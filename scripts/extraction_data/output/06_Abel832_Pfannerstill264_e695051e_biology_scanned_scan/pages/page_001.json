@@ -1,0 +1,121 @@
+{
+  "page_number": 1,
+  "width": 769.92,
+  "height": 1080.48,
+  "native_text": "+ Dossier patient synthetique multimodal\n'\nCOMPTE RENDU D'ANALYSES BIOLOGIQUES\n133 LITTLETON RD, WESTFORD, MA - Tel. 9785771946\nPatient Abel832 Pfannerstill264 Numero de rapport CR-20241228-E695051E\nce 695051 e-ec01-8530-e5b1 -6e759 Date du document 28 dec. 2024\nIdentifiant\nbbb3e66\nType de rencontre Wellness\nDate de naissance 23 oct. 1999\nPrescripteur Brendan864 Hintz995\nAge 25\nSpecialite GENERAL PRACTICE\nSexe M\nStatut Version finale synthetique\nmein 618 Lehner Stravenue, Westford,\nMassachusetts, 00000\nResultats selectionnes\nAnalyse / Observation Resultat Unites Valeurs de reference sea Date\nHematocrit [Volume Fraction] of Blood by 46.1 9° 36.0 - 53.0 - 25 dec. 2024\nAutomated count ; ° ; ; ;\nHemoglobin [Mass/volume] in Blood 14.4 g/dL 12.0 - 17.5 - 25 dec. 2021\nLeukocytes [#/volume] in Blood by 9 10°3/uL 4.0-11.0 . 25 dec. 2021\nAutomated count\nPlatelets [#/volume] in Blood by Automated 375 10°3/uL. 150 - 450 - 25 dec. 2021\ncount\nPlatelet distribution width [Entitic volume] in 308 fL 150 - 450 : 25 dec. 2021\nBlood by Automated count ,\nPlatelet [Entitic mean volume] in Blood by 10.9 fL 150 - 450 L 25 dec. 2021\nAutomated count : /\nBasophils/Leukocytes in Blood by 34 9 4.0-11.0 L 14 janv. 2021\nAutomated count . = ; ; ae\nEosinophils/Leukocytes in Blood by 52 9° 4.0-11.0 ; 14 janv. 2021\nAutomated count : ys . ; FANG\nMonocytes/Leukocytes in Blood by 99 9° 4.0-11.0 - 14 janv. 2021\nAutomated count . ° ; . —\nLymphocytes/Leukocytes in Blood by 23.7 % 4.0-11.0 H 14 janv. 2021\nAutomated count\nDocument synthetique - usage exclusif pour tests OCR parsing / retrieval multimodal Page 1",
+  "final_text": "+ Dossier patient synthetique multimodal\n'\nCOMPTE RENDU D'ANALYSES BIOLOGIQUES\n133 LITTLETON RD, WESTFORD, MA - Tel. 9785771946\nPatient Abel832 Pfannerstill264 Numero de rapport CR-20241228-E695051E\nce 695051 e-ec01-8530-e5b1 -6e759 Date du document 28 dec. 2024\nIdentifiant\nbbb3e66\nType de rencontre Wellness\nDate de naissance 23 oct. 1999\nPrescripteur Brendan864 Hintz995\nAge 25\nSpecialite GENERAL PRACTICE\nSexe M\nStatut Version finale synthetique\nmein 618 Lehner Stravenue, Westford,\nMassachusetts, 00000\nResultats selectionnes\nAnalyse / Observation Resultat Unites Valeurs de reference sea Date\nHematocrit [Volume Fraction] of Blood by 46.1 9° 36.0 - 53.0 - 25 dec. 2024\nAutomated count ; ° ; ; ;\nHemoglobin [Mass/volume] in Blood 14.4 g/dL 12.0 - 17.5 - 25 dec. 2021\nLeukocytes [#/volume] in Blood by 9 10°3/uL 4.0-11.0 . 25 dec. 2021\nAutomated count\nPlatelets [#/volume] in Blood by Automated 375 10°3/uL. 150 - 450 - 25 dec. 2021\ncount\nPlatelet distribution width [Entitic volume] in 308 fL 150 - 450 : 25 dec. 2021\nBlood by Automated count ,\nPlatelet [Entitic mean volume] in Blood by 10.9 fL 150 - 450 L 25 dec. 2021\nAutomated count : /\nBasophils/Leukocytes in Blood by 34 9 4.0-11.0 L 14 janv. 2021\nAutomated count . = ; ; ae\nEosinophils/Leukocytes in Blood by 52 9° 4.0-11.0 ; 14 janv. 2021\nAutomated count : ys . ; FANG\nMonocytes/Leukocytes in Blood by 99 9° 4.0-11.0 - 14 janv. 2021\nAutomated count . ° ; . —\nLymphocytes/Leukocytes in Blood by 23.7 % 4.0-11.0 H 14 janv. 2021\nAutomated count\nDocument synthetique - usage exclusif pour tests OCR parsing / retrieval multimodal Page 1",
+  "native_text_chars": 1595,
+  "ocr_used": true,
+  "ocr_text_chars": 1595,
+  "table_ids": [
+    "table_p001_01",
+    "table_p001_02",
+    "table_p001_03"
+  ],
+  "image_ids": [
+    "image_p001_01"
+  ],
+  "blocks": [
+    {
+      "block_id": "block_001",
+      "page_number": 1,
+      "block_type": "document_header",
+      "section_title": "COMPTE RENDU D'ANALYSES BIOLOGIQUES",
+      "text": "COMPTE RENDU D'ANALYSES BIOLOGIQUES",
+      "bbox": {
+        "x0": 61.59,
+        "y0": 80.48,
+        "x1": 708.33,
+        "y1": 196.66
+      },
+      "source_table_ids": [],
+      "source_image_ids": [
+        "image_p001_01"
+      ],
+      "source_text_block_ids": [
+        "ocr_line_003"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_002",
+      "page_number": 1,
+      "block_type": "facility_block",
+      "section_title": "Facility",
+      "text": "133 LITTLETON RD, WESTFORD, MA - Tel. 9785771946",
+      "bbox": {
+        "x0": 94.24,
+        "y0": 203.86,
+        "x1": 373.67,
+        "y1": 217.6
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "ocr_line_004"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_003",
+      "page_number": 1,
+      "block_type": "patient_info_block",
+      "section_title": "Patient information",
+      "text": "Patient: Abel832 Pfannerstill264 Identifiant: ce695051e-ec01-8530-e5b1-6e759bbb3e66 Date de naissance: 23 oct. 1999 Age: 25 Sexe: M Adresse: 618 Lehner Stravenue, Westford, Massachusetts, 00000",
+      "bbox": null,
+      "source_table_ids": [
+        "table_p001_01"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_004",
+      "page_number": 1,
+      "block_type": "report_info_block",
+      "section_title": "Report metadata",
+      "text": "Numero de rapport: CR-20241228-E695051E Date du document: 28 dec. 2024 Type de rencontre: Wellness Prescripteur: Brendan864 Hintz995 Specialite: GENERAL PRACTICE Statut: Version finale synthetique",
+      "bbox": null,
+      "source_table_ids": [
+        "table_p001_02"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_005",
+      "page_number": 1,
+      "block_type": "results_table_block",
+      "section_title": "Selected results",
+      "text": "Analyse / Observation: Hematocrit [Volume Fraction] of Blood by Automated count | Resultat: 46.1 | Unites: % | Valeurs de reference: 36.0 - 53.0 | Alert e: - | Date: 25 dec. 2024 Analyse / Observation: Hemoglobin [Mass/volume] in Blood | Resultat: 14.4 | Unites: g/dL | Valeurs de reference: 12.0 - 17.5 | Alert e: - | Date: 25 dec. 2021 Analyse / Observation: Leukocytes [#/volume] in Blood by Automated count | Resultat: 9 | Unites: 10*3/uL | Valeurs de reference: 4.0-11.0 | Alert e: - | Date: 25 dec. 2021 Analyse / Observation: Platelets [#/volume] in Blood by Automated count | Resultat: 375 | Unites: 10*3/uL | Valeurs de reference: 150 - 450 | Alert e: - | Date: 25 dec. 2021 Analyse / Observation: Platelet distribution width [Entitic volume] in Blood by Automated count | Resultat: 308 | Unites: fL | Valeurs de reference: 150 - 450 | Alert e: - | Date: 25 dec. 2021 Analyse / Observation: Platelet [Entitic mean volume] in Blood by Automated count | Resultat: 10.9 | Unites: fL | Valeurs de reference: 150 - 450 | Alert e: L | Date: 25 dec. 2021 Analyse / Observation: Automated count ae Eosinophils/Leukocytes in Blood by Automated count ys FANG | Resultat: 52 | Unites: % | Valeurs de reference: 4.0-11.0 | Alert e: - | Date: 14 janv. 2021 Analyse / Observation: Monocytes/Leukocytes in Blood by Automated count | Resultat: 99 | Unites: % | Valeurs de reference: 4.0-11.0 | Alert e: - | Date: 14 janv. 2021 Analyse / Observation: Lymphocytes/Leukocytes in Blood by Automated count | Resultat: 23.7 | Unites: % | Valeurs de reference: 4.0-11.0 | Alert e: H | Date: 14 janv. 2021",
+      "bbox": null,
+      "source_table_ids": [
+        "table_p001_03"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_006",
+      "page_number": 1,
+      "block_type": "footer_block",
+      "section_title": "Footer",
+      "text": "Document synthetique - usage exclusif pour tests OCR parsing / retrieval multimodal Page 1",
+      "bbox": {
+        "x0": 77.22,
+        "y0": 1000.97,
+        "x1": 679.94,
+        "y1": 1016.02
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "ocr_line_039"
+      ],
+      "is_indexable": false
+    }
+  ]
+}

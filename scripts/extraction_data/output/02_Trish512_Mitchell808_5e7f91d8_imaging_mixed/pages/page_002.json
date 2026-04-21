@@ -1,0 +1,78 @@
+{
+  "page_number": 2,
+  "width": 595.28,
+  "height": 841.89,
+  "native_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 2\nSynthese radioclinique\nCorrelation entre contexte clinique, tableau synthetique et\nillustration d'imagerie : Une image diagnostique synthetique\nnon interpretable est jointe pour simuler un compte rendu\nd'imagerie. Les mesures biologiques d'accompagnement\nservent uniquement de contexte documentaire. Antecedents :\nMalignant neoplasm of breast (disorder), Concussion with no\nloss of consciousness (disorder), Concussion injury of brain\n(disorder), Medication review due (situation). Document\nreserve aux essais de parsing, OCR, retrieval et fusion\ntexte-image.\nContexte documente : Malignant neoplasm of breast (disorder),\nConcussion with no loss of consciousness (disorder), Concussion\ninjury of brain (disorder), Medication review due (situation), Injury\nof anterior cruciate ligament (disorder)\nCommentaires techniques\nLe present compte rendu a ete mis en forme de facon realiste\nafin de tester l'extraction conjointe du texte, des tableaux et\ndes visuels rasterises.\nEchographie synthetique\nImage medicale synthetique non diagnostique inseree\nvolontairement pour evaluation multimodale.",
+  "final_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 2\nSynthese radioclinique\nCorrelation entre contexte clinique, tableau synthetique et\nillustration d'imagerie : Une image diagnostique synthetique\nnon interpretable est jointe pour simuler un compte rendu\nd'imagerie. Les mesures biologiques d'accompagnement\nservent uniquement de contexte documentaire. Antecedents :\nMalignant neoplasm of breast (disorder), Concussion with no\nloss of consciousness (disorder), Concussion injury of brain\n(disorder), Medication review due (situation). Document\nreserve aux essais de parsing, OCR, retrieval et fusion\ntexte-image.\nContexte documente : Malignant neoplasm of breast (disorder),\nConcussion with no loss of consciousness (disorder), Concussion\ninjury of brain (disorder), Medication review due (situation), Injury\nof anterior cruciate ligament (disorder)\nCommentaires techniques\nLe present compte rendu a ete mis en forme de facon realiste\nafin de tester l'extraction conjointe du texte, des tableaux et\ndes visuels rasterises.\nEchographie synthetique\nImage medicale synthetique non diagnostique inseree\nvolontairement pour evaluation multimodale.",
+  "native_text_chars": 1182,
+  "ocr_used": false,
+  "ocr_text_chars": 0,
+  "table_ids": [],
+  "image_ids": [
+    "image_p002_01"
+  ],
+  "blocks": [
+    {
+      "block_id": "block_007",
+      "page_number": 2,
+      "block_type": "clinical_interpretation_block",
+      "section_title": "Synthese radioclinique",
+      "text": "Synthese radioclinique Correlation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non interpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent uniquement de contexte documentaire. Antecedents : Malignant neoplasm of breast (disorder), Concussion with no loss of consciousness (disorder), Concussion injury of brain (disorder), Medication review due (situation). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image. Contexte documente : Malignant neoplasm of breast (disorder), Concussion with no loss of consciousness (disorder), Concussion injury of brain (disorder), Medication review due (situation), Injury of anterior cruciate ligament (disorder)",
+      "bbox": {
+        "x0": 60.02,
+        "y0": 60.44,
+        "x1": 301.07,
+        "y1": 249.04
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p002_02",
+        "text_p002_03",
+        "text_p002_04"
+      ],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_008",
+      "page_number": 2,
+      "block_type": "image_context_block",
+      "section_title": "Echographie synthetique",
+      "text": "Echographie synthetique Image medicale synthetique non diagnostique inseree volontairement pour evaluation multimodale. Echographie synthetique | Image medicale synthetique non diagnostique inseree volontairement pour evaluation multimodale.",
+      "bbox": {
+        "x0": 320.81,
+        "y0": 60.44,
+        "x1": 541.91,
+        "y1": 384.04
+      },
+      "source_table_ids": [],
+      "source_image_ids": [
+        "image_p002_01"
+      ],
+      "source_text_block_ids": [
+        "text_p002_07",
+        "text_p002_08"
+      ],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_009",
+      "page_number": 2,
+      "block_type": "footer_block",
+      "section_title": "Footer",
+      "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 2",
+      "bbox": {
+        "x0": 45.35,
+        "y0": 810.37,
+        "x1": 549.92,
+        "y1": 820.95
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p002_01"
+      ],
+      "is_indexable": false
+    }
+  ]
+}

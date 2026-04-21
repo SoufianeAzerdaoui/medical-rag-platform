@@ -1,0 +1,27 @@
+Synthese radioclinique Echographie synthetique
+Correlation entre contexte clinique, tableau synthetique et — = SSS eT |
+illustration d'imagerie : Une image diagnostique synthetique Echographie synthetique - illustration non diagnostique
+non interpretable est jointe pour simuler un compte rendu ar te hey gg tek 8 p> Oe, tere tea
+d'imagerie. Les mesures biologiques d'accompagnement Oe fate | cect : TTS AGRIC Eos aera ata
+. . , e ’ : * "ee
+servent uniquement de contexte documentaire. Antecedents : ¢ tar oy es Je sg oe fo ow
+Gingivitis (disorder), Victim of intimate partner abuse (finding), 3 nt, ae,” ° ed cel
+Chronic congestive heart failure (disorder), Abnormal findings om : Sf
+diagnostic imaging heart+coronary circulat (finding). ee ya “ ‘y “ail 77 “See Se
+Document reserve aux essais de parsing, OCR, retrieval et POY 4 s me
+fusion texte-image. tO te ss? $0 8c, fae
+Py " ‘ ‘ . wa?
+Contexte documente : Gingivitis (disorder), Victim of intimate cone oy q 0.064) ae
+partner abuse (finding), Chronic congestive heart failure (disorder), wo 5 Batt. Bo ng
+Abnormal findings diagnostic imaging heart+coronary circulat retina ; A ei
+(finding), Full-time employment (finding) be ’ “a . AE
+Commentaires techniques Ly oy a m8,
+* tk, oo a x A " as) F
+Le present compte rendu a ete mis en forme de facon realiste Ta mR ie wes NCS Moet
+afin de tester l'extraction conjointe du texte, des tableaux et bg Oh cyt Ft ge ge ot He avi hes
+des visuels rasterises. Hey caplG dita) coxicia evita sat gee Cia teragitte a v
+" *. ve ; “y se net oa .
+’ f ” r oy to! be : a : :* eth
+Image medicale synthetique non diagnostique inseree
+volontairement pour evaluation multimodale
+Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 2

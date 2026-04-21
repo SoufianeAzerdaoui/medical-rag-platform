@@ -1,0 +1,1308 @@
+{
+  "doc_id": "05_Gale827_Champlin946_0dcdda68_imaging_clean",
+  "source_pdf": "/home/onizuka/Bureau/PFE/medical-rag-platform/docs/05_Gale827_Champlin946_0dcdda68_imaging_clean.pdf",
+  "output_dir": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/05_Gale827_Champlin946_0dcdda68_imaging_clean",
+  "pdf_type": "mixed",
+  "document_type": "imaging_report",
+  "page_count": 3,
+  "native_text_available": true,
+  "ocr_available": false,
+  "extraction_warnings": [],
+  "metadata": {
+    "pdf_metadata": {
+      "format": "PDF 1.4",
+      "title": "CR-20250810-0DCDDA68",
+      "author": "OpenAI synthetic medical PDF generator",
+      "subject": "(unspecified)",
+      "keywords": "",
+      "creator": "(unspecified)",
+      "producer": "ReportLab PDF Library - (opensource)",
+      "creationDate": "D:20260421190340+01'00'",
+      "modDate": "D:20260421190340+01'00'",
+      "trapped": "",
+      "encryption": null
+    },
+    "page_sizes": [
+      {
+        "page_number": 1,
+        "width": 595.28,
+        "height": 841.89,
+        "rotation": 0
+      },
+      {
+        "page_number": 2,
+        "width": 595.28,
+        "height": 841.89,
+        "rotation": 0
+      },
+      {
+        "page_number": 3,
+        "width": 595.28,
+        "height": 841.89,
+        "rotation": 0
+      }
+    ],
+    "classification": {
+      "pdf_type": "mixed",
+      "page_signals": [
+        {
+          "page_number": 1,
+          "native_text_chars": 1187,
+          "has_meaningful_text": true,
+          "image_count": 1
+        },
+        {
+          "page_number": 2,
+          "native_text_chars": 1077,
+          "has_meaningful_text": true,
+          "image_count": 1
+        },
+        {
+          "page_number": 3,
+          "native_text_chars": 1258,
+          "has_meaningful_text": true,
+          "image_count": 2
+        }
+      ],
+      "native_text_available": true,
+      "image_pages": 3
+    }
+  },
+  "facility": {
+    "raw_text": "260 ELM ST, SOMERVILLE, MA - Tel. 6176669577",
+    "address": "260 ELM ST, SOMERVILLE, MA",
+    "phone": "6176669577"
+  },
+  "patient": {
+    "name": "Gale827 Champlin946",
+    "patient_id": "0dcdda68-4c75-afe7-f056-31e78e9b6b2a",
+    "birth_date": "1970-12-06",
+    "age": 54,
+    "sex": "M",
+    "address": "855 Runolfsdottir Camp, Boston, Massachusetts, 02134"
+  },
+  "report": {
+    "report_id": "CR-20250810-0DCDDA68",
+    "report_date": "2025-08-10",
+    "encounter_type": "Wellness",
+    "prescriber": "Enriqueta274 Barton704",
+    "specialty": "GENERAL PRACTICE",
+    "status": "Version finale synthetique"
+  },
+  "results": [
+    {
+      "page_number": 1,
+      "source_table_id": "table_p001_03",
+      "analyte": "Potassium [Moles/volume] in Blood",
+      "value_raw": "3.8",
+      "value_numeric": 3.8,
+      "unit": "mmol/L",
+      "reference_range": {
+        "text": "3.5 - 5.1",
+        "low": 3.5,
+        "high": 5.1
+      },
+      "alert_flag": null,
+      "is_abnormal": false,
+      "observation_date": "2025-08-10"
+    },
+    {
+      "page_number": 1,
+      "source_table_id": "table_p001_03",
+      "analyte": "Sodium [Moles/volume] in Blood",
+      "value_raw": "137",
+      "value_numeric": 137.0,
+      "unit": "mmol/L",
+      "reference_range": {
+        "text": "135 - 145",
+        "low": 135.0,
+        "high": 145.0
+      },
+      "alert_flag": null,
+      "is_abnormal": false,
+      "observation_date": "2025-08-10"
+    },
+    {
+      "page_number": 1,
+      "source_table_id": "table_p001_03",
+      "analyte": "Calcium [Mass/volume] in Blood",
+      "value_raw": "8.9",
+      "value_numeric": 8.9,
+      "unit": "mg/dL",
+      "reference_range": {
+        "text": "8.5 - 10.5",
+        "low": 8.5,
+        "high": 10.5
+      },
+      "alert_flag": null,
+      "is_abnormal": false,
+      "observation_date": "2025-08-10"
+    },
+    {
+      "page_number": 1,
+      "source_table_id": "table_p001_03",
+      "analyte": "Creatinine [Mass/volume] in Blood",
+      "value_raw": "1.3",
+      "value_numeric": 1.3,
+      "unit": "mg/dL",
+      "reference_range": {
+        "text": "0.6 - 1.3",
+        "low": 0.6,
+        "high": 1.3
+      },
+      "alert_flag": null,
+      "is_abnormal": false,
+      "observation_date": "2025-08-10"
+    },
+    {
+      "page_number": 1,
+      "source_table_id": "table_p001_03",
+      "analyte": "Urea nitrogen [Mass/volume] in Blood",
+      "value_raw": "15.2",
+      "value_numeric": 15.2,
+      "unit": "mg/dL",
+      "reference_range": {
+        "text": "10 - 50",
+        "low": 10.0,
+        "high": 50.0
+      },
+      "alert_flag": null,
+      "is_abnormal": false,
+      "observation_date": "2025-08-10"
+    },
+    {
+      "page_number": 1,
+      "source_table_id": "table_p001_03",
+      "analyte": "Glucose [Mass/volume] in Blood",
+      "value_raw": "66.2",
+      "value_numeric": 66.2,
+      "unit": "mg/dL",
+      "reference_range": {
+        "text": "70 - 99",
+        "low": 70.0,
+        "high": 99.0
+      },
+      "alert_flag": "L",
+      "is_abnormal": true,
+      "observation_date": "2025-08-10"
+    },
+    {
+      "page_number": 1,
+      "source_table_id": "table_p001_03",
+      "analyte": "Respiratory rate",
+      "value_raw": "14",
+      "value_numeric": 14.0,
+      "unit": "/min",
+      "reference_range": {
+        "text": "Selon contexte",
+        "low": null,
+        "high": null
+      },
+      "alert_flag": null,
+      "is_abnormal": false,
+      "observation_date": "2025-08-10"
+    },
+    {
+      "page_number": 1,
+      "source_table_id": "table_p001_03",
+      "analyte": "Systolic Blood Pressure",
+      "value_raw": "124",
+      "value_numeric": 124.0,
+      "unit": "mm[Hg]",
+      "reference_range": {
+        "text": "Selon contexte",
+        "low": null,
+        "high": null
+      },
+      "alert_flag": null,
+      "is_abnormal": false,
+      "observation_date": "2025-08-10"
+    }
+  ],
+  "interpretation": {
+    "text": "Synthese radioclinique Correlation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non interpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent uniquement de contexte documentaire. Antecedents : Misuses drugs (finding), Social isolation (finding), Unemployed (finding), Primary dental caries (disorder). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image. Contexte documente : Misuses drugs (finding), Social isolation (finding), Unemployed (finding), Primary dental caries (disorder), Reports of violence in the environment (finding)\n\nInterpretation et validation Correlation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non interpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent uniquement de contexte documentaire. Antecedents : Misuses drugs (finding), Social isolation (finding), Unemployed (finding), Primary dental caries (disorder). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image.",
+    "sections": [
+      {
+        "page_number": 2,
+        "title": "Synthese radioclinique",
+        "text": "Synthese radioclinique Correlation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non interpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent uniquement de contexte documentaire. Antecedents : Misuses drugs (finding), Social isolation (finding), Unemployed (finding), Primary dental caries (disorder). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image. Contexte documente : Misuses drugs (finding), Social isolation (finding), Unemployed (finding), Primary dental caries (disorder), Reports of violence in the environment (finding)"
+      },
+      {
+        "page_number": 3,
+        "title": "Interpretation et validation",
+        "text": "Interpretation et validation Correlation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non interpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent uniquement de contexte documentaire. Antecedents : Misuses drugs (finding), Social isolation (finding), Unemployed (finding), Primary dental caries (disorder). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image."
+      }
+    ],
+    "summary_text": "Resume du dossier Patient synthetique issu de donnees Synthea. Ce document a ete enrichi par un tableau structure, un bloc de texte clinique et une image medicale factice afin de reproduire des conditions proches de PDF reels de sante."
+  },
+  "validation": {
+    "validated_by": "Enriqueta274 Barton704",
+    "specialty": "GENERAL PRACTICE",
+    "signature_image_ids": [
+      "image_p003_02"
+    ],
+    "stamp_image_ids": [
+      "image_p003_01"
+    ],
+    "status": "Version finale synthetique",
+    "is_signed": true,
+    "is_stamped": true
+  },
+  "pages": [
+    {
+      "page_number": 1,
+      "width": 595.28,
+      "height": 841.89,
+      "native_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 1\nCOMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE\n260 ELM ST, SOMERVILLE, MA - Tel. 6176669577\nPatient\nGale827 Champlin946\nIdentifiant\n0dcdda68-4c75-afe7-f056-31e78e9\nb6b2a\nDate de naissance\n06 dec. 1970\nAge\n54\nSexe\nM\nAdresse\n855 Runolfsdottir Camp, Boston,\nMassachusetts, 02134\nNumero de rapport\nCR-20250810-0DCDDA68\nDate du document\n10 aout 2025\nType de rencontre\nWellness\nPrescripteur\nEnriqueta274 Barton704\nSpecialite\nGENERAL PRACTICE\nStatut\nVersion finale synthetique\nResultats selectionnes\nAnalyse / Observation\nResultat\nUnites\nValeurs de reference\nAlert\ne\nDate\nPotassium [Moles/volume] in Blood\n3.8\nmmol/L\n3.5 - 5.1\n-\n10 aout 2025\nSodium [Moles/volume] in Blood\n137\nmmol/L\n135 - 145\n-\n10 aout 2025\nCalcium [Mass/volume] in Blood\n8.9\nmg/dL\n8.5 - 10.5\n-\n10 aout 2025\nCreatinine [Mass/volume] in Blood\n1.3\nmg/dL\n0.6 - 1.3\n-\n10 aout 2025\nUrea nitrogen [Mass/volume] in Blood\n15.2\nmg/dL\n10 - 50\n-\n10 aout 2025\nGlucose [Mass/volume] in Blood\n66.2\nmg/dL\n70 - 99\nL\n10 aout 2025\nRespiratory rate\n14\n/min\nSelon contexte\n-\n10 aout 2025\nSystolic Blood Pressure\n124\nmm[Hg]\nSelon contexte\n-\n10 aout 2025",
+      "final_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 1\nCOMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE\n260 ELM ST, SOMERVILLE, MA - Tel. 6176669577\nPatient\nGale827 Champlin946\nIdentifiant\n0dcdda68-4c75-afe7-f056-31e78e9\nb6b2a\nDate de naissance\n06 dec. 1970\nAge\n54\nSexe\nM\nAdresse\n855 Runolfsdottir Camp, Boston,\nMassachusetts, 02134\nNumero de rapport\nCR-20250810-0DCDDA68\nDate du document\n10 aout 2025\nType de rencontre\nWellness\nPrescripteur\nEnriqueta274 Barton704\nSpecialite\nGENERAL PRACTICE\nStatut\nVersion finale synthetique\nResultats selectionnes\nAnalyse / Observation\nResultat\nUnites\nValeurs de reference\nAlert\ne\nDate\nPotassium [Moles/volume] in Blood\n3.8\nmmol/L\n3.5 - 5.1\n-\n10 aout 2025\nSodium [Moles/volume] in Blood\n137\nmmol/L\n135 - 145\n-\n10 aout 2025\nCalcium [Mass/volume] in Blood\n8.9\nmg/dL\n8.5 - 10.5\n-\n10 aout 2025\nCreatinine [Mass/volume] in Blood\n1.3\nmg/dL\n0.6 - 1.3\n-\n10 aout 2025\nUrea nitrogen [Mass/volume] in Blood\n15.2\nmg/dL\n10 - 50\n-\n10 aout 2025\nGlucose [Mass/volume] in Blood\n66.2\nmg/dL\n70 - 99\nL\n10 aout 2025\nRespiratory rate\n14\n/min\nSelon contexte\n-\n10 aout 2025\nSystolic Blood Pressure\n124\nmm[Hg]\nSelon contexte\n-\n10 aout 2025",
+      "native_text_chars": 1187,
+      "ocr_used": false,
+      "ocr_text_chars": 0,
+      "table_ids": [
+        "table_p001_01",
+        "table_p001_02",
+        "table_p001_03"
+      ],
+      "image_ids": [
+        "image_p001_01"
+      ],
+      "blocks": [
+        {
+          "block_id": "block_001",
+          "page_number": 1,
+          "block_type": "document_header",
+          "section_title": "COMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE",
+          "text": "COMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE",
+          "bbox": {
+            "x0": 51.02,
+            "y0": 54.19,
+            "x1": 544.25,
+            "y1": 142.24
+          },
+          "source_table_ids": [],
+          "source_image_ids": [
+            "image_p001_01"
+          ],
+          "source_text_block_ids": [
+            "text_p001_02"
+          ],
+          "is_indexable": false
+        },
+        {
+          "block_id": "block_002",
+          "page_number": 1,
+          "block_type": "facility_block",
+          "section_title": "Facility",
+          "text": "260 ELM ST, SOMERVILLE, MA - Tel. 6176669577",
+          "bbox": {
+            "x0": 51.35,
+            "y0": 145.3,
+            "x1": 260.24,
+            "y1": 157.81
+          },
+          "source_table_ids": [],
+          "source_image_ids": [],
+          "source_text_block_ids": [
+            "text_p001_03"
+          ],
+          "is_indexable": false
+        },
+        {
+          "block_id": "block_003",
+          "page_number": 1,
+          "block_type": "patient_info_block",
+          "section_title": "Patient information",
+          "text": "Patient: Gale827 Champlin946 Identifiant: 0dcdda68-4c75-afe7-f056-31e78e9 b6b2a Date de naissance: 06 dec. 1970 Age: 54 Sexe: M Adresse: 855 Runolfsdottir Camp, Boston, Massachusetts, 02134",
+          "bbox": {
+            "x0": 55.54,
+            "y0": 167.48,
+            "x1": 297.97,
+            "y1": 317.08
+          },
+          "source_table_ids": [
+            "table_p001_01"
+          ],
+          "source_image_ids": [],
+          "source_text_block_ids": [],
+          "is_indexable": false
+        },
+        {
+          "block_id": "block_004",
+          "page_number": 1,
+          "block_type": "report_info_block",
+          "section_title": "Report metadata",
+          "text": "Numero de rapport: CR-20250810-0DCDDA68 Date du document: 10 aout 2025 Type de rencontre: Wellness Prescripteur: Enriqueta274 Barton704 Specialite: GENERAL PRACTICE Statut: Version finale synthetique",
+          "bbox": {
+            "x0": 303.64,
+            "y0": 167.48,
+            "x1": 544.42,
+            "y1": 294.68
+          },
+          "source_table_ids": [
+            "table_p001_02"
+          ],
+          "source_image_ids": [],
+          "source_text_block_ids": [],
+          "is_indexable": false
+        },
+        {
+          "block_id": "block_005",
+          "page_number": 1,
+          "block_type": "results_table_block",
+          "section_title": "Selected results",
+          "text": "Analyse / Observation: Potassium [Moles/volume] in Blood | Resultat: 3.8 | Unites: mmol/L | Valeurs de reference: 3.5 - 5.1 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Sodium [Moles/volume] in Blood | Resultat: 137 | Unites: mmol/L | Valeurs de reference: 135 - 145 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Calcium [Mass/volume] in Blood | Resultat: 8.9 | Unites: mg/dL | Valeurs de reference: 8.5 - 10.5 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Creatinine [Mass/volume] in Blood | Resultat: 1.3 | Unites: mg/dL | Valeurs de reference: 0.6 - 1.3 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Urea nitrogen [Mass/volume] in Blood | Resultat: 15.2 | Unites: mg/dL | Valeurs de reference: 10 - 50 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Glucose [Mass/volume] in Blood | Resultat: 66.2 | Unites: mg/dL | Valeurs de reference: 70 - 99 | Alert e: L | Date: 10 aout 2025 Analyse / Observation: Respiratory rate | Resultat: 14 | Unites: /min | Valeurs de reference: Selon contexte | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Systolic Blood Pressure | Resultat: 124 | Unites: mm[Hg] | Valeurs de reference: Selon contexte | Alert e: - | Date: 10 aout 2025",
+          "bbox": {
+            "x0": 55.54,
+            "y0": 349.08,
+            "x1": 540.0,
+            "y1": 558.08
+          },
+          "source_table_ids": [
+            "table_p001_03"
+          ],
+          "source_image_ids": [],
+          "source_text_block_ids": [],
+          "is_indexable": true
+        },
+        {
+          "block_id": "block_006",
+          "page_number": 1,
+          "block_type": "footer_block",
+          "section_title": "Footer",
+          "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 1",
+          "bbox": {
+            "x0": 45.35,
+            "y0": 810.37,
+            "x1": 549.92,
+            "y1": 820.95
+          },
+          "source_table_ids": [],
+          "source_image_ids": [],
+          "source_text_block_ids": [
+            "text_p001_01"
+          ],
+          "is_indexable": false
+        }
+      ]
+    },
+    {
+      "page_number": 2,
+      "width": 595.28,
+      "height": 841.89,
+      "native_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 2\nSynthese radioclinique\nCorrelation entre contexte clinique, tableau synthetique et\nillustration d'imagerie : Une image diagnostique synthetique\nnon interpretable est jointe pour simuler un compte rendu\nd'imagerie. Les mesures biologiques d'accompagnement\nservent uniquement de contexte documentaire. Antecedents :\nMisuses drugs (finding), Social isolation (finding),\nUnemployed (finding), Primary dental caries (disorder).\nDocument reserve aux essais de parsing, OCR, retrieval et\nfusion texte-image.\nContexte documente : Misuses drugs (finding), Social isolation\n(finding), Unemployed (finding), Primary dental caries (disorder),\nReports of violence in the environment (finding)\nCommentaires techniques\nLe present compte rendu a ete mis en forme de facon realiste\nafin de tester l'extraction conjointe du texte, des tableaux et\ndes visuels rasterises.\nRadiographie thoracique synthetique\nImage medicale synthetique non diagnostique inseree\nvolontairement pour evaluation multimodale.",
+      "final_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 2\nSynthese radioclinique\nCorrelation entre contexte clinique, tableau synthetique et\nillustration d'imagerie : Une image diagnostique synthetique\nnon interpretable est jointe pour simuler un compte rendu\nd'imagerie. Les mesures biologiques d'accompagnement\nservent uniquement de contexte documentaire. Antecedents :\nMisuses drugs (finding), Social isolation (finding),\nUnemployed (finding), Primary dental caries (disorder).\nDocument reserve aux essais de parsing, OCR, retrieval et\nfusion texte-image.\nContexte documente : Misuses drugs (finding), Social isolation\n(finding), Unemployed (finding), Primary dental caries (disorder),\nReports of violence in the environment (finding)\nCommentaires techniques\nLe present compte rendu a ete mis en forme de facon realiste\nafin de tester l'extraction conjointe du texte, des tableaux et\ndes visuels rasterises.\nRadiographie thoracique synthetique\nImage medicale synthetique non diagnostique inseree\nvolontairement pour evaluation multimodale.",
+      "native_text_chars": 1077,
+      "ocr_used": false,
+      "ocr_text_chars": 0,
+      "table_ids": [],
+      "image_ids": [
+        "image_p002_01"
+      ],
+      "blocks": [
+        {
+          "block_id": "block_007",
+          "page_number": 2,
+          "block_type": "clinical_interpretation_block",
+          "section_title": "Synthese radioclinique",
+          "text": "Synthese radioclinique Correlation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non interpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent uniquement de contexte documentaire. Antecedents : Misuses drugs (finding), Social isolation (finding), Unemployed (finding), Primary dental caries (disorder). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image. Contexte documente : Misuses drugs (finding), Social isolation (finding), Unemployed (finding), Primary dental caries (disorder), Reports of violence in the environment (finding)",
+          "bbox": {
+            "x0": 60.02,
+            "y0": 60.44,
+            "x1": 301.07,
+            "y1": 227.44
+          },
+          "source_table_ids": [],
+          "source_image_ids": [],
+          "source_text_block_ids": [
+            "text_p002_02",
+            "text_p002_03",
+            "text_p002_04"
+          ],
+          "is_indexable": true
+        },
+        {
+          "block_id": "block_008",
+          "page_number": 2,
+          "block_type": "image_context_block",
+          "section_title": "Radiographie thoracique synthetique",
+          "text": "Radiographie thoracique synthetique Image medicale synthetique non diagnostique inseree volontairement pour evaluation multimodale. Radiographie thoracique synthetique | Image medicale synthetique non diagnostique inseree volontairement pour evaluation multimodale.",
+          "bbox": {
+            "x0": 320.81,
+            "y0": 60.44,
+            "x1": 541.91,
+            "y1": 384.04
+          },
+          "source_table_ids": [],
+          "source_image_ids": [
+            "image_p002_01"
+          ],
+          "source_text_block_ids": [
+            "text_p002_07",
+            "text_p002_08"
+          ],
+          "is_indexable": true
+        },
+        {
+          "block_id": "block_009",
+          "page_number": 2,
+          "block_type": "footer_block",
+          "section_title": "Footer",
+          "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 2",
+          "bbox": {
+            "x0": 45.35,
+            "y0": 810.37,
+            "x1": 549.92,
+            "y1": 820.95
+          },
+          "source_table_ids": [],
+          "source_image_ids": [],
+          "source_text_block_ids": [
+            "text_p002_01"
+          ],
+          "is_indexable": false
+        }
+      ]
+    },
+    {
+      "page_number": 3,
+      "width": 595.28,
+      "height": 841.89,
+      "native_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 3\nInterpretation et validation\nCorrelation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non\ninterpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent\nuniquement de contexte documentaire. Antecedents : Misuses drugs (finding), Social isolation (finding), Unemployed (finding),\nPrimary dental caries (disorder). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image.\nResume du dossier\nPatient synthetique issu de donnees Synthea. Ce document a ete enrichi par un tableau structure, un bloc de texte clinique et\nune image medicale factice afin de reproduire des conditions proches de PDF reels de sante.\nAnalyse / Observation\nResultat\nUnites\nValeurs de reference\nAlert\ne\nDate\nPotassium [Moles/volume] in Blood\n3.8\nmmol/L\n3.5 - 5.1\n-\n10 aout 2025\nSodium [Moles/volume] in Blood\n137\nmmol/L\n135 - 145\n-\n10 aout 2025\nCalcium [Mass/volume] in Blood\n8.9\nmg/dL\n8.5 - 10.5\n-\n10 aout 2025\nCreatinine [Mass/volume] in Blood\n1.3\nmg/dL\n0.6 - 1.3\n-\n10 aout 2025\nValidation medicale\nEnriqueta274 Barton704\nGENERAL PRACTICE\nCachet du service",
+      "final_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 3\nInterpretation et validation\nCorrelation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non\ninterpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent\nuniquement de contexte documentaire. Antecedents : Misuses drugs (finding), Social isolation (finding), Unemployed (finding),\nPrimary dental caries (disorder). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image.\nResume du dossier\nPatient synthetique issu de donnees Synthea. Ce document a ete enrichi par un tableau structure, un bloc de texte clinique et\nune image medicale factice afin de reproduire des conditions proches de PDF reels de sante.\nAnalyse / Observation\nResultat\nUnites\nValeurs de reference\nAlert\ne\nDate\nPotassium [Moles/volume] in Blood\n3.8\nmmol/L\n3.5 - 5.1\n-\n10 aout 2025\nSodium [Moles/volume] in Blood\n137\nmmol/L\n135 - 145\n-\n10 aout 2025\nCalcium [Mass/volume] in Blood\n8.9\nmg/dL\n8.5 - 10.5\n-\n10 aout 2025\nCreatinine [Mass/volume] in Blood\n1.3\nmg/dL\n0.6 - 1.3\n-\n10 aout 2025\nValidation medicale\nEnriqueta274 Barton704\nGENERAL PRACTICE\nCachet du service",
+      "native_text_chars": 1258,
+      "ocr_used": false,
+      "ocr_text_chars": 0,
+      "table_ids": [
+        "table_p003_01"
+      ],
+      "image_ids": [
+        "image_p003_01",
+        "image_p003_02"
+      ],
+      "blocks": [
+        {
+          "block_id": "block_010",
+          "page_number": 3,
+          "block_type": "clinical_interpretation_block",
+          "section_title": "Interpretation et validation",
+          "text": "Interpretation et validation Correlation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non interpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent uniquement de contexte documentaire. Antecedents : Misuses drugs (finding), Social isolation (finding), Unemployed (finding), Primary dental caries (disorder). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image.",
+          "bbox": {
+            "x0": 51.35,
+            "y0": 53.44,
+            "x1": 543.92,
+            "y1": 118.29
+          },
+          "source_table_ids": [],
+          "source_image_ids": [],
+          "source_text_block_ids": [
+            "text_p003_02",
+            "text_p003_03"
+          ],
+          "is_indexable": true
+        },
+        {
+          "block_id": "block_011",
+          "page_number": 3,
+          "block_type": "summary_block",
+          "section_title": "Resume du dossier",
+          "text": "Resume du dossier Patient synthetique issu de donnees Synthea. Ce document a ete enrichi par un tableau structure, un bloc de texte clinique et une image medicale factice afin de reproduire des conditions proches de PDF reels de sante.",
+          "bbox": {
+            "x0": 51.35,
+            "y0": 124.24,
+            "x1": 542.31,
+            "y1": 166.69
+          },
+          "source_table_ids": [],
+          "source_image_ids": [],
+          "source_text_block_ids": [
+            "text_p003_04",
+            "text_p003_05"
+          ],
+          "is_indexable": true
+        },
+        {
+          "block_id": "block_012",
+          "page_number": 3,
+          "block_type": "results_table_block",
+          "section_title": "Selected results",
+          "text": "Analyse / Observation: Potassium [Moles/volume] in Blood | Resultat: 3.8 | Unites: mmol/L | Valeurs de reference: 3.5 - 5.1 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Sodium [Moles/volume] in Blood | Resultat: 137 | Unites: mmol/L | Valeurs de reference: 135 - 145 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Calcium [Mass/volume] in Blood | Resultat: 8.9 | Unites: mg/dL | Valeurs de reference: 8.5 - 10.5 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Creatinine [Mass/volume] in Blood | Resultat: 1.3 | Unites: mg/dL | Valeurs de reference: 0.6 - 1.3 | Alert e: - | Date: 10 aout 2025",
+          "bbox": {
+            "x0": 55.28,
+            "y0": 172.39,
+            "x1": 540.0,
+            "y1": 292.59
+          },
+          "source_table_ids": [
+            "table_p003_01"
+          ],
+          "source_image_ids": [],
+          "source_text_block_ids": [],
+          "is_indexable": true
+        },
+        {
+          "block_id": "block_013",
+          "page_number": 3,
+          "block_type": "validation_block",
+          "section_title": "Validation medicale",
+          "text": "Validation medicale Cachet du service Enriqueta274 Barton704 GENERAL PRACTICE",
+          "bbox": {
+            "x0": 61.02,
+            "y0": 307.84,
+            "x1": 506.94,
+            "y1": 411.63
+          },
+          "source_table_ids": [],
+          "source_image_ids": [
+            "image_p003_01",
+            "image_p003_02"
+          ],
+          "source_text_block_ids": [
+            "text_p003_11",
+            "text_p003_14",
+            "text_p003_12",
+            "text_p003_13"
+          ],
+          "is_indexable": false
+        },
+        {
+          "block_id": "block_014",
+          "page_number": 3,
+          "block_type": "footer_block",
+          "section_title": "Footer",
+          "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 3",
+          "bbox": {
+            "x0": 45.35,
+            "y0": 810.37,
+            "x1": 549.92,
+            "y1": 820.95
+          },
+          "source_table_ids": [],
+          "source_image_ids": [],
+          "source_text_block_ids": [
+            "text_p003_01"
+          ],
+          "is_indexable": false
+        }
+      ]
+    }
+  ],
+  "tables": [
+    {
+      "table_id": "table_p001_01",
+      "page_number": 1,
+      "row_count": 5,
+      "column_count": 2,
+      "csv_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/05_Gale827_Champlin946_0dcdda68_imaging_clean/tables/table_p001_01.csv",
+      "json_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/05_Gale827_Champlin946_0dcdda68_imaging_clean/tables/table_p001_01.json",
+      "columns": [
+        "Patient",
+        "Gale827 Champlin946"
+      ],
+      "records": [
+        {
+          "Patient": "Identifiant",
+          "Gale827 Champlin946": "0dcdda68-4c75-afe7-f056-31e78e9\nb6b2a"
+        },
+        {
+          "Patient": "Date de naissance",
+          "Gale827 Champlin946": "06 dec. 1970"
+        },
+        {
+          "Patient": "Age",
+          "Gale827 Champlin946": "54"
+        },
+        {
+          "Patient": "Sexe",
+          "Gale827 Champlin946": "M"
+        },
+        {
+          "Patient": "Adresse",
+          "Gale827 Champlin946": "855 Runolfsdottir Camp, Boston,\nMassachusetts, 02134"
+        }
+      ],
+      "preview": [
+        {
+          "Patient": "Identifiant",
+          "Gale827 Champlin946": "0dcdda68-4c75-afe7-f056-31e78e9\nb6b2a"
+        },
+        {
+          "Patient": "Date de naissance",
+          "Gale827 Champlin946": "06 dec. 1970"
+        },
+        {
+          "Patient": "Age",
+          "Gale827 Champlin946": "54"
+        },
+        {
+          "Patient": "Sexe",
+          "Gale827 Champlin946": "M"
+        },
+        {
+          "Patient": "Adresse",
+          "Gale827 Champlin946": "855 Runolfsdottir Camp, Boston,\nMassachusetts, 02134"
+        }
+      ],
+      "bbox": {
+        "x0": 55.54,
+        "y0": 167.48,
+        "x1": 297.97,
+        "y1": 317.08
+      },
+      "table_role": "patient_info_table",
+      "is_indexable": false
+    },
+    {
+      "table_id": "table_p001_02",
+      "page_number": 1,
+      "row_count": 5,
+      "column_count": 2,
+      "csv_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/05_Gale827_Champlin946_0dcdda68_imaging_clean/tables/table_p001_02.csv",
+      "json_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/05_Gale827_Champlin946_0dcdda68_imaging_clean/tables/table_p001_02.json",
+      "columns": [
+        "Numero de rapport",
+        "CR-20250810-0DCDDA68"
+      ],
+      "records": [
+        {
+          "Numero de rapport": "Date du document",
+          "CR-20250810-0DCDDA68": "10 aout 2025"
+        },
+        {
+          "Numero de rapport": "Type de rencontre",
+          "CR-20250810-0DCDDA68": "Wellness"
+        },
+        {
+          "Numero de rapport": "Prescripteur",
+          "CR-20250810-0DCDDA68": "Enriqueta274 Barton704"
+        },
+        {
+          "Numero de rapport": "Specialite",
+          "CR-20250810-0DCDDA68": "GENERAL PRACTICE"
+        },
+        {
+          "Numero de rapport": "Statut",
+          "CR-20250810-0DCDDA68": "Version finale synthetique"
+        }
+      ],
+      "preview": [
+        {
+          "Numero de rapport": "Date du document",
+          "CR-20250810-0DCDDA68": "10 aout 2025"
+        },
+        {
+          "Numero de rapport": "Type de rencontre",
+          "CR-20250810-0DCDDA68": "Wellness"
+        },
+        {
+          "Numero de rapport": "Prescripteur",
+          "CR-20250810-0DCDDA68": "Enriqueta274 Barton704"
+        },
+        {
+          "Numero de rapport": "Specialite",
+          "CR-20250810-0DCDDA68": "GENERAL PRACTICE"
+        },
+        {
+          "Numero de rapport": "Statut",
+          "CR-20250810-0DCDDA68": "Version finale synthetique"
+        }
+      ],
+      "bbox": {
+        "x0": 303.64,
+        "y0": 167.48,
+        "x1": 544.42,
+        "y1": 294.68
+      },
+      "table_role": "report_info_table",
+      "is_indexable": false
+    },
+    {
+      "table_id": "table_p001_03",
+      "page_number": 1,
+      "row_count": 8,
+      "column_count": 6,
+      "csv_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/05_Gale827_Champlin946_0dcdda68_imaging_clean/tables/table_p001_03.csv",
+      "json_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/05_Gale827_Champlin946_0dcdda68_imaging_clean/tables/table_p001_03.json",
+      "columns": [
+        "Analyse / Observation",
+        "Resultat",
+        "Unites",
+        "Valeurs de reference",
+        "Alert\ne",
+        "Date"
+      ],
+      "records": [
+        {
+          "Analyse / Observation": "Potassium [Moles/volume] in Blood",
+          "Resultat": "3.8",
+          "Unites": "mmol/L",
+          "Valeurs de reference": "3.5 - 5.1",
+          "Alert\ne": "-",
+          "Date": "10 aout 2025"
+        },
+        {
+          "Analyse / Observation": "Sodium [Moles/volume] in Blood",
+          "Resultat": "137",
+          "Unites": "mmol/L",
+          "Valeurs de reference": "135 - 145",
+          "Alert\ne": "-",
+          "Date": "10 aout 2025"
+        },
+        {
+          "Analyse / Observation": "Calcium [Mass/volume] in Blood",
+          "Resultat": "8.9",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "8.5 - 10.5",
+          "Alert\ne": "-",
+          "Date": "10 aout 2025"
+        },
+        {
+          "Analyse / Observation": "Creatinine [Mass/volume] in Blood",
+          "Resultat": "1.3",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "0.6 - 1.3",
+          "Alert\ne": "-",
+          "Date": "10 aout 2025"
+        },
+        {
+          "Analyse / Observation": "Urea nitrogen [Mass/volume] in Blood",
+          "Resultat": "15.2",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "10 - 50",
+          "Alert\ne": "-",
+          "Date": "10 aout 2025"
+        },
+        {
+          "Analyse / Observation": "Glucose [Mass/volume] in Blood",
+          "Resultat": "66.2",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "70 - 99",
+          "Alert\ne": "L",
+          "Date": "10 aout 2025"
+        },
+        {
+          "Analyse / Observation": "Respiratory rate",
+          "Resultat": "14",
+          "Unites": "/min",
+          "Valeurs de reference": "Selon contexte",
+          "Alert\ne": "-",
+          "Date": "10 aout 2025"
+        },
+        {
+          "Analyse / Observation": "Systolic Blood Pressure",
+          "Resultat": "124",
+          "Unites": "mm[Hg]",
+          "Valeurs de reference": "Selon contexte",
+          "Alert\ne": "-",
+          "Date": "10 aout 2025"
+        }
+      ],
+      "preview": [
+        {
+          "Analyse / Observation": "Potassium [Moles/volume] in Blood",
+          "Resultat": "3.8",
+          "Unites": "mmol/L",
+          "Valeurs de reference": "3.5 - 5.1",
+          "Alert\ne": "-",
+          "Date": "10 aout 2025"
+        },
+        {
+          "Analyse / Observation": "Sodium [Moles/volume] in Blood",
+          "Resultat": "137",
+          "Unites": "mmol/L",
+          "Valeurs de reference": "135 - 145",
+          "Alert\ne": "-",
+          "Date": "10 aout 2025"
+        },
+        {
+          "Analyse / Observation": "Calcium [Mass/volume] in Blood",
+          "Resultat": "8.9",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "8.5 - 10.5",
+          "Alert\ne": "-",
+          "Date": "10 aout 2025"
+        },
+        {
+          "Analyse / Observation": "Creatinine [Mass/volume] in Blood",
+          "Resultat": "1.3",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "0.6 - 1.3",
+          "Alert\ne": "-",
+          "Date": "10 aout 2025"
+        },
+        {
+          "Analyse / Observation": "Urea nitrogen [Mass/volume] in Blood",
+          "Resultat": "15.2",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "10 - 50",
+          "Alert\ne": "-",
+          "Date": "10 aout 2025"
+        }
+      ],
+      "bbox": {
+        "x0": 55.54,
+        "y0": 349.08,
+        "x1": 540.0,
+        "y1": 558.08
+      },
+      "table_role": "results_table",
+      "is_indexable": true
+    },
+    {
+      "table_id": "table_p003_01",
+      "page_number": 3,
+      "row_count": 4,
+      "column_count": 6,
+      "csv_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/05_Gale827_Champlin946_0dcdda68_imaging_clean/tables/table_p003_01.csv",
+      "json_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/05_Gale827_Champlin946_0dcdda68_imaging_clean/tables/table_p003_01.json",
+      "columns": [
+        "Analyse / Observation",
+        "Resultat",
+        "Unites",
+        "Valeurs de reference",
+        "Alert\ne",
+        "Date"
+      ],
+      "records": [
+        {
+          "Analyse / Observation": "Potassium [Moles/volume] in Blood",
+          "Resultat": "3.8",
+          "Unites": "mmol/L",
+          "Valeurs de reference": "3.5 - 5.1",
+          "Alert\ne": "-",
+          "Date": "10 aout 2025"
+        },
+        {
+          "Analyse / Observation": "Sodium [Moles/volume] in Blood",
+          "Resultat": "137",
+          "Unites": "mmol/L",
+          "Valeurs de reference": "135 - 145",
+          "Alert\ne": "-",
+          "Date": "10 aout 2025"
+        },
+        {
+          "Analyse / Observation": "Calcium [Mass/volume] in Blood",
+          "Resultat": "8.9",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "8.5 - 10.5",
+          "Alert\ne": "-",
+          "Date": "10 aout 2025"
+        },
+        {
+          "Analyse / Observation": "Creatinine [Mass/volume] in Blood",
+          "Resultat": "1.3",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "0.6 - 1.3",
+          "Alert\ne": "-",
+          "Date": "10 aout 2025"
+        }
+      ],
+      "preview": [
+        {
+          "Analyse / Observation": "Potassium [Moles/volume] in Blood",
+          "Resultat": "3.8",
+          "Unites": "mmol/L",
+          "Valeurs de reference": "3.5 - 5.1",
+          "Alert\ne": "-",
+          "Date": "10 aout 2025"
+        },
+        {
+          "Analyse / Observation": "Sodium [Moles/volume] in Blood",
+          "Resultat": "137",
+          "Unites": "mmol/L",
+          "Valeurs de reference": "135 - 145",
+          "Alert\ne": "-",
+          "Date": "10 aout 2025"
+        },
+        {
+          "Analyse / Observation": "Calcium [Mass/volume] in Blood",
+          "Resultat": "8.9",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "8.5 - 10.5",
+          "Alert\ne": "-",
+          "Date": "10 aout 2025"
+        },
+        {
+          "Analyse / Observation": "Creatinine [Mass/volume] in Blood",
+          "Resultat": "1.3",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "0.6 - 1.3",
+          "Alert\ne": "-",
+          "Date": "10 aout 2025"
+        }
+      ],
+      "bbox": {
+        "x0": 55.28,
+        "y0": 172.39,
+        "x1": 540.0,
+        "y1": 292.59
+      },
+      "table_role": "results_table",
+      "is_indexable": true
+    }
+  ],
+  "images": [
+    {
+      "image_id": "image_p001_01",
+      "page_number": 1,
+      "file_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/05_Gale827_Champlin946_0dcdda68_imaging_clean/images/page_001_img_01.png",
+      "width": 1200,
+      "height": 150,
+      "ext": "png",
+      "bbox": {
+        "x0": 51.02,
+        "y0": 54.19,
+        "x1": 544.25,
+        "y1": 115.98
+      },
+      "xref": 3,
+      "page_coverage": 0.0608,
+      "image_type": "logo_or_branding",
+      "role": "branding",
+      "is_indexable": false,
+      "context_text": "COMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE | 260 ELM ST, SOMERVILLE, MA - Tel. 6176669577 | Patient Gale827 Champlin946"
+    },
+    {
+      "image_id": "image_p002_01",
+      "page_number": 2,
+      "file_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/05_Gale827_Champlin946_0dcdda68_imaging_clean/images/page_002_img_01.png",
+      "width": 950,
+      "height": 1250,
+      "ext": "png",
+      "bbox": {
+        "x0": 320.81,
+        "y0": 79.19,
+        "x1": 541.91,
+        "y1": 356.98
+      },
+      "xref": 7,
+      "page_coverage": 0.1226,
+      "image_type": "medical_illustration",
+      "role": "clinical_visual",
+      "is_indexable": true,
+      "context_text": "Radiographie thoracique synthetique | Image medicale synthetique non diagnostique inseree volontairement pour evaluation multimodale."
+    },
+    {
+      "image_id": "image_p003_01",
+      "page_number": 3,
+      "file_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/05_Gale827_Champlin946_0dcdda68_imaging_clean/images/page_003_img_01.png",
+      "width": 566,
+      "height": 566,
+      "ext": "png",
+      "bbox": {
+        "x0": 415.35,
+        "y0": 326.59,
+        "x1": 500.39,
+        "y1": 411.63
+      },
+      "xref": 11,
+      "page_coverage": 0.0144,
+      "image_type": "stamp_or_seal",
+      "role": "validation",
+      "is_indexable": false,
+      "context_text": "Cachet du service | Creatinine [Mass/volume] in Blood 1.3 mg/dL 0.6 - 1.3 - 10 aout 2025 | Calcium [Mass/volume] in Blood 8.9 mg/dL 8.5 - 10.5 - 10 aout 2025"
+    },
+    {
+      "image_id": "image_p003_02",
+      "page_number": 3,
+      "file_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/05_Gale827_Champlin946_0dcdda68_imaging_clean/images/page_003_img_02.png",
+      "width": 1000,
+      "height": 220,
+      "ext": "png",
+      "bbox": {
+        "x0": 61.02,
+        "y0": 360.19,
+        "x1": 236.77,
+        "y1": 399.87
+      },
+      "xref": 9,
+      "page_coverage": 0.0139,
+      "image_type": "signature",
+      "role": "validation",
+      "is_indexable": false,
+      "context_text": "GENERAL PRACTICE | Enriqueta274 Barton704 | Validation medicale"
+    }
+  ],
+  "blocks": [
+    {
+      "block_id": "block_001",
+      "page_number": 1,
+      "block_type": "document_header",
+      "section_title": "COMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE",
+      "text": "COMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE",
+      "bbox": {
+        "x0": 51.02,
+        "y0": 54.19,
+        "x1": 544.25,
+        "y1": 142.24
+      },
+      "source_table_ids": [],
+      "source_image_ids": [
+        "image_p001_01"
+      ],
+      "source_text_block_ids": [
+        "text_p001_02"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_002",
+      "page_number": 1,
+      "block_type": "facility_block",
+      "section_title": "Facility",
+      "text": "260 ELM ST, SOMERVILLE, MA - Tel. 6176669577",
+      "bbox": {
+        "x0": 51.35,
+        "y0": 145.3,
+        "x1": 260.24,
+        "y1": 157.81
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p001_03"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_003",
+      "page_number": 1,
+      "block_type": "patient_info_block",
+      "section_title": "Patient information",
+      "text": "Patient: Gale827 Champlin946 Identifiant: 0dcdda68-4c75-afe7-f056-31e78e9 b6b2a Date de naissance: 06 dec. 1970 Age: 54 Sexe: M Adresse: 855 Runolfsdottir Camp, Boston, Massachusetts, 02134",
+      "bbox": {
+        "x0": 55.54,
+        "y0": 167.48,
+        "x1": 297.97,
+        "y1": 317.08
+      },
+      "source_table_ids": [
+        "table_p001_01"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_004",
+      "page_number": 1,
+      "block_type": "report_info_block",
+      "section_title": "Report metadata",
+      "text": "Numero de rapport: CR-20250810-0DCDDA68 Date du document: 10 aout 2025 Type de rencontre: Wellness Prescripteur: Enriqueta274 Barton704 Specialite: GENERAL PRACTICE Statut: Version finale synthetique",
+      "bbox": {
+        "x0": 303.64,
+        "y0": 167.48,
+        "x1": 544.42,
+        "y1": 294.68
+      },
+      "source_table_ids": [
+        "table_p001_02"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_005",
+      "page_number": 1,
+      "block_type": "results_table_block",
+      "section_title": "Selected results",
+      "text": "Analyse / Observation: Potassium [Moles/volume] in Blood | Resultat: 3.8 | Unites: mmol/L | Valeurs de reference: 3.5 - 5.1 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Sodium [Moles/volume] in Blood | Resultat: 137 | Unites: mmol/L | Valeurs de reference: 135 - 145 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Calcium [Mass/volume] in Blood | Resultat: 8.9 | Unites: mg/dL | Valeurs de reference: 8.5 - 10.5 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Creatinine [Mass/volume] in Blood | Resultat: 1.3 | Unites: mg/dL | Valeurs de reference: 0.6 - 1.3 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Urea nitrogen [Mass/volume] in Blood | Resultat: 15.2 | Unites: mg/dL | Valeurs de reference: 10 - 50 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Glucose [Mass/volume] in Blood | Resultat: 66.2 | Unites: mg/dL | Valeurs de reference: 70 - 99 | Alert e: L | Date: 10 aout 2025 Analyse / Observation: Respiratory rate | Resultat: 14 | Unites: /min | Valeurs de reference: Selon contexte | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Systolic Blood Pressure | Resultat: 124 | Unites: mm[Hg] | Valeurs de reference: Selon contexte | Alert e: - | Date: 10 aout 2025",
+      "bbox": {
+        "x0": 55.54,
+        "y0": 349.08,
+        "x1": 540.0,
+        "y1": 558.08
+      },
+      "source_table_ids": [
+        "table_p001_03"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_006",
+      "page_number": 1,
+      "block_type": "footer_block",
+      "section_title": "Footer",
+      "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 1",
+      "bbox": {
+        "x0": 45.35,
+        "y0": 810.37,
+        "x1": 549.92,
+        "y1": 820.95
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p001_01"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_007",
+      "page_number": 2,
+      "block_type": "clinical_interpretation_block",
+      "section_title": "Synthese radioclinique",
+      "text": "Synthese radioclinique Correlation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non interpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent uniquement de contexte documentaire. Antecedents : Misuses drugs (finding), Social isolation (finding), Unemployed (finding), Primary dental caries (disorder). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image. Contexte documente : Misuses drugs (finding), Social isolation (finding), Unemployed (finding), Primary dental caries (disorder), Reports of violence in the environment (finding)",
+      "bbox": {
+        "x0": 60.02,
+        "y0": 60.44,
+        "x1": 301.07,
+        "y1": 227.44
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p002_02",
+        "text_p002_03",
+        "text_p002_04"
+      ],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_008",
+      "page_number": 2,
+      "block_type": "image_context_block",
+      "section_title": "Radiographie thoracique synthetique",
+      "text": "Radiographie thoracique synthetique Image medicale synthetique non diagnostique inseree volontairement pour evaluation multimodale. Radiographie thoracique synthetique | Image medicale synthetique non diagnostique inseree volontairement pour evaluation multimodale.",
+      "bbox": {
+        "x0": 320.81,
+        "y0": 60.44,
+        "x1": 541.91,
+        "y1": 384.04
+      },
+      "source_table_ids": [],
+      "source_image_ids": [
+        "image_p002_01"
+      ],
+      "source_text_block_ids": [
+        "text_p002_07",
+        "text_p002_08"
+      ],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_009",
+      "page_number": 2,
+      "block_type": "footer_block",
+      "section_title": "Footer",
+      "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 2",
+      "bbox": {
+        "x0": 45.35,
+        "y0": 810.37,
+        "x1": 549.92,
+        "y1": 820.95
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p002_01"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_010",
+      "page_number": 3,
+      "block_type": "clinical_interpretation_block",
+      "section_title": "Interpretation et validation",
+      "text": "Interpretation et validation Correlation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non interpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent uniquement de contexte documentaire. Antecedents : Misuses drugs (finding), Social isolation (finding), Unemployed (finding), Primary dental caries (disorder). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image.",
+      "bbox": {
+        "x0": 51.35,
+        "y0": 53.44,
+        "x1": 543.92,
+        "y1": 118.29
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p003_02",
+        "text_p003_03"
+      ],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_011",
+      "page_number": 3,
+      "block_type": "summary_block",
+      "section_title": "Resume du dossier",
+      "text": "Resume du dossier Patient synthetique issu de donnees Synthea. Ce document a ete enrichi par un tableau structure, un bloc de texte clinique et une image medicale factice afin de reproduire des conditions proches de PDF reels de sante.",
+      "bbox": {
+        "x0": 51.35,
+        "y0": 124.24,
+        "x1": 542.31,
+        "y1": 166.69
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p003_04",
+        "text_p003_05"
+      ],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_012",
+      "page_number": 3,
+      "block_type": "results_table_block",
+      "section_title": "Selected results",
+      "text": "Analyse / Observation: Potassium [Moles/volume] in Blood | Resultat: 3.8 | Unites: mmol/L | Valeurs de reference: 3.5 - 5.1 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Sodium [Moles/volume] in Blood | Resultat: 137 | Unites: mmol/L | Valeurs de reference: 135 - 145 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Calcium [Mass/volume] in Blood | Resultat: 8.9 | Unites: mg/dL | Valeurs de reference: 8.5 - 10.5 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Creatinine [Mass/volume] in Blood | Resultat: 1.3 | Unites: mg/dL | Valeurs de reference: 0.6 - 1.3 | Alert e: - | Date: 10 aout 2025",
+      "bbox": {
+        "x0": 55.28,
+        "y0": 172.39,
+        "x1": 540.0,
+        "y1": 292.59
+      },
+      "source_table_ids": [
+        "table_p003_01"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_013",
+      "page_number": 3,
+      "block_type": "validation_block",
+      "section_title": "Validation medicale",
+      "text": "Validation medicale Cachet du service Enriqueta274 Barton704 GENERAL PRACTICE",
+      "bbox": {
+        "x0": 61.02,
+        "y0": 307.84,
+        "x1": 506.94,
+        "y1": 411.63
+      },
+      "source_table_ids": [],
+      "source_image_ids": [
+        "image_p003_01",
+        "image_p003_02"
+      ],
+      "source_text_block_ids": [
+        "text_p003_11",
+        "text_p003_14",
+        "text_p003_12",
+        "text_p003_13"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_014",
+      "page_number": 3,
+      "block_type": "footer_block",
+      "section_title": "Footer",
+      "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 3",
+      "bbox": {
+        "x0": 45.35,
+        "y0": 810.37,
+        "x1": 549.92,
+        "y1": 820.95
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p003_01"
+      ],
+      "is_indexable": false
+    }
+  ]
+}

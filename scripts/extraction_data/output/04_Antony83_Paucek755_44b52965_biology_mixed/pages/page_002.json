@@ -1,0 +1,78 @@
+{
+  "page_number": 2,
+  "width": 595.28,
+  "height": 841.89,
+  "native_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 2\nInterpretation biologique\nAnalyse synthetique du bilan le plus recent : Hemoglobin\nA1c/Hemoglobin.total in Blood eleve. Les resultats ci-dessus\ndoivent etre interpretes dans le contexte clinique du patient.\nAntecedents ou contexte associe : Acute viral pharyngitis\n(disorder), Stress (finding), Limited social contact (finding),\nMedication review due (situation). Document synthetique\nreserve aux tests d'ingestion PDF, extraction de tableaux,\nOCR et RAG multimodal.\nAntecedents / contexte : Acute viral pharyngitis (disorder), Stress\n(finding), Limited social contact (finding), Medication review due\n(situation), Acute bronchitis (disorder)\nVue analytique synthetique\nBloc image rasterise volontairement pour simuler un\ndocument mixed texte-tableau-image.",
+  "final_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 2\nInterpretation biologique\nAnalyse synthetique du bilan le plus recent : Hemoglobin\nA1c/Hemoglobin.total in Blood eleve. Les resultats ci-dessus\ndoivent etre interpretes dans le contexte clinique du patient.\nAntecedents ou contexte associe : Acute viral pharyngitis\n(disorder), Stress (finding), Limited social contact (finding),\nMedication review due (situation). Document synthetique\nreserve aux tests d'ingestion PDF, extraction de tableaux,\nOCR et RAG multimodal.\nAntecedents / contexte : Acute viral pharyngitis (disorder), Stress\n(finding), Limited social contact (finding), Medication review due\n(situation), Acute bronchitis (disorder)\nVue analytique synthetique\nBloc image rasterise volontairement pour simuler un\ndocument mixed texte-tableau-image.",
+  "native_text_chars": 850,
+  "ocr_used": false,
+  "ocr_text_chars": 0,
+  "table_ids": [],
+  "image_ids": [
+    "image_p002_01"
+  ],
+  "blocks": [
+    {
+      "block_id": "block_007",
+      "page_number": 2,
+      "block_type": "clinical_interpretation_block",
+      "section_title": "Interpretation biologique",
+      "text": "Interpretation biologique Analyse synthetique du bilan le plus recent : Hemoglobin A1c/Hemoglobin.total in Blood eleve. Les resultats ci-dessus doivent etre interpretes dans le contexte clinique du patient. Antecedents ou contexte associe : Acute viral pharyngitis (disorder), Stress (finding), Limited social contact (finding), Medication review due (situation). Document synthetique reserve aux tests d'ingestion PDF, extraction de tableaux, OCR et RAG multimodal. Antecedents / contexte : Acute viral pharyngitis (disorder), Stress (finding), Limited social contact (finding), Medication review due (situation), Acute bronchitis (disorder)",
+      "bbox": {
+        "x0": 60.02,
+        "y0": 60.44,
+        "x1": 297.11,
+        "y1": 216.24
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p002_02",
+        "text_p002_03",
+        "text_p002_04"
+      ],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_008",
+      "page_number": 2,
+      "block_type": "image_context_block",
+      "section_title": "Vue analytique synthetique",
+      "text": "Vue analytique synthetique Bloc image rasterise volontairement pour simuler un document mixed texte-tableau-image. Vue analytique synthetique | Bloc image rasterise volontairement pour simuler un document mixed texte-tableau-image.",
+      "bbox": {
+        "x0": 320.81,
+        "y0": 60.44,
+        "x1": 541.91,
+        "y1": 219.63
+      },
+      "source_table_ids": [],
+      "source_image_ids": [
+        "image_p002_01"
+      ],
+      "source_text_block_ids": [
+        "text_p002_05",
+        "text_p002_06"
+      ],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_009",
+      "page_number": 2,
+      "block_type": "footer_block",
+      "section_title": "Footer",
+      "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 2",
+      "bbox": {
+        "x0": 45.35,
+        "y0": 810.37,
+        "x1": 549.92,
+        "y1": 820.95
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p002_01"
+      ],
+      "is_indexable": false
+    }
+  ]
+}

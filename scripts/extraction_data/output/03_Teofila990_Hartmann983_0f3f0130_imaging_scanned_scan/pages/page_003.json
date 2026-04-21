@@ -1,0 +1,156 @@
+{
+  "page_number": 3,
+  "width": 763.2,
+  "height": 1074.72,
+  "native_text": "Interpretation et validation\nCorrelation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non\ninterpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent\nuniquement de contexte documentaire. Antecedents : Severe anxiety (panic) (finding), Normal pregnancy (finding), Past\npregnancy history of miscarriage (situation), Complete miscarriage (disorder). Document reserve aux essais de parsing, OCR,\nretrieval et fusion texte-image.\nResume du dossier\nPatient synthetique issu de donnees Synthea. Ce document a ete enrichi par un tableau structure, un bloc de texte clinique et\nune image medicale factice afin de reproduire des conditions proches de PDF reels de sante.\n“4 ‘ Alert\nAnalyse / Observation Resultat Unites Valeurs de reference ss Date\nPotassium [Moles/volume] in Blood 4.8 mmol/L 3.5 - 5.1 - 03 dec. 2025\nCholesterol [Mass/volume] in Serum or 131 mg/dL 0-200 - 03 dec. 2025\nPlasma\nTriglyceride [Mass/volume] in Serum or 132 mg/dL. 0-150 - 03 dec. 2025\nPlasma\nCholesterol in LDL [Mass/volume] in Serum 525 mg/dl. 0-200 - 03 dec. 2025\nor Plasma by Direct assay\nValidation medicale Cachet du service\nJacobo456 Lebr6n484\nGENERAL PRACTICE S\nVALIDE\nJacobo456 Lebron484 P\nDocument synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 3",
+  "final_text": "Interpretation et validation\nCorrelation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non\ninterpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent\nuniquement de contexte documentaire. Antecedents : Severe anxiety (panic) (finding), Normal pregnancy (finding), Past\npregnancy history of miscarriage (situation), Complete miscarriage (disorder). Document reserve aux essais de parsing, OCR,\nretrieval et fusion texte-image.\nResume du dossier\nPatient synthetique issu de donnees Synthea. Ce document a ete enrichi par un tableau structure, un bloc de texte clinique et\nune image medicale factice afin de reproduire des conditions proches de PDF reels de sante.\n“4 ‘ Alert\nAnalyse / Observation Resultat Unites Valeurs de reference ss Date\nPotassium [Moles/volume] in Blood 4.8 mmol/L 3.5 - 5.1 - 03 dec. 2025\nCholesterol [Mass/volume] in Serum or 131 mg/dL 0-200 - 03 dec. 2025\nPlasma\nTriglyceride [Mass/volume] in Serum or 132 mg/dL. 0-150 - 03 dec. 2025\nPlasma\nCholesterol in LDL [Mass/volume] in Serum 525 mg/dl. 0-200 - 03 dec. 2025\nor Plasma by Direct assay\nValidation medicale Cachet du service\nJacobo456 Lebr6n484\nGENERAL PRACTICE S\nVALIDE\nJacobo456 Lebron484 P\nDocument synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 3",
+  "native_text_chars": 1380,
+  "ocr_used": true,
+  "ocr_text_chars": 1380,
+  "table_ids": [
+    "table_p003_04"
+  ],
+  "image_ids": [
+    "image_p003_01",
+    "image_p003_02"
+  ],
+  "blocks": [
+    {
+      "block_id": "block_009",
+      "page_number": 3,
+      "block_type": "clinical_interpretation_block",
+      "section_title": "Interpretation et validation",
+      "text": "Interpretation et validation Correlation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non interpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent uniquement de contexte documentaire. Antecedents : Severe anxiety (panic) (finding), Normal pregnancy (finding), Past pregnancy history of miscarriage (situation), Complete miscarriage (disorder). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image. Resume du dossier Patient synthetique issu de donnees Synthea. Ce document a ete enrichi par un tableau structure, un bloc de texte clinique et une image medicale factice afin de reproduire des conditions proches de PDF reels de sante. “4 ‘ Alert Analyse / Observation Resultat Unites Valeurs de reference ss Date Potassium [Moles/volume] in Blood 4.8 mmol/L 3.5 - 5.1 - 03 dec. 2025 Cholesterol [Mass/volume] in Serum or 131 mg/dL 0-200 - 03 dec. 2025 Plasma Triglyceride [Mass/volume] in Serum or 132 mg/dL. 0-150 - 03 dec. 2025 Plasma Cholesterol in LDL [Mass/volume] in Serum 525 mg/dl. 0-200 - 03 dec. 2025 or Plasma by Direct assay Validation medicale Cachet du service Jacobo456 Lebr6n484 GENERAL PRACTICE S VALIDE Jacobo456 Lebron484 P Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 3",
+      "bbox": {
+        "x0": 76.91,
+        "y0": 93.92,
+        "x1": 681.05,
+        "y1": 1012.87
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "ocr_line_001",
+        "ocr_line_002",
+        "ocr_line_003",
+        "ocr_line_004",
+        "ocr_line_005",
+        "ocr_line_006",
+        "ocr_line_007",
+        "ocr_line_008",
+        "ocr_line_009",
+        "ocr_line_010",
+        "ocr_line_011",
+        "ocr_line_012",
+        "ocr_line_013",
+        "ocr_line_014",
+        "ocr_line_015",
+        "ocr_line_016",
+        "ocr_line_017",
+        "ocr_line_018",
+        "ocr_line_019",
+        "ocr_line_020",
+        "ocr_line_021",
+        "ocr_line_022",
+        "ocr_line_023",
+        "ocr_line_024"
+      ],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_010",
+      "page_number": 3,
+      "block_type": "summary_block",
+      "section_title": "Resume du dossier",
+      "text": "Resume du dossier Patient synthetique issu de donnees Synthea. Ce document a ete enrichi par un tableau structure, un bloc de texte clinique et une image medicale factice afin de reproduire des conditions proches de PDF reels de sante. “4 ‘ Alert Analyse / Observation Resultat Unites Valeurs de reference ss Date Potassium [Moles/volume] in Blood 4.8 mmol/L 3.5 - 5.1 - 03 dec. 2025 Cholesterol [Mass/volume] in Serum or 131 mg/dL 0-200 - 03 dec. 2025 Plasma Triglyceride [Mass/volume] in Serum or 132 mg/dL. 0-150 - 03 dec. 2025 Plasma Cholesterol in LDL [Mass/volume] in Serum 525 mg/dl. 0-200 - 03 dec. 2025 or Plasma by Direct assay Validation medicale Cachet du service Jacobo456 Lebr6n484 GENERAL PRACTICE S VALIDE Jacobo456 Lebron484 P Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 3",
+      "bbox": {
+        "x0": 76.91,
+        "y0": 192.1,
+        "x1": 681.05,
+        "y1": 1012.87
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "ocr_line_007",
+        "ocr_line_008",
+        "ocr_line_009",
+        "ocr_line_010",
+        "ocr_line_011",
+        "ocr_line_012",
+        "ocr_line_013",
+        "ocr_line_014",
+        "ocr_line_015",
+        "ocr_line_016",
+        "ocr_line_017",
+        "ocr_line_018",
+        "ocr_line_019",
+        "ocr_line_020",
+        "ocr_line_021",
+        "ocr_line_022",
+        "ocr_line_023",
+        "ocr_line_024"
+      ],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_011",
+      "page_number": 3,
+      "block_type": "results_table_block",
+      "section_title": "Selected results",
+      "text": "Analyse / Observation: Potassium [Moles/volume] in Blood | Resultat: 4.8 | Unites: mmol/L | Valeurs de reference: 3.5 - 5.1 | Alert e: - | Date: 03 dec. 2025 Analyse / Observation: Cholesterol [Mass/volume] in Serum or Plasma | Resultat: 131 | Unites: mg/dL | Valeurs de reference: 0-200 | Alert e: - | Date: 03 dec. 2025 Analyse / Observation: Triglyceride [Mass/volume] in Serum or Plasma | Resultat: 132 | Unites: mg/dL. | Valeurs de reference: 0-150 | Alert e: - | Date: 03 dec. 2025 Analyse / Observation: Cholesterol in LDL [Mass/volume] in Serum | Resultat: 525 | Unites: mg/dl. | Valeurs de reference: 0-200 | Alert e: - | Date: 03 dec. 2025",
+      "bbox": null,
+      "source_table_ids": [
+        "table_p003_04"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_012",
+      "page_number": 3,
+      "block_type": "validation_block",
+      "section_title": "Validation medicale Cachet du service",
+      "text": "Validation medicale Cachet du service Jacobo456 Lebr6n484 GENERAL PRACTICE S VALIDE Jacobo456 Lebron484 P",
+      "bbox": {
+        "x0": 61.06,
+        "y0": 449.65,
+        "x1": 656.35,
+        "y1": 983.98
+      },
+      "source_table_ids": [],
+      "source_image_ids": [
+        "image_p003_01",
+        "image_p003_02"
+      ],
+      "source_text_block_ids": [
+        "ocr_line_019",
+        "ocr_line_020",
+        "ocr_line_021",
+        "ocr_line_022",
+        "ocr_line_023"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_013",
+      "page_number": 3,
+      "block_type": "footer_block",
+      "section_title": "Footer",
+      "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 3",
+      "bbox": {
+        "x0": 76.91,
+        "y0": 1000.1,
+        "x1": 681.05,
+        "y1": 1012.87
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "ocr_line_024"
+      ],
+      "is_indexable": false
+    }
+  ]
+}

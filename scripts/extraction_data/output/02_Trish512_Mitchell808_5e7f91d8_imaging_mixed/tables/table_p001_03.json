@@ -1,0 +1,66 @@
+[
+  {
+    "Analyse \/ Observation":"Platelet [Entitic mean volume] in Blood by\nAutomated count",
+    "Resultat":"11.6",
+    "Unites":"fL",
+    "Valeurs de reference":"150 - 450",
+    "Alert\ne":"L",
+    "Date":"18 nov. 2025"
+  },
+  {
+    "Analyse \/ Observation":"Platelet distribution width [Entitic volume] in\nBlood by Automated count",
+    "Resultat":"396",
+    "Unites":"fL",
+    "Valeurs de reference":"150 - 450",
+    "Alert\ne":"-",
+    "Date":"18 nov. 2025"
+  },
+  {
+    "Analyse \/ Observation":"Platelets [#\/volume] in Blood by Automated\ncount",
+    "Resultat":"311",
+    "Unites":"10*3\/uL",
+    "Valeurs de reference":"150 - 450",
+    "Alert\ne":"-",
+    "Date":"18 nov. 2025"
+  },
+  {
+    "Analyse \/ Observation":"Hematocrit [Volume Fraction] of Blood by\nAutomated count",
+    "Resultat":"44.8",
+    "Unites":"%",
+    "Valeurs de reference":"36.0 - 53.0",
+    "Alert\ne":"-",
+    "Date":"18 nov. 2025"
+  },
+  {
+    "Analyse \/ Observation":"Hemoglobin [Mass\/volume] in Blood",
+    "Resultat":"15.9",
+    "Unites":"g\/dL",
+    "Valeurs de reference":"12.0 - 17.5",
+    "Alert\ne":"-",
+    "Date":"18 nov. 2025"
+  },
+  {
+    "Analyse \/ Observation":"Leukocytes [#\/volume] in Blood by\nAutomated count",
+    "Resultat":"10",
+    "Unites":"10*3\/uL",
+    "Valeurs de reference":"4.0 - 11.0",
+    "Alert\ne":"-",
+    "Date":"18 nov. 2025"
+  },
+  {
+    "Analyse \/ Observation":"Heart rate",
+    "Resultat":"89",
+    "Unites":"\/min",
+    "Valeurs de reference":"Selon contexte",
+    "Alert\ne":"-",
+    "Date":"18 nov. 2025"
+  },
+  {
+    "Analyse \/ Observation":"Respiratory rate",
+    "Resultat":"14",
+    "Unites":"\/min",
+    "Valeurs de reference":"Selon contexte",
+    "Alert\ne":"-",
+    "Date":"18 nov. 2025"
+  }
+]

@@ -1,0 +1,136 @@
+{
+  "page_number": 1,
+  "width": 595.28,
+  "height": 841.89,
+  "native_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 1\nCOMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE\n260 ELM ST, SOMERVILLE, MA - Tel. 6176669577\nPatient\nGale827 Champlin946\nIdentifiant\n0dcdda68-4c75-afe7-f056-31e78e9\nb6b2a\nDate de naissance\n06 dec. 1970\nAge\n54\nSexe\nM\nAdresse\n855 Runolfsdottir Camp, Boston,\nMassachusetts, 02134\nNumero de rapport\nCR-20250810-0DCDDA68\nDate du document\n10 aout 2025\nType de rencontre\nWellness\nPrescripteur\nEnriqueta274 Barton704\nSpecialite\nGENERAL PRACTICE\nStatut\nVersion finale synthetique\nResultats selectionnes\nAnalyse / Observation\nResultat\nUnites\nValeurs de reference\nAlert\ne\nDate\nPotassium [Moles/volume] in Blood\n3.8\nmmol/L\n3.5 - 5.1\n-\n10 aout 2025\nSodium [Moles/volume] in Blood\n137\nmmol/L\n135 - 145\n-\n10 aout 2025\nCalcium [Mass/volume] in Blood\n8.9\nmg/dL\n8.5 - 10.5\n-\n10 aout 2025\nCreatinine [Mass/volume] in Blood\n1.3\nmg/dL\n0.6 - 1.3\n-\n10 aout 2025\nUrea nitrogen [Mass/volume] in Blood\n15.2\nmg/dL\n10 - 50\n-\n10 aout 2025\nGlucose [Mass/volume] in Blood\n66.2\nmg/dL\n70 - 99\nL\n10 aout 2025\nRespiratory rate\n14\n/min\nSelon contexte\n-\n10 aout 2025\nSystolic Blood Pressure\n124\nmm[Hg]\nSelon contexte\n-\n10 aout 2025",
+  "final_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 1\nCOMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE\n260 ELM ST, SOMERVILLE, MA - Tel. 6176669577\nPatient\nGale827 Champlin946\nIdentifiant\n0dcdda68-4c75-afe7-f056-31e78e9\nb6b2a\nDate de naissance\n06 dec. 1970\nAge\n54\nSexe\nM\nAdresse\n855 Runolfsdottir Camp, Boston,\nMassachusetts, 02134\nNumero de rapport\nCR-20250810-0DCDDA68\nDate du document\n10 aout 2025\nType de rencontre\nWellness\nPrescripteur\nEnriqueta274 Barton704\nSpecialite\nGENERAL PRACTICE\nStatut\nVersion finale synthetique\nResultats selectionnes\nAnalyse / Observation\nResultat\nUnites\nValeurs de reference\nAlert\ne\nDate\nPotassium [Moles/volume] in Blood\n3.8\nmmol/L\n3.5 - 5.1\n-\n10 aout 2025\nSodium [Moles/volume] in Blood\n137\nmmol/L\n135 - 145\n-\n10 aout 2025\nCalcium [Mass/volume] in Blood\n8.9\nmg/dL\n8.5 - 10.5\n-\n10 aout 2025\nCreatinine [Mass/volume] in Blood\n1.3\nmg/dL\n0.6 - 1.3\n-\n10 aout 2025\nUrea nitrogen [Mass/volume] in Blood\n15.2\nmg/dL\n10 - 50\n-\n10 aout 2025\nGlucose [Mass/volume] in Blood\n66.2\nmg/dL\n70 - 99\nL\n10 aout 2025\nRespiratory rate\n14\n/min\nSelon contexte\n-\n10 aout 2025\nSystolic Blood Pressure\n124\nmm[Hg]\nSelon contexte\n-\n10 aout 2025",
+  "native_text_chars": 1187,
+  "ocr_used": false,
+  "ocr_text_chars": 0,
+  "table_ids": [
+    "table_p001_01",
+    "table_p001_02",
+    "table_p001_03"
+  ],
+  "image_ids": [
+    "image_p001_01"
+  ],
+  "blocks": [
+    {
+      "block_id": "block_001",
+      "page_number": 1,
+      "block_type": "document_header",
+      "section_title": "COMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE",
+      "text": "COMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE",
+      "bbox": {
+        "x0": 51.02,
+        "y0": 54.19,
+        "x1": 544.25,
+        "y1": 142.24
+      },
+      "source_table_ids": [],
+      "source_image_ids": [
+        "image_p001_01"
+      ],
+      "source_text_block_ids": [
+        "text_p001_02"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_002",
+      "page_number": 1,
+      "block_type": "facility_block",
+      "section_title": "Facility",
+      "text": "260 ELM ST, SOMERVILLE, MA - Tel. 6176669577",
+      "bbox": {
+        "x0": 51.35,
+        "y0": 145.3,
+        "x1": 260.24,
+        "y1": 157.81
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p001_03"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_003",
+      "page_number": 1,
+      "block_type": "patient_info_block",
+      "section_title": "Patient information",
+      "text": "Patient: Gale827 Champlin946 Identifiant: 0dcdda68-4c75-afe7-f056-31e78e9 b6b2a Date de naissance: 06 dec. 1970 Age: 54 Sexe: M Adresse: 855 Runolfsdottir Camp, Boston, Massachusetts, 02134",
+      "bbox": {
+        "x0": 55.54,
+        "y0": 167.48,
+        "x1": 297.97,
+        "y1": 317.08
+      },
+      "source_table_ids": [
+        "table_p001_01"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_004",
+      "page_number": 1,
+      "block_type": "report_info_block",
+      "section_title": "Report metadata",
+      "text": "Numero de rapport: CR-20250810-0DCDDA68 Date du document: 10 aout 2025 Type de rencontre: Wellness Prescripteur: Enriqueta274 Barton704 Specialite: GENERAL PRACTICE Statut: Version finale synthetique",
+      "bbox": {
+        "x0": 303.64,
+        "y0": 167.48,
+        "x1": 544.42,
+        "y1": 294.68
+      },
+      "source_table_ids": [
+        "table_p001_02"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_005",
+      "page_number": 1,
+      "block_type": "results_table_block",
+      "section_title": "Selected results",
+      "text": "Analyse / Observation: Potassium [Moles/volume] in Blood | Resultat: 3.8 | Unites: mmol/L | Valeurs de reference: 3.5 - 5.1 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Sodium [Moles/volume] in Blood | Resultat: 137 | Unites: mmol/L | Valeurs de reference: 135 - 145 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Calcium [Mass/volume] in Blood | Resultat: 8.9 | Unites: mg/dL | Valeurs de reference: 8.5 - 10.5 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Creatinine [Mass/volume] in Blood | Resultat: 1.3 | Unites: mg/dL | Valeurs de reference: 0.6 - 1.3 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Urea nitrogen [Mass/volume] in Blood | Resultat: 15.2 | Unites: mg/dL | Valeurs de reference: 10 - 50 | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Glucose [Mass/volume] in Blood | Resultat: 66.2 | Unites: mg/dL | Valeurs de reference: 70 - 99 | Alert e: L | Date: 10 aout 2025 Analyse / Observation: Respiratory rate | Resultat: 14 | Unites: /min | Valeurs de reference: Selon contexte | Alert e: - | Date: 10 aout 2025 Analyse / Observation: Systolic Blood Pressure | Resultat: 124 | Unites: mm[Hg] | Valeurs de reference: Selon contexte | Alert e: - | Date: 10 aout 2025",
+      "bbox": {
+        "x0": 55.54,
+        "y0": 349.08,
+        "x1": 540.0,
+        "y1": 558.08
+      },
+      "source_table_ids": [
+        "table_p001_03"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_006",
+      "page_number": 1,
+      "block_type": "footer_block",
+      "section_title": "Footer",
+      "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 1",
+      "bbox": {
+        "x0": 45.35,
+        "y0": 810.37,
+        "x1": 549.92,
+        "y1": 820.95
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p001_01"
+      ],
+      "is_indexable": false
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+-
+COMMUNICATIVE HEALTH CARE ASSOCIATES
+Dossier patient synthetique multimodal
+'
+COMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE
+977 MAIN ST, WALTHAM, MA - Tel 7818994709
+Patient Bea654 Goldner995 Numero de rapport CR-20200121-21B99B01
+21b99b01 -b902-9731-Obc6-00eb0 Date du document 21 janv. 2020
+identifiant
+aie16c1
+Type de rencontre Wellness
+Date de naissance 12 juin 1951
+Prescripteur Jamie386 Lowe577
+Age 68
+Specialite GENERAL PRACTICE
+Sexe F
+Statut Version finale synthetique
+pains 899 Cole Parade Unit 77, Newton,
+Massachusetts, 02458
+Resultats selectionnes
+‘i : Alert
+Analyse / Observation Resultat Unites Valeurs de reference . Date
+Leukocytes [#/volume] in Blood by 3.6 10°3/uL 4.0 - 11.0 L 04 janv. 2020
+Automated count : : : ,
+Potassium (Moles/volume] in Serum or 42 Sarin 35-51 ; 04 janv. 2020
+Plasma : , . ra:
+Sodium [Moles/volume] in Serum or 143 wml: 135 - 145 : 04 janv. 2020
+Plasma earns
+Calcium [Mass/volume] in Serum or 10.1 iid. 85 -10.5 : 04 janv. 2020
+Plasma , 9 . , Seni
+Creatinine [Mass/volume] in Serum or 06 el 06-13 : 04 janv. 2020
+Plasma , 9 , , Janv.
+Urea nitrogen [Mass/volume] in Serum or 13 iil! 10-50 ; 04 janv. 2020
+Plasma 9 janv.
+Systolic Blood Pressure 100 mm[Hg] Selon contexte - 13 janv. 2020
+Diastolic Blood Pressure 60 mm{[Hg] Selon contexte - 13 janv. 2020
+Document synthetique - usage exclusif pour tests OCR / parsing / retreva multimodal Page 1

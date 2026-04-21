@@ -1,0 +1,2380 @@
+{
+  "page_number": 2,
+  "text": "Interpretation biologique Vue analytique synthetique\nAnalyse synthetique du bilan le plus recent : Platelet [Entitic ainantiali ti a\nmean volume] in Blood by Automated count abaisse; sa\nBasophils/Leukocytes in Blood by Automated count abaisse; ‘inp\nLymphocytes/Leukocytes in Blood by Automated count eleve.\nLes resultats ci-dessus doivent etre interpretes dans le\ncontexte clinique du patient. Antecedents ou contexte associe\n: Medication review due (situation), Viral sinusitis (disorder), 2 so R . ve\nSocial isolation (finding), Epidermal burn of skin (disorder).\nDocument synthetique reserve aux tests d'ingestion PDF, Merman ie Iememtin le Leshecyisiay Mem lan —iael ie PhO) aap\nextraction de tableaux, OCR et RAG multimodal.\nBloc image rasterise volontairement pour simuler un\nAntecedents / contexte : Medication review due (situation), Viral document mixed texte-tableau-image.\nsinusitis (disorder), Social isolation (finding), Epidermal burn of\nskin (disorder), Burn injury (morphologic abnormality)\nDocument synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 2",
+  "text_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/06_Abel832_Pfannerstill264_e695051e_biology_scanned_scan/ocr/page_002.txt",
+  "image_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/06_Abel832_Pfannerstill264_e695051e_biology_scanned_scan/ocr/page_002.png",
+  "used": true,
+  "engine": "pytesseract",
+  "blocks": [
+    {
+      "text_block_id": "ocr_line_001",
+      "text": "Interpretation biologique Vue analytique synthetique",
+      "bbox": {
+        "x0": 111.6,
+        "y0": 103.72,
+        "x1": 590.4,
+        "y1": 124.99
+      },
+      "max_font_size": 13.75,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_002",
+      "text": "Analyse synthetique du bilan le plus recent : Platelet [Entitic ainantiali ti a",
+      "bbox": {
+        "x0": 110.62,
+        "y0": 131.86,
+        "x1": 530.84,
+        "y1": 151.49
+      },
+      "max_font_size": 18.98,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_003",
+      "text": "mean volume] in Blood by Automated count abaisse; sa",
+      "bbox": {
+        "x0": 110.95,
+        "y0": 145.93,
+        "x1": 560.95,
+        "y1": 164.25
+      },
+      "max_font_size": 11.12,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_004",
+      "text": "Basophils/Leukocytes in Blood by Automated count abaisse; ‘inp",
+      "bbox": {
+        "x0": 110.62,
+        "y0": 158.36,
+        "x1": 599.56,
+        "y1": 179.95
+      },
+      "max_font_size": 13.41,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_005",
+      "text": "Lymphocytes/Leukocytes in Blood by Automated count eleve.",
+      "bbox": {
+        "x0": 110.29,
+        "y0": 172.1,
+        "x1": 398.62,
+        "y1": 185.84
+      },
+      "max_font_size": 12.43,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_006",
+      "text": "Les resultats ci-dessus doivent etre interpretes dans le",
+      "bbox": {
+        "x0": 110.29,
+        "y0": 185.52,
+        "x1": 366.55,
+        "y1": 199.58
+      },
+      "max_font_size": 11.12,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_007",
+      "text": "contexte clinique du patient. Antecedents ou contexte associe",
+      "bbox": {
+        "x0": 109.64,
+        "y0": 199.91,
+        "x1": 399.6,
+        "y1": 212.67
+      },
+      "max_font_size": 10.8,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_008",
+      "text": ": Medication review due (situation), Viral sinusitis (disorder), 2 so R . ve",
+      "bbox": {
+        "x0": 109.96,
+        "y0": 212.34,
+        "x1": 672.87,
+        "y1": 235.9
+      },
+      "max_font_size": 11.13,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_009",
+      "text": "Social isolation (finding), Epidermal burn of skin (disorder).",
+      "bbox": {
+        "x0": 109.31,
+        "y0": 225.76,
+        "x1": 383.56,
+        "y1": 242.45
+      },
+      "max_font_size": 13.42,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_010",
+      "text": "Document synthetique reserve aux tests d'ingestion PDF, Merman ie Iememtin le Leshecyisiay Mem lan —iael ie PhO) aap",
+      "bbox": {
+        "x0": 109.31,
+        "y0": 239.17,
+        "x1": 686.29,
+        "y1": 254.55
+      },
+      "max_font_size": 11.13,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_011",
+      "text": "extraction de tableaux, OCR et RAG multimodal.",
+      "bbox": {
+        "x0": 108.65,
+        "y0": 253.24,
+        "x1": 336.11,
+        "y1": 265.35
+      },
+      "max_font_size": 10.47,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_012",
+      "text": "Bloc image rasterise volontairement pour simuler un",
+      "bbox": {
+        "x0": 421.85,
+        "y0": 273.53,
+        "x1": 647.67,
+        "y1": 285.96
+      },
+      "max_font_size": 9.82,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_013",
+      "text": "Antecedents / contexte : Medication review due (situation), Viral document mixed texte-tableau-image.",
+      "bbox": {
+        "x0": 108.0,
+        "y0": 277.78,
+        "x1": 584.84,
+        "y1": 298.72
+      },
+      "max_font_size": 10.47,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_014",
+      "text": "sinusitis (disorder), Social isolation (finding), Epidermal burn of",
+      "bbox": {
+        "x0": 108.0,
+        "y0": 290.54,
+        "x1": 379.96,
+        "y1": 303.3
+      },
+      "max_font_size": 10.14,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_015",
+      "text": "skin (disorder), Burn injury (morphologic abnormality)",
+      "bbox": {
+        "x0": 108.0,
+        "y0": 302.98,
+        "x1": 338.07,
+        "y1": 316.39
+      },
+      "max_font_size": 10.14,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_016",
+      "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 2",
+      "bbox": {
+        "x0": 77.56,
+        "y0": 1002.17,
+        "x1": 682.04,
+        "y1": 1022.13
+      },
+      "max_font_size": 12.76,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    }
+  ],
+  "words": [
+    {
+      "text": "Interpretation",
+      "conf": 95.0,
+      "bbox": {
+        "x0": 111.6,
+        "y0": 103.72,
+        "x1": 193.42,
+        "y1": 117.13
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 1,
+      "word_num": 1
+    },
+    {
+      "text": "biologique",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 198.0,
+        "y0": 105.35,
+        "x1": 262.47,
+        "y1": 119.1
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 1,
+      "word_num": 2
+    },
+    {
+      "text": "Vue",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 424.47,
+        "y0": 109.61,
+        "x1": 447.38,
+        "y1": 120.08
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 1,
+      "word_num": 3
+    },
+    {
+      "text": "analytique",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 451.31,
+        "y0": 110.59,
+        "x1": 514.8,
+        "y1": 123.68
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 1,
+      "word_num": 4
+    },
+    {
+      "text": "synthetique",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 518.73,
+        "y0": 111.9,
+        "x1": 590.4,
+        "y1": 124.99
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 1,
+      "word_num": 5
+    },
+    {
+      "text": "Analyse",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 110.62,
+        "y0": 131.86,
+        "x1": 148.58,
+        "y1": 142.65
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 1
+    },
+    {
+      "text": "synthetique",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 151.53,
+        "y0": 132.84,
+        "x1": 205.53,
+        "y1": 143.96
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 2
+    },
+    {
+      "text": "du",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 208.8,
+        "y0": 133.49,
+        "x1": 220.25,
+        "y1": 142.33
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 3
+    },
+    {
+      "text": "bilan",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 223.53,
+        "y0": 133.82,
+        "x1": 245.78,
+        "y1": 142.65
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 4
+    },
+    {
+      "text": "le",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 249.05,
+        "y0": 134.47,
+        "x1": 256.91,
+        "y1": 142.98
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 5
+    },
+    {
+      "text": "plus",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 260.18,
+        "y0": 134.47,
+        "x1": 279.49,
+        "y1": 144.94
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 6
+    },
+    {
+      "text": "recent",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 282.76,
+        "y0": 136.11,
+        "x1": 311.89,
+        "y1": 143.96
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 7
+    },
+    {
+      "text": ":",
+      "conf": 91.0,
+      "bbox": {
+        "x0": 315.82,
+        "y0": 137.75,
+        "x1": 317.45,
+        "y1": 143.96
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 8
+    },
+    {
+      "text": "Platelet",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 321.38,
+        "y0": 135.78,
+        "x1": 356.4,
+        "y1": 144.94
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 9
+    },
+    {
+      "text": "[Entitic",
+      "conf": 66.0,
+      "bbox": {
+        "x0": 359.35,
+        "y0": 136.11,
+        "x1": 391.09,
+        "y1": 146.91
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 10
+    },
+    {
+      "text": "ainantiali",
+      "conf": 0.0,
+      "bbox": {
+        "x0": 431.67,
+        "y0": 133.82,
+        "x1": 484.36,
+        "y1": 140.69
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 11
+    },
+    {
+      "text": "ti",
+      "conf": 44.0,
+      "bbox": {
+        "x0": 509.24,
+        "y0": 132.51,
+        "x1": 517.42,
+        "y1": 151.49
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 12
+    },
+    {
+      "text": "a",
+      "conf": 0.0,
+      "bbox": {
+        "x0": 523.64,
+        "y0": 136.76,
+        "x1": 530.84,
+        "y1": 141.67
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 13
+    },
+    {
+      "text": "mean",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 110.95,
+        "y0": 147.23,
+        "x1": 136.8,
+        "y1": 154.11
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 3,
+      "word_num": 1
+    },
+    {
+      "text": "volume]",
+      "conf": 95.0,
+      "bbox": {
+        "x0": 140.07,
+        "y0": 145.93,
+        "x1": 176.73,
+        "y1": 157.05
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 3,
+      "word_num": 2
+    },
+    {
+      "text": "in",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 180.65,
+        "y0": 146.25,
+        "x1": 188.18,
+        "y1": 154.76
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 3,
+      "word_num": 3
+    },
+    {
+      "text": "Blood",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 191.78,
+        "y0": 146.58,
+        "x1": 218.29,
+        "y1": 155.74
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 3,
+      "word_num": 4
+    },
+    {
+      "text": "by",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 221.56,
+        "y0": 147.23,
+        "x1": 232.69,
+        "y1": 158.03
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 3,
+      "word_num": 5
+    },
+    {
+      "text": "Automated",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 235.64,
+        "y0": 147.56,
+        "x1": 287.02,
+        "y1": 157.05
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 3,
+      "word_num": 6
+    },
+    {
+      "text": "count",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 289.96,
+        "y0": 149.52,
+        "x1": 315.82,
+        "y1": 157.38
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 3,
+      "word_num": 7
+    },
+    {
+      "text": "abaisse;",
+      "conf": 71.0,
+      "bbox": {
+        "x0": 319.09,
+        "y0": 149.2,
+        "x1": 358.36,
+        "y1": 159.34
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 3,
+      "word_num": 8
+    },
+    {
+      "text": "sa",
+      "conf": 21.0,
+      "bbox": {
+        "x0": 552.76,
+        "y0": 160.65,
+        "x1": 560.95,
+        "y1": 164.25
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 3,
+      "word_num": 9
+    },
+    {
+      "text": "Basophils/Leukocytes",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 110.62,
+        "y0": 158.36,
+        "x1": 212.73,
+        "y1": 170.79
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 4,
+      "word_num": 1
+    },
+    {
+      "text": "in",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 216.33,
+        "y0": 160.65,
+        "x1": 223.85,
+        "y1": 168.83
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 4,
+      "word_num": 2
+    },
+    {
+      "text": "Blood",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 227.45,
+        "y0": 160.65,
+        "x1": 253.96,
+        "y1": 169.81
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 4,
+      "word_num": 3
+    },
+    {
+      "text": "by",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 257.24,
+        "y0": 161.3,
+        "x1": 268.36,
+        "y1": 172.1
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 4,
+      "word_num": 4
+    },
+    {
+      "text": "Automated",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 271.31,
+        "y0": 161.63,
+        "x1": 322.69,
+        "y1": 171.12
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 4,
+      "word_num": 5
+    },
+    {
+      "text": "count",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 325.64,
+        "y0": 163.59,
+        "x1": 351.82,
+        "y1": 171.77
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 4,
+      "word_num": 6
+    },
+    {
+      "text": "abaisse;",
+      "conf": 87.0,
+      "bbox": {
+        "x0": 354.76,
+        "y0": 163.27,
+        "x1": 393.71,
+        "y1": 173.41
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 4,
+      "word_num": 7
+    },
+    {
+      "text": "‘inp",
+      "conf": 52.0,
+      "bbox": {
+        "x0": 589.42,
+        "y0": 166.54,
+        "x1": 599.56,
+        "y1": 179.95
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 4,
+      "word_num": 8
+    },
+    {
+      "text": "Lymphocytes/Leukocytes",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 110.29,
+        "y0": 172.1,
+        "x1": 229.09,
+        "y1": 184.53
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 5,
+      "word_num": 1
+    },
+    {
+      "text": "in",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 232.69,
+        "y0": 174.39,
+        "x1": 240.22,
+        "y1": 182.57
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 5,
+      "word_num": 2
+    },
+    {
+      "text": "Blood",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 243.82,
+        "y0": 174.39,
+        "x1": 270.33,
+        "y1": 183.55
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 5,
+      "word_num": 3
+    },
+    {
+      "text": "by",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 273.6,
+        "y0": 175.05,
+        "x1": 284.73,
+        "y1": 185.84
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 5,
+      "word_num": 4
+    },
+    {
+      "text": "Automated",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 288.0,
+        "y0": 175.37,
+        "x1": 339.05,
+        "y1": 184.86
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 5,
+      "word_num": 5
+    },
+    {
+      "text": "count",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 342.0,
+        "y0": 177.34,
+        "x1": 368.18,
+        "y1": 185.52
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 5,
+      "word_num": 6
+    },
+    {
+      "text": "eleve.",
+      "conf": 91.0,
+      "bbox": {
+        "x0": 371.13,
+        "y0": 177.01,
+        "x1": 398.62,
+        "y1": 185.84
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 5,
+      "word_num": 7
+    },
+    {
+      "text": "Les",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 110.29,
+        "y0": 185.52,
+        "x1": 126.65,
+        "y1": 194.35
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 6,
+      "word_num": 1
+    },
+    {
+      "text": "resultats",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 130.25,
+        "y0": 186.17,
+        "x1": 169.85,
+        "y1": 195.0
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 6,
+      "word_num": 2
+    },
+    {
+      "text": "ci-dessus",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 172.8,
+        "y0": 186.82,
+        "x1": 217.64,
+        "y1": 195.99
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 6,
+      "word_num": 3
+    },
+    {
+      "text": "doivent",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 220.58,
+        "y0": 187.81,
+        "x1": 254.95,
+        "y1": 196.64
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 6,
+      "word_num": 4
+    },
+    {
+      "text": "etre",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 257.89,
+        "y0": 189.11,
+        "x1": 276.22,
+        "y1": 197.29
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 6,
+      "word_num": 5
+    },
+    {
+      "text": "interpretes",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 279.49,
+        "y0": 188.46,
+        "x1": 329.24,
+        "y1": 199.58
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 6,
+      "word_num": 6
+    },
+    {
+      "text": "dans",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 332.18,
+        "y0": 189.77,
+        "x1": 355.09,
+        "y1": 198.6
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 6,
+      "word_num": 7
+    },
+    {
+      "text": "le",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 358.69,
+        "y0": 190.1,
+        "x1": 366.55,
+        "y1": 198.93
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 6,
+      "word_num": 8
+    },
+    {
+      "text": "contexte",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 109.64,
+        "y0": 199.91,
+        "x1": 149.56,
+        "y1": 208.09
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 7,
+      "word_num": 1
+    },
+    {
+      "text": "clinique",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 152.51,
+        "y0": 199.91,
+        "x1": 188.51,
+        "y1": 210.71
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 7,
+      "word_num": 2
+    },
+    {
+      "text": "du",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 191.45,
+        "y0": 200.57,
+        "x1": 202.91,
+        "y1": 209.07
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 7,
+      "word_num": 3
+    },
+    {
+      "text": "patient.",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 206.51,
+        "y0": 200.89,
+        "x1": 240.55,
+        "y1": 211.36
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 7,
+      "word_num": 4
+    },
+    {
+      "text": "Antecedents",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 244.15,
+        "y0": 201.55,
+        "x1": 303.05,
+        "y1": 211.04
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 7,
+      "word_num": 5
+    },
+    {
+      "text": "ou",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 306.0,
+        "y0": 204.49,
+        "x1": 317.78,
+        "y1": 211.36
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 7,
+      "word_num": 6
+    },
+    {
+      "text": "contexte",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 321.05,
+        "y0": 203.84,
+        "x1": 360.98,
+        "y1": 212.02
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 7,
+      "word_num": 7
+    },
+    {
+      "text": "associe",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 364.25,
+        "y0": 204.16,
+        "x1": 399.6,
+        "y1": 212.67
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 7,
+      "word_num": 8
+    },
+    {
+      "text": ":",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 109.96,
+        "y0": 214.31,
+        "x1": 111.93,
+        "y1": 220.52
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 8,
+      "word_num": 1
+    },
+    {
+      "text": "Medication",
+      "conf": 97.0,
+      "bbox": {
+        "x0": 115.53,
+        "y0": 212.34,
+        "x1": 166.25,
+        "y1": 221.83
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 8,
+      "word_num": 2
+    },
+    {
+      "text": "review",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 169.85,
+        "y0": 213.65,
+        "x1": 200.29,
+        "y1": 222.49
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 8,
+      "word_num": 3
+    },
+    {
+      "text": "due",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 202.91,
+        "y0": 213.98,
+        "x1": 220.91,
+        "y1": 222.81
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 8,
+      "word_num": 4
+    },
+    {
+      "text": "(situation),",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 224.18,
+        "y0": 214.63,
+        "x1": 272.62,
+        "y1": 225.76
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 8,
+      "word_num": 5
+    },
+    {
+      "text": "Viral",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 276.55,
+        "y0": 215.29,
+        "x1": 297.16,
+        "y1": 224.45
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 8,
+      "word_num": 6
+    },
+    {
+      "text": "sinusitis",
+      "conf": 95.0,
+      "bbox": {
+        "x0": 300.76,
+        "y0": 215.94,
+        "x1": 338.07,
+        "y1": 225.1
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 8,
+      "word_num": 7
+    },
+    {
+      "text": "(disorder),",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 341.67,
+        "y0": 216.93,
+        "x1": 389.13,
+        "y1": 227.72
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 8,
+      "word_num": 8
+    },
+    {
+      "text": "2",
+      "conf": 0.0,
+      "bbox": {
+        "x0": 436.91,
+        "y0": 219.87,
+        "x1": 446.73,
+        "y1": 223.8
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 8,
+      "word_num": 9
+    },
+    {
+      "text": "so",
+      "conf": 3.0,
+      "bbox": {
+        "x0": 475.53,
+        "y0": 226.74,
+        "x1": 485.02,
+        "y1": 230.01
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 8,
+      "word_num": 10
+    },
+    {
+      "text": "R",
+      "conf": 0.0,
+      "bbox": {
+        "x0": 513.16,
+        "y0": 228.38,
+        "x1": 515.78,
+        "y1": 231.65
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 8,
+      "word_num": 11
+    },
+    {
+      "text": ".",
+      "conf": 0.0,
+      "bbox": {
+        "x0": 633.6,
+        "y0": 230.34,
+        "x1": 637.53,
+        "y1": 233.61
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 8,
+      "word_num": 12
+    },
+    {
+      "text": "ve",
+      "conf": 17.0,
+      "bbox": {
+        "x0": 665.67,
+        "y0": 232.3,
+        "x1": 672.87,
+        "y1": 235.9
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 8,
+      "word_num": 13
+    },
+    {
+      "text": "Social",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 109.31,
+        "y0": 225.76,
+        "x1": 137.78,
+        "y1": 234.92
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 9,
+      "word_num": 1
+    },
+    {
+      "text": "isolation",
+      "conf": 95.0,
+      "bbox": {
+        "x0": 141.38,
+        "y0": 226.41,
+        "x1": 179.35,
+        "y1": 235.57
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 9,
+      "word_num": 2
+    },
+    {
+      "text": "(finding),",
+      "conf": 95.0,
+      "bbox": {
+        "x0": 183.27,
+        "y0": 227.07,
+        "x1": 223.53,
+        "y1": 238.52
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 9,
+      "word_num": 3
+    },
+    {
+      "text": "Epidermal",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 227.45,
+        "y0": 227.72,
+        "x1": 274.58,
+        "y1": 238.85
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 9,
+      "word_num": 4
+    },
+    {
+      "text": "burn",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 277.85,
+        "y0": 229.03,
+        "x1": 298.8,
+        "y1": 237.54
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 9,
+      "word_num": 5
+    },
+    {
+      "text": "of",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 302.07,
+        "y0": 229.36,
+        "x1": 310.91,
+        "y1": 237.87
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 9,
+      "word_num": 6
+    },
+    {
+      "text": "skin",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 313.85,
+        "y0": 229.69,
+        "x1": 332.51,
+        "y1": 238.19
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 9,
+      "word_num": 7
+    },
+    {
+      "text": "(disorder).",
+      "conf": 95.0,
+      "bbox": {
+        "x0": 336.11,
+        "y0": 229.03,
+        "x1": 383.56,
+        "y1": 242.45
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 9,
+      "word_num": 8
+    },
+    {
+      "text": "Document",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 109.31,
+        "y0": 239.17,
+        "x1": 157.09,
+        "y1": 248.66
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 10,
+      "word_num": 1
+    },
+    {
+      "text": "synthetique",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 160.36,
+        "y0": 240.48,
+        "x1": 214.36,
+        "y1": 251.61
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 10,
+      "word_num": 2
+    },
+    {
+      "text": "reserve",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 217.64,
+        "y0": 243.43,
+        "x1": 252.65,
+        "y1": 250.3
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 10,
+      "word_num": 3
+    },
+    {
+      "text": "aux",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 255.93,
+        "y0": 243.75,
+        "x1": 272.62,
+        "y1": 250.63
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 10,
+      "word_num": 4
+    },
+    {
+      "text": "tests",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 275.56,
+        "y0": 242.77,
+        "x1": 298.15,
+        "y1": 251.28
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 10,
+      "word_num": 5
+    },
+    {
+      "text": "d'ingestion",
+      "conf": 74.0,
+      "bbox": {
+        "x0": 301.09,
+        "y0": 242.77,
+        "x1": 351.49,
+        "y1": 253.9
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 10,
+      "word_num": 6
+    },
+    {
+      "text": "PDF,",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 355.09,
+        "y0": 243.75,
+        "x1": 378.33,
+        "y1": 253.9
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 10,
+      "word_num": 7
+    },
+    {
+      "text": "Merman",
+      "conf": 0.0,
+      "bbox": {
+        "x0": 434.95,
+        "y0": 248.34,
+        "x1": 455.56,
+        "y1": 249.97
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 10,
+      "word_num": 8
+    },
+    {
+      "text": "ie",
+      "conf": 36.0,
+      "bbox": {
+        "x0": 459.82,
+        "y0": 248.66,
+        "x1": 461.78,
+        "y1": 250.3
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 10,
+      "word_num": 9
+    },
+    {
+      "text": "Iememtin",
+      "conf": 0.0,
+      "bbox": {
+        "x0": 473.24,
+        "y0": 248.99,
+        "x1": 490.91,
+        "y1": 251.61
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 10,
+      "word_num": 10
+    },
+    {
+      "text": "le",
+      "conf": 43.0,
+      "bbox": {
+        "x0": 499.09,
+        "y0": 248.99,
+        "x1": 504.0,
+        "y1": 250.95
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 10,
+      "word_num": 11
+    },
+    {
+      "text": "Leshecyisiay",
+      "conf": 0.0,
+      "bbox": {
+        "x0": 513.49,
+        "y0": 249.97,
+        "x1": 538.04,
+        "y1": 251.93
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 10,
+      "word_num": 12
+    },
+    {
+      "text": "Mem",
+      "conf": 10.0,
+      "bbox": {
+        "x0": 549.16,
+        "y0": 250.3,
+        "x1": 560.95,
+        "y1": 252.26
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 10,
+      "word_num": 13
+    },
+    {
+      "text": "lan",
+      "conf": 10.0,
+      "bbox": {
+        "x0": 569.13,
+        "y0": 250.63,
+        "x1": 574.36,
+        "y1": 252.59
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 10,
+      "word_num": 14
+    },
+    {
+      "text": "—iael",
+      "conf": 0.0,
+      "bbox": {
+        "x0": 589.09,
+        "y0": 250.95,
+        "x1": 600.87,
+        "y1": 252.92
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 10,
+      "word_num": 15
+    },
+    {
+      "text": "ie",
+      "conf": 41.0,
+      "bbox": {
+        "x0": 608.73,
+        "y0": 251.28,
+        "x1": 609.38,
+        "y1": 251.93
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 10,
+      "word_num": 16
+    },
+    {
+      "text": "PhO)",
+      "conf": 0.0,
+      "bbox": {
+        "x0": 626.4,
+        "y0": 251.61,
+        "x1": 648.33,
+        "y1": 253.57
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 10,
+      "word_num": 17
+    },
+    {
+      "text": "aap",
+      "conf": 0.0,
+      "bbox": {
+        "x0": 663.71,
+        "y0": 252.26,
+        "x1": 686.29,
+        "y1": 254.55
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 10,
+      "word_num": 18
+    },
+    {
+      "text": "extraction",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 108.65,
+        "y0": 253.24,
+        "x1": 154.15,
+        "y1": 261.75
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 11,
+      "word_num": 1
+    },
+    {
+      "text": "de",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 157.42,
+        "y0": 253.57,
+        "x1": 169.2,
+        "y1": 262.4
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 11,
+      "word_num": 2
+    },
+    {
+      "text": "tableaux,",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 172.47,
+        "y0": 253.9,
+        "x1": 214.69,
+        "y1": 264.37
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 11,
+      "word_num": 3
+    },
+    {
+      "text": "OCR",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 218.29,
+        "y0": 254.55,
+        "x1": 241.53,
+        "y1": 263.39
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 11,
+      "word_num": 4
+    },
+    {
+      "text": "et",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 244.8,
+        "y0": 255.86,
+        "x1": 253.64,
+        "y1": 264.04
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 11,
+      "word_num": 5
+    },
+    {
+      "text": "RAG",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 257.24,
+        "y0": 255.21,
+        "x1": 279.49,
+        "y1": 264.37
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 11,
+      "word_num": 6
+    },
+    {
+      "text": "multimodal.",
+      "conf": 95.0,
+      "bbox": {
+        "x0": 282.76,
+        "y0": 256.19,
+        "x1": 336.11,
+        "y1": 265.35
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 11,
+      "word_num": 7
+    },
+    {
+      "text": "Bloc",
+      "conf": 82.0,
+      "bbox": {
+        "x0": 421.85,
+        "y0": 273.53,
+        "x1": 440.18,
+        "y1": 281.71
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 12,
+      "word_num": 1
+    },
+    {
+      "text": "image",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 443.45,
+        "y0": 274.18,
+        "x1": 469.64,
+        "y1": 284.0
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 12,
+      "word_num": 2
+    },
+    {
+      "text": "rasterise",
+      "conf": 91.0,
+      "bbox": {
+        "x0": 472.91,
+        "y0": 275.16,
+        "x1": 509.89,
+        "y1": 283.02
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 12,
+      "word_num": 3
+    },
+    {
+      "text": "volontairement",
+      "conf": 91.0,
+      "bbox": {
+        "x0": 513.16,
+        "y0": 275.49,
+        "x1": 577.31,
+        "y1": 284.0
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 12,
+      "word_num": 4
+    },
+    {
+      "text": "pour",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 580.58,
+        "y0": 278.44,
+        "x1": 599.89,
+        "y1": 285.96
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 12,
+      "word_num": 5
+    },
+    {
+      "text": "simuler",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 602.84,
+        "y0": 277.13,
+        "x1": 634.58,
+        "y1": 285.31
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 12,
+      "word_num": 6
+    },
+    {
+      "text": "un",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 637.53,
+        "y0": 279.75,
+        "x1": 647.67,
+        "y1": 285.31
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 12,
+      "word_num": 7
+    },
+    {
+      "text": "Antecedents",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 108.0,
+        "y0": 277.78,
+        "x1": 162.33,
+        "y1": 286.62
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 13,
+      "word_num": 1
+    },
+    {
+      "text": "/",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 165.6,
+        "y0": 279.42,
+        "x1": 168.22,
+        "y1": 286.29
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 13,
+      "word_num": 2
+    },
+    {
+      "text": "contexte",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 171.16,
+        "y0": 280.07,
+        "x1": 208.15,
+        "y1": 287.27
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 13,
+      "word_num": 3
+    },
+    {
+      "text": ":",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 211.75,
+        "y0": 281.71,
+        "x1": 213.05,
+        "y1": 287.27
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 13,
+      "word_num": 4
+    },
+    {
+      "text": "Medication",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 216.98,
+        "y0": 279.75,
+        "x1": 263.45,
+        "y1": 288.25
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 13,
+      "word_num": 5
+    },
+    {
+      "text": "review",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 267.05,
+        "y0": 281.05,
+        "x1": 294.87,
+        "y1": 288.91
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 13,
+      "word_num": 6
+    },
+    {
+      "text": "due",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 297.82,
+        "y0": 281.71,
+        "x1": 313.85,
+        "y1": 289.23
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 13,
+      "word_num": 7
+    },
+    {
+      "text": "(situation),",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 317.45,
+        "y0": 282.04,
+        "x1": 361.96,
+        "y1": 291.85
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 13,
+      "word_num": 8
+    },
+    {
+      "text": "Viral",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 366.22,
+        "y0": 282.69,
+        "x1": 384.87,
+        "y1": 290.54
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 13,
+      "word_num": 9
+    },
+    {
+      "text": "document",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 420.87,
+        "y0": 286.29,
+        "x1": 463.75,
+        "y1": 294.47
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 13,
+      "word_num": 10
+    },
+    {
+      "text": "mixed",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 467.35,
+        "y0": 287.27,
+        "x1": 492.87,
+        "y1": 295.12
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 13,
+      "word_num": 11
+    },
+    {
+      "text": "texte-tableau-image.",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 496.15,
+        "y0": 288.25,
+        "x1": 584.84,
+        "y1": 298.72
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 13,
+      "word_num": 12
+    },
+    {
+      "text": "sinusitis",
+      "conf": 95.0,
+      "bbox": {
+        "x0": 108.0,
+        "y0": 290.54,
+        "x1": 142.69,
+        "y1": 298.72
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 14,
+      "word_num": 1
+    },
+    {
+      "text": "(disorder),",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 145.96,
+        "y0": 291.2,
+        "x1": 189.49,
+        "y1": 300.69
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 14,
+      "word_num": 2
+    },
+    {
+      "text": "Social",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 193.42,
+        "y0": 291.85,
+        "x1": 219.6,
+        "y1": 300.03
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 14,
+      "word_num": 3
+    },
+    {
+      "text": "isolation",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 222.87,
+        "y0": 292.51,
+        "x1": 258.22,
+        "y1": 300.69
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 14,
+      "word_num": 4
+    },
+    {
+      "text": "(finding),",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 262.15,
+        "y0": 293.16,
+        "x1": 299.13,
+        "y1": 303.3
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 14,
+      "word_num": 5
+    },
+    {
+      "text": "Epidermal",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 303.05,
+        "y0": 293.81,
+        "x1": 346.25,
+        "y1": 303.3
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 14,
+      "word_num": 6
+    },
+    {
+      "text": "burn",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 349.85,
+        "y0": 295.12,
+        "x1": 368.84,
+        "y1": 302.65
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 14,
+      "word_num": 7
+    },
+    {
+      "text": "of",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 372.11,
+        "y0": 295.45,
+        "x1": 379.96,
+        "y1": 302.98
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 14,
+      "word_num": 8
+    },
+    {
+      "text": "skin",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 108.0,
+        "y0": 302.98,
+        "x1": 124.69,
+        "y1": 310.5
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 15,
+      "word_num": 1
+    },
+    {
+      "text": "(disorder),",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 128.29,
+        "y0": 303.3,
+        "x1": 172.15,
+        "y1": 313.12
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 15,
+      "word_num": 2
+    },
+    {
+      "text": "Burn",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 176.07,
+        "y0": 303.96,
+        "x1": 195.71,
+        "y1": 311.81
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 15,
+      "word_num": 3
+    },
+    {
+      "text": "injury",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 199.31,
+        "y0": 304.61,
+        "x1": 221.89,
+        "y1": 314.43
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 15,
+      "word_num": 4
+    },
+    {
+      "text": "(morphologic",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 225.82,
+        "y0": 305.27,
+        "x1": 281.78,
+        "y1": 315.41
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 15,
+      "word_num": 5
+    },
+    {
+      "text": "abnormality)",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 285.05,
+        "y0": 306.25,
+        "x1": 338.07,
+        "y1": 316.39
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 15,
+      "word_num": 6
+    },
+    {
+      "text": "Document",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 77.56,
+        "y0": 1002.17,
+        "x1": 118.47,
+        "y1": 1010.03
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 16,
+      "word_num": 1
+    },
+    {
+      "text": "synthetique",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 121.75,
+        "y0": 1003.48,
+        "x1": 168.55,
+        "y1": 1012.32
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 16,
+      "word_num": 2
+    },
+    {
+      "text": "-",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 172.15,
+        "y0": 1007.74,
+        "x1": 173.78,
+        "y1": 1008.72
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 16,
+      "word_num": 3
+    },
+    {
+      "text": "usage",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 177.38,
+        "y0": 1006.1,
+        "x1": 201.93,
+        "y1": 1013.3
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 16,
+      "word_num": 4
+    },
+    {
+      "text": "exclusif",
+      "conf": 91.0,
+      "bbox": {
+        "x0": 204.87,
+        "y0": 1005.12,
+        "x1": 235.31,
+        "y1": 1011.99
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 16,
+      "word_num": 5
+    },
+    {
+      "text": "pour",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 238.25,
+        "y0": 1007.08,
+        "x1": 256.25,
+        "y1": 1013.95
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 16,
+      "word_num": 6
+    },
+    {
+      "text": "tests",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 259.53,
+        "y0": 1006.43,
+        "x1": 278.51,
+        "y1": 1012.97
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 16,
+      "word_num": 7
+    },
+    {
+      "text": "OCR",
+      "conf": 89.0,
+      "bbox": {
+        "x0": 281.45,
+        "y0": 1006.1,
+        "x1": 301.09,
+        "y1": 1013.3
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 16,
+      "word_num": 8
+    },
+    {
+      "text": "/",
+      "conf": 89.0,
+      "bbox": {
+        "x0": 301.75,
+        "y0": 1004.79,
+        "x1": 305.02,
+        "y1": 1017.55
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 16,
+      "word_num": 9
+    },
+    {
+      "text": "parsing",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 309.6,
+        "y0": 1007.08,
+        "x1": 339.38,
+        "y1": 1015.92
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 16,
+      "word_num": 10
+    },
+    {
+      "text": "/",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 340.04,
+        "y0": 1004.79,
+        "x1": 343.31,
+        "y1": 1017.55
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 16,
+      "word_num": 11
+    },
+    {
+      "text": "retrieval",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 347.89,
+        "y0": 1007.74,
+        "x1": 379.96,
+        "y1": 1014.93
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 16,
+      "word_num": 12
+    },
+    {
+      "text": "multimodal",
+      "conf": 95.0,
+      "bbox": {
+        "x0": 383.24,
+        "y0": 1008.39,
+        "x1": 427.09,
+        "y1": 1015.92
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 16,
+      "word_num": 13
+    },
+    {
+      "text": "Page",
+      "conf": 95.0,
+      "bbox": {
+        "x0": 653.56,
+        "y0": 1012.97,
+        "x1": 674.18,
+        "y1": 1022.13
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 16,
+      "word_num": 14
+    },
+    {
+      "text": "2",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 677.45,
+        "y0": 1013.63,
+        "x1": 682.04,
+        "y1": 1020.5
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 16,
+      "word_num": 15
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+[
+  {
+    "Analyse \/ Observation":"Leukocytes [#\/volume] in Blood by Automated count",
+    "Resultat":"3.6",
+    "Unites":"10*3\/uL",
+    "Valeurs de reference":"4.0 - 11.0",
+    "Alert\ne":"L",
+    "Date":"04 janv. 2020"
+  },
+  {
+    "Analyse \/ Observation":"Potassium (Moles\/volume] in Serum or Plasma ra",
+    "Resultat":"42",
+    "Unites":"Sarin",
+    "Valeurs de reference":"35-51",
+    "Alert\ne":"-",
+    "Date":"04 janv. 2020"
+  },
+  {
+    "Analyse \/ Observation":"Sodium [Moles\/volume] in Serum or Plasma earns",
+    "Resultat":"143",
+    "Unites":"wml:",
+    "Valeurs de reference":"135 - 145",
+    "Alert\ne":"-",
+    "Date":"04 janv. 2020"
+  },
+  {
+    "Analyse \/ Observation":"Calcium [Mass\/volume] in Serum or Plasma Seni",
+    "Resultat":"10.1",
+    "Unites":"iid.",
+    "Valeurs de reference":"85 -10.5",
+    "Alert\ne":"-",
+    "Date":"04 janv. 2020"
+  },
+  {
+    "Analyse \/ Observation":"Creatinine [Mass\/volume] in Serum or Plasma Janv",
+    "Resultat":"06",
+    "Unites":"el",
+    "Valeurs de reference":"06-13",
+    "Alert\ne":"-",
+    "Date":"04 janv. 2020"
+  },
+  {
+    "Analyse \/ Observation":"Urea nitrogen [Mass\/volume] in Serum or Plasma janv",
+    "Resultat":"13",
+    "Unites":"iil!",
+    "Valeurs de reference":"10-50",
+    "Alert\ne":"-",
+    "Date":"04 janv. 2020"
+  },
+  {
+    "Analyse \/ Observation":"Systolic Blood Pressure",
+    "Resultat":"100",
+    "Unites":"mm[Hg]",
+    "Valeurs de reference":"Selon contexte",
+    "Alert\ne":"-",
+    "Date":"13 janv. 2020"
+  },
+  {
+    "Analyse \/ Observation":"Diastolic Blood Pressure",
+    "Resultat":"60",
+    "Unites":"mm{[Hg]",
+    "Valeurs de reference":"Selon contexte",
+    "Alert\ne":"-",
+    "Date":"13 janv. 2020"
+  }
+]

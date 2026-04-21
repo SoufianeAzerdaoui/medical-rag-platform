@@ -1,0 +1,39 @@
++ Dossier patient synthetique multimodal
+'
+COMPTE RENDU D'ANALYSES BIOLOGIQUES
+133 LITTLETON RD, WESTFORD, MA - Tel. 9785771946
+Patient Abel832 Pfannerstill264 Numero de rapport CR-20241228-E695051E
+ce 695051 e-ec01-8530-e5b1 -6e759 Date du document 28 dec. 2024
+Identifiant
+bbb3e66
+Type de rencontre Wellness
+Date de naissance 23 oct. 1999
+Prescripteur Brendan864 Hintz995
+Age 25
+Specialite GENERAL PRACTICE
+Sexe M
+Statut Version finale synthetique
+mein 618 Lehner Stravenue, Westford,
+Massachusetts, 00000
+Resultats selectionnes
+Analyse / Observation Resultat Unites Valeurs de reference sea Date
+Hematocrit [Volume Fraction] of Blood by 46.1 9° 36.0 - 53.0 - 25 dec. 2024
+Automated count ; ° ; ; ;
+Hemoglobin [Mass/volume] in Blood 14.4 g/dL 12.0 - 17.5 - 25 dec. 2021
+Leukocytes [#/volume] in Blood by 9 10°3/uL 4.0-11.0 . 25 dec. 2021
+Automated count
+Platelets [#/volume] in Blood by Automated 375 10°3/uL. 150 - 450 - 25 dec. 2021
+count
+Platelet distribution width [Entitic volume] in 308 fL 150 - 450 : 25 dec. 2021
+Blood by Automated count ,
+Platelet [Entitic mean volume] in Blood by 10.9 fL 150 - 450 L 25 dec. 2021
+Automated count : /
+Basophils/Leukocytes in Blood by 34 9 4.0-11.0 L 14 janv. 2021
+Automated count . = ; ; ae
+Eosinophils/Leukocytes in Blood by 52 9° 4.0-11.0 ; 14 janv. 2021
+Automated count : ys . ; FANG
+Monocytes/Leukocytes in Blood by 99 9° 4.0-11.0 - 14 janv. 2021
+Automated count . ° ; . —
+Lymphocytes/Leukocytes in Blood by 23.7 % 4.0-11.0 H 14 janv. 2021
+Automated count
+Document synthetique - usage exclusif pour tests OCR parsing / retrieval multimodal Page 1

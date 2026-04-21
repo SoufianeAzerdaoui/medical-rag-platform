@@ -1,0 +1,75 @@
+{
+  "page_number": 2,
+  "width": 775.68,
+  "height": 1083.36,
+  "native_text": "Synthese radioclinique Radiographie thoracique synthetique\nCorrelation entre contexte clinique, tableau synthetique et Radiographie thoracique synthetique - non diagnost\nillustration d'imagerie : Une image diagnostique synthetique\n\nnon interpretable est jointe pour simuler un compte rendu =~ fr\n\nd'imagerie. Les mesures biologiques d'accompagnement\n\n4 : I Te\n\nservent uniquement de contexte documentaire. Antecedents :\n\nSevere anxiety (panic) (finding), Normal pregnancy (finding),\n\nPast pregnancy history of miscarriage (situation), Complete .\n\nmiscarriage (disorder). Document reserve aux essais de\n\nparsing, OCR, retrieval et fusion texte-image. a ~~ on ~\nContexte documente : Severe anxiety (panic) (finding), Normal i -_—en\npregnancy (finding), Past pregnancy history of miscarriage\n\nSituation), Complete miscarriage (disorder), Miscarria je in first a ~, wr ~\ntrimester ols der — —\nCommentaires techniques\nLe present compte rendu a ete mis en forme de facon realiste\nafin de tester I'extraction conjointe du texte, des tableaux et\ndes visuels rasterises.\n\nImage medicaie synthetique non diagnostique inseree\nvolontairement pour evaluation multimodale\nDocument synthetique age exciusif pour test CR / parsing / retrieva iltimoda Page z",
+  "final_text": "Synthese radioclinique Radiographie thoracique synthetique\nCorrelation entre contexte clinique, tableau synthetique et Radiographie thoracique synthetique - non diagnost\nillustration d'imagerie : Une image diagnostique synthetique\n\nnon interpretable est jointe pour simuler un compte rendu =~ fr\n\nd'imagerie. Les mesures biologiques d'accompagnement\n\n4 : I Te\n\nservent uniquement de contexte documentaire. Antecedents :\n\nSevere anxiety (panic) (finding), Normal pregnancy (finding),\n\nPast pregnancy history of miscarriage (situation), Complete .\n\nmiscarriage (disorder). Document reserve aux essais de\n\nparsing, OCR, retrieval et fusion texte-image. a ~~ on ~\nContexte documente : Severe anxiety (panic) (finding), Normal i -_—en\npregnancy (finding), Past pregnancy history of miscarriage\n\nSituation), Complete miscarriage (disorder), Miscarria je in first a ~, wr ~\ntrimester ols der — —\nCommentaires techniques\nLe present compte rendu a ete mis en forme de facon realiste\nafin de tester I'extraction conjointe du texte, des tableaux et\ndes visuels rasterises.\n\nImage medicaie synthetique non diagnostique inseree\nvolontairement pour evaluation multimodale\nDocument synthetique age exciusif pour test CR / parsing / retrieva iltimoda Page z",
+  "native_text_chars": 1241,
+  "ocr_used": true,
+  "ocr_text_chars": 1241,
+  "table_ids": [],
+  "image_ids": [
+    "image_p002_01"
+  ],
+  "blocks": [
+    {
+      "block_id": "block_007",
+      "page_number": 2,
+      "block_type": "clinical_interpretation_block",
+      "section_title": "Synthese radioclinique Radiographie thoracique synthetique",
+      "text": "Synthese radioclinique Radiographie thoracique synthetique Correlation entre contexte clinique, tableau synthetique et Radiographie thoracique synthetique - non diagnost illustration d'imagerie : Une image diagnostique synthetique non interpretable est jointe pour simuler un compte rendu =~ fr d'imagerie. Les mesures biologiques d'accompagnement 4 : I Te servent uniquement de contexte documentaire. Antecedents : Severe anxiety (panic) (finding), Normal pregnancy (finding), Past pregnancy history of miscarriage (situation), Complete . miscarriage (disorder). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image. a ~~ on ~ Contexte documente : Severe anxiety (panic) (finding), Normal i -_—en pregnancy (finding), Past pregnancy history of miscarriage Situation), Complete miscarriage (disorder), Miscarria je in first a ~, wr ~ trimester ols der — — Commentaires techniques Le present compte rendu a ete mis en forme de facon realiste afin de tester I'extraction conjointe du texte, des tableaux et des visuels rasterises. Image medicaie synthetique non diagnostique inseree volontairement pour evaluation multimodale Document synthetique age exciusif pour test CR / parsing / retrieva iltimoda Page z",
+      "bbox": {
+        "x0": 77.86,
+        "y0": 103.4,
+        "x1": 686.04,
+        "y1": 1021.19
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "ocr_line_001",
+        "ocr_line_002",
+        "ocr_line_003",
+        "ocr_line_004",
+        "ocr_line_005",
+        "ocr_line_006",
+        "ocr_line_007",
+        "ocr_line_008",
+        "ocr_line_009",
+        "ocr_line_010",
+        "ocr_line_011",
+        "ocr_line_012",
+        "ocr_line_013",
+        "ocr_line_014",
+        "ocr_line_015",
+        "ocr_line_016",
+        "ocr_line_017",
+        "ocr_line_018",
+        "ocr_line_019",
+        "ocr_line_020",
+        "ocr_line_021",
+        "ocr_line_022"
+      ],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_008",
+      "page_number": 2,
+      "block_type": "footer_block",
+      "section_title": "Footer",
+      "text": "Document synthetique age exciusif pour test CR / parsing / retrieva iltimoda Page z",
+      "bbox": {
+        "x0": 77.86,
+        "y0": 1000.91,
+        "x1": 679.17,
+        "y1": 1021.19
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "ocr_line_022"
+      ],
+      "is_indexable": false
+    }
+  ]
+}

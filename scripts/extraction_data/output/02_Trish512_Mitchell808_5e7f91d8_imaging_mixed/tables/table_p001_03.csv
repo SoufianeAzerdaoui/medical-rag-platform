@@ -1,0 +1,15 @@
+Analyse / Observation,Resultat,Unites,Valeurs de reference,"Alert
+e",Date
+"Platelet [Entitic mean volume] in Blood by
+Automated count",11.6,fL,150 - 450,L,18 nov. 2025
+"Platelet distribution width [Entitic volume] in
+Blood by Automated count",396,fL,150 - 450,-,18 nov. 2025
+"Platelets [#/volume] in Blood by Automated
+count",311,10*3/uL,150 - 450,-,18 nov. 2025
+"Hematocrit [Volume Fraction] of Blood by
+Automated count",44.8,%,36.0 - 53.0,-,18 nov. 2025
+Hemoglobin [Mass/volume] in Blood,15.9,g/dL,12.0 - 17.5,-,18 nov. 2025
+"Leukocytes [#/volume] in Blood by
+Automated count",10,10*3/uL,4.0 - 11.0,-,18 nov. 2025
+Heart rate,89,/min,Selon contexte,-,18 nov. 2025
+Respiratory rate,14,/min,Selon contexte,-,18 nov. 2025
