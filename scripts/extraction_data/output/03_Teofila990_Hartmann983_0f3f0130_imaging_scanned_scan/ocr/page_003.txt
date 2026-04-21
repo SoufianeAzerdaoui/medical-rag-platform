@@ -1,0 +1,24 @@
+Interpretation et validation
+Correlation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non
+interpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent
+uniquement de contexte documentaire. Antecedents : Severe anxiety (panic) (finding), Normal pregnancy (finding), Past
+pregnancy history of miscarriage (situation), Complete miscarriage (disorder). Document reserve aux essais de parsing, OCR,
+retrieval et fusion texte-image.
+Resume du dossier
+Patient synthetique issu de donnees Synthea. Ce document a ete enrichi par un tableau structure, un bloc de texte clinique et
+une image medicale factice afin de reproduire des conditions proches de PDF reels de sante.
+“4 ‘ Alert
+Analyse / Observation Resultat Unites Valeurs de reference ss Date
+Potassium [Moles/volume] in Blood 4.8 mmol/L 3.5 - 5.1 - 03 dec. 2025
+Cholesterol [Mass/volume] in Serum or 131 mg/dL 0-200 - 03 dec. 2025
+Plasma
+Triglyceride [Mass/volume] in Serum or 132 mg/dL. 0-150 - 03 dec. 2025
+Plasma
+Cholesterol in LDL [Mass/volume] in Serum 525 mg/dl. 0-200 - 03 dec. 2025
+or Plasma by Direct assay
+Validation medicale Cachet du service
+Jacobo456 Lebr6n484
+GENERAL PRACTICE S
+VALIDE
+Jacobo456 Lebron484 P
+Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 3

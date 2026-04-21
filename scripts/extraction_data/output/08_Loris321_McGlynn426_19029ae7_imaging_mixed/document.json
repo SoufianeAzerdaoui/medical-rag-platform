@@ -1,0 +1,1308 @@
+{
+  "doc_id": "08_Loris321_McGlynn426_19029ae7_imaging_mixed",
+  "source_pdf": "/home/onizuka/Bureau/PFE/medical-rag-platform/docs/08_Loris321_McGlynn426_19029ae7_imaging_mixed.pdf",
+  "output_dir": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/08_Loris321_McGlynn426_19029ae7_imaging_mixed",
+  "pdf_type": "mixed",
+  "document_type": "imaging_report",
+  "page_count": 3,
+  "native_text_available": true,
+  "ocr_available": false,
+  "extraction_warnings": [],
+  "metadata": {
+    "pdf_metadata": {
+      "format": "PDF 1.4",
+      "title": "CR-20251208-19029AE7",
+      "author": "OpenAI synthetic medical PDF generator",
+      "subject": "(unspecified)",
+      "keywords": "",
+      "creator": "(unspecified)",
+      "producer": "ReportLab PDF Library - (opensource)",
+      "creationDate": "D:20260421190343+01'00'",
+      "modDate": "D:20260421190343+01'00'",
+      "trapped": "",
+      "encryption": null
+    },
+    "page_sizes": [
+      {
+        "page_number": 1,
+        "width": 595.28,
+        "height": 841.89,
+        "rotation": 0
+      },
+      {
+        "page_number": 2,
+        "width": 595.28,
+        "height": 841.89,
+        "rotation": 0
+      },
+      {
+        "page_number": 3,
+        "width": 595.28,
+        "height": 841.89,
+        "rotation": 0
+      }
+    ],
+    "classification": {
+      "pdf_type": "mixed",
+      "page_signals": [
+        {
+          "page_number": 1,
+          "native_text_chars": 1197,
+          "has_meaningful_text": true,
+          "image_count": 1
+        },
+        {
+          "page_number": 2,
+          "native_text_chars": 1097,
+          "has_meaningful_text": true,
+          "image_count": 1
+        },
+        {
+          "page_number": 3,
+          "native_text_chars": 1282,
+          "has_meaningful_text": true,
+          "image_count": 2
+        }
+      ],
+      "native_text_available": true,
+      "image_pages": 3
+    }
+  },
+  "facility": {
+    "raw_text": "102 MAIN ST, GREENFIELD, MA - Tel. 4133258500",
+    "address": "102 MAIN ST, GREENFIELD, MA",
+    "phone": "4133258500"
+  },
+  "patient": {
+    "name": "Loris321 McGlynn426",
+    "patient_id": "19029ae7-ac84-3e50-37a5-1fd9278544fd",
+    "birth_date": "1965-02-15",
+    "age": 60,
+    "sex": "F",
+    "address": "266 Greenholt Trafficway Unit 17, Shelburne Falls, Massachusetts, 01370"
+  },
+  "report": {
+    "report_id": "CR-20251208-19029AE7",
+    "report_date": "2025-12-08",
+    "encounter_type": "Wellness",
+    "prescriber": "Emory494 Nicolas769",
+    "specialty": "GENERAL PRACTICE",
+    "status": "Version finale synthetique"
+  },
+  "results": [
+    {
+      "page_number": 1,
+      "source_table_id": "table_p001_03",
+      "analyte": "Glucose [Mass/volume] in Blood",
+      "value_raw": "94.8",
+      "value_numeric": 94.8,
+      "unit": "mg/dL",
+      "reference_range": {
+        "text": "70 - 99",
+        "low": 70.0,
+        "high": 99.0
+      },
+      "alert_flag": null,
+      "is_abnormal": false,
+      "observation_date": "2025-12-08"
+    },
+    {
+      "page_number": 1,
+      "source_table_id": "table_p001_03",
+      "analyte": "Triglyceride [Mass/volume] in Serum or Plasma",
+      "value_raw": "146",
+      "value_numeric": 146.0,
+      "unit": "mg/dL",
+      "reference_range": {
+        "text": "0 - 150",
+        "low": 0.0,
+        "high": 150.0
+      },
+      "alert_flag": null,
+      "is_abnormal": false,
+      "observation_date": "2025-12-08"
+    },
+    {
+      "page_number": 1,
+      "source_table_id": "table_p001_03",
+      "analyte": "Potassium [Moles/volume] in Blood",
+      "value_raw": "4.1",
+      "value_numeric": 4.1,
+      "unit": "mmol/L",
+      "reference_range": {
+        "text": "3.5 - 5.1",
+        "low": 3.5,
+        "high": 5.1
+      },
+      "alert_flag": null,
+      "is_abnormal": false,
+      "observation_date": "2025-12-08"
+    },
+    {
+      "page_number": 1,
+      "source_table_id": "table_p001_03",
+      "analyte": "Sodium [Moles/volume] in Blood",
+      "value_raw": "137",
+      "value_numeric": 137.0,
+      "unit": "mmol/L",
+      "reference_range": {
+        "text": "135 - 145",
+        "low": 135.0,
+        "high": 145.0
+      },
+      "alert_flag": null,
+      "is_abnormal": false,
+      "observation_date": "2025-12-08"
+    },
+    {
+      "page_number": 1,
+      "source_table_id": "table_p001_03",
+      "analyte": "Calcium [Mass/volume] in Blood",
+      "value_raw": "8.8",
+      "value_numeric": 8.8,
+      "unit": "mg/dL",
+      "reference_range": {
+        "text": "8.5 - 10.5",
+        "low": 8.5,
+        "high": 10.5
+      },
+      "alert_flag": null,
+      "is_abnormal": false,
+      "observation_date": "2025-12-08"
+    },
+    {
+      "page_number": 1,
+      "source_table_id": "table_p001_03",
+      "analyte": "Creatinine [Mass/volume] in Blood",
+      "value_raw": "0.8",
+      "value_numeric": 0.8,
+      "unit": "mg/dL",
+      "reference_range": {
+        "text": "0.6 - 1.3",
+        "low": 0.6,
+        "high": 1.3
+      },
+      "alert_flag": null,
+      "is_abnormal": false,
+      "observation_date": "2025-12-08"
+    },
+    {
+      "page_number": 1,
+      "source_table_id": "table_p001_03",
+      "analyte": "Respiratory rate",
+      "value_raw": "15",
+      "value_numeric": 15.0,
+      "unit": "/min",
+      "reference_range": {
+        "text": "Selon contexte",
+        "low": null,
+        "high": null
+      },
+      "alert_flag": null,
+      "is_abnormal": false,
+      "observation_date": "2025-12-08"
+    },
+    {
+      "page_number": 1,
+      "source_table_id": "table_p001_03",
+      "analyte": "Heart rate",
+      "value_raw": "91",
+      "value_numeric": 91.0,
+      "unit": "/min",
+      "reference_range": {
+        "text": "Selon contexte",
+        "low": null,
+        "high": null
+      },
+      "alert_flag": null,
+      "is_abnormal": false,
+      "observation_date": "2025-12-08"
+    }
+  ],
+  "interpretation": {
+    "text": "Synthese radioclinique Correlation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non interpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent uniquement de contexte documentaire. Antecedents : Social isolation (finding), Full-time employment (finding), Reports of violence in the environment (finding), Stress (finding). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image. Contexte documente : Social isolation (finding), Full-time employment (finding), Reports of violence in the environment (finding), Stress (finding), Part-time employment (finding)\n\nInterpretation et validation Correlation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non interpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent uniquement de contexte documentaire. Antecedents : Social isolation (finding), Full-time employment (finding), Reports of violence in the environment (finding), Stress (finding). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image.",
+    "sections": [
+      {
+        "page_number": 2,
+        "title": "Synthese radioclinique",
+        "text": "Synthese radioclinique Correlation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non interpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent uniquement de contexte documentaire. Antecedents : Social isolation (finding), Full-time employment (finding), Reports of violence in the environment (finding), Stress (finding). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image. Contexte documente : Social isolation (finding), Full-time employment (finding), Reports of violence in the environment (finding), Stress (finding), Part-time employment (finding)"
+      },
+      {
+        "page_number": 3,
+        "title": "Interpretation et validation",
+        "text": "Interpretation et validation Correlation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non interpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent uniquement de contexte documentaire. Antecedents : Social isolation (finding), Full-time employment (finding), Reports of violence in the environment (finding), Stress (finding). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image."
+      }
+    ],
+    "summary_text": "Resume du dossier Patient synthetique issu de donnees Synthea. Ce document a ete enrichi par un tableau structure, un bloc de texte clinique et une image medicale factice afin de reproduire des conditions proches de PDF reels de sante."
+  },
+  "validation": {
+    "validated_by": "Emory494 Nicolas769",
+    "specialty": "GENERAL PRACTICE",
+    "signature_image_ids": [
+      "image_p003_01"
+    ],
+    "stamp_image_ids": [
+      "image_p003_02"
+    ],
+    "status": "Version finale synthetique",
+    "is_signed": true,
+    "is_stamped": true
+  },
+  "pages": [
+    {
+      "page_number": 1,
+      "width": 595.28,
+      "height": 841.89,
+      "native_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 1\nCOMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE\n102 MAIN ST, GREENFIELD, MA - Tel. 4133258500\nPatient\nLoris321 McGlynn426\nIdentifiant\n19029ae7-ac84-3e50-37a5-1fd927\n8544fd\nDate de naissance\n15 fevr. 1965\nAge\n60\nSexe\nF\nAdresse\n266 Greenholt Trafficway Unit 17,\nShelburne Falls, Massachusetts,\n01370\nNumero de rapport\nCR-20251208-19029AE7\nDate du document\n08 dec. 2025\nType de rencontre\nWellness\nPrescripteur\nEmory494 Nicolas769\nSpecialite\nGENERAL PRACTICE\nStatut\nVersion finale synthetique\nResultats selectionnes\nAnalyse / Observation\nResultat\nUnites\nValeurs de reference\nAlert\ne\nDate\nGlucose [Mass/volume] in Blood\n94.8\nmg/dL\n70 - 99\n-\n08 dec. 2025\nTriglyceride [Mass/volume] in Serum or\nPlasma\n146\nmg/dL\n0 - 150\n-\n08 dec. 2025\nPotassium [Moles/volume] in Blood\n4.1\nmmol/L\n3.5 - 5.1\n-\n08 dec. 2025\nSodium [Moles/volume] in Blood\n137\nmmol/L\n135 - 145\n-\n08 dec. 2025\nCalcium [Mass/volume] in Blood\n8.8\nmg/dL\n8.5 - 10.5\n-\n08 dec. 2025\nCreatinine [Mass/volume] in Blood\n0.8\nmg/dL\n0.6 - 1.3\n-\n08 dec. 2025\nRespiratory rate\n15\n/min\nSelon contexte\n-\n08 dec. 2025\nHeart rate\n91\n/min\nSelon contexte\n-\n08 dec. 2025",
+      "final_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 1\nCOMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE\n102 MAIN ST, GREENFIELD, MA - Tel. 4133258500\nPatient\nLoris321 McGlynn426\nIdentifiant\n19029ae7-ac84-3e50-37a5-1fd927\n8544fd\nDate de naissance\n15 fevr. 1965\nAge\n60\nSexe\nF\nAdresse\n266 Greenholt Trafficway Unit 17,\nShelburne Falls, Massachusetts,\n01370\nNumero de rapport\nCR-20251208-19029AE7\nDate du document\n08 dec. 2025\nType de rencontre\nWellness\nPrescripteur\nEmory494 Nicolas769\nSpecialite\nGENERAL PRACTICE\nStatut\nVersion finale synthetique\nResultats selectionnes\nAnalyse / Observation\nResultat\nUnites\nValeurs de reference\nAlert\ne\nDate\nGlucose [Mass/volume] in Blood\n94.8\nmg/dL\n70 - 99\n-\n08 dec. 2025\nTriglyceride [Mass/volume] in Serum or\nPlasma\n146\nmg/dL\n0 - 150\n-\n08 dec. 2025\nPotassium [Moles/volume] in Blood\n4.1\nmmol/L\n3.5 - 5.1\n-\n08 dec. 2025\nSodium [Moles/volume] in Blood\n137\nmmol/L\n135 - 145\n-\n08 dec. 2025\nCalcium [Mass/volume] in Blood\n8.8\nmg/dL\n8.5 - 10.5\n-\n08 dec. 2025\nCreatinine [Mass/volume] in Blood\n0.8\nmg/dL\n0.6 - 1.3\n-\n08 dec. 2025\nRespiratory rate\n15\n/min\nSelon contexte\n-\n08 dec. 2025\nHeart rate\n91\n/min\nSelon contexte\n-\n08 dec. 2025",
+      "native_text_chars": 1197,
+      "ocr_used": false,
+      "ocr_text_chars": 0,
+      "table_ids": [
+        "table_p001_01",
+        "table_p001_02",
+        "table_p001_03"
+      ],
+      "image_ids": [
+        "image_p001_01"
+      ],
+      "blocks": [
+        {
+          "block_id": "block_001",
+          "page_number": 1,
+          "block_type": "document_header",
+          "section_title": "COMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE",
+          "text": "COMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE",
+          "bbox": {
+            "x0": 51.02,
+            "y0": 54.19,
+            "x1": 544.25,
+            "y1": 142.24
+          },
+          "source_table_ids": [],
+          "source_image_ids": [
+            "image_p001_01"
+          ],
+          "source_text_block_ids": [
+            "text_p001_02"
+          ],
+          "is_indexable": false
+        },
+        {
+          "block_id": "block_002",
+          "page_number": 1,
+          "block_type": "facility_block",
+          "section_title": "Facility",
+          "text": "102 MAIN ST, GREENFIELD, MA - Tel. 4133258500",
+          "bbox": {
+            "x0": 51.35,
+            "y0": 145.3,
+            "x1": 264.28,
+            "y1": 157.81
+          },
+          "source_table_ids": [],
+          "source_image_ids": [],
+          "source_text_block_ids": [
+            "text_p001_03"
+          ],
+          "is_indexable": false
+        },
+        {
+          "block_id": "block_003",
+          "page_number": 1,
+          "block_type": "patient_info_block",
+          "section_title": "Patient information",
+          "text": "Patient: Loris321 McGlynn426 Identifiant: 19029ae7-ac84-3e50-37a5-1fd927 8544fd Date de naissance: 15 fevr. 1965 Age: 60 Sexe: F Adresse: 266 Greenholt Trafficway Unit 17, Shelburne Falls, Massachusetts, 01370",
+          "bbox": {
+            "x0": 55.54,
+            "y0": 167.48,
+            "x1": 297.97,
+            "y1": 328.28
+          },
+          "source_table_ids": [
+            "table_p001_01"
+          ],
+          "source_image_ids": [],
+          "source_text_block_ids": [],
+          "is_indexable": false
+        },
+        {
+          "block_id": "block_004",
+          "page_number": 1,
+          "block_type": "report_info_block",
+          "section_title": "Report metadata",
+          "text": "Numero de rapport: CR-20251208-19029AE7 Date du document: 08 dec. 2025 Type de rencontre: Wellness Prescripteur: Emory494 Nicolas769 Specialite: GENERAL PRACTICE Statut: Version finale synthetique",
+          "bbox": {
+            "x0": 303.64,
+            "y0": 167.48,
+            "x1": 544.47,
+            "y1": 294.68
+          },
+          "source_table_ids": [
+            "table_p001_02"
+          ],
+          "source_image_ids": [],
+          "source_text_block_ids": [],
+          "is_indexable": false
+        },
+        {
+          "block_id": "block_005",
+          "page_number": 1,
+          "block_type": "results_table_block",
+          "section_title": "Selected results",
+          "text": "Analyse / Observation: Glucose [Mass/volume] in Blood | Resultat: 94.8 | Unites: mg/dL | Valeurs de reference: 70 - 99 | Alert e: - | Date: 08 dec. 2025 Analyse / Observation: Triglyceride [Mass/volume] in Serum or Plasma | Resultat: 146 | Unites: mg/dL | Valeurs de reference: 0 - 150 | Alert e: - | Date: 08 dec. 2025 Analyse / Observation: Potassium [Moles/volume] in Blood | Resultat: 4.1 | Unites: mmol/L | Valeurs de reference: 3.5 - 5.1 | Alert e: - | Date: 08 dec. 2025 Analyse / Observation: Sodium [Moles/volume] in Blood | Resultat: 137 | Unites: mmol/L | Valeurs de reference: 135 - 145 | Alert e: - | Date: 08 dec. 2025 Analyse / Observation: Calcium [Mass/volume] in Blood | Resultat: 8.8 | Unites: mg/dL | Valeurs de reference: 8.5 - 10.5 | Alert e: - | Date: 08 dec. 2025 Analyse / Observation: Creatinine [Mass/volume] in Blood | Resultat: 0.8 | Unites: mg/dL | Valeurs de reference: 0.6 - 1.3 | Alert e: - | Date: 08 dec. 2025 Analyse / Observation: Respiratory rate | Resultat: 15 | Unites: /min | Valeurs de reference: Selon contexte | Alert e: - | Date: 08 dec. 2025 Analyse / Observation: Heart rate | Resultat: 91 | Unites: /min | Valeurs de reference: Selon contexte | Alert e: - | Date: 08 dec. 2025",
+          "bbox": {
+            "x0": 55.54,
+            "y0": 360.28,
+            "x1": 540.0,
+            "y1": 579.48
+          },
+          "source_table_ids": [
+            "table_p001_03"
+          ],
+          "source_image_ids": [],
+          "source_text_block_ids": [],
+          "is_indexable": true
+        },
+        {
+          "block_id": "block_006",
+          "page_number": 1,
+          "block_type": "footer_block",
+          "section_title": "Footer",
+          "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 1",
+          "bbox": {
+            "x0": 45.35,
+            "y0": 810.37,
+            "x1": 549.92,
+            "y1": 820.95
+          },
+          "source_table_ids": [],
+          "source_image_ids": [],
+          "source_text_block_ids": [
+            "text_p001_01"
+          ],
+          "is_indexable": false
+        }
+      ]
+    },
+    {
+      "page_number": 2,
+      "width": 595.28,
+      "height": 841.89,
+      "native_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 2\nSynthese radioclinique\nCorrelation entre contexte clinique, tableau synthetique et\nillustration d'imagerie : Une image diagnostique synthetique\nnon interpretable est jointe pour simuler un compte rendu\nd'imagerie. Les mesures biologiques d'accompagnement\nservent uniquement de contexte documentaire. Antecedents :\nSocial isolation (finding), Full-time employment (finding),\nReports of violence in the environment (finding), Stress\n(finding). Document reserve aux essais de parsing, OCR,\nretrieval et fusion texte-image.\nContexte documente : Social isolation (finding), Full-time\nemployment (finding), Reports of violence in the environment\n(finding), Stress (finding), Part-time employment (finding)\nCommentaires techniques\nLe present compte rendu a ete mis en forme de facon realiste\nafin de tester l'extraction conjointe du texte, des tableaux et\ndes visuels rasterises.\nRadiographie thoracique synthetique\nImage medicale synthetique non diagnostique inseree\nvolontairement pour evaluation multimodale.",
+      "final_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 2\nSynthese radioclinique\nCorrelation entre contexte clinique, tableau synthetique et\nillustration d'imagerie : Une image diagnostique synthetique\nnon interpretable est jointe pour simuler un compte rendu\nd'imagerie. Les mesures biologiques d'accompagnement\nservent uniquement de contexte documentaire. Antecedents :\nSocial isolation (finding), Full-time employment (finding),\nReports of violence in the environment (finding), Stress\n(finding). Document reserve aux essais de parsing, OCR,\nretrieval et fusion texte-image.\nContexte documente : Social isolation (finding), Full-time\nemployment (finding), Reports of violence in the environment\n(finding), Stress (finding), Part-time employment (finding)\nCommentaires techniques\nLe present compte rendu a ete mis en forme de facon realiste\nafin de tester l'extraction conjointe du texte, des tableaux et\ndes visuels rasterises.\nRadiographie thoracique synthetique\nImage medicale synthetique non diagnostique inseree\nvolontairement pour evaluation multimodale.",
+      "native_text_chars": 1097,
+      "ocr_used": false,
+      "ocr_text_chars": 0,
+      "table_ids": [],
+      "image_ids": [
+        "image_p002_01"
+      ],
+      "blocks": [
+        {
+          "block_id": "block_007",
+          "page_number": 2,
+          "block_type": "clinical_interpretation_block",
+          "section_title": "Synthese radioclinique",
+          "text": "Synthese radioclinique Correlation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non interpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent uniquement de contexte documentaire. Antecedents : Social isolation (finding), Full-time employment (finding), Reports of violence in the environment (finding), Stress (finding). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image. Contexte documente : Social isolation (finding), Full-time employment (finding), Reports of violence in the environment (finding), Stress (finding), Part-time employment (finding)",
+          "bbox": {
+            "x0": 60.02,
+            "y0": 60.44,
+            "x1": 301.07,
+            "y1": 227.44
+          },
+          "source_table_ids": [],
+          "source_image_ids": [],
+          "source_text_block_ids": [
+            "text_p002_02",
+            "text_p002_03",
+            "text_p002_04"
+          ],
+          "is_indexable": true
+        },
+        {
+          "block_id": "block_008",
+          "page_number": 2,
+          "block_type": "image_context_block",
+          "section_title": "Radiographie thoracique synthetique",
+          "text": "Radiographie thoracique synthetique Image medicale synthetique non diagnostique inseree volontairement pour evaluation multimodale. Radiographie thoracique synthetique | Image medicale synthetique non diagnostique inseree volontairement pour evaluation multimodale.",
+          "bbox": {
+            "x0": 320.81,
+            "y0": 60.44,
+            "x1": 541.91,
+            "y1": 384.04
+          },
+          "source_table_ids": [],
+          "source_image_ids": [
+            "image_p002_01"
+          ],
+          "source_text_block_ids": [
+            "text_p002_07",
+            "text_p002_08"
+          ],
+          "is_indexable": true
+        },
+        {
+          "block_id": "block_009",
+          "page_number": 2,
+          "block_type": "footer_block",
+          "section_title": "Footer",
+          "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 2",
+          "bbox": {
+            "x0": 45.35,
+            "y0": 810.37,
+            "x1": 549.92,
+            "y1": 820.95
+          },
+          "source_table_ids": [],
+          "source_image_ids": [],
+          "source_text_block_ids": [
+            "text_p002_01"
+          ],
+          "is_indexable": false
+        }
+      ]
+    },
+    {
+      "page_number": 3,
+      "width": 595.28,
+      "height": 841.89,
+      "native_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 3\nInterpretation et validation\nCorrelation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non\ninterpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent\nuniquement de contexte documentaire. Antecedents : Social isolation (finding), Full-time employment (finding), Reports of\nviolence in the environment (finding), Stress (finding). Document reserve aux essais de parsing, OCR, retrieval et fusion\ntexte-image.\nResume du dossier\nPatient synthetique issu de donnees Synthea. Ce document a ete enrichi par un tableau structure, un bloc de texte clinique et\nune image medicale factice afin de reproduire des conditions proches de PDF reels de sante.\nAnalyse / Observation\nResultat\nUnites\nValeurs de reference\nAlert\ne\nDate\nGlucose [Mass/volume] in Blood\n94.8\nmg/dL\n70 - 99\n-\n08 dec. 2025\nTriglyceride [Mass/volume] in Serum or\nPlasma\n146\nmg/dL\n0 - 150\n-\n08 dec. 2025\nPotassium [Moles/volume] in Blood\n4.1\nmmol/L\n3.5 - 5.1\n-\n08 dec. 2025\nSodium [Moles/volume] in Blood\n137\nmmol/L\n135 - 145\n-\n08 dec. 2025\nValidation medicale\nEmory494 Nicolas769\nGENERAL PRACTICE\nCachet du service",
+      "final_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 3\nInterpretation et validation\nCorrelation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non\ninterpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent\nuniquement de contexte documentaire. Antecedents : Social isolation (finding), Full-time employment (finding), Reports of\nviolence in the environment (finding), Stress (finding). Document reserve aux essais de parsing, OCR, retrieval et fusion\ntexte-image.\nResume du dossier\nPatient synthetique issu de donnees Synthea. Ce document a ete enrichi par un tableau structure, un bloc de texte clinique et\nune image medicale factice afin de reproduire des conditions proches de PDF reels de sante.\nAnalyse / Observation\nResultat\nUnites\nValeurs de reference\nAlert\ne\nDate\nGlucose [Mass/volume] in Blood\n94.8\nmg/dL\n70 - 99\n-\n08 dec. 2025\nTriglyceride [Mass/volume] in Serum or\nPlasma\n146\nmg/dL\n0 - 150\n-\n08 dec. 2025\nPotassium [Moles/volume] in Blood\n4.1\nmmol/L\n3.5 - 5.1\n-\n08 dec. 2025\nSodium [Moles/volume] in Blood\n137\nmmol/L\n135 - 145\n-\n08 dec. 2025\nValidation medicale\nEmory494 Nicolas769\nGENERAL PRACTICE\nCachet du service",
+      "native_text_chars": 1282,
+      "ocr_used": false,
+      "ocr_text_chars": 0,
+      "table_ids": [
+        "table_p003_01"
+      ],
+      "image_ids": [
+        "image_p003_01",
+        "image_p003_02"
+      ],
+      "blocks": [
+        {
+          "block_id": "block_010",
+          "page_number": 3,
+          "block_type": "clinical_interpretation_block",
+          "section_title": "Interpretation et validation",
+          "text": "Interpretation et validation Correlation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non interpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent uniquement de contexte documentaire. Antecedents : Social isolation (finding), Full-time employment (finding), Reports of violence in the environment (finding), Stress (finding). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image.",
+          "bbox": {
+            "x0": 51.35,
+            "y0": 53.44,
+            "x1": 530.19,
+            "y1": 129.49
+          },
+          "source_table_ids": [],
+          "source_image_ids": [],
+          "source_text_block_ids": [
+            "text_p003_02",
+            "text_p003_03"
+          ],
+          "is_indexable": true
+        },
+        {
+          "block_id": "block_011",
+          "page_number": 3,
+          "block_type": "summary_block",
+          "section_title": "Resume du dossier",
+          "text": "Resume du dossier Patient synthetique issu de donnees Synthea. Ce document a ete enrichi par un tableau structure, un bloc de texte clinique et une image medicale factice afin de reproduire des conditions proches de PDF reels de sante.",
+          "bbox": {
+            "x0": 51.35,
+            "y0": 135.44,
+            "x1": 542.31,
+            "y1": 177.89
+          },
+          "source_table_ids": [],
+          "source_image_ids": [],
+          "source_text_block_ids": [
+            "text_p003_04",
+            "text_p003_05"
+          ],
+          "is_indexable": true
+        },
+        {
+          "block_id": "block_012",
+          "page_number": 3,
+          "block_type": "results_table_block",
+          "section_title": "Selected results",
+          "text": "Analyse / Observation: Glucose [Mass/volume] in Blood | Resultat: 94.8 | Unites: mg/dL | Valeurs de reference: 70 - 99 | Alert e: - | Date: 08 dec. 2025 Analyse / Observation: Triglyceride [Mass/volume] in Serum or Plasma | Resultat: 146 | Unites: mg/dL | Valeurs de reference: 0 - 150 | Alert e: - | Date: 08 dec. 2025 Analyse / Observation: Potassium [Moles/volume] in Blood | Resultat: 4.1 | Unites: mmol/L | Valeurs de reference: 3.5 - 5.1 | Alert e: - | Date: 08 dec. 2025 Analyse / Observation: Sodium [Moles/volume] in Blood | Resultat: 137 | Unites: mmol/L | Valeurs de reference: 135 - 145 | Alert e: - | Date: 08 dec. 2025",
+          "bbox": {
+            "x0": 55.28,
+            "y0": 183.59,
+            "x1": 540.0,
+            "y1": 313.99
+          },
+          "source_table_ids": [
+            "table_p003_01"
+          ],
+          "source_image_ids": [],
+          "source_text_block_ids": [],
+          "is_indexable": true
+        },
+        {
+          "block_id": "block_013",
+          "page_number": 3,
+          "block_type": "validation_block",
+          "section_title": "Validation medicale",
+          "text": "Validation medicale Cachet du service Emory494 Nicolas769 GENERAL PRACTICE",
+          "bbox": {
+            "x0": 61.02,
+            "y0": 329.24,
+            "x1": 506.94,
+            "y1": 433.03
+          },
+          "source_table_ids": [],
+          "source_image_ids": [
+            "image_p003_01",
+            "image_p003_02"
+          ],
+          "source_text_block_ids": [
+            "text_p003_11",
+            "text_p003_14",
+            "text_p003_12",
+            "text_p003_13"
+          ],
+          "is_indexable": false
+        },
+        {
+          "block_id": "block_014",
+          "page_number": 3,
+          "block_type": "footer_block",
+          "section_title": "Footer",
+          "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 3",
+          "bbox": {
+            "x0": 45.35,
+            "y0": 810.37,
+            "x1": 549.92,
+            "y1": 820.95
+          },
+          "source_table_ids": [],
+          "source_image_ids": [],
+          "source_text_block_ids": [
+            "text_p003_01"
+          ],
+          "is_indexable": false
+        }
+      ]
+    }
+  ],
+  "tables": [
+    {
+      "table_id": "table_p001_01",
+      "page_number": 1,
+      "row_count": 5,
+      "column_count": 2,
+      "csv_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/08_Loris321_McGlynn426_19029ae7_imaging_mixed/tables/table_p001_01.csv",
+      "json_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/08_Loris321_McGlynn426_19029ae7_imaging_mixed/tables/table_p001_01.json",
+      "columns": [
+        "Patient",
+        "Loris321 McGlynn426"
+      ],
+      "records": [
+        {
+          "Patient": "Identifiant",
+          "Loris321 McGlynn426": "19029ae7-ac84-3e50-37a5-1fd927\n8544fd"
+        },
+        {
+          "Patient": "Date de naissance",
+          "Loris321 McGlynn426": "15 fevr. 1965"
+        },
+        {
+          "Patient": "Age",
+          "Loris321 McGlynn426": "60"
+        },
+        {
+          "Patient": "Sexe",
+          "Loris321 McGlynn426": "F"
+        },
+        {
+          "Patient": "Adresse",
+          "Loris321 McGlynn426": "266 Greenholt Trafficway Unit 17,\nShelburne Falls, Massachusetts,\n01370"
+        }
+      ],
+      "preview": [
+        {
+          "Patient": "Identifiant",
+          "Loris321 McGlynn426": "19029ae7-ac84-3e50-37a5-1fd927\n8544fd"
+        },
+        {
+          "Patient": "Date de naissance",
+          "Loris321 McGlynn426": "15 fevr. 1965"
+        },
+        {
+          "Patient": "Age",
+          "Loris321 McGlynn426": "60"
+        },
+        {
+          "Patient": "Sexe",
+          "Loris321 McGlynn426": "F"
+        },
+        {
+          "Patient": "Adresse",
+          "Loris321 McGlynn426": "266 Greenholt Trafficway Unit 17,\nShelburne Falls, Massachusetts,\n01370"
+        }
+      ],
+      "bbox": {
+        "x0": 55.54,
+        "y0": 167.48,
+        "x1": 297.97,
+        "y1": 328.28
+      },
+      "table_role": "patient_info_table",
+      "is_indexable": false
+    },
+    {
+      "table_id": "table_p001_02",
+      "page_number": 1,
+      "row_count": 5,
+      "column_count": 2,
+      "csv_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/08_Loris321_McGlynn426_19029ae7_imaging_mixed/tables/table_p001_02.csv",
+      "json_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/08_Loris321_McGlynn426_19029ae7_imaging_mixed/tables/table_p001_02.json",
+      "columns": [
+        "Numero de rapport",
+        "CR-20251208-19029AE7"
+      ],
+      "records": [
+        {
+          "Numero de rapport": "Date du document",
+          "CR-20251208-19029AE7": "08 dec. 2025"
+        },
+        {
+          "Numero de rapport": "Type de rencontre",
+          "CR-20251208-19029AE7": "Wellness"
+        },
+        {
+          "Numero de rapport": "Prescripteur",
+          "CR-20251208-19029AE7": "Emory494 Nicolas769"
+        },
+        {
+          "Numero de rapport": "Specialite",
+          "CR-20251208-19029AE7": "GENERAL PRACTICE"
+        },
+        {
+          "Numero de rapport": "Statut",
+          "CR-20251208-19029AE7": "Version finale synthetique"
+        }
+      ],
+      "preview": [
+        {
+          "Numero de rapport": "Date du document",
+          "CR-20251208-19029AE7": "08 dec. 2025"
+        },
+        {
+          "Numero de rapport": "Type de rencontre",
+          "CR-20251208-19029AE7": "Wellness"
+        },
+        {
+          "Numero de rapport": "Prescripteur",
+          "CR-20251208-19029AE7": "Emory494 Nicolas769"
+        },
+        {
+          "Numero de rapport": "Specialite",
+          "CR-20251208-19029AE7": "GENERAL PRACTICE"
+        },
+        {
+          "Numero de rapport": "Statut",
+          "CR-20251208-19029AE7": "Version finale synthetique"
+        }
+      ],
+      "bbox": {
+        "x0": 303.64,
+        "y0": 167.48,
+        "x1": 544.47,
+        "y1": 294.68
+      },
+      "table_role": "report_info_table",
+      "is_indexable": false
+    },
+    {
+      "table_id": "table_p001_03",
+      "page_number": 1,
+      "row_count": 8,
+      "column_count": 6,
+      "csv_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/08_Loris321_McGlynn426_19029ae7_imaging_mixed/tables/table_p001_03.csv",
+      "json_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/08_Loris321_McGlynn426_19029ae7_imaging_mixed/tables/table_p001_03.json",
+      "columns": [
+        "Analyse / Observation",
+        "Resultat",
+        "Unites",
+        "Valeurs de reference",
+        "Alert\ne",
+        "Date"
+      ],
+      "records": [
+        {
+          "Analyse / Observation": "Glucose [Mass/volume] in Blood",
+          "Resultat": "94.8",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "70 - 99",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        },
+        {
+          "Analyse / Observation": "Triglyceride [Mass/volume] in Serum or\nPlasma",
+          "Resultat": "146",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "0 - 150",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        },
+        {
+          "Analyse / Observation": "Potassium [Moles/volume] in Blood",
+          "Resultat": "4.1",
+          "Unites": "mmol/L",
+          "Valeurs de reference": "3.5 - 5.1",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        },
+        {
+          "Analyse / Observation": "Sodium [Moles/volume] in Blood",
+          "Resultat": "137",
+          "Unites": "mmol/L",
+          "Valeurs de reference": "135 - 145",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        },
+        {
+          "Analyse / Observation": "Calcium [Mass/volume] in Blood",
+          "Resultat": "8.8",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "8.5 - 10.5",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        },
+        {
+          "Analyse / Observation": "Creatinine [Mass/volume] in Blood",
+          "Resultat": "0.8",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "0.6 - 1.3",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        },
+        {
+          "Analyse / Observation": "Respiratory rate",
+          "Resultat": "15",
+          "Unites": "/min",
+          "Valeurs de reference": "Selon contexte",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        },
+        {
+          "Analyse / Observation": "Heart rate",
+          "Resultat": "91",
+          "Unites": "/min",
+          "Valeurs de reference": "Selon contexte",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        }
+      ],
+      "preview": [
+        {
+          "Analyse / Observation": "Glucose [Mass/volume] in Blood",
+          "Resultat": "94.8",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "70 - 99",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        },
+        {
+          "Analyse / Observation": "Triglyceride [Mass/volume] in Serum or\nPlasma",
+          "Resultat": "146",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "0 - 150",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        },
+        {
+          "Analyse / Observation": "Potassium [Moles/volume] in Blood",
+          "Resultat": "4.1",
+          "Unites": "mmol/L",
+          "Valeurs de reference": "3.5 - 5.1",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        },
+        {
+          "Analyse / Observation": "Sodium [Moles/volume] in Blood",
+          "Resultat": "137",
+          "Unites": "mmol/L",
+          "Valeurs de reference": "135 - 145",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        },
+        {
+          "Analyse / Observation": "Calcium [Mass/volume] in Blood",
+          "Resultat": "8.8",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "8.5 - 10.5",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        }
+      ],
+      "bbox": {
+        "x0": 55.54,
+        "y0": 360.28,
+        "x1": 540.0,
+        "y1": 579.48
+      },
+      "table_role": "results_table",
+      "is_indexable": true
+    },
+    {
+      "table_id": "table_p003_01",
+      "page_number": 3,
+      "row_count": 4,
+      "column_count": 6,
+      "csv_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/08_Loris321_McGlynn426_19029ae7_imaging_mixed/tables/table_p003_01.csv",
+      "json_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/08_Loris321_McGlynn426_19029ae7_imaging_mixed/tables/table_p003_01.json",
+      "columns": [
+        "Analyse / Observation",
+        "Resultat",
+        "Unites",
+        "Valeurs de reference",
+        "Alert\ne",
+        "Date"
+      ],
+      "records": [
+        {
+          "Analyse / Observation": "Glucose [Mass/volume] in Blood",
+          "Resultat": "94.8",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "70 - 99",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        },
+        {
+          "Analyse / Observation": "Triglyceride [Mass/volume] in Serum or\nPlasma",
+          "Resultat": "146",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "0 - 150",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        },
+        {
+          "Analyse / Observation": "Potassium [Moles/volume] in Blood",
+          "Resultat": "4.1",
+          "Unites": "mmol/L",
+          "Valeurs de reference": "3.5 - 5.1",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        },
+        {
+          "Analyse / Observation": "Sodium [Moles/volume] in Blood",
+          "Resultat": "137",
+          "Unites": "mmol/L",
+          "Valeurs de reference": "135 - 145",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        }
+      ],
+      "preview": [
+        {
+          "Analyse / Observation": "Glucose [Mass/volume] in Blood",
+          "Resultat": "94.8",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "70 - 99",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        },
+        {
+          "Analyse / Observation": "Triglyceride [Mass/volume] in Serum or\nPlasma",
+          "Resultat": "146",
+          "Unites": "mg/dL",
+          "Valeurs de reference": "0 - 150",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        },
+        {
+          "Analyse / Observation": "Potassium [Moles/volume] in Blood",
+          "Resultat": "4.1",
+          "Unites": "mmol/L",
+          "Valeurs de reference": "3.5 - 5.1",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        },
+        {
+          "Analyse / Observation": "Sodium [Moles/volume] in Blood",
+          "Resultat": "137",
+          "Unites": "mmol/L",
+          "Valeurs de reference": "135 - 145",
+          "Alert\ne": "-",
+          "Date": "08 dec. 2025"
+        }
+      ],
+      "bbox": {
+        "x0": 55.28,
+        "y0": 183.59,
+        "x1": 540.0,
+        "y1": 313.99
+      },
+      "table_role": "results_table",
+      "is_indexable": true
+    }
+  ],
+  "images": [
+    {
+      "image_id": "image_p001_01",
+      "page_number": 1,
+      "file_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/08_Loris321_McGlynn426_19029ae7_imaging_mixed/images/page_001_img_01.png",
+      "width": 1200,
+      "height": 150,
+      "ext": "png",
+      "bbox": {
+        "x0": 51.02,
+        "y0": 54.19,
+        "x1": 544.25,
+        "y1": 115.98
+      },
+      "xref": 3,
+      "page_coverage": 0.0608,
+      "image_type": "logo_or_branding",
+      "role": "branding",
+      "is_indexable": false,
+      "context_text": "COMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE | 102 MAIN ST, GREENFIELD, MA - Tel. 4133258500 | Patient Loris321 McGlynn426"
+    },
+    {
+      "image_id": "image_p002_01",
+      "page_number": 2,
+      "file_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/08_Loris321_McGlynn426_19029ae7_imaging_mixed/images/page_002_img_01.png",
+      "width": 950,
+      "height": 1250,
+      "ext": "png",
+      "bbox": {
+        "x0": 320.81,
+        "y0": 79.19,
+        "x1": 541.91,
+        "y1": 356.98
+      },
+      "xref": 7,
+      "page_coverage": 0.1226,
+      "image_type": "medical_illustration",
+      "role": "clinical_visual",
+      "is_indexable": true,
+      "context_text": "Radiographie thoracique synthetique | Image medicale synthetique non diagnostique inseree volontairement pour evaluation multimodale."
+    },
+    {
+      "image_id": "image_p003_01",
+      "page_number": 3,
+      "file_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/08_Loris321_McGlynn426_19029ae7_imaging_mixed/images/page_003_img_01.png",
+      "width": 1000,
+      "height": 220,
+      "ext": "png",
+      "bbox": {
+        "x0": 61.02,
+        "y0": 381.59,
+        "x1": 236.77,
+        "y1": 421.27
+      },
+      "xref": 9,
+      "page_coverage": 0.0139,
+      "image_type": "signature",
+      "role": "validation",
+      "is_indexable": false,
+      "context_text": "GENERAL PRACTICE | Emory494 Nicolas769 | Validation medicale"
+    },
+    {
+      "image_id": "image_p003_02",
+      "page_number": 3,
+      "file_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/08_Loris321_McGlynn426_19029ae7_imaging_mixed/images/page_003_img_02.png",
+      "width": 524,
+      "height": 524,
+      "ext": "png",
+      "bbox": {
+        "x0": 415.35,
+        "y0": 347.99,
+        "x1": 500.39,
+        "y1": 433.03
+      },
+      "xref": 11,
+      "page_coverage": 0.0144,
+      "image_type": "stamp_or_seal",
+      "role": "validation",
+      "is_indexable": false,
+      "context_text": "Cachet du service | Sodium [Moles/volume] in Blood 137 mmol/L 135 - 145 - 08 dec. 2025 | Potassium [Moles/volume] in Blood 4.1 mmol/L 3.5 - 5.1 - 08 dec. 2025"
+    }
+  ],
+  "blocks": [
+    {
+      "block_id": "block_001",
+      "page_number": 1,
+      "block_type": "document_header",
+      "section_title": "COMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE",
+      "text": "COMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE",
+      "bbox": {
+        "x0": 51.02,
+        "y0": 54.19,
+        "x1": 544.25,
+        "y1": 142.24
+      },
+      "source_table_ids": [],
+      "source_image_ids": [
+        "image_p001_01"
+      ],
+      "source_text_block_ids": [
+        "text_p001_02"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_002",
+      "page_number": 1,
+      "block_type": "facility_block",
+      "section_title": "Facility",
+      "text": "102 MAIN ST, GREENFIELD, MA - Tel. 4133258500",
+      "bbox": {
+        "x0": 51.35,
+        "y0": 145.3,
+        "x1": 264.28,
+        "y1": 157.81
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p001_03"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_003",
+      "page_number": 1,
+      "block_type": "patient_info_block",
+      "section_title": "Patient information",
+      "text": "Patient: Loris321 McGlynn426 Identifiant: 19029ae7-ac84-3e50-37a5-1fd927 8544fd Date de naissance: 15 fevr. 1965 Age: 60 Sexe: F Adresse: 266 Greenholt Trafficway Unit 17, Shelburne Falls, Massachusetts, 01370",
+      "bbox": {
+        "x0": 55.54,
+        "y0": 167.48,
+        "x1": 297.97,
+        "y1": 328.28
+      },
+      "source_table_ids": [
+        "table_p001_01"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_004",
+      "page_number": 1,
+      "block_type": "report_info_block",
+      "section_title": "Report metadata",
+      "text": "Numero de rapport: CR-20251208-19029AE7 Date du document: 08 dec. 2025 Type de rencontre: Wellness Prescripteur: Emory494 Nicolas769 Specialite: GENERAL PRACTICE Statut: Version finale synthetique",
+      "bbox": {
+        "x0": 303.64,
+        "y0": 167.48,
+        "x1": 544.47,
+        "y1": 294.68
+      },
+      "source_table_ids": [
+        "table_p001_02"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_005",
+      "page_number": 1,
+      "block_type": "results_table_block",
+      "section_title": "Selected results",
+      "text": "Analyse / Observation: Glucose [Mass/volume] in Blood | Resultat: 94.8 | Unites: mg/dL | Valeurs de reference: 70 - 99 | Alert e: - | Date: 08 dec. 2025 Analyse / Observation: Triglyceride [Mass/volume] in Serum or Plasma | Resultat: 146 | Unites: mg/dL | Valeurs de reference: 0 - 150 | Alert e: - | Date: 08 dec. 2025 Analyse / Observation: Potassium [Moles/volume] in Blood | Resultat: 4.1 | Unites: mmol/L | Valeurs de reference: 3.5 - 5.1 | Alert e: - | Date: 08 dec. 2025 Analyse / Observation: Sodium [Moles/volume] in Blood | Resultat: 137 | Unites: mmol/L | Valeurs de reference: 135 - 145 | Alert e: - | Date: 08 dec. 2025 Analyse / Observation: Calcium [Mass/volume] in Blood | Resultat: 8.8 | Unites: mg/dL | Valeurs de reference: 8.5 - 10.5 | Alert e: - | Date: 08 dec. 2025 Analyse / Observation: Creatinine [Mass/volume] in Blood | Resultat: 0.8 | Unites: mg/dL | Valeurs de reference: 0.6 - 1.3 | Alert e: - | Date: 08 dec. 2025 Analyse / Observation: Respiratory rate | Resultat: 15 | Unites: /min | Valeurs de reference: Selon contexte | Alert e: - | Date: 08 dec. 2025 Analyse / Observation: Heart rate | Resultat: 91 | Unites: /min | Valeurs de reference: Selon contexte | Alert e: - | Date: 08 dec. 2025",
+      "bbox": {
+        "x0": 55.54,
+        "y0": 360.28,
+        "x1": 540.0,
+        "y1": 579.48
+      },
+      "source_table_ids": [
+        "table_p001_03"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_006",
+      "page_number": 1,
+      "block_type": "footer_block",
+      "section_title": "Footer",
+      "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 1",
+      "bbox": {
+        "x0": 45.35,
+        "y0": 810.37,
+        "x1": 549.92,
+        "y1": 820.95
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p001_01"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_007",
+      "page_number": 2,
+      "block_type": "clinical_interpretation_block",
+      "section_title": "Synthese radioclinique",
+      "text": "Synthese radioclinique Correlation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non interpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent uniquement de contexte documentaire. Antecedents : Social isolation (finding), Full-time employment (finding), Reports of violence in the environment (finding), Stress (finding). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image. Contexte documente : Social isolation (finding), Full-time employment (finding), Reports of violence in the environment (finding), Stress (finding), Part-time employment (finding)",
+      "bbox": {
+        "x0": 60.02,
+        "y0": 60.44,
+        "x1": 301.07,
+        "y1": 227.44
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p002_02",
+        "text_p002_03",
+        "text_p002_04"
+      ],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_008",
+      "page_number": 2,
+      "block_type": "image_context_block",
+      "section_title": "Radiographie thoracique synthetique",
+      "text": "Radiographie thoracique synthetique Image medicale synthetique non diagnostique inseree volontairement pour evaluation multimodale. Radiographie thoracique synthetique | Image medicale synthetique non diagnostique inseree volontairement pour evaluation multimodale.",
+      "bbox": {
+        "x0": 320.81,
+        "y0": 60.44,
+        "x1": 541.91,
+        "y1": 384.04
+      },
+      "source_table_ids": [],
+      "source_image_ids": [
+        "image_p002_01"
+      ],
+      "source_text_block_ids": [
+        "text_p002_07",
+        "text_p002_08"
+      ],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_009",
+      "page_number": 2,
+      "block_type": "footer_block",
+      "section_title": "Footer",
+      "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 2",
+      "bbox": {
+        "x0": 45.35,
+        "y0": 810.37,
+        "x1": 549.92,
+        "y1": 820.95
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p002_01"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_010",
+      "page_number": 3,
+      "block_type": "clinical_interpretation_block",
+      "section_title": "Interpretation et validation",
+      "text": "Interpretation et validation Correlation entre contexte clinique, tableau synthetique et illustration d'imagerie : Une image diagnostique synthetique non interpretable est jointe pour simuler un compte rendu d'imagerie. Les mesures biologiques d'accompagnement servent uniquement de contexte documentaire. Antecedents : Social isolation (finding), Full-time employment (finding), Reports of violence in the environment (finding), Stress (finding). Document reserve aux essais de parsing, OCR, retrieval et fusion texte-image.",
+      "bbox": {
+        "x0": 51.35,
+        "y0": 53.44,
+        "x1": 530.19,
+        "y1": 129.49
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p003_02",
+        "text_p003_03"
+      ],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_011",
+      "page_number": 3,
+      "block_type": "summary_block",
+      "section_title": "Resume du dossier",
+      "text": "Resume du dossier Patient synthetique issu de donnees Synthea. Ce document a ete enrichi par un tableau structure, un bloc de texte clinique et une image medicale factice afin de reproduire des conditions proches de PDF reels de sante.",
+      "bbox": {
+        "x0": 51.35,
+        "y0": 135.44,
+        "x1": 542.31,
+        "y1": 177.89
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p003_04",
+        "text_p003_05"
+      ],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_012",
+      "page_number": 3,
+      "block_type": "results_table_block",
+      "section_title": "Selected results",
+      "text": "Analyse / Observation: Glucose [Mass/volume] in Blood | Resultat: 94.8 | Unites: mg/dL | Valeurs de reference: 70 - 99 | Alert e: - | Date: 08 dec. 2025 Analyse / Observation: Triglyceride [Mass/volume] in Serum or Plasma | Resultat: 146 | Unites: mg/dL | Valeurs de reference: 0 - 150 | Alert e: - | Date: 08 dec. 2025 Analyse / Observation: Potassium [Moles/volume] in Blood | Resultat: 4.1 | Unites: mmol/L | Valeurs de reference: 3.5 - 5.1 | Alert e: - | Date: 08 dec. 2025 Analyse / Observation: Sodium [Moles/volume] in Blood | Resultat: 137 | Unites: mmol/L | Valeurs de reference: 135 - 145 | Alert e: - | Date: 08 dec. 2025",
+      "bbox": {
+        "x0": 55.28,
+        "y0": 183.59,
+        "x1": 540.0,
+        "y1": 313.99
+      },
+      "source_table_ids": [
+        "table_p003_01"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_013",
+      "page_number": 3,
+      "block_type": "validation_block",
+      "section_title": "Validation medicale",
+      "text": "Validation medicale Cachet du service Emory494 Nicolas769 GENERAL PRACTICE",
+      "bbox": {
+        "x0": 61.02,
+        "y0": 329.24,
+        "x1": 506.94,
+        "y1": 433.03
+      },
+      "source_table_ids": [],
+      "source_image_ids": [
+        "image_p003_01",
+        "image_p003_02"
+      ],
+      "source_text_block_ids": [
+        "text_p003_11",
+        "text_p003_14",
+        "text_p003_12",
+        "text_p003_13"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_014",
+      "page_number": 3,
+      "block_type": "footer_block",
+      "section_title": "Footer",
+      "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 3",
+      "bbox": {
+        "x0": 45.35,
+        "y0": 810.37,
+        "x1": 549.92,
+        "y1": 820.95
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p003_01"
+      ],
+      "is_indexable": false
+    }
+  ]
+}

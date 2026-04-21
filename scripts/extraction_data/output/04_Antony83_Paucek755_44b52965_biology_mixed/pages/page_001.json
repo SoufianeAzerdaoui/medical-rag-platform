@@ -1,0 +1,136 @@
+{
+  "page_number": 1,
+  "width": 595.28,
+  "height": 841.89,
+  "native_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 1\nCOMPTE RENDU D'ANALYSES BIOLOGIQUES\n250 POND STREET, FRAMINGHAM, MA - Tel. 7818485353\nPatient\nAntony83 Paucek755\nIdentifiant\n44b52965-f0db-8e52-8e87-8e3fce\n15fcf8\nDate de naissance\n09 aout 1982\nAge\n42\nSexe\nM\nAdresse\n497 Price Center, Sherborn,\nMassachusetts, 00000\nNumero de rapport\nCR-20250611-44B52965\nDate du document\n11 juin 2025\nType de rencontre\nAmbulatory\nPrescripteur\nLeonarda398 Schumm995\nSpecialite\nGENERAL PRACTICE\nStatut\nVersion finale synthetique\nResultats selectionnes\nAnalyse / Observation\nResultat\nUnites\nValeurs de reference\nAlert\ne\nDate\nUrea nitrogen [Mass/volume] in Blood\n15\nmg/dL\n10 - 50\n-\n19 aout 2024\nGlucose [Mass/volume] in Blood\n77.7\nmg/dL\n70 - 99\n-\n19 aout 2024\nSodium [Moles/volume] in Blood\n141\nmmol/L\n135 - 145\n-\n19 aout 2024\nHemoglobin A1c/Hemoglobin.total in Blood\n6.2\n%\n4.0 - 5.6\nH\n19 aout 2024\nCalcium [Mass/volume] in Blood\n9.4\nmg/dL\n8.5 - 10.5\n-\n19 aout 2024\nCreatinine [Mass/volume] in Blood\n1.1\nmg/dL\n0.6 - 1.3\n-\n19 aout 2024\nPotassium [Moles/volume] in Blood\n4.2\nmmol/L\n3.5 - 5.1\n-\n19 aout 2024\nCholesterol [Mass/volume] in Serum or\nPlasma\n200\nmg/dL\n0 - 200\n-\n03 juil. 2023\nTriglyceride [Mass/volume] in Serum or\nPlasma\n129\nmg/dL\n0 - 150\n-\n03 juil. 2023\nCholesterol in LDL [Mass/volume] in Serum\nor Plasma by Direct assay\n142\nmg/dL\n0 - 200\n-\n03 juil. 2023",
+  "final_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 1\nCOMPTE RENDU D'ANALYSES BIOLOGIQUES\n250 POND STREET, FRAMINGHAM, MA - Tel. 7818485353\nPatient\nAntony83 Paucek755\nIdentifiant\n44b52965-f0db-8e52-8e87-8e3fce\n15fcf8\nDate de naissance\n09 aout 1982\nAge\n42\nSexe\nM\nAdresse\n497 Price Center, Sherborn,\nMassachusetts, 00000\nNumero de rapport\nCR-20250611-44B52965\nDate du document\n11 juin 2025\nType de rencontre\nAmbulatory\nPrescripteur\nLeonarda398 Schumm995\nSpecialite\nGENERAL PRACTICE\nStatut\nVersion finale synthetique\nResultats selectionnes\nAnalyse / Observation\nResultat\nUnites\nValeurs de reference\nAlert\ne\nDate\nUrea nitrogen [Mass/volume] in Blood\n15\nmg/dL\n10 - 50\n-\n19 aout 2024\nGlucose [Mass/volume] in Blood\n77.7\nmg/dL\n70 - 99\n-\n19 aout 2024\nSodium [Moles/volume] in Blood\n141\nmmol/L\n135 - 145\n-\n19 aout 2024\nHemoglobin A1c/Hemoglobin.total in Blood\n6.2\n%\n4.0 - 5.6\nH\n19 aout 2024\nCalcium [Mass/volume] in Blood\n9.4\nmg/dL\n8.5 - 10.5\n-\n19 aout 2024\nCreatinine [Mass/volume] in Blood\n1.1\nmg/dL\n0.6 - 1.3\n-\n19 aout 2024\nPotassium [Moles/volume] in Blood\n4.2\nmmol/L\n3.5 - 5.1\n-\n19 aout 2024\nCholesterol [Mass/volume] in Serum or\nPlasma\n200\nmg/dL\n0 - 200\n-\n03 juil. 2023\nTriglyceride [Mass/volume] in Serum or\nPlasma\n129\nmg/dL\n0 - 150\n-\n03 juil. 2023\nCholesterol in LDL [Mass/volume] in Serum\nor Plasma by Direct assay\n142\nmg/dL\n0 - 200\n-\n03 juil. 2023",
+  "native_text_chars": 1387,
+  "ocr_used": false,
+  "ocr_text_chars": 0,
+  "table_ids": [
+    "table_p001_01",
+    "table_p001_02",
+    "table_p001_03"
+  ],
+  "image_ids": [
+    "image_p001_01"
+  ],
+  "blocks": [
+    {
+      "block_id": "block_001",
+      "page_number": 1,
+      "block_type": "document_header",
+      "section_title": "COMPTE RENDU D'ANALYSES BIOLOGIQUES",
+      "text": "COMPTE RENDU D'ANALYSES BIOLOGIQUES",
+      "bbox": {
+        "x0": 51.02,
+        "y0": 54.19,
+        "x1": 544.25,
+        "y1": 142.24
+      },
+      "source_table_ids": [],
+      "source_image_ids": [
+        "image_p001_01"
+      ],
+      "source_text_block_ids": [
+        "text_p001_02"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_002",
+      "page_number": 1,
+      "block_type": "facility_block",
+      "section_title": "Facility",
+      "text": "250 POND STREET, FRAMINGHAM, MA - Tel. 7818485353",
+      "bbox": {
+        "x0": 51.35,
+        "y0": 145.3,
+        "x1": 296.12,
+        "y1": 157.81
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p001_03"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_003",
+      "page_number": 1,
+      "block_type": "patient_info_block",
+      "section_title": "Patient information",
+      "text": "Patient: Antony83 Paucek755 Identifiant: 44b52965-f0db-8e52-8e87-8e3fce 15fcf8 Date de naissance: 09 aout 1982 Age: 42 Sexe: M Adresse: 497 Price Center, Sherborn, Massachusetts, 00000",
+      "bbox": {
+        "x0": 55.51,
+        "y0": 167.48,
+        "x1": 297.97,
+        "y1": 317.08
+      },
+      "source_table_ids": [
+        "table_p001_01"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_004",
+      "page_number": 1,
+      "block_type": "report_info_block",
+      "section_title": "Report metadata",
+      "text": "Numero de rapport: CR-20250611-44B52965 Date du document: 11 juin 2025 Type de rencontre: Ambulatory Prescripteur: Leonarda398 Schumm995 Specialite: GENERAL PRACTICE Statut: Version finale synthetique",
+      "bbox": {
+        "x0": 303.64,
+        "y0": 167.48,
+        "x1": 544.47,
+        "y1": 294.68
+      },
+      "source_table_ids": [
+        "table_p001_02"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_005",
+      "page_number": 1,
+      "block_type": "results_table_block",
+      "section_title": "Selected results",
+      "text": "Analyse / Observation: Urea nitrogen [Mass/volume] in Blood | Resultat: 15 | Unites: mg/dL | Valeurs de reference: 10 - 50 | Alert e: - | Date: 19 aout 2024 Analyse / Observation: Glucose [Mass/volume] in Blood | Resultat: 77.7 | Unites: mg/dL | Valeurs de reference: 70 - 99 | Alert e: - | Date: 19 aout 2024 Analyse / Observation: Sodium [Moles/volume] in Blood | Resultat: 141 | Unites: mmol/L | Valeurs de reference: 135 - 145 | Alert e: - | Date: 19 aout 2024 Analyse / Observation: Hemoglobin A1c/Hemoglobin.total in Blood | Resultat: 6.2 | Unites: % | Valeurs de reference: 4.0 - 5.6 | Alert e: H | Date: 19 aout 2024 Analyse / Observation: Calcium [Mass/volume] in Blood | Resultat: 9.4 | Unites: mg/dL | Valeurs de reference: 8.5 - 10.5 | Alert e: - | Date: 19 aout 2024 Analyse / Observation: Creatinine [Mass/volume] in Blood | Resultat: 1.1 | Unites: mg/dL | Valeurs de reference: 0.6 - 1.3 | Alert e: - | Date: 19 aout 2024 Analyse / Observation: Potassium [Moles/volume] in Blood | Resultat: 4.2 | Unites: mmol/L | Valeurs de reference: 3.5 - 5.1 | Alert e: - | Date: 19 aout 2024 Analyse / Observation: Cholesterol [Mass/volume] in Serum or Plasma | Resultat: 200 | Unites: mg/dL | Valeurs de reference: 0 - 200 | Alert e: - | Date: 03 juil. 2023 Analyse / Observation: Triglyceride [Mass/volume] in Serum or Plasma | Resultat: 129 | Unites: mg/dL | Valeurs de reference: 0 - 150 | Alert e: - | Date: 03 juil. 2023 Analyse / Observation: Cholesterol in LDL [Mass/volume] in Serum or Plasma by Direct assay | Resultat: 142 | Unites: mg/dL | Valeurs de reference: 0 - 200 | Alert e: - | Date: 03 juil. 2023",
+      "bbox": {
+        "x0": 55.51,
+        "y0": 349.08,
+        "x1": 540.0,
+        "y1": 633.08
+      },
+      "source_table_ids": [
+        "table_p001_03"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_006",
+      "page_number": 1,
+      "block_type": "footer_block",
+      "section_title": "Footer",
+      "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 1",
+      "bbox": {
+        "x0": 45.35,
+        "y0": 810.37,
+        "x1": 549.92,
+        "y1": 820.95
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p001_01"
+      ],
+      "is_indexable": false
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+[
+  {
+    "Analyse \/ Observation":"Potassium [Moles\/volume] in Blood",
+    "Resultat":"3.8",
+    "Unites":"mmol\/L",
+    "Valeurs de reference":"3.5 - 5.1",
+    "Alert\ne":"-",
+    "Date":"10 aout 2025"
+  },
+  {
+    "Analyse \/ Observation":"Sodium [Moles\/volume] in Blood",
+    "Resultat":"137",
+    "Unites":"mmol\/L",
+    "Valeurs de reference":"135 - 145",
+    "Alert\ne":"-",
+    "Date":"10 aout 2025"
+  },
+  {
+    "Analyse \/ Observation":"Calcium [Mass\/volume] in Blood",
+    "Resultat":"8.9",
+    "Unites":"mg\/dL",
+    "Valeurs de reference":"8.5 - 10.5",
+    "Alert\ne":"-",
+    "Date":"10 aout 2025"
+  },
+  {
+    "Analyse \/ Observation":"Creatinine [Mass\/volume] in Blood",
+    "Resultat":"1.3",
+    "Unites":"mg\/dL",
+    "Valeurs de reference":"0.6 - 1.3",
+    "Alert\ne":"-",
+    "Date":"10 aout 2025"
+  },
+  {
+    "Analyse \/ Observation":"Urea nitrogen [Mass\/volume] in Blood",
+    "Resultat":"15.2",
+    "Unites":"mg\/dL",
+    "Valeurs de reference":"10 - 50",
+    "Alert\ne":"-",
+    "Date":"10 aout 2025"
+  },
+  {
+    "Analyse \/ Observation":"Glucose [Mass\/volume] in Blood",
+    "Resultat":"66.2",
+    "Unites":"mg\/dL",
+    "Valeurs de reference":"70 - 99",
+    "Alert\ne":"L",
+    "Date":"10 aout 2025"
+  },
+  {
+    "Analyse \/ Observation":"Respiratory rate",
+    "Resultat":"14",
+    "Unites":"\/min",
+    "Valeurs de reference":"Selon contexte",
+    "Alert\ne":"-",
+    "Date":"10 aout 2025"
+  },
+  {
+    "Analyse \/ Observation":"Systolic Blood Pressure",
+    "Resultat":"124",
+    "Unites":"mm[Hg]",
+    "Valeurs de reference":"Selon contexte",
+    "Alert\ne":"-",
+    "Date":"10 aout 2025"
+  }
+]

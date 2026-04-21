@@ -1,0 +1,121 @@
+{
+  "page_number": 1,
+  "width": 758.4,
+  "height": 1071.84,
+  "native_text": "+ Dossier patient synthetique multimodal\n'\nCOMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE\n115 W SILVER ST, WESTFIELD, MA - Tel. 4135682811\nPatient Teofila990 Hartmann983 Numero de rapport CR-2026031 1-0F3F0130\nOf3f0130-Oef7-d892-5b36-20fe8f54 Date du document 11 mars 2026\nIdentifiant 1211\nType de rencontre Outpatient\nDate de naissance 12 juil. 1989\nPrescripteur Jacobo456 Lebr6n484\nAge 36\nSpecialite GENERAL PRACTICE\nSexe F\nStatut Version finale synthetique\nAdresse 1071 Hyatt Parade Apt 16,\n. Westfield, Massachusetts, 01085\nResultats selectionnes\n- , Alert\nAnalyse / Observation Resultat Unites Valeurs de reference . Date\nPotassium [Moles/volume] in Blood 48 mmol/L 3.5 - 5.1 - 03 dec. 2025\nCholesterol [Mass/volume] in Serum or 131 mg/d 0-200 - 03 dec. 2025\nPlasma\nTriglyceride [Mass/volume] in Serum or 132 mg/d 0-150 : 03 dec. 2025\nPlasma\nCholesterol in LDL [Mass/volume] in Serum 525 mg/dL 0-200 : 03 dec. 2025\nor Plasma by Direct assay\nCholesterol in HDL [Mass/volume] in 525 mg/dL 0-200 ; 03 dec. 2025\nSerum or Plasma\nHemoglobin Aic/Hemoglobin.total in Blood 6 % 4.0 - 5.6 H 03 dec. 2025\nBody Height 148 cm Selon contexte - 03 dec. 2025\nPain severity - 0-10 verbal numeric rating :\n[Score] - Reported a {score} Selon contexte 03 dec. 2025\nDocument synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 1",
+  "final_text": "+ Dossier patient synthetique multimodal\n'\nCOMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE\n115 W SILVER ST, WESTFIELD, MA - Tel. 4135682811\nPatient Teofila990 Hartmann983 Numero de rapport CR-2026031 1-0F3F0130\nOf3f0130-Oef7-d892-5b36-20fe8f54 Date du document 11 mars 2026\nIdentifiant 1211\nType de rencontre Outpatient\nDate de naissance 12 juil. 1989\nPrescripteur Jacobo456 Lebr6n484\nAge 36\nSpecialite GENERAL PRACTICE\nSexe F\nStatut Version finale synthetique\nAdresse 1071 Hyatt Parade Apt 16,\n. Westfield, Massachusetts, 01085\nResultats selectionnes\n- , Alert\nAnalyse / Observation Resultat Unites Valeurs de reference . Date\nPotassium [Moles/volume] in Blood 48 mmol/L 3.5 - 5.1 - 03 dec. 2025\nCholesterol [Mass/volume] in Serum or 131 mg/d 0-200 - 03 dec. 2025\nPlasma\nTriglyceride [Mass/volume] in Serum or 132 mg/d 0-150 : 03 dec. 2025\nPlasma\nCholesterol in LDL [Mass/volume] in Serum 525 mg/dL 0-200 : 03 dec. 2025\nor Plasma by Direct assay\nCholesterol in HDL [Mass/volume] in 525 mg/dL 0-200 ; 03 dec. 2025\nSerum or Plasma\nHemoglobin Aic/Hemoglobin.total in Blood 6 % 4.0 - 5.6 H 03 dec. 2025\nBody Height 148 cm Selon contexte - 03 dec. 2025\nPain severity - 0-10 verbal numeric rating :\n[Score] - Reported a {score} Selon contexte 03 dec. 2025\nDocument synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 1",
+  "native_text_chars": 1343,
+  "ocr_used": true,
+  "ocr_text_chars": 1343,
+  "table_ids": [
+    "table_p001_01",
+    "table_p001_02",
+    "table_p001_03"
+  ],
+  "image_ids": [
+    "image_p001_01"
+  ],
+  "blocks": [
+    {
+      "block_id": "block_001",
+      "page_number": 1,
+      "block_type": "document_header",
+      "section_title": "COMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE",
+      "text": "COMPTE RENDU D'IMAGERIE ET CORRELATION CLINIQUE",
+      "bbox": {
+        "x0": 60.67,
+        "y0": 79.33,
+        "x1": 697.73,
+        "y1": 191.4
+      },
+      "source_table_ids": [],
+      "source_image_ids": [
+        "image_p001_01"
+      ],
+      "source_text_block_ids": [
+        "ocr_line_003"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_002",
+      "page_number": 1,
+      "block_type": "facility_block",
+      "section_title": "Facility",
+      "text": "115 W SILVER ST, WESTFIELD, MA - Tel. 4135682811",
+      "bbox": {
+        "x0": 85.39,
+        "y0": 201.87,
+        "x1": 354.01,
+        "y1": 214.63
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "ocr_line_004"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_003",
+      "page_number": 1,
+      "block_type": "patient_info_block",
+      "section_title": "Patient information",
+      "text": "Patient: Teofila990 Hartmann983 Identifiant: Of3f0130-Oef7-d892-5b36-20fe8f541211 Date de naissance: 12 juil. 1989 Age: 36 Sexe: F Adresse: 1071 Hyatt Parade Apt 16, . Westfield, Massachusetts, 01085",
+      "bbox": null,
+      "source_table_ids": [
+        "table_p001_01"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_004",
+      "page_number": 1,
+      "block_type": "report_info_block",
+      "section_title": "Report metadata",
+      "text": "Numero de rapport: CR-20260311-0F3F0130 Date du document: 11 mars 2026 Type de rencontre: Outpatient Prescripteur: Jacobo456 Lebr6n484 Specialite: GENERAL PRACTICE Statut: Version finale synthetique",
+      "bbox": null,
+      "source_table_ids": [
+        "table_p001_02"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_005",
+      "page_number": 1,
+      "block_type": "results_table_block",
+      "section_title": "Selected results",
+      "text": "Analyse / Observation: Potassium [Moles/volume] in Blood | Resultat: 48 | Unites: mmol/L | Valeurs de reference: 3.5 - 5.1 | Alert e: - | Date: 03 dec. 2025 Analyse / Observation: Cholesterol [Mass/volume] in Serum or Plasma | Resultat: 131 | Unites: mg/d | Valeurs de reference: 0-200 | Alert e: - | Date: 03 dec. 2025 Analyse / Observation: Triglyceride [Mass/volume] in Serum or Plasma | Resultat: 132 | Unites: mg/d | Valeurs de reference: 0-150 | Alert e: - | Date: 03 dec. 2025 Analyse / Observation: Cholesterol in LDL [Mass/volume] in Serum | Resultat: 525 | Unites: mg/dL | Valeurs de reference: 0-200 | Alert e: - | Date: 03 dec. 2025 Analyse / Observation: or Plasma by Direct assay Cholesterol in HDL [Mass/volume] in Serum or Plasma | Resultat: 525 | Unites: mg/dL | Valeurs de reference: 0-200 | Alert e: - | Date: 03 dec. 2025 Analyse / Observation: Hemoglobin Aic/Hemoglobin.total in Blood | Resultat: 6 | Unites: % | Valeurs de reference: 4.0 - 5.6 | Alert e: H | Date: 03 dec. 2025 Analyse / Observation: Body Height | Resultat: 148 | Unites: cm | Valeurs de reference: Selon contexte | Alert e: - | Date: 03 dec. 2025",
+      "bbox": null,
+      "source_table_ids": [
+        "table_p001_03"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_006",
+      "page_number": 1,
+      "block_type": "footer_block",
+      "section_title": "Footer",
+      "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 1",
+      "bbox": {
+        "x0": 76.89,
+        "y0": 1000.19,
+        "x1": 679.22,
+        "y1": 1010.66
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "ocr_line_033"
+      ],
+      "is_indexable": false
+    }
+  ]
+}

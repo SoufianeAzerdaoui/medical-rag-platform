@@ -1,0 +1,111 @@
+{
+  "page_number": 2,
+  "width": 777.6,
+  "height": 1085.28,
+  "native_text": "Interpretation biologique Vue analytique synthetique\nAnalyse synthetique du bilan le plus recent : Platelet [Entitic ainantiali ti a\nmean volume] in Blood by Automated count abaisse; sa\nBasophils/Leukocytes in Blood by Automated count abaisse; ‘inp\nLymphocytes/Leukocytes in Blood by Automated count eleve.\nLes resultats ci-dessus doivent etre interpretes dans le\ncontexte clinique du patient. Antecedents ou contexte associe\n: Medication review due (situation), Viral sinusitis (disorder), 2 so R . ve\nSocial isolation (finding), Epidermal burn of skin (disorder).\nDocument synthetique reserve aux tests d'ingestion PDF, Merman ie Iememtin le Leshecyisiay Mem lan —iael ie PhO) aap\nextraction de tableaux, OCR et RAG multimodal.\nBloc image rasterise volontairement pour simuler un\nAntecedents / contexte : Medication review due (situation), Viral document mixed texte-tableau-image.\nsinusitis (disorder), Social isolation (finding), Epidermal burn of\nskin (disorder), Burn injury (morphologic abnormality)\nDocument synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 2",
+  "final_text": "Interpretation biologique Vue analytique synthetique\nAnalyse synthetique du bilan le plus recent : Platelet [Entitic ainantiali ti a\nmean volume] in Blood by Automated count abaisse; sa\nBasophils/Leukocytes in Blood by Automated count abaisse; ‘inp\nLymphocytes/Leukocytes in Blood by Automated count eleve.\nLes resultats ci-dessus doivent etre interpretes dans le\ncontexte clinique du patient. Antecedents ou contexte associe\n: Medication review due (situation), Viral sinusitis (disorder), 2 so R . ve\nSocial isolation (finding), Epidermal burn of skin (disorder).\nDocument synthetique reserve aux tests d'ingestion PDF, Merman ie Iememtin le Leshecyisiay Mem lan —iael ie PhO) aap\nextraction de tableaux, OCR et RAG multimodal.\nBloc image rasterise volontairement pour simuler un\nAntecedents / contexte : Medication review due (situation), Viral document mixed texte-tableau-image.\nsinusitis (disorder), Social isolation (finding), Epidermal burn of\nskin (disorder), Burn injury (morphologic abnormality)\nDocument synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 2",
+  "native_text_chars": 1099,
+  "ocr_used": true,
+  "ocr_text_chars": 1099,
+  "table_ids": [],
+  "image_ids": [
+    "image_p002_01"
+  ],
+  "blocks": [
+    {
+      "block_id": "block_007",
+      "page_number": 2,
+      "block_type": "clinical_interpretation_block",
+      "section_title": "Interpretation biologique Vue analytique synthetique",
+      "text": "Interpretation biologique Vue analytique synthetique Analyse synthetique du bilan le plus recent : Platelet [Entitic ainantiali ti a mean volume] in Blood by Automated count abaisse; sa Basophils/Leukocytes in Blood by Automated count abaisse; ‘inp Lymphocytes/Leukocytes in Blood by Automated count eleve. Les resultats ci-dessus doivent etre interpretes dans le contexte clinique du patient. Antecedents ou contexte associe : Medication review due (situation), Viral sinusitis (disorder), 2 so R . ve Social isolation (finding), Epidermal burn of skin (disorder). Document synthetique reserve aux tests d'ingestion PDF, Merman ie Iememtin le Leshecyisiay Mem lan —iael ie PhO) aap extraction de tableaux, OCR et RAG multimodal. Bloc image rasterise volontairement pour simuler un Antecedents / contexte : Medication review due (situation), Viral document mixed texte-tableau-image. sinusitis (disorder), Social isolation (finding), Epidermal burn of skin (disorder), Burn injury (morphologic abnormality) Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 2",
+      "bbox": {
+        "x0": 77.56,
+        "y0": 103.72,
+        "x1": 686.29,
+        "y1": 1022.13
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "ocr_line_001",
+        "ocr_line_002",
+        "ocr_line_003",
+        "ocr_line_004",
+        "ocr_line_005",
+        "ocr_line_006",
+        "ocr_line_007",
+        "ocr_line_008",
+        "ocr_line_009",
+        "ocr_line_010",
+        "ocr_line_011",
+        "ocr_line_012",
+        "ocr_line_013",
+        "ocr_line_014",
+        "ocr_line_015",
+        "ocr_line_016"
+      ],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_008",
+      "page_number": 2,
+      "block_type": "image_context_block",
+      "section_title": "Interpretation biologique Vue analytique synthetique",
+      "text": "Interpretation biologique Vue analytique synthetique Bloc image rasterise volontairement pour simuler un Antecedents / contexte : Medication review due (situation), Viral document mixed texte-tableau-image. Bloc image rasterise volontairement pour simuler un",
+      "bbox": {
+        "x0": 108.0,
+        "y0": 103.72,
+        "x1": 723.17,
+        "y1": 298.72
+      },
+      "source_table_ids": [],
+      "source_image_ids": [
+        "image_p002_01"
+      ],
+      "source_text_block_ids": [
+        "ocr_line_001",
+        "ocr_line_012",
+        "ocr_line_013"
+      ],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_009",
+      "page_number": 2,
+      "block_type": "footer_block",
+      "section_title": "Footer",
+      "text": "Document synthetique reserve aux tests d'ingestion PDF, Merman ie Iememtin le Leshecyisiay Mem lan —iael ie PhO) aap",
+      "bbox": {
+        "x0": 109.31,
+        "y0": 239.17,
+        "x1": 686.29,
+        "y1": 254.55
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "ocr_line_010"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_010",
+      "page_number": 2,
+      "block_type": "footer_block",
+      "section_title": "Footer",
+      "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 2",
+      "bbox": {
+        "x0": 77.56,
+        "y0": 1002.17,
+        "x1": 682.04,
+        "y1": 1022.13
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "ocr_line_016"
+      ],
+      "is_indexable": false
+    }
+  ]
+}

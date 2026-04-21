@@ -1,0 +1,2708 @@
+{
+  "page_number": 2,
+  "text": "Synthese radioclinique Radiographie thoracique synthetique\nCorrelation entre contexte clinique, tableau synthetique et Radiographie thoracique synthetique - non diagnost\nillustration d'imagerie : Une image diagnostique synthetique\n\nnon interpretable est jointe pour simuler un compte rendu =~ fr\n\nd'imagerie. Les mesures biologiques d'accompagnement\n\n4 : I Te\n\nservent uniquement de contexte documentaire. Antecedents :\n\nSevere anxiety (panic) (finding), Normal pregnancy (finding),\n\nPast pregnancy history of miscarriage (situation), Complete .\n\nmiscarriage (disorder). Document reserve aux essais de\n\nparsing, OCR, retrieval et fusion texte-image. a ~~ on ~\nContexte documente : Severe anxiety (panic) (finding), Normal i -_—en\npregnancy (finding), Past pregnancy history of miscarriage\n\nSituation), Complete miscarriage (disorder), Miscarria je in first a ~, wr ~\ntrimester ols der — —\nCommentaires techniques\nLe present compte rendu a ete mis en forme de facon realiste\nafin de tester I'extraction conjointe du texte, des tableaux et\ndes visuels rasterises.\n\nImage medicaie synthetique non diagnostique inseree\nvolontairement pour evaluation multimodale\nDocument synthetique age exciusif pour test CR / parsing / retrieva iltimoda Page z",
+  "text_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/03_Teofila990_Hartmann983_0f3f0130_imaging_scanned_scan/ocr/page_002.txt",
+  "image_path": "/home/onizuka/Bureau/PFE/medical-rag-platform/scripts/extraction_data/output/03_Teofila990_Hartmann983_0f3f0130_imaging_scanned_scan/ocr/page_002.png",
+  "used": true,
+  "engine": "pytesseract",
+  "blocks": [
+    {
+      "text_block_id": "ocr_line_001",
+      "text": "Synthese radioclinique Radiographie thoracique synthetique",
+      "bbox": {
+        "x0": 109.92,
+        "y0": 103.4,
+        "x1": 648.74,
+        "y1": 124.34
+      },
+      "max_font_size": 12.76,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_002",
+      "text": "Correlation entre contexte clinique, tableau synthetique et Radiographie thoracique synthetique - non diagnost",
+      "bbox": {
+        "x0": 109.27,
+        "y0": 130.23,
+        "x1": 686.04,
+        "y1": 152.8
+      },
+      "max_font_size": 14.39,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_003",
+      "text": "illustration d'imagerie : Une image diagnostique synthetique",
+      "bbox": {
+        "x0": 109.27,
+        "y0": 145.28,
+        "x1": 388.33,
+        "y1": 159.35
+      },
+      "max_font_size": 10.47,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_004",
+      "text": "non interpretable est jointe pour simuler un compte rendu =~ fr",
+      "bbox": {
+        "x0": 108.94,
+        "y0": 159.67,
+        "x1": 587.89,
+        "y1": 181.6
+      },
+      "max_font_size": 17.02,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_005",
+      "text": "d'imagerie. Les mesures biologiques d'accompagnement",
+      "bbox": {
+        "x0": 108.61,
+        "y0": 172.11,
+        "x1": 375.24,
+        "y1": 187.16
+      },
+      "max_font_size": 13.42,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_006",
+      "text": "4 : I Te",
+      "bbox": {
+        "x0": 158.67,
+        "y0": 186.5,
+        "x1": 621.92,
+        "y1": 194.36
+      },
+      "max_font_size": 5.57,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_007",
+      "text": "servent uniquement de contexte documentaire. Antecedents :",
+      "bbox": {
+        "x0": 108.61,
+        "y0": 186.83,
+        "x1": 396.51,
+        "y1": 197.96
+      },
+      "max_font_size": 8.84,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_008",
+      "text": "Severe anxiety (panic) (finding), Normal pregnancy (finding),",
+      "bbox": {
+        "x0": 108.29,
+        "y0": 198.61,
+        "x1": 390.62,
+        "y1": 213.33
+      },
+      "max_font_size": 10.47,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_009",
+      "text": "Past pregnancy history of miscarriage (situation), Complete .",
+      "bbox": {
+        "x0": 108.29,
+        "y0": 212.03,
+        "x1": 535.22,
+        "y1": 226.42
+      },
+      "max_font_size": 10.47,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_010",
+      "text": "miscarriage (disorder). Document reserve aux essais de",
+      "bbox": {
+        "x0": 107.96,
+        "y0": 226.1,
+        "x1": 370.66,
+        "y1": 237.87
+      },
+      "max_font_size": 10.47,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_011",
+      "text": "parsing, OCR, retrieval et fusion texte-image. a ~~ on ~",
+      "bbox": {
+        "x0": 107.63,
+        "y0": 239.51,
+        "x1": 640.24,
+        "y1": 258.49
+      },
+      "max_font_size": 17.01,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_012",
+      "text": "Contexte documente : Severe anxiety (panic) (finding), Normal i -_—en",
+      "bbox": {
+        "x0": 107.63,
+        "y0": 261.11,
+        "x1": 643.18,
+        "y1": 284.01
+      },
+      "max_font_size": 22.25,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_013",
+      "text": "pregnancy (finding), Past pregnancy history of miscarriage",
+      "bbox": {
+        "x0": 107.31,
+        "y0": 278.45,
+        "x1": 360.2,
+        "y1": 287.94
+      },
+      "max_font_size": 6.88,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_014",
+      "text": "Situation), Complete miscarriage (disorder), Miscarria je in first a ~, wr ~",
+      "bbox": {
+        "x0": 110.58,
+        "y0": 290.88,
+        "x1": 640.24,
+        "y1": 307.57
+      },
+      "max_font_size": 15.05,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_015",
+      "text": "trimester ols der — —",
+      "bbox": {
+        "x0": 106.98,
+        "y0": 303.31,
+        "x1": 610.47,
+        "y1": 320.98
+      },
+      "max_font_size": 5.88,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_016",
+      "text": "Commentaires techniques",
+      "bbox": {
+        "x0": 106.32,
+        "y0": 324.91,
+        "x1": 265.65,
+        "y1": 339.31
+      },
+      "max_font_size": 12.44,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_017",
+      "text": "Le present compte rendu a ete mis en forme de facon realiste",
+      "bbox": {
+        "x0": 106.0,
+        "y0": 353.05,
+        "x1": 394.55,
+        "y1": 368.75
+      },
+      "max_font_size": 12.76,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_018",
+      "text": "afin de tester I'extraction conjointe du texte, des tableaux et",
+      "bbox": {
+        "x0": 105.34,
+        "y0": 366.46,
+        "x1": 383.42,
+        "y1": 378.9
+      },
+      "max_font_size": 9.82,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_019",
+      "text": "des visuels rasterises.",
+      "bbox": {
+        "x0": 105.02,
+        "y0": 379.88,
+        "x1": 208.4,
+        "y1": 389.37
+      },
+      "max_font_size": 8.18,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_020",
+      "text": "Image medicaie synthetique non diagnostique inseree",
+      "bbox": {
+        "x0": 417.45,
+        "y0": 470.51,
+        "x1": 650.71,
+        "y1": 480.33
+      },
+      "max_font_size": 7.86,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_021",
+      "text": "volontairement pour evaluation multimodale",
+      "bbox": {
+        "x0": 418.1,
+        "y0": 484.26,
+        "x1": 605.56,
+        "y1": 492.44
+      },
+      "max_font_size": 5.89,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    },
+    {
+      "text_block_id": "ocr_line_022",
+      "text": "Document synthetique age exciusif pour test CR / parsing / retrieva iltimoda Page z",
+      "bbox": {
+        "x0": 77.86,
+        "y0": 1000.91,
+        "x1": 679.17,
+        "y1": 1021.19
+      },
+      "max_font_size": 11.13,
+      "is_bold": false,
+      "fonts": [
+        "ocr"
+      ]
+    }
+  ],
+  "words": [
+    {
+      "text": "Synthese",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 109.92,
+        "y0": 103.4,
+        "x1": 165.87,
+        "y1": 115.83
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 1,
+      "word_num": 1
+    },
+    {
+      "text": "radioclinique",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 170.77,
+        "y0": 105.03,
+        "x1": 249.62,
+        "y1": 117.79
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 1,
+      "word_num": 2
+    },
+    {
+      "text": "Radiographie",
+      "conf": 91.0,
+      "bbox": {
+        "x0": 423.34,
+        "y0": 108.96,
+        "x1": 503.82,
+        "y1": 121.72
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 1,
+      "word_num": 3
+    },
+    {
+      "text": "thoracique",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 508.4,
+        "y0": 110.27,
+        "x1": 573.17,
+        "y1": 123.03
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 1,
+      "word_num": 4
+    },
+    {
+      "text": "synthetique",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 577.75,
+        "y0": 111.9,
+        "x1": 648.74,
+        "y1": 124.34
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 1,
+      "word_num": 5
+    },
+    {
+      "text": "Correlation",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 109.27,
+        "y0": 130.23,
+        "x1": 160.31,
+        "y1": 144.62
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 1
+    },
+    {
+      "text": "entre",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 164.23,
+        "y0": 133.5,
+        "x1": 187.46,
+        "y1": 140.7
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 2
+    },
+    {
+      "text": "contexte",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 191.38,
+        "y0": 133.82,
+        "x1": 230.64,
+        "y1": 141.68
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 3
+    },
+    {
+      "text": "clinique,",
+      "conf": 86.0,
+      "bbox": {
+        "x0": 234.24,
+        "y0": 132.52,
+        "x1": 272.19,
+        "y1": 146.59
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 4
+    },
+    {
+      "text": "tableau",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 276.44,
+        "y0": 134.81,
+        "x1": 310.14,
+        "y1": 142.99
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 5
+    },
+    {
+      "text": "synthetique",
+      "conf": 91.0,
+      "bbox": {
+        "x0": 314.39,
+        "y0": 134.15,
+        "x1": 367.72,
+        "y1": 148.22
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 6
+    },
+    {
+      "text": "et",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 371.32,
+        "y0": 136.77,
+        "x1": 379.5,
+        "y1": 143.97
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 7
+    },
+    {
+      "text": "Radiographie",
+      "conf": 91.0,
+      "bbox": {
+        "x0": 440.68,
+        "y0": 142.33,
+        "x1": 501.85,
+        "y1": 150.18
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 8
+    },
+    {
+      "text": "thoracique",
+      "conf": 90.0,
+      "bbox": {
+        "x0": 506.43,
+        "y0": 143.64,
+        "x1": 555.83,
+        "y1": 151.17
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 9
+    },
+    {
+      "text": "synthetique",
+      "conf": 90.0,
+      "bbox": {
+        "x0": 560.09,
+        "y0": 144.62,
+        "x1": 615.37,
+        "y1": 151.82
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 10
+    },
+    {
+      "text": "-",
+      "conf": 91.0,
+      "bbox": {
+        "x0": 620.28,
+        "y0": 148.22,
+        "x1": 621.26,
+        "y1": 148.88
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 11
+    },
+    {
+      "text": "non",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 626.5,
+        "y0": 147.24,
+        "x1": 642.2,
+        "y1": 150.84
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 12
+    },
+    {
+      "text": "diagnost",
+      "conf": 89.0,
+      "bbox": {
+        "x0": 646.78,
+        "y0": 145.6,
+        "x1": 686.04,
+        "y1": 152.8
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 2,
+      "word_num": 13
+    },
+    {
+      "text": "illustration",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 109.27,
+        "y0": 145.28,
+        "x1": 156.05,
+        "y1": 153.46
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 3,
+      "word_num": 1
+    },
+    {
+      "text": "d'imagerie",
+      "conf": 89.0,
+      "bbox": {
+        "x0": 159.65,
+        "y0": 145.93,
+        "x1": 207.74,
+        "y1": 156.4
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 3,
+      "word_num": 2
+    },
+    {
+      "text": ":",
+      "conf": 91.0,
+      "bbox": {
+        "x0": 212.32,
+        "y0": 148.88,
+        "x1": 213.3,
+        "y1": 154.44
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 3,
+      "word_num": 3
+    },
+    {
+      "text": "Une",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 217.88,
+        "y0": 146.91,
+        "x1": 236.2,
+        "y1": 155.09
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 3,
+      "word_num": 4
+    },
+    {
+      "text": "image",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 240.13,
+        "y0": 147.57,
+        "x1": 267.94,
+        "y1": 157.71
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 3,
+      "word_num": 5
+    },
+    {
+      "text": "diagnostique",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 271.54,
+        "y0": 147.89,
+        "x1": 331.08,
+        "y1": 158.36
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 3,
+      "word_num": 6
+    },
+    {
+      "text": "synthetique",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 335.0,
+        "y0": 149.2,
+        "x1": 388.33,
+        "y1": 159.35
+      },
+      "block_num": 1,
+      "par_num": 1,
+      "line_num": 3,
+      "word_num": 7
+    },
+    {
+      "text": "non",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 108.94,
+        "y0": 160.66,
+        "x1": 125.63,
+        "y1": 166.54
+      },
+      "block_num": 1,
+      "par_num": 2,
+      "line_num": 1,
+      "word_num": 1
+    },
+    {
+      "text": "interpretable",
+      "conf": 95.0,
+      "bbox": {
+        "x0": 129.88,
+        "y0": 159.67,
+        "x1": 187.79,
+        "y1": 169.16
+      },
+      "block_num": 1,
+      "par_num": 2,
+      "line_num": 1,
+      "word_num": 2
+    },
+    {
+      "text": "est",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 191.38,
+        "y0": 160.98,
+        "x1": 204.8,
+        "y1": 168.18
+      },
+      "block_num": 1,
+      "par_num": 2,
+      "line_num": 1,
+      "word_num": 3
+    },
+    {
+      "text": "jointe",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 208.4,
+        "y0": 160.33,
+        "x1": 233.26,
+        "y1": 170.14
+      },
+      "block_num": 1,
+      "par_num": 2,
+      "line_num": 1,
+      "word_num": 4
+    },
+    {
+      "text": "pour",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 236.86,
+        "y0": 162.62,
+        "x1": 257.8,
+        "y1": 170.47
+      },
+      "block_num": 1,
+      "par_num": 2,
+      "line_num": 1,
+      "word_num": 5
+    },
+    {
+      "text": "simuler",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 261.4,
+        "y0": 161.31,
+        "x1": 294.76,
+        "y1": 169.49
+      },
+      "block_num": 1,
+      "par_num": 2,
+      "line_num": 1,
+      "word_num": 6
+    },
+    {
+      "text": "un",
+      "conf": 97.0,
+      "bbox": {
+        "x0": 298.69,
+        "y0": 163.6,
+        "x1": 309.16,
+        "y1": 169.49
+      },
+      "block_num": 1,
+      "par_num": 2,
+      "line_num": 1,
+      "word_num": 7
+    },
+    {
+      "text": "compte",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 313.09,
+        "y0": 163.27,
+        "x1": 347.11,
+        "y1": 172.11
+      },
+      "block_num": 1,
+      "par_num": 2,
+      "line_num": 1,
+      "word_num": 8
+    },
+    {
+      "text": "rendu",
+      "conf": 95.0,
+      "bbox": {
+        "x0": 351.04,
+        "y0": 162.95,
+        "x1": 376.88,
+        "y1": 170.8
+      },
+      "block_num": 1,
+      "par_num": 2,
+      "line_num": 1,
+      "word_num": 9
+    },
+    {
+      "text": "=~",
+      "conf": 46.0,
+      "bbox": {
+        "x0": 519.19,
+        "y0": 164.25,
+        "x1": 545.04,
+        "y1": 181.27
+      },
+      "block_num": 1,
+      "par_num": 2,
+      "line_num": 1,
+      "word_num": 10
+    },
+    {
+      "text": "fr",
+      "conf": 49.0,
+      "bbox": {
+        "x0": 561.72,
+        "y0": 165.24,
+        "x1": 587.89,
+        "y1": 181.6
+      },
+      "block_num": 1,
+      "par_num": 2,
+      "line_num": 1,
+      "word_num": 11
+    },
+    {
+      "text": "d'imagerie.",
+      "conf": 90.0,
+      "bbox": {
+        "x0": 108.61,
+        "y0": 172.11,
+        "x1": 159.0,
+        "y1": 182.58
+      },
+      "block_num": 1,
+      "par_num": 3,
+      "line_num": 1,
+      "word_num": 1
+    },
+    {
+      "text": "Les",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 163.58,
+        "y0": 173.09,
+        "x1": 179.61,
+        "y1": 180.94
+      },
+      "block_num": 1,
+      "par_num": 3,
+      "line_num": 1,
+      "word_num": 2
+    },
+    {
+      "text": "mesures",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 183.53,
+        "y0": 175.05,
+        "x1": 223.12,
+        "y1": 181.92
+      },
+      "block_num": 1,
+      "par_num": 3,
+      "line_num": 1,
+      "word_num": 3
+    },
+    {
+      "text": "biologiques",
+      "conf": 91.0,
+      "bbox": {
+        "x0": 227.04,
+        "y0": 174.07,
+        "x1": 279.72,
+        "y1": 184.21
+      },
+      "block_num": 1,
+      "par_num": 3,
+      "line_num": 1,
+      "word_num": 4
+    },
+    {
+      "text": "d'accompagnement",
+      "conf": 53.0,
+      "bbox": {
+        "x0": 283.31,
+        "y0": 173.74,
+        "x1": 375.24,
+        "y1": 187.16
+      },
+      "block_num": 1,
+      "par_num": 3,
+      "line_num": 1,
+      "word_num": 5
+    },
+    {
+      "text": "4",
+      "conf": 28.0,
+      "bbox": {
+        "x0": 158.67,
+        "y0": 186.5,
+        "x1": 159.32,
+        "y1": 187.16
+      },
+      "block_num": 1,
+      "par_num": 4,
+      "line_num": 1,
+      "word_num": 1
+    },
+    {
+      "text": ":",
+      "conf": 0.0,
+      "bbox": {
+        "x0": 315.7,
+        "y0": 188.79,
+        "x1": 316.36,
+        "y1": 189.78
+      },
+      "block_num": 1,
+      "par_num": 4,
+      "line_num": 1,
+      "word_num": 2
+    },
+    {
+      "text": "I",
+      "conf": 28.0,
+      "bbox": {
+        "x0": 487.13,
+        "y0": 187.16,
+        "x1": 511.99,
+        "y1": 192.72
+      },
+      "block_num": 1,
+      "par_num": 4,
+      "line_num": 1,
+      "word_num": 3
+    },
+    {
+      "text": "Te",
+      "conf": 0.0,
+      "bbox": {
+        "x0": 587.57,
+        "y0": 188.79,
+        "x1": 621.92,
+        "y1": 194.36
+      },
+      "block_num": 1,
+      "par_num": 4,
+      "line_num": 1,
+      "word_num": 4
+    },
+    {
+      "text": "servent",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 108.61,
+        "y0": 186.83,
+        "x1": 142.64,
+        "y1": 194.03
+      },
+      "block_num": 1,
+      "par_num": 5,
+      "line_num": 1,
+      "word_num": 1
+    },
+    {
+      "text": "uniquement",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 146.56,
+        "y0": 187.81,
+        "x1": 200.87,
+        "y1": 196.32
+      },
+      "block_num": 1,
+      "par_num": 5,
+      "line_num": 1,
+      "word_num": 2
+    },
+    {
+      "text": "de",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 204.47,
+        "y0": 187.16,
+        "x1": 215.59,
+        "y1": 195.01
+      },
+      "block_num": 1,
+      "par_num": 5,
+      "line_num": 1,
+      "word_num": 3
+    },
+    {
+      "text": "contexte",
+      "conf": 91.0,
+      "bbox": {
+        "x0": 219.19,
+        "y0": 188.14,
+        "x1": 258.78,
+        "y1": 195.67
+      },
+      "block_num": 1,
+      "par_num": 5,
+      "line_num": 1,
+      "word_num": 4
+    },
+    {
+      "text": "documentaire.",
+      "conf": 90.0,
+      "bbox": {
+        "x0": 262.38,
+        "y0": 188.14,
+        "x1": 328.46,
+        "y1": 196.97
+      },
+      "block_num": 1,
+      "par_num": 5,
+      "line_num": 1,
+      "word_num": 5
+    },
+    {
+      "text": "Antecedents",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 332.71,
+        "y0": 189.12,
+        "x1": 390.95,
+        "y1": 197.96
+      },
+      "block_num": 1,
+      "par_num": 5,
+      "line_num": 1,
+      "word_num": 6
+    },
+    {
+      "text": ":",
+      "conf": 90.0,
+      "bbox": {
+        "x0": 395.53,
+        "y0": 192.39,
+        "x1": 396.51,
+        "y1": 197.96
+      },
+      "block_num": 1,
+      "par_num": 5,
+      "line_num": 1,
+      "word_num": 7
+    },
+    {
+      "text": "Severe",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 108.29,
+        "y0": 198.61,
+        "x1": 141.0,
+        "y1": 207.44
+      },
+      "block_num": 1,
+      "par_num": 6,
+      "line_num": 1,
+      "word_num": 1
+    },
+    {
+      "text": "anxiety",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 144.93,
+        "y0": 199.92,
+        "x1": 177.64,
+        "y1": 210.06
+      },
+      "block_num": 1,
+      "par_num": 6,
+      "line_num": 1,
+      "word_num": 2
+    },
+    {
+      "text": "(panic)",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 181.57,
+        "y0": 200.57,
+        "x1": 212.65,
+        "y1": 210.06
+      },
+      "block_num": 1,
+      "par_num": 6,
+      "line_num": 1,
+      "word_num": 3
+    },
+    {
+      "text": "(finding),",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 217.23,
+        "y0": 200.57,
+        "x1": 256.82,
+        "y1": 211.04
+      },
+      "block_num": 1,
+      "par_num": 6,
+      "line_num": 1,
+      "word_num": 4
+    },
+    {
+      "text": "Normal",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 261.4,
+        "y0": 201.23,
+        "x1": 294.44,
+        "y1": 209.74
+      },
+      "block_num": 1,
+      "par_num": 6,
+      "line_num": 1,
+      "word_num": 5
+    },
+    {
+      "text": "pregnancy",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 298.36,
+        "y0": 203.85,
+        "x1": 347.11,
+        "y1": 212.68
+      },
+      "block_num": 1,
+      "par_num": 6,
+      "line_num": 1,
+      "word_num": 6
+    },
+    {
+      "text": "(finding),",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 351.04,
+        "y0": 202.86,
+        "x1": 390.62,
+        "y1": 213.33
+      },
+      "block_num": 1,
+      "par_num": 6,
+      "line_num": 1,
+      "word_num": 7
+    },
+    {
+      "text": "Past",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 108.29,
+        "y0": 212.03,
+        "x1": 128.57,
+        "y1": 220.53
+      },
+      "block_num": 1,
+      "par_num": 7,
+      "line_num": 1,
+      "word_num": 1
+    },
+    {
+      "text": "pregnancy",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 132.17,
+        "y0": 214.64,
+        "x1": 180.92,
+        "y1": 223.48
+      },
+      "block_num": 1,
+      "par_num": 7,
+      "line_num": 1,
+      "word_num": 2
+    },
+    {
+      "text": "history",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 184.84,
+        "y0": 213.66,
+        "x1": 215.27,
+        "y1": 224.13
+      },
+      "block_num": 1,
+      "par_num": 7,
+      "line_num": 1,
+      "word_num": 3
+    },
+    {
+      "text": "of",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 218.87,
+        "y0": 214.32,
+        "x1": 227.04,
+        "y1": 222.17
+      },
+      "block_num": 1,
+      "par_num": 7,
+      "line_num": 1,
+      "word_num": 4
+    },
+    {
+      "text": "miscarriage",
+      "conf": 95.0,
+      "bbox": {
+        "x0": 230.97,
+        "y0": 216.28,
+        "x1": 284.95,
+        "y1": 225.11
+      },
+      "block_num": 1,
+      "par_num": 7,
+      "line_num": 1,
+      "word_num": 5
+    },
+    {
+      "text": "(situation),",
+      "conf": 95.0,
+      "bbox": {
+        "x0": 288.88,
+        "y0": 215.62,
+        "x1": 336.97,
+        "y1": 225.44
+      },
+      "block_num": 1,
+      "par_num": 7,
+      "line_num": 1,
+      "word_num": 6
+    },
+    {
+      "text": "Complete",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 341.22,
+        "y0": 215.95,
+        "x1": 385.71,
+        "y1": 226.42
+      },
+      "block_num": 1,
+      "par_num": 7,
+      "line_num": 1,
+      "word_num": 7
+    },
+    {
+      "text": ".",
+      "conf": 73.0,
+      "bbox": {
+        "x0": 534.57,
+        "y0": 222.82,
+        "x1": 535.22,
+        "y1": 223.48
+      },
+      "block_num": 1,
+      "par_num": 7,
+      "line_num": 1,
+      "word_num": 8
+    },
+    {
+      "text": "miscarriage",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 107.96,
+        "y0": 226.1,
+        "x1": 161.94,
+        "y1": 236.57
+      },
+      "block_num": 1,
+      "par_num": 8,
+      "line_num": 1,
+      "word_num": 1
+    },
+    {
+      "text": "(disorder).",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 165.87,
+        "y0": 226.75,
+        "x1": 212.65,
+        "y1": 236.57
+      },
+      "block_num": 1,
+      "par_num": 8,
+      "line_num": 1,
+      "word_num": 2
+    },
+    {
+      "text": "Document",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 217.23,
+        "y0": 227.4,
+        "x1": 264.67,
+        "y1": 236.24
+      },
+      "block_num": 1,
+      "par_num": 8,
+      "line_num": 1,
+      "word_num": 3
+    },
+    {
+      "text": "reserve",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 268.59,
+        "y0": 230.35,
+        "x1": 302.94,
+        "y1": 236.89
+      },
+      "block_num": 1,
+      "par_num": 8,
+      "line_num": 1,
+      "word_num": 4
+    },
+    {
+      "text": "aux",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 306.54,
+        "y0": 231.0,
+        "x1": 322.9,
+        "y1": 237.22
+      },
+      "block_num": 1,
+      "par_num": 8,
+      "line_num": 1,
+      "word_num": 5
+    },
+    {
+      "text": "essais",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 326.83,
+        "y0": 229.69,
+        "x1": 355.94,
+        "y1": 237.87
+      },
+      "block_num": 1,
+      "par_num": 8,
+      "line_num": 1,
+      "word_num": 6
+    },
+    {
+      "text": "de",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 359.54,
+        "y0": 230.02,
+        "x1": 370.66,
+        "y1": 237.87
+      },
+      "block_num": 1,
+      "par_num": 8,
+      "line_num": 1,
+      "word_num": 7
+    },
+    {
+      "text": "parsing,",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 107.63,
+        "y0": 239.51,
+        "x1": 143.95,
+        "y1": 249.65
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 1,
+      "word_num": 1
+    },
+    {
+      "text": "OCR,",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 148.2,
+        "y0": 239.51,
+        "x1": 173.72,
+        "y1": 248.67
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 1,
+      "word_num": 2
+    },
+    {
+      "text": "retrieval",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 177.97,
+        "y0": 240.82,
+        "x1": 214.61,
+        "y1": 248.67
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 1,
+      "word_num": 3
+    },
+    {
+      "text": "et",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 218.54,
+        "y0": 241.8,
+        "x1": 226.72,
+        "y1": 249.0
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 1,
+      "word_num": 4
+    },
+    {
+      "text": "fusion",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 230.32,
+        "y0": 241.15,
+        "x1": 257.8,
+        "y1": 249.33
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 1,
+      "word_num": 5
+    },
+    {
+      "text": "texte-image.",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 261.72,
+        "y0": 242.13,
+        "x1": 318.65,
+        "y1": 252.6
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 1,
+      "word_num": 6
+    },
+    {
+      "text": "a",
+      "conf": 55.0,
+      "bbox": {
+        "x0": 466.19,
+        "y0": 241.8,
+        "x1": 477.97,
+        "y1": 250.96
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 1,
+      "word_num": 7
+    },
+    {
+      "text": "~~",
+      "conf": 0.0,
+      "bbox": {
+        "x0": 526.06,
+        "y0": 240.82,
+        "x1": 542.09,
+        "y1": 257.83
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 1,
+      "word_num": 8
+    },
+    {
+      "text": "on",
+      "conf": 0.0,
+      "bbox": {
+        "x0": 563.68,
+        "y0": 241.8,
+        "x1": 580.7,
+        "y1": 258.49
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 1,
+      "word_num": 9
+    },
+    {
+      "text": "~",
+      "conf": 35.0,
+      "bbox": {
+        "x0": 628.46,
+        "y0": 244.42,
+        "x1": 640.24,
+        "y1": 254.23
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 1,
+      "word_num": 10
+    },
+    {
+      "text": "Contexte",
+      "conf": 90.0,
+      "bbox": {
+        "x0": 107.63,
+        "y0": 264.7,
+        "x1": 145.58,
+        "y1": 271.25
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 2,
+      "word_num": 1
+    },
+    {
+      "text": "documente",
+      "conf": 89.0,
+      "bbox": {
+        "x0": 149.51,
+        "y0": 265.69,
+        "x1": 196.62,
+        "y1": 272.56
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 2,
+      "word_num": 2
+    },
+    {
+      "text": ":",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 198.25,
+        "y0": 261.11,
+        "x1": 204.14,
+        "y1": 277.14
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 2,
+      "word_num": 3
+    },
+    {
+      "text": "Severe",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 206.76,
+        "y0": 266.67,
+        "x1": 236.2,
+        "y1": 272.88
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 2,
+      "word_num": 4
+    },
+    {
+      "text": "anxiety",
+      "conf": 94.0,
+      "bbox": {
+        "x0": 240.46,
+        "y0": 268.3,
+        "x1": 270.23,
+        "y1": 275.83
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 2,
+      "word_num": 5
+    },
+    {
+      "text": "(panic)",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 277.75,
+        "y0": 269.61,
+        "x1": 292.15,
+        "y1": 274.19
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 2,
+      "word_num": 6
+    },
+    {
+      "text": "(finding),",
+      "conf": 82.0,
+      "bbox": {
+        "x0": 310.47,
+        "y0": 268.63,
+        "x1": 337.95,
+        "y1": 275.18
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 2,
+      "word_num": 7
+    },
+    {
+      "text": "Normal",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 348.42,
+        "y0": 268.3,
+        "x1": 378.19,
+        "y1": 275.5
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 2,
+      "word_num": 8
+    },
+    {
+      "text": "i",
+      "conf": 2.0,
+      "bbox": {
+        "x0": 463.58,
+        "y0": 263.07,
+        "x1": 543.73,
+        "y1": 282.37
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 2,
+      "word_num": 9
+    },
+    {
+      "text": "-_—en",
+      "conf": 0.0,
+      "bbox": {
+        "x0": 559.76,
+        "y0": 261.76,
+        "x1": 643.18,
+        "y1": 284.01
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 2,
+      "word_num": 10
+    },
+    {
+      "text": "pregnancy",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 107.31,
+        "y0": 279.1,
+        "x1": 141.98,
+        "y1": 284.34
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 3,
+      "word_num": 1
+    },
+    {
+      "text": "(finding),",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 159.32,
+        "y0": 278.77,
+        "x1": 186.48,
+        "y1": 285.65
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 3,
+      "word_num": 2
+    },
+    {
+      "text": "Past",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 197.27,
+        "y0": 278.45,
+        "x1": 215.27,
+        "y1": 285.32
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 3,
+      "word_num": 3
+    },
+    {
+      "text": "pregnancy",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 219.52,
+        "y0": 281.07,
+        "x1": 256.49,
+        "y1": 285.97
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 3,
+      "word_num": 4
+    },
+    {
+      "text": "history",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 268.27,
+        "y0": 281.07,
+        "x1": 294.44,
+        "y1": 287.28
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 3,
+      "word_num": 5
+    },
+    {
+      "text": "of",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 299.67,
+        "y0": 281.72,
+        "x1": 306.22,
+        "y1": 285.32
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 3,
+      "word_num": 6
+    },
+    {
+      "text": "miscarriage",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 311.12,
+        "y0": 282.37,
+        "x1": 360.2,
+        "y1": 287.94
+      },
+      "block_num": 1,
+      "par_num": 9,
+      "line_num": 3,
+      "word_num": 7
+    },
+    {
+      "text": "Situation),",
+      "conf": 91.0,
+      "bbox": {
+        "x0": 110.58,
+        "y0": 290.88,
+        "x1": 145.26,
+        "y1": 296.44
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 1,
+      "word_num": 1
+    },
+    {
+      "text": "Complete",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 156.05,
+        "y0": 291.54,
+        "x1": 196.29,
+        "y1": 297.75
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 1,
+      "word_num": 2
+    },
+    {
+      "text": "miscarriage",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 200.87,
+        "y0": 292.84,
+        "x1": 249.94,
+        "y1": 298.73
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 1,
+      "word_num": 3
+    },
+    {
+      "text": "(disorder),",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 254.53,
+        "y0": 293.83,
+        "x1": 290.84,
+        "y1": 298.73
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 1,
+      "word_num": 4
+    },
+    {
+      "text": "Miscarria",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 301.96,
+        "y0": 292.52,
+        "x1": 339.91,
+        "y1": 300.04
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 1,
+      "word_num": 5
+    },
+    {
+      "text": "je",
+      "conf": 61.0,
+      "bbox": {
+        "x0": 344.49,
+        "y0": 295.46,
+        "x1": 351.04,
+        "y1": 301.35
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 1,
+      "word_num": 6
+    },
+    {
+      "text": "in",
+      "conf": 95.0,
+      "bbox": {
+        "x0": 357.58,
+        "y0": 295.79,
+        "x1": 358.56,
+        "y1": 299.39
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 1,
+      "word_num": 7
+    },
+    {
+      "text": "first",
+      "conf": 95.0,
+      "bbox": {
+        "x0": 365.76,
+        "y0": 293.83,
+        "x1": 380.15,
+        "y1": 300.37
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 1,
+      "word_num": 8
+    },
+    {
+      "text": "a",
+      "conf": 42.0,
+      "bbox": {
+        "x0": 463.9,
+        "y0": 292.52,
+        "x1": 477.32,
+        "y1": 302.99
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 1,
+      "word_num": 9
+    },
+    {
+      "text": "~,",
+      "conf": 3.0,
+      "bbox": {
+        "x0": 526.39,
+        "y0": 292.19,
+        "x1": 541.44,
+        "y1": 307.24
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 1,
+      "word_num": 10
+    },
+    {
+      "text": "wr",
+      "conf": 33.0,
+      "bbox": {
+        "x0": 564.01,
+        "y0": 292.84,
+        "x1": 578.73,
+        "y1": 307.57
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 1,
+      "word_num": 11
+    },
+    {
+      "text": "~",
+      "conf": 65.0,
+      "bbox": {
+        "x0": 626.83,
+        "y0": 294.48,
+        "x1": 640.24,
+        "y1": 305.61
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 1,
+      "word_num": 12
+    },
+    {
+      "text": "trimester",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 106.98,
+        "y0": 303.31,
+        "x1": 142.97,
+        "y1": 307.57
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 2,
+      "word_num": 1
+    },
+    {
+      "text": "ols",
+      "conf": 62.0,
+      "bbox": {
+        "x0": 150.82,
+        "y0": 304.3,
+        "x1": 159.32,
+        "y1": 308.88
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 2,
+      "word_num": 2
+    },
+    {
+      "text": "der",
+      "conf": 58.0,
+      "bbox": {
+        "x0": 167.18,
+        "y0": 304.3,
+        "x1": 184.51,
+        "y1": 309.53
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 2,
+      "word_num": 3
+    },
+    {
+      "text": "—",
+      "conf": 60.0,
+      "bbox": {
+        "x0": 491.71,
+        "y0": 313.79,
+        "x1": 510.69,
+        "y1": 319.67
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 2,
+      "word_num": 4
+    },
+    {
+      "text": "—",
+      "conf": 80.0,
+      "bbox": {
+        "x0": 593.46,
+        "y0": 315.75,
+        "x1": 610.47,
+        "y1": 320.98
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 2,
+      "word_num": 5
+    },
+    {
+      "text": "Commentaires",
+      "conf": 95.0,
+      "bbox": {
+        "x0": 106.32,
+        "y0": 324.91,
+        "x1": 194.33,
+        "y1": 335.71
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 3,
+      "word_num": 1
+    },
+    {
+      "text": "techniques",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 198.91,
+        "y0": 326.87,
+        "x1": 265.65,
+        "y1": 339.31
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 3,
+      "word_num": 2
+    },
+    {
+      "text": "Le",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 106.0,
+        "y0": 353.05,
+        "x1": 116.79,
+        "y1": 360.9
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 4,
+      "word_num": 1
+    },
+    {
+      "text": "present",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 120.39,
+        "y0": 354.36,
+        "x1": 155.07,
+        "y1": 362.87
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 4,
+      "word_num": 2
+    },
+    {
+      "text": "compte",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 158.67,
+        "y0": 355.01,
+        "x1": 192.69,
+        "y1": 363.85
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 4,
+      "word_num": 3
+    },
+    {
+      "text": "rendu",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 196.95,
+        "y0": 354.69,
+        "x1": 222.79,
+        "y1": 362.87
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 4,
+      "word_num": 4
+    },
+    {
+      "text": "a",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 226.72,
+        "y0": 356.65,
+        "x1": 231.95,
+        "y1": 362.87
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 4,
+      "word_num": 5
+    },
+    {
+      "text": "ete",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 235.55,
+        "y0": 355.99,
+        "x1": 249.29,
+        "y1": 363.19
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 4,
+      "word_num": 6
+    },
+    {
+      "text": "mis",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 253.54,
+        "y0": 355.67,
+        "x1": 268.92,
+        "y1": 363.52
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 4,
+      "word_num": 7
+    },
+    {
+      "text": "en",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 272.85,
+        "y0": 357.63,
+        "x1": 283.64,
+        "y1": 363.52
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 4,
+      "word_num": 8
+    },
+    {
+      "text": "forme",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 287.57,
+        "y0": 355.99,
+        "x1": 313.74,
+        "y1": 364.17
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 4,
+      "word_num": 9
+    },
+    {
+      "text": "de",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 317.34,
+        "y0": 356.65,
+        "x1": 328.46,
+        "y1": 364.5
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 4,
+      "word_num": 10
+    },
+    {
+      "text": "facon",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 332.39,
+        "y0": 356.65,
+        "x1": 357.25,
+        "y1": 364.83
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 4,
+      "word_num": 11
+    },
+    {
+      "text": "realiste",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 361.5,
+        "y0": 355.99,
+        "x1": 394.55,
+        "y1": 368.75
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 4,
+      "word_num": 12
+    },
+    {
+      "text": "afin",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 105.34,
+        "y0": 366.46,
+        "x1": 121.7,
+        "y1": 374.32
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 5,
+      "word_num": 1
+    },
+    {
+      "text": "de",
+      "conf": 95.0,
+      "bbox": {
+        "x0": 125.3,
+        "y0": 366.79,
+        "x1": 136.42,
+        "y1": 374.64
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 5,
+      "word_num": 2
+    },
+    {
+      "text": "tester",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 140.35,
+        "y0": 367.77,
+        "x1": 166.19,
+        "y1": 375.3
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 5,
+      "word_num": 3
+    },
+    {
+      "text": "I'extraction",
+      "conf": 54.0,
+      "bbox": {
+        "x0": 169.79,
+        "y0": 367.45,
+        "x1": 219.19,
+        "y1": 375.95
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 5,
+      "word_num": 4
+    },
+    {
+      "text": "conjointe",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 223.12,
+        "y0": 368.75,
+        "x1": 264.99,
+        "y1": 378.57
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 5,
+      "word_num": 5
+    },
+    {
+      "text": "du",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 268.27,
+        "y0": 369.08,
+        "x1": 279.39,
+        "y1": 377.26
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 5,
+      "word_num": 6
+    },
+    {
+      "text": "texte,",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 283.31,
+        "y0": 370.06,
+        "x1": 308.18,
+        "y1": 377.92
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 5,
+      "word_num": 7
+    },
+    {
+      "text": "des",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 312.1,
+        "y0": 370.06,
+        "x1": 328.46,
+        "y1": 377.92
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 5,
+      "word_num": 8
+    },
+    {
+      "text": "tableaux",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 332.39,
+        "y0": 370.39,
+        "x1": 371.32,
+        "y1": 378.57
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 5,
+      "word_num": 9
+    },
+    {
+      "text": "et",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 375.57,
+        "y0": 371.7,
+        "x1": 383.42,
+        "y1": 378.9
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 5,
+      "word_num": 10
+    },
+    {
+      "text": "des",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 105.02,
+        "y0": 379.88,
+        "x1": 121.7,
+        "y1": 388.06
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 6,
+      "word_num": 1
+    },
+    {
+      "text": "visuels",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 125.3,
+        "y0": 380.21,
+        "x1": 157.03,
+        "y1": 388.39
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 6,
+      "word_num": 2
+    },
+    {
+      "text": "rasterises.",
+      "conf": 91.0,
+      "bbox": {
+        "x0": 160.96,
+        "y0": 381.19,
+        "x1": 208.4,
+        "y1": 389.37
+      },
+      "block_num": 1,
+      "par_num": 10,
+      "line_num": 6,
+      "word_num": 3
+    },
+    {
+      "text": "Image",
+      "conf": 94.0,
+      "bbox": {
+        "x0": 417.45,
+        "y0": 470.51,
+        "x1": 442.97,
+        "y1": 478.37
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 1,
+      "word_num": 1
+    },
+    {
+      "text": "medicaie",
+      "conf": 49.0,
+      "bbox": {
+        "x0": 447.55,
+        "y0": 472.8,
+        "x1": 485.17,
+        "y1": 478.04
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 1,
+      "word_num": 2
+    },
+    {
+      "text": "synthetique",
+      "conf": 91.0,
+      "bbox": {
+        "x0": 489.42,
+        "y0": 473.13,
+        "x1": 538.17,
+        "y1": 479.68
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 1,
+      "word_num": 3
+    },
+    {
+      "text": "non",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 542.42,
+        "y0": 474.44,
+        "x1": 557.14,
+        "y1": 478.04
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 1,
+      "word_num": 4
+    },
+    {
+      "text": "diagnostique",
+      "conf": 88.0,
+      "bbox": {
+        "x0": 561.39,
+        "y0": 474.11,
+        "x1": 615.7,
+        "y1": 480.33
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 1,
+      "word_num": 5
+    },
+    {
+      "text": "inseree",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 620.28,
+        "y0": 475.75,
+        "x1": 650.71,
+        "y1": 480.0
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 1,
+      "word_num": 6
+    },
+    {
+      "text": "volontairement",
+      "conf": 59.0,
+      "bbox": {
+        "x0": 418.1,
+        "y0": 484.26,
+        "x1": 479.61,
+        "y1": 489.82
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 2,
+      "word_num": 1
+    },
+    {
+      "text": "pour",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 484.19,
+        "y0": 486.22,
+        "x1": 501.53,
+        "y1": 491.13
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 2,
+      "word_num": 2
+    },
+    {
+      "text": "evaluation",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 506.43,
+        "y0": 485.89,
+        "x1": 549.94,
+        "y1": 491.45
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 2,
+      "word_num": 3
+    },
+    {
+      "text": "multimodale",
+      "conf": 90.0,
+      "bbox": {
+        "x0": 554.52,
+        "y0": 486.55,
+        "x1": 605.56,
+        "y1": 492.44
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 2,
+      "word_num": 4
+    },
+    {
+      "text": "Document",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 77.86,
+        "y0": 1002.21,
+        "x1": 112.87,
+        "y1": 1008.43
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 3,
+      "word_num": 1
+    },
+    {
+      "text": "synthetique",
+      "conf": 90.0,
+      "bbox": {
+        "x0": 121.05,
+        "y0": 1000.91,
+        "x1": 165.21,
+        "y1": 1012.03
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 3,
+      "word_num": 2
+    },
+    {
+      "text": "age",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 190.08,
+        "y0": 1006.47,
+        "x1": 198.58,
+        "y1": 1010.39
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 3,
+      "word_num": 3
+    },
+    {
+      "text": "exciusif",
+      "conf": 90.0,
+      "bbox": {
+        "x0": 205.45,
+        "y0": 1006.14,
+        "x1": 239.8,
+        "y1": 1011.38
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 3,
+      "word_num": 4
+    },
+    {
+      "text": "pour",
+      "conf": 95.0,
+      "bbox": {
+        "x0": 239.48,
+        "y0": 1004.18,
+        "x1": 252.56,
+        "y1": 1013.99
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 3,
+      "word_num": 5
+    },
+    {
+      "text": "test",
+      "conf": 96.0,
+      "bbox": {
+        "x0": 254.53,
+        "y0": 1006.8,
+        "x1": 273.17,
+        "y1": 1011.05
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 3,
+      "word_num": 6
+    },
+    {
+      "text": "CR",
+      "conf": 90.0,
+      "bbox": {
+        "x0": 289.53,
+        "y0": 1005.81,
+        "x1": 297.06,
+        "y1": 1010.07
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 3,
+      "word_num": 7
+    },
+    {
+      "text": "/",
+      "conf": 89.0,
+      "bbox": {
+        "x0": 300.98,
+        "y0": 1004.5,
+        "x1": 305.89,
+        "y1": 1015.63
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 3,
+      "word_num": 8
+    },
+    {
+      "text": "parsing",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 310.14,
+        "y0": 1008.43,
+        "x1": 318.65,
+        "y1": 1013.01
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 3,
+      "word_num": 9
+    },
+    {
+      "text": "/",
+      "conf": 92.0,
+      "bbox": {
+        "x0": 339.91,
+        "y0": 1008.76,
+        "x1": 340.24,
+        "y1": 1013.01
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 3,
+      "word_num": 10
+    },
+    {
+      "text": "retrieva",
+      "conf": 90.0,
+      "bbox": {
+        "x0": 348.42,
+        "y0": 1008.43,
+        "x1": 377.21,
+        "y1": 1013.34
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 3,
+      "word_num": 11
+    },
+    {
+      "text": "iltimoda",
+      "conf": 88.0,
+      "bbox": {
+        "x0": 394.22,
+        "y0": 1008.76,
+        "x1": 424.64,
+        "y1": 1013.99
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 3,
+      "word_num": 12
+    },
+    {
+      "text": "Page",
+      "conf": 93.0,
+      "bbox": {
+        "x0": 654.31,
+        "y0": 1010.72,
+        "x1": 670.99,
+        "y1": 1021.19
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 3,
+      "word_num": 13
+    },
+    {
+      "text": "z",
+      "conf": 61.0,
+      "bbox": {
+        "x0": 677.86,
+        "y0": 1017.27,
+        "x1": 679.17,
+        "y1": 1018.57
+      },
+      "block_num": 1,
+      "par_num": 11,
+      "line_num": 3,
+      "word_num": 14
+    }
+  ]
+}

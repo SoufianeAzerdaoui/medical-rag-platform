@@ -1,0 +1,5 @@
+PyMuPDF>=1.24
+pdfplumber>=0.11
+pandas>=2.2
+Pillow>=10.0
+pytesseract>=0.3.10

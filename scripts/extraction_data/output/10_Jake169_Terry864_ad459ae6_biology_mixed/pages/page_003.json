@@ -1,0 +1,122 @@
+{
+  "page_number": 3,
+  "width": 595.28,
+  "height": 841.89,
+  "native_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 3\nInterpretation et validation\nAnalyse synthetique du bilan le plus recent : Hemoglobin A1c/Hemoglobin.total in Blood eleve; Urea nitrogen [Mass/volume] in\nBlood abaisse; Cholesterol [Mass/volume] in Serum or Plasma eleve. Les resultats ci-dessus doivent etre interpretes dans le\ncontexte clinique du patient. Antecedents ou contexte associe : Medication review due (situation), Acute viral pharyngitis\n(disorder), Social isolation (finding), Infection of tooth (disorder). Document synthetique reserve aux tests d'ingestion PDF,\nextraction de tableaux, OCR et RAG multimodal.\nResume du dossier\nPatient synthetique issu de donnees Synthea. Ce document a ete enrichi par un tableau structure, un bloc de texte clinique et\nune image medicale factice afin de reproduire des conditions proches de PDF reels de sante.\nAnalyse / Observation\nResultat\nUnites\nValeurs de reference\nAlert\ne\nDate\nHemoglobin A1c/Hemoglobin.total in Blood\n5.8\n%\n4.0 - 5.6\nH\n20 janv. 2009\nUrea nitrogen [Mass/volume] in Blood\n9.8\nmg/dL\n10 - 50\nL\n20 janv. 2009\nGlucose [Mass/volume] in Blood\n89.4\nmg/dL\n70 - 99\n-\n20 janv. 2009\nSodium [Moles/volume] in Blood\n138\nmmol/L\n135 - 145\n-\n20 janv. 2009\nValidation medicale\nAlicia629 Vargas494\nGENERAL PRACTICE\nCachet du service",
+  "final_text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal\nPage 3\nInterpretation et validation\nAnalyse synthetique du bilan le plus recent : Hemoglobin A1c/Hemoglobin.total in Blood eleve; Urea nitrogen [Mass/volume] in\nBlood abaisse; Cholesterol [Mass/volume] in Serum or Plasma eleve. Les resultats ci-dessus doivent etre interpretes dans le\ncontexte clinique du patient. Antecedents ou contexte associe : Medication review due (situation), Acute viral pharyngitis\n(disorder), Social isolation (finding), Infection of tooth (disorder). Document synthetique reserve aux tests d'ingestion PDF,\nextraction de tableaux, OCR et RAG multimodal.\nResume du dossier\nPatient synthetique issu de donnees Synthea. Ce document a ete enrichi par un tableau structure, un bloc de texte clinique et\nune image medicale factice afin de reproduire des conditions proches de PDF reels de sante.\nAnalyse / Observation\nResultat\nUnites\nValeurs de reference\nAlert\ne\nDate\nHemoglobin A1c/Hemoglobin.total in Blood\n5.8\n%\n4.0 - 5.6\nH\n20 janv. 2009\nUrea nitrogen [Mass/volume] in Blood\n9.8\nmg/dL\n10 - 50\nL\n20 janv. 2009\nGlucose [Mass/volume] in Blood\n89.4\nmg/dL\n70 - 99\n-\n20 janv. 2009\nSodium [Moles/volume] in Blood\n138\nmmol/L\n135 - 145\n-\n20 janv. 2009\nValidation medicale\nAlicia629 Vargas494\nGENERAL PRACTICE\nCachet du service",
+  "native_text_chars": 1328,
+  "ocr_used": false,
+  "ocr_text_chars": 0,
+  "table_ids": [
+    "table_p003_01"
+  ],
+  "image_ids": [
+    "image_p003_01",
+    "image_p003_02"
+  ],
+  "blocks": [
+    {
+      "block_id": "block_010",
+      "page_number": 3,
+      "block_type": "clinical_interpretation_block",
+      "section_title": "Interpretation et validation",
+      "text": "Interpretation et validation Analyse synthetique du bilan le plus recent : Hemoglobin A1c/Hemoglobin.total in Blood eleve; Urea nitrogen [Mass/volume] in Blood abaisse; Cholesterol [Mass/volume] in Serum or Plasma eleve. Les resultats ci-dessus doivent etre interpretes dans le contexte clinique du patient. Antecedents ou contexte associe : Medication review due (situation), Acute viral pharyngitis (disorder), Social isolation (finding), Infection of tooth (disorder). Document synthetique reserve aux tests d'ingestion PDF, extraction de tableaux, OCR et RAG multimodal.",
+      "bbox": {
+        "x0": 51.35,
+        "y0": 53.44,
+        "x1": 543.92,
+        "y1": 129.49
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p003_02",
+        "text_p003_03"
+      ],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_011",
+      "page_number": 3,
+      "block_type": "summary_block",
+      "section_title": "Resume du dossier",
+      "text": "Resume du dossier Patient synthetique issu de donnees Synthea. Ce document a ete enrichi par un tableau structure, un bloc de texte clinique et une image medicale factice afin de reproduire des conditions proches de PDF reels de sante.",
+      "bbox": {
+        "x0": 51.35,
+        "y0": 135.44,
+        "x1": 542.31,
+        "y1": 177.89
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p003_04",
+        "text_p003_05"
+      ],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_012",
+      "page_number": 3,
+      "block_type": "results_table_block",
+      "section_title": "Selected results",
+      "text": "Analyse / Observation: Hemoglobin A1c/Hemoglobin.total in Blood | Resultat: 5.8 | Unites: % | Valeurs de reference: 4.0 - 5.6 | Alert e: H | Date: 20 janv. 2009 Analyse / Observation: Urea nitrogen [Mass/volume] in Blood | Resultat: 9.8 | Unites: mg/dL | Valeurs de reference: 10 - 50 | Alert e: L | Date: 20 janv. 2009 Analyse / Observation: Glucose [Mass/volume] in Blood | Resultat: 89.4 | Unites: mg/dL | Valeurs de reference: 70 - 99 | Alert e: - | Date: 20 janv. 2009 Analyse / Observation: Sodium [Moles/volume] in Blood | Resultat: 138 | Unites: mmol/L | Valeurs de reference: 135 - 145 | Alert e: - | Date: 20 janv. 2009",
+      "bbox": {
+        "x0": 55.28,
+        "y0": 183.59,
+        "x1": 540.0,
+        "y1": 303.79
+      },
+      "source_table_ids": [
+        "table_p003_01"
+      ],
+      "source_image_ids": [],
+      "source_text_block_ids": [],
+      "is_indexable": true
+    },
+    {
+      "block_id": "block_013",
+      "page_number": 3,
+      "block_type": "validation_block",
+      "section_title": "Validation medicale",
+      "text": "Validation medicale Cachet du service Alicia629 Vargas494 GENERAL PRACTICE",
+      "bbox": {
+        "x0": 61.02,
+        "y0": 319.04,
+        "x1": 506.94,
+        "y1": 422.83
+      },
+      "source_table_ids": [],
+      "source_image_ids": [
+        "image_p003_01",
+        "image_p003_02"
+      ],
+      "source_text_block_ids": [
+        "text_p003_11",
+        "text_p003_14",
+        "text_p003_12",
+        "text_p003_13"
+      ],
+      "is_indexable": false
+    },
+    {
+      "block_id": "block_014",
+      "page_number": 3,
+      "block_type": "footer_block",
+      "section_title": "Footer",
+      "text": "Document synthetique - usage exclusif pour tests OCR / parsing / retrieval multimodal Page 3",
+      "bbox": {
+        "x0": 45.35,
+        "y0": 810.37,
+        "x1": 549.92,
+        "y1": 820.95
+      },
+      "source_table_ids": [],
+      "source_image_ids": [],
+      "source_text_block_ids": [
+        "text_p003_01"
+      ],
+      "is_indexable": false
+    }
+  ]
+}
