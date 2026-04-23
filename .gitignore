@@ -12,6 +12,8 @@ __pycache__/
 
 # Logs
 *.log
+
+#agent
 medical-rag-codex-skills/
 
 # Generated extraction outputs
