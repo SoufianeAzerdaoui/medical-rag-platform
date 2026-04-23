@@ -17,3 +17,13 @@ done
 
 ./venv/bin/python tests/validate_extraction_outputs.py
 
+
+
+
+# Status
+
+### extraction (done)
+### chunking  (soon)
+### anonymisation  (soon)
+### indexing (soon)
+### retrieval (soon)
