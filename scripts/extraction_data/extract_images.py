@@ -4,7 +4,7 @@ from pathlib import Path
 
 import fitz
 
-from schemas import ImageAsset
+from schemas import ImageAsset, OcrVisualAsset
 from utils import (
     bbox_area,
     bbox_from_sequence,
@@ -110,7 +110,7 @@ def _clamp_bbox(
     return {"x0": round(x0, 2), "y0": round(y0, 2), "x1": round(x1, 2), "y1": round(y1, 2)}
 
 
-def _save_crop_asset(
+def _save_native_image_asset(
     *,
     page: fitz.Page,
     page_number: int,
@@ -121,24 +121,22 @@ def _save_crop_asset(
     bbox: dict[str, float],
     context_text: str,
     images_dir: Path,
-) -> ImageAsset | None:
-    clip = fitz.Rect(bbox["x0"], bbox["y0"], bbox["x1"], bbox["y1"])
-    pix = page.get_pixmap(dpi=220, clip=clip, alpha=False)
-    if pix.width <= 8 or pix.height <= 8:
-        return None
-
-    file_path = images_dir / f"page_{page_number:03d}_img_{image_index:02d}.png"
-    pix.save(str(file_path))
+    extracted: dict,
+    xref: int,
+) -> ImageAsset:
+    ext = extracted.get("ext", "bin")
+    file_path = images_dir / f"page_{page_number:03d}_img_{image_index:02d}.{ext}"
+    file_path.write_bytes(extracted["image"])
     page_area = max(float(page.rect.width) * float(page.rect.height), 1.0)
     return ImageAsset(
         image_id=f"image_p{page_number:03d}_{image_index:02d}",
         page_number=page_number,
         file_path=str(file_path),
-        width=pix.width,
-        height=pix.height,
-        ext="png",
+        width=int(extracted.get("width", 0)),
+        height=int(extracted.get("height", 0)),
+        ext=ext,
         bbox=bbox,
-        xref=None,
+        xref=xref,
         page_coverage=round(bbox_area(bbox) / page_area, 4),
         image_type=image_type,
         role=role,
@@ -147,82 +145,116 @@ def _save_crop_asset(
     )
 
 
-def _extract_scanned_page_crops(
+def _save_scanned_visual_crop(
+    *,
+    page: fitz.Page,
+    page_number: int,
+    crop_index: int,
+    bbox: dict[str, float],
+    visuals_dir: Path,
+    label: str,
+) -> OcrVisualAsset | None:
+    clipped = _clamp_bbox(
+        bbox,
+        page_width=float(page.rect.width),
+        page_height=float(page.rect.height),
+    )
+    if clipped is None:
+        return None
+    clip = fitz.Rect(clipped["x0"], clipped["y0"], clipped["x1"], clipped["y1"])
+    pix = page.get_pixmap(dpi=220, clip=clip, alpha=False)
+    if pix.width <= 8 or pix.height <= 8:
+        return None
+    file_path = visuals_dir / f"page_{page_number:03d}_{label}_{crop_index:02d}.png"
+    pix.save(str(file_path))
+    visual_type_map = {
+        "branding": ("logo_or_branding", "branding", False),
+        "chart": ("clinical_chart", "analytics", True),
+        "visual": ("medical_illustration", "clinical_visual", True),
+        "signature": ("signature", "validation", False),
+        "stamp": ("stamp_or_seal", "validation", False),
+    }
+    visual_type, role, is_indexable = visual_type_map.get(label, ("unknown", "unknown", False))
+    return OcrVisualAsset(
+        visual_id=f"ocr_visual_p{page_number:03d}_{crop_index:02d}",
+        page_number=page_number,
+        file_path=str(file_path),
+        width=pix.width,
+        height=pix.height,
+        ext="png",
+        bbox=clipped,
+        visual_type=visual_type,
+        role=role,
+        is_indexable=is_indexable,
+        context_text=label,
+    )
+
+
+def _export_scanned_page_visuals(
     *,
     page: fitz.Page,
     page_number: int,
     page_width: float,
     page_height: float,
     text_blocks: list[dict],
-    images_dir: Path,
-    start_index: int,
-) -> list[ImageAsset]:
+    output_dir: Path,
+) -> list[OcrVisualAsset]:
+    visuals_dir = ensure_dir(output_dir / "ocr" / "visuals")
     footer = _find_last_text_block(text_blocks, ["document_synthetique"])
     footer_top = footer["bbox"]["y0"] if footer else page_height * 0.94
-    created: list[ImageAsset] = []
-    next_index = start_index
+    next_index = 1
+    assets: list[OcrVisualAsset] = []
 
-    def append_crop(
-        bbox: dict[str, float],
-        *,
-        image_type: str,
-        role: str,
-        is_indexable: bool,
-        context_text: str,
-    ) -> None:
+    def export_crop(bbox: dict[str, float], *, label: str) -> None:
         nonlocal next_index
-        clipped = _clamp_bbox(bbox, page_width=page_width, page_height=page_height)
-        if clipped is None:
-            return
-        asset = _save_crop_asset(
+        asset = _save_scanned_visual_crop(
             page=page,
             page_number=page_number,
-            image_index=next_index,
-            image_type=image_type,
-            role=role,
-            is_indexable=is_indexable,
-            bbox=clipped,
-            context_text=context_text,
-            images_dir=images_dir,
+            crop_index=next_index,
+            bbox=bbox,
+            visuals_dir=visuals_dir,
+            label=label,
         )
-        if asset is None:
-            return
-        created.append(asset)
+        if asset is not None:
+            assets.append(asset)
         next_index += 1
 
     header_block = _find_text_block(text_blocks, ["dossier_patient_synthetique_multimodal", "communicative_health_care_associates"])
     title_block = _find_text_block(text_blocks, ["compte_rendu_d_analyses", "compte_rendu_d_imagerie"])
     if page_number == 1 and title_block:
         top_y = header_block["bbox"]["y0"] - page_height * 0.02 if header_block else page_height * 0.04
-        append_crop(
+        export_crop(
             {
                 "x0": page_width * 0.08,
                 "y0": top_y,
                 "x1": page_width * 0.92,
                 "y1": max(page_height * 0.17, title_block["bbox"]["y0"] - page_height * 0.015),
             },
-            image_type="logo_or_branding",
-            role="branding",
-            is_indexable=False,
-            context_text="branding header crop from scanned page",
+            label="branding",
         )
 
     chart_caption = _find_text_block(text_blocks, ["bloc_image_rasterise", "visualisation_analytique", "image_medicaie_synthetique", "image_medicale_synthetique"])
     chart_title = _find_text_block(text_blocks, ["vue_analytique_synthetique", "synthese_radioclinique", "radiographie_thoracique_synthetique", "echographie_synthetique"])
     if chart_caption or chart_title:
-        anchor = chart_caption or chart_title
-        image_type = "clinical_chart" if _find_text_block(text_blocks, ["vue_analytique_synthetique", "visualisation_analytique"]) else "medical_illustration"
-        append_crop(
+        has_chart_title = _find_text_block(text_blocks, ["vue_analytique_synthetique", "visualisation_analytique"]) is not None
+        if chart_caption:
+            crop_y0 = max(
+                page_height * 0.10,
+                chart_caption["bbox"]["y0"] - page_height * 0.20,
+                (chart_title["bbox"]["y1"] + page_height * 0.01) if chart_title else 0.0,
+            )
+            crop_y1 = chart_caption["bbox"]["y0"] - page_height * 0.008
+        else:
+            crop_y0 = max(page_height * 0.18, chart_title["bbox"]["y0"] + page_height * 0.04)
+            crop_y1 = min(page_height * 0.55, crop_y0 + page_height * 0.24)
+        export_crop(
             {
-                "x0": max(page_width * 0.5, anchor["bbox"]["x0"] - page_width * 0.03),
-                "y0": max(page_height * 0.18, anchor["bbox"]["y0"] - page_height * 0.28),
+                "x0": page_width * 0.5,
+                "y0": crop_y0,
                 "x1": page_width * 0.93,
-                "y1": anchor["bbox"]["y0"] - page_height * 0.015,
+                "y1": crop_y1,
             },
-            image_type=image_type,
-            role="analytics" if image_type == "clinical_chart" else "clinical_visual",
-            is_indexable=image_type in {"clinical_chart", "medical_illustration"},
-            context_text=(anchor["text"] if anchor else ""),
+            label="chart" if has_chart_title else "visual",
         )
 
     validation_block = _find_text_block(text_blocks, ["validation_medicale"])
@@ -231,32 +263,25 @@ def _extract_scanned_page_crops(
     if validation_anchor:
         y0 = validation_anchor["bbox"]["y1"] + page_height * 0.02
         y1 = footer_top - page_height * 0.015
-        append_crop(
+        export_crop(
             {
                 "x0": page_width * 0.08,
                 "y0": y0,
                 "x1": page_width * 0.42,
                 "y1": y1,
             },
-            image_type="signature",
-            role="validation",
-            is_indexable=False,
-            context_text="Validation medicale",
+            label="signature",
         )
-        append_crop(
+        export_crop(
             {
                 "x0": page_width * 0.58,
                 "y0": y0,
                 "x1": page_width * 0.86,
                 "y1": y1,
             },
-            image_type="stamp_or_seal",
-            role="validation",
-            is_indexable=False,
-            context_text="Cachet du service",
+            label="stamp",
         )
-
-    return created
+    return assets
 
 
 def extract_images(
@@ -264,11 +289,13 @@ def extract_images(
     output_dir: str | Path,
     page_text_data: list[dict],
     full_page_threshold: float = 0.90,
-) -> list[ImageAsset]:
+) -> tuple[list[ImageAsset], list[OcrVisualAsset]]:
     source = Path(pdf_path).expanduser().resolve()
-    images_dir = ensure_dir(Path(output_dir) / "images")
+    output_root = Path(output_dir)
+    images_dir = ensure_dir(output_root / "images")
     page_map = {page["page_number"]: page for page in page_text_data}
     assets: list[ImageAsset] = []
+    ocr_visual_assets: list[OcrVisualAsset] = []
     seen_xrefs: set[tuple[int, int]] = set()
 
     with fitz.open(source) as doc:
@@ -298,10 +325,6 @@ def extract_images(
                     continue
 
                 extracted = doc.extract_image(xref)
-                ext = extracted.get("ext", "bin")
-                file_path = images_dir / f"page_{page_number:03d}_img_{page_image_index:02d}.{ext}"
-                file_path.write_bytes(extracted["image"])
-
                 context_text = _get_context_text(bbox, text_blocks)
                 image_type, role, is_indexable = _classify_image(
                     page_number=page_number,
@@ -312,20 +335,18 @@ def extract_images(
                 )
 
                 assets.append(
-                    ImageAsset(
-                        image_id=f"image_p{page_number:03d}_{page_image_index:02d}",
+                    _save_native_image_asset(
+                        page=page,
                         page_number=page_number,
-                        file_path=str(file_path),
-                        width=int(extracted.get("width", 0)),
-                        height=int(extracted.get("height", 0)),
-                        ext=ext,
-                        bbox=bbox,
-                        xref=xref,
-                        page_coverage=round(coverage, 4),
+                        image_index=page_image_index,
                         image_type=image_type,
                         role=role,
                         is_indexable=is_indexable,
-                        context_text=normalize_inline_text(context_text),
+                        bbox=bbox,
+                        context_text=context_text,
+                        images_dir=images_dir,
+                        extracted=extracted,
+                        xref=xref,
                     )
                 )
                 page_image_index += 1
@@ -333,16 +354,15 @@ def extract_images(
             if page_image_index == 1 and text_blocks and (
                 has_full_page_raster or page_map.get(page_number, {}).get("ocr_used")
             ):
-                assets.extend(
-                    _extract_scanned_page_crops(
-                        page=page,
-                        page_number=page_number,
-                        page_width=page_width,
-                        page_height=page_height,
-                        text_blocks=text_blocks,
-                        images_dir=images_dir,
-                        start_index=page_image_index,
-                    )
+                ocr_visual_assets.extend(
+                    _export_scanned_page_visuals(
+                    page=page,
+                    page_number=page_number,
+                    page_width=page_width,
+                    page_height=page_height,
+                    text_blocks=text_blocks,
+                    output_dir=output_root,
+                )
                 )
 
-    return assets
+    return assets, ocr_visual_assets

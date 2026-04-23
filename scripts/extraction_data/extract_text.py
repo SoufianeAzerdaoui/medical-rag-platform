@@ -4,7 +4,7 @@ from pathlib import Path
 
 import fitz
 
-from utils import bbox_from_sequence, clean_text
+from utils import bbox_from_sequence, clean_text, strip_page_boilerplate
 
 
 def _extract_text_blocks(page: fitz.Page) -> list[dict]:
@@ -64,7 +64,7 @@ def extract_text(pdf_path: str | Path) -> list[dict]:
     with fitz.open(source) as doc:
         for page in doc:
             text_blocks = _extract_text_blocks(page)
-            native_text = clean_text(page.get_text("text"))
+            native_text = strip_page_boilerplate(page.get_text("text"))
             pages.append(
                 {
                     "page_number": page.number + 1,

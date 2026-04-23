@@ -25,6 +25,25 @@ class ImageAsset:
 
 
 @dataclass
+class OcrVisualAsset:
+    visual_id: str
+    page_number: int
+    file_path: str
+    width: int
+    height: int
+    ext: str
+    bbox: dict[str, float] | None = None
+    visual_type: str = "unknown"
+    role: str = "unknown"
+    is_indexable: bool = False
+    source: str = "ocr_derived"
+    context_text: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class TableAsset:
     table_id: str
     page_number: int
@@ -51,6 +70,9 @@ class DocumentBlock:
     section_title: str
     text: str
     bbox: dict[str, float] | None
+    confidence: str = "medium"
+    confidence_score: float = 0.5
+    structured_fields: dict[str, Any] = field(default_factory=dict)
     source_table_ids: list[str] = field(default_factory=list)
     source_image_ids: list[str] = field(default_factory=list)
     source_text_block_ids: list[str] = field(default_factory=list)
@@ -81,12 +103,15 @@ class PageData:
     width: float
     height: float
     native_text: str
+    ocr_text: str
     final_text: str
+    text_source: str
     native_text_chars: int
     ocr_used: bool
     ocr_text_chars: int
     table_ids: list[str] = field(default_factory=list)
     image_ids: list[str] = field(default_factory=list)
+    ocr_visual_ids: list[str] = field(default_factory=list)
     blocks: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -111,9 +136,11 @@ class DocumentData:
     results: list[dict[str, Any]] = field(default_factory=list)
     interpretation: dict[str, Any] = field(default_factory=dict)
     validation: dict[str, Any] = field(default_factory=dict)
+    validation_report: dict[str, Any] = field(default_factory=dict)
     pages: list[dict[str, Any]] = field(default_factory=list)
     tables: list[dict[str, Any]] = field(default_factory=list)
     images: list[dict[str, Any]] = field(default_factory=list)
+    ocr_visuals: list[dict[str, Any]] = field(default_factory=list)
     blocks: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
