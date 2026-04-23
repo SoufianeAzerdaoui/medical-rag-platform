@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from utils import (
     normalize_ocr_analyte_text,
     normalize_result_unit_text,
     optional_import,
+    sanitize_json_data,
 )
 
 
@@ -204,8 +206,8 @@ def _write_table_asset(
     csv_path = tables_dir / f"{table_id}.csv"
     json_path = tables_dir / f"{table_id}.json"
     frame.to_csv(csv_path, index=False)
-    records = frame.to_dict(orient="records")
-    json_path.write_text(frame.to_json(orient="records", force_ascii=False, indent=2), encoding="utf-8")
+    records = sanitize_json_data(frame.to_dict(orient="records"))
+    json_path.write_text(json.dumps(records, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
 
     if table_role is None or is_indexable is None:
         detected_role, detected_indexable = _classify_table(frame, page_index)
@@ -220,7 +222,7 @@ def _write_table_asset(
         json_path=str(json_path),
         columns=[str(column) for column in frame.columns],
         records=records,
-        preview=frame.head(5).to_dict(orient="records"),
+        preview=sanitize_json_data(frame.head(5).to_dict(orient="records")),
         bbox=bbox,
         table_role=table_role,
         is_indexable=is_indexable,
@@ -287,7 +289,10 @@ def _deduplicate_result_rows_across_tables(assets: list[TableAsset]) -> list[Tab
         asset.row_count = len(kept_records)
         frame = pd.DataFrame(kept_records, columns=asset.columns)
         frame.to_csv(asset.csv_path, index=False)
-        Path(asset.json_path).write_text(frame.to_json(orient="records", force_ascii=False, indent=2), encoding="utf-8")
+        Path(asset.json_path).write_text(
+            json.dumps(sanitize_json_data(frame.to_dict(orient="records")), ensure_ascii=False, indent=2, allow_nan=False),
+            encoding="utf-8",
+        )
         deduped_assets.append(asset)
     return deduped_assets
 

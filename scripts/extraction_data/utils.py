@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import unicodedata
 from datetime import date
@@ -64,8 +65,22 @@ def ensure_dir(path: Path) -> Path:
 
 def write_json(path: Path, data: Any) -> Path:
     ensure_dir(path.parent)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    path.write_text(json.dumps(sanitize_json_data(data), indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8")
     return path
+
+
+def sanitize_json_data(data: Any) -> Any:
+    if isinstance(data, dict):
+        return {key: sanitize_json_data(value) for key, value in data.items()}
+    if isinstance(data, list):
+        return [sanitize_json_data(item) for item in data]
+    if isinstance(data, tuple):
+        return [sanitize_json_data(item) for item in data]
+    if isinstance(data, float):
+        if math.isnan(data) or math.isinf(data):
+            return None
+        return data
+    return data
 
 
 def clean_text(text: str) -> str:
