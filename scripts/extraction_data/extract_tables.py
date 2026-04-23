@@ -7,18 +7,154 @@ import fitz
 import pandas as pd
 
 from schemas import TableAsset
-from utils import bbox_from_sequence, ensure_dir, normalize_inline_text, normalize_label, optional_import
+from utils import (
+    bbox_from_sequence,
+    canonicalize_uuid_like,
+    ensure_dir,
+    normalize_named_field,
+    normalize_inline_text,
+    normalize_label,
+    normalize_ocr_analyte_text,
+    normalize_result_unit_text,
+    optional_import,
+)
 
 
 pdfplumber = optional_import("pdfplumber")
 
+HEADER_LABEL_MAP = {
+    "field": "Field",
+    "value": "Value",
+    "patient": "Patient",
+    "identifiant": "Identifiant",
+    "date_de_naissance": "Date de naissance",
+    "age": "Age",
+    "sexe": "Sexe",
+    "adresse": "Adresse",
+    "numero_de_rapport": "Numero de rapport",
+    "date_du_document": "Date du document",
+    "type_de_rencontre": "Type de rencontre",
+    "prescripteur": "Prescripteur",
+    "specialite": "Specialite",
+    "statut": "Statut",
+    "analyse_observation": "Analyse / Observation",
+    "resultat": "Resultat",
+    "unites": "Unites",
+    "valeurs_de_reference": "Valeurs de reference",
+    "alerte": "Alerte",
+    "alert_e": "Alerte",
+    "date": "Date",
+}
+
+FIELD_VALUE_KEYS = {
+    "patient",
+    "identifiant",
+    "date_de_naissance",
+    "age",
+    "sexe",
+    "adresse",
+    "numero_de_rapport",
+    "date_du_document",
+    "type_de_rencontre",
+    "prescripteur",
+    "specialite",
+    "statut",
+}
+
+BOILERPLATE_PATTERNS = (
+    "document_synthetique",
+    "usage_exclusif_pour_tests_ocr",
+    "parsing_retrieval_multimodal",
+)
+
+
+def _clean_cell_text(value: str | None) -> str:
+    if value is None:
+        return ""
+    text = normalize_inline_text(str(value))
+    if not text:
+        return ""
+    if any(pattern in normalize_label(text) for pattern in BOILERPLATE_PATTERNS):
+        return ""
+    return text
+
+
+def _normalize_field_label(value: str) -> str:
+    return HEADER_LABEL_MAP.get(normalize_label(value), value)
+
+
+def _normalize_field_value_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    records = frame.to_dict(orient="records")
+    normalized_records: list[dict[str, str]] = []
+    field_name_by_label = {
+        "Identifiant": "patient_id",
+        "Date de naissance": "birth_date",
+        "Date du document": "report_date",
+        "Numero de rapport": "report_id",
+        "Sexe": "sex",
+        "Type de rencontre": "encounter_type",
+        "Specialite": "specialty",
+    }
+    for record in records:
+        field = _normalize_field_label(_clean_cell_text(record.get("Field", "")))
+        value = _clean_cell_text(record.get("Value", ""))
+        field_name = field_name_by_label.get(field)
+        if field_name:
+            value = normalize_named_field(field_name, value)["canonical"] or value
+        normalized_records.append({"Field": field, "Value": value})
+    return pd.DataFrame(normalized_records, columns=["Field", "Value"])
+
+
+def _canonicalize_header(header: list[str]) -> list[str]:
+    canonical: list[str] = []
+    seen: dict[str, int] = {}
+    for index, column in enumerate(header, start=1):
+        label = normalize_label(column)
+        column_name = HEADER_LABEL_MAP.get(label, column or f"column_{index}")
+        count = seen.get(column_name, 0)
+        if count:
+            column_name = f"{column_name}_{count + 1}"
+        seen[column_name] = count + 1
+        canonical.append(column_name)
+    return canonical
+
+
+def _looks_like_field_value_table(rows: list[list[str]]) -> bool:
+    if not rows:
+        return False
+    sample = rows[: min(len(rows), 6)]
+    hits = 0
+    for row in sample:
+        if len(row) < 2:
+            continue
+        if normalize_label(row[0]) in FIELD_VALUE_KEYS:
+            hits += 1
+    return hits >= max(2, len(sample) // 2)
+
+
+def _deduplicate_table_rows(rows: list[list[str]]) -> list[list[str]]:
+    deduped: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
+    for row in rows:
+        key = tuple(row)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    return deduped
+
 
 def _normalize_table(raw_table: list[list[str | None]]) -> pd.DataFrame:
-    rows = [[("" if cell is None else str(cell).strip()) for cell in row] for row in raw_table]
+    rows = [[_clean_cell_text(cell) for cell in row] for row in raw_table]
+    rows = [row for row in rows if any(cell for cell in row)]
     if not rows:
         return pd.DataFrame()
 
-    header = rows[0]
+    rows = _deduplicate_table_rows(rows)
+    if len(rows[0]) == 2 and _looks_like_field_value_table(rows):
+        return _normalize_field_value_frame(pd.DataFrame(rows, columns=["Field", "Value"]))
+
+    header = _canonicalize_header(rows[0])
     data_rows = rows[1:] if len(rows) > 1 else []
     if len(set(header)) != len(header) or any(not col for col in header):
         header = [f"column_{idx + 1}" for idx in range(len(header))]
@@ -31,6 +167,17 @@ def _classify_table(frame: pd.DataFrame, page_number: int) -> tuple[str, bool]:
 
     if {"analyse_observation", "resultat", "unites"}.issubset(normalized_columns):
         return "results_table", True
+    if {"field", "value"}.issubset(normalized_columns):
+        first_column = str(frame.columns[0])
+        second_column = str(frame.columns[1])
+        first_values = {
+            normalize_label(str(record.get(first_column, "")))
+            for record in frame.head(6).to_dict(orient="records")
+        }
+        if first_values & {"patient", "identifiant", "date_de_naissance", "age", "sexe", "adresse"}:
+            return "patient_info_table", False
+        if first_values & {"numero_de_rapport", "date_du_document", "type_de_rencontre", "prescripteur", "specialite", "statut"}:
+            return "report_info_table", False
     if "patient" in normalized_columns:
         return "patient_info_table", False
     if "numero_de_rapport" in normalized_columns:
@@ -78,6 +225,71 @@ def _write_table_asset(
         table_role=table_role,
         is_indexable=is_indexable,
     )
+
+
+def _table_fingerprint(table: TableAsset) -> tuple:
+    records = tuple(
+        tuple((key, normalize_inline_text(str(value))) for key, value in sorted(record.items()))
+        for record in table.records
+    )
+    return (
+        table.table_role,
+        tuple(table.columns),
+        records,
+    )
+
+
+def _deduplicate_tables(assets: list[TableAsset]) -> list[TableAsset]:
+    deduped: list[TableAsset] = []
+    seen: set[tuple] = set()
+    for asset in assets:
+        fingerprint = _table_fingerprint(asset)
+        if fingerprint in seen:
+            Path(asset.csv_path).unlink(missing_ok=True)
+            Path(asset.json_path).unlink(missing_ok=True)
+            continue
+        seen.add(fingerprint)
+        deduped.append(asset)
+    return deduped
+
+
+def _result_row_fingerprint(record: dict[str, object]) -> tuple[str, str, str]:
+    return (
+        normalize_label(str(record.get("Analyse / Observation", ""))),
+        normalize_inline_text(str(record.get("Resultat", ""))),
+        normalize_result_unit_text(str(record.get("Unites", ""))) or "",
+    )
+
+
+def _deduplicate_result_rows_across_tables(assets: list[TableAsset]) -> list[TableAsset]:
+    deduped_assets: list[TableAsset] = []
+    seen_rows: set[tuple[str, str, str]] = set()
+    for asset in assets:
+        if asset.table_role != "results_table":
+            deduped_assets.append(asset)
+            continue
+
+        kept_records = []
+        for record in asset.records:
+            fingerprint = _result_row_fingerprint(record)
+            if fingerprint in seen_rows:
+                continue
+            seen_rows.add(fingerprint)
+            kept_records.append(record)
+
+        if not kept_records:
+            Path(asset.csv_path).unlink(missing_ok=True)
+            Path(asset.json_path).unlink(missing_ok=True)
+            continue
+
+        asset.records = kept_records
+        asset.preview = kept_records[:5]
+        asset.row_count = len(kept_records)
+        frame = pd.DataFrame(kept_records, columns=asset.columns)
+        frame.to_csv(asset.csv_path, index=False)
+        Path(asset.json_path).write_text(frame.to_json(orient="records", force_ascii=False, indent=2), encoding="utf-8")
+        deduped_assets.append(asset)
+    return deduped_assets
 
 
 def _ocr_lines_in_page_band(ocr_asset, start_pattern: str, end_patterns: list[str] | None = None) -> list[dict]:
@@ -242,8 +454,9 @@ def _extract_header_fields_from_ocr_asset(ocr_asset) -> tuple[dict[str, str], di
 
         index += 1
 
-    if explicit_identifier and len(explicit_identifier) <= 8 and identifier_prefix:
-        patient["patient_id"] = f"{identifier_prefix}{explicit_identifier}"
+    normalized_identifier = canonicalize_uuid_like(f"{identifier_prefix}{explicit_identifier}")
+    if normalized_identifier:
+        patient["patient_id"] = normalized_identifier
     elif explicit_identifier:
         patient["patient_id"] = explicit_identifier
     elif identifier_prefix:
@@ -255,19 +468,6 @@ def _extract_header_fields_from_ocr_asset(ocr_asset) -> tuple[dict[str, str], di
         patient["address"] = digit_match.group(0) if digit_match else address
 
     return patient, report
-
-
-def _normalize_ocr_unit(unit: str) -> str:
-    raw = normalize_inline_text(unit).replace(" ", "")
-    replacements = {
-        "9°": "%",
-        "9": "%",
-        "9.": "%",
-        "10°3/uL": "10*3/uL",
-        "10°3/uL.": "10*3/uL",
-        "10°3/uL,": "10*3/uL",
-    }
-    return replacements.get(raw, raw)
 
 
 def _clean_ocr_continuation_text(text: str) -> str:
@@ -322,7 +522,19 @@ def _row_expects_suffix(prefix_text: str, main_text: str) -> bool:
             break
     analyte_seed = " ".join(tokens[:value_index]) if value_index is not None else seed
     last_token = normalize_label(analyte_seed).split("_")[-1] if analyte_seed else ""
-    return last_token in {"by", "or", "in", "automated"}
+    return last_token in {"by", "or", "in", "automated", "count", "serum", "plasma"}
+
+
+def _looks_like_new_row_prefix(text: str) -> bool:
+    normalized = normalize_inline_text(text)
+    if not normalized:
+        return False
+    first_word = normalize_label(normalized).split("_")[0]
+    if first_word in {"automated", "count", "or", "plasma", "serum", "blood"}:
+        return False
+    if "[" in normalized or "/" in normalized:
+        return True
+    return bool(re.search(r"\b(Blood|Serum|Plasma|Pressure|Height)\b", normalized, flags=re.IGNORECASE))
 
 
 def _parse_ocr_result_rows(ocr_asset) -> list[dict]:
@@ -354,6 +566,10 @@ def _parse_ocr_result_rows(ocr_asset) -> list[dict]:
 
         continuation = _clean_ocr_continuation_text(text)
         if not continuation:
+            continue
+        if current_row and _looks_like_new_row_prefix(continuation):
+            prefix_buffer = [continuation]
+            current_row = None
             continue
         if current_row and _row_expects_suffix(" ".join(current_row["prefix"]), str(current_row["main"])):
             current_row["suffix"].append(continuation)
@@ -389,16 +605,16 @@ def _parse_ocr_result_rows(ocr_asset) -> list[dict]:
             continue
 
         analyte = normalize_inline_text(" ".join(part for part in [prefix_text, " ".join(tokens[:value_index]), suffix_text] if part))
-        value = tokens[value_index]
-        unit = " ".join(tokens[value_index + 1 :])
-        analyte = analyte.strip(" -:;,./")
+        analyte = normalize_ocr_analyte_text(analyte)
         if not analyte:
             continue
+        value = normalize_inline_text(tokens[value_index])
+        unit = normalize_result_unit_text(" ".join(tokens[value_index + 1 :])) or "unknown"
         records.append(
             {
                 "Analyse / Observation": analyte,
                 "Resultat": value,
-                "Unites": _normalize_ocr_unit(unit),
+                "Unites": unit,
                 "Valeurs de reference": reference_text,
                 "Alert\ne": flag,
                 "Date": date_text,
@@ -481,7 +697,7 @@ def extract_tables_from_ocr(output_dir: str | Path, ocr_results: dict[int, objec
             continue
         frame = pd.DataFrame(
             result_records,
-            columns=["Analyse / Observation", "Resultat", "Unites", "Valeurs de reference", "Alert\ne", "Date"],
+            columns=["Analyse / Observation", "Resultat", "Unites", "Valeurs de reference", "Alerte", "Date"],
         )
         assets.append(
             _write_table_asset(
@@ -496,7 +712,7 @@ def extract_tables_from_ocr(output_dir: str | Path, ocr_results: dict[int, objec
         )
         table_index += 1
 
-    return assets
+    return _deduplicate_tables(assets)
 
 
 def extract_tables(pdf_path: str | Path, output_dir: str | Path) -> list[TableAsset]:
@@ -522,7 +738,7 @@ def extract_tables(pdf_path: str | Path, output_dir: str | Path) -> list[TableAs
                 )
 
     if assets or pdfplumber is None:
-        return assets
+        return _deduplicate_tables(assets)
 
     with pdfplumber.open(source) as pdf:
         for page_index, page in enumerate(pdf.pages, start=1):
@@ -541,4 +757,4 @@ def extract_tables(pdf_path: str | Path, output_dir: str | Path) -> list[TableAs
                     )
                 )
 
-    return assets
+    return _deduplicate_tables(assets)

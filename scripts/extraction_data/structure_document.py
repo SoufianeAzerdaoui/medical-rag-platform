@@ -12,6 +12,7 @@ def structure_document(
     page_text_data: list[dict],
     tables: list,
     images: list,
+    ocr_visuals: list,
     blocks: list,
     structured_data: dict,
     ocr_results: dict[int, object],
@@ -27,6 +28,10 @@ def structure_document(
     image_map: dict[int, list[str]] = {}
     for image in images:
         image_map.setdefault(image.page_number, []).append(image.image_id)
+
+    ocr_visual_map: dict[int, list[str]] = {}
+    for visual in ocr_visuals:
+        ocr_visual_map.setdefault(visual.page_number, []).append(visual.visual_id)
 
     block_map: dict[int, list[dict]] = {}
     for block in blocks:
@@ -63,6 +68,7 @@ def structure_document(
         results=structured_data.get("results", []),
         interpretation=structured_data.get("interpretation", {}),
         validation=structured_data.get("validation", {}),
+        validation_report=structured_data.get("validation_report", {}),
     )
 
     for page in page_text_data:
@@ -70,19 +76,23 @@ def structure_document(
         ocr_asset = ocr_results.get(page_number)
         ocr_text = getattr(ocr_asset, "text", "") if ocr_asset else ""
         ocr_used = bool(ocr_asset and getattr(ocr_asset, "used", False) and ocr_text)
-        final_text = ocr_text if ocr_used else page["native_text"]
+        final_text = page.get("final_text", ocr_text if ocr_used else page["native_text"])
+        text_source = page.get("text_source", "ocr" if ocr_used and not page["native_text"] else ("hybrid" if ocr_used else "native"))
 
         page_record = PageData(
             page_number=page_number,
             width=page["width"],
             height=page["height"],
             native_text=page["native_text"],
+            ocr_text=page.get("ocr_text", ocr_text),
             final_text=final_text,
+            text_source=text_source,
             native_text_chars=page["native_text_chars"],
             ocr_used=ocr_used,
-            ocr_text_chars=len(ocr_text),
+            ocr_text_chars=page.get("ocr_text_chars", len(ocr_text)),
             table_ids=table_map.get(page_number, []),
             image_ids=image_map.get(page_number, []),
+            ocr_visual_ids=ocr_visual_map.get(page_number, []),
             blocks=block_map.get(page_number, []),
         )
         write_json(pages_dir / f"{page_name(page_number)}.json", page_record.to_dict())
@@ -90,6 +100,7 @@ def structure_document(
 
     document.tables = [table.to_dict() for table in tables]
     document.images = [image.to_dict() for image in images]
+    document.ocr_visuals = [visual.to_dict() for visual in ocr_visuals]
     document.blocks = [block.to_dict() for block in blocks]
     write_json(out_dir / "document.json", document.to_dict())
     return document

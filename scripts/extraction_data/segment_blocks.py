@@ -34,6 +34,9 @@ def _make_block(
     source_image_ids: list[str] | None = None,
     source_text_block_ids: list[str] | None = None,
     is_indexable: bool = True,
+    confidence: str = "medium",
+    confidence_score: float = 0.5,
+    structured_fields: dict | None = None,
 ) -> DocumentBlock:
     return DocumentBlock(
         block_id=block_id,
@@ -42,11 +45,59 @@ def _make_block(
         section_title=section_title,
         text=normalize_inline_text(text),
         bbox=bbox_union([bbox for bbox in bboxes if bbox]),
+        confidence=confidence,
+        confidence_score=round(confidence_score, 3),
+        structured_fields=structured_fields or {},
         source_table_ids=source_table_ids or [],
         source_image_ids=source_image_ids or [],
         source_text_block_ids=source_text_block_ids or [],
         is_indexable=is_indexable,
     )
+
+
+def _score_to_confidence(score: float) -> str:
+    if score >= 0.85:
+        return "high"
+    if score >= 0.6:
+        return "medium"
+    return "low"
+
+
+def _compute_block_confidence(
+    *,
+    page_text_source: str,
+    block_type: str,
+    has_table_source: bool = False,
+    has_image_source: bool = False,
+    text_length: int = 0,
+    source_count: int = 0,
+) -> tuple[str, float]:
+    if block_type == "footer_block":
+        return ("low", 0.2)
+
+    score = 0.45
+    if page_text_source == "native":
+        score += 0.35
+    elif page_text_source == "hybrid":
+        score += 0.2
+    elif page_text_source == "ocr":
+        score += 0.05
+
+    if has_table_source:
+        score += 0.2
+    if has_image_source:
+        score += 0.1
+    if source_count >= 2:
+        score += 0.05
+    if text_length > 80:
+        score += 0.05
+    if block_type in {"clinical_interpretation_block", "summary_block"} and page_text_source == "ocr":
+        score -= 0.15
+    if block_type == "validation_block" and not (has_image_source or source_count):
+        score -= 0.1
+
+    score = max(0.0, min(1.0, score))
+    return (_score_to_confidence(score), score)
 
 
 def _collect_text_blocks_between(
@@ -93,6 +144,7 @@ def _create_column_blocks_from_ocr(
     end_y: float,
     page_width: float,
     block_index: int,
+    page_text_source: str,
 ) -> tuple[list[DocumentBlock], int]:
     mid_x = page_width * 0.5
     selected = _blocks_below(text_blocks, start_y, end_y)
@@ -101,31 +153,49 @@ def _create_column_blocks_from_ocr(
     created: list[DocumentBlock] = []
 
     if left_blocks:
+        left_text = "\n".join(block["text"] for block in left_blocks)
+        confidence, confidence_score = _compute_block_confidence(
+            page_text_source=page_text_source,
+            block_type="patient_info_block",
+            text_length=len(normalize_inline_text(left_text)),
+            source_count=len(left_blocks),
+        )
         created.append(
             _make_block(
                 block_id=f"block_{block_index:03d}",
                 page_number=page_number,
                 block_type="patient_info_block",
                 section_title="Patient information",
-                text="\n".join(block["text"] for block in left_blocks),
+                text=left_text,
                 bboxes=[block["bbox"] for block in left_blocks],
                 source_text_block_ids=[block["text_block_id"] for block in left_blocks],
                 is_indexable=False,
+                confidence=confidence,
+                confidence_score=confidence_score,
             )
         )
         block_index += 1
 
     if right_blocks:
+        right_text = "\n".join(block["text"] for block in right_blocks)
+        confidence, confidence_score = _compute_block_confidence(
+            page_text_source=page_text_source,
+            block_type="report_info_block",
+            text_length=len(normalize_inline_text(right_text)),
+            source_count=len(right_blocks),
+        )
         created.append(
             _make_block(
                 block_id=f"block_{block_index:03d}",
                 page_number=page_number,
                 block_type="report_info_block",
                 section_title="Report metadata",
-                text="\n".join(block["text"] for block in right_blocks),
+                text=right_text,
                 bboxes=[block["bbox"] for block in right_blocks],
                 source_text_block_ids=[block["text_block_id"] for block in right_blocks],
                 is_indexable=False,
+                confidence=confidence,
+                confidence_score=confidence_score,
             )
         )
         block_index += 1
@@ -140,6 +210,7 @@ def _create_results_block_from_ocr(
     title_candidates: list[str],
     stop_candidates: list[str],
     block_index: int,
+    page_text_source: str,
 ) -> tuple[list[DocumentBlock], int]:
     start_block = None
     for title in title_candidates:
@@ -166,15 +237,24 @@ def _create_results_block_from_ocr(
     if not candidate_blocks:
         return [], block_index
 
+    results_text = "\n".join(item["text"] for item in candidate_blocks)
+    confidence, confidence_score = _compute_block_confidence(
+        page_text_source=page_text_source,
+        block_type="results_table_block",
+        text_length=len(normalize_inline_text(results_text)),
+        source_count=len(candidate_blocks),
+    )
     block = _make_block(
         block_id=f"block_{block_index:03d}",
         page_number=page_number,
         block_type="results_table_block",
         section_title="Selected results",
-        text="\n".join(item["text"] for item in candidate_blocks),
+        text=results_text,
         bboxes=[item["bbox"] for item in candidate_blocks],
         source_text_block_ids=[item["text_block_id"] for item in candidate_blocks],
         is_indexable=True,
+        confidence=confidence,
+        confidence_score=confidence_score,
     )
     return [block], block_index + 1
 
@@ -205,30 +285,158 @@ def _find_title_above_image(text_blocks: list[dict], image_bbox: dict[str, float
     return max(candidates, key=lambda block: block["bbox"]["y1"]) if candidates else None
 
 
-def build_blocks(page_text_data: list[dict], tables: list, images: list) -> list[DocumentBlock]:
+def _next_boundary_y(
+    *,
+    text_blocks: list[dict],
+    page_tables: list,
+    start_block: dict,
+    page_height: float,
+    companion_title: dict | None = None,
+    explicit_stops: list[dict] | None = None,
+) -> float:
+    candidates = [
+        block["bbox"]["y0"]
+        for block in text_blocks
+        if block["bbox"]["y0"] > start_block["bbox"]["y0"]
+        and block["max_font_size"] >= start_block["max_font_size"]
+        and block["is_bold"]
+        and (companion_title is None or block["text_block_id"] != companion_title["text_block_id"])
+    ]
+    candidates.extend(
+        table.bbox["y0"] for table in page_tables if table.bbox and table.bbox["y0"] > start_block["bbox"]["y0"]
+    )
+    if explicit_stops:
+        candidates.extend(stop["bbox"]["y0"] for stop in explicit_stops if stop and stop["bbox"]["y0"] > start_block["bbox"]["y0"])
+    candidates.append(page_height * 0.95)
+    return min(candidates)
+
+
+def _filter_content_blocks(blocks: list[dict]) -> list[dict]:
+    return [
+        block
+        for block in blocks
+        if block.get("text") and not normalize_label(block["text"]).startswith("document_synthetique")
+    ]
+
+
+def _dedupe_text_parts(parts: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: list[str] = []
+    for part in parts:
+        fragments = [normalize_inline_text(fragment) for fragment in str(part).replace("|", "\n").splitlines()]
+        for text in fragments:
+            if not text:
+                continue
+            key = normalize_label(text)
+            if not key:
+                continue
+            if any(key == existing or key in existing or existing in key for existing in seen):
+                continue
+            seen.append(key)
+            deduped.append(text)
+    return deduped
+
+
+def _select_footer_blocks(text_blocks: list[dict]) -> list[dict]:
+    candidates = [
+        block
+        for block in text_blocks
+        if normalize_label(block["text"]).startswith("document_synthetique")
+    ]
+    if not candidates:
+        return []
+    return [max(candidates, key=lambda block: block["bbox"]["y0"])]
+
+
+def _asset_id(asset) -> str:
+    return getattr(asset, "image_id", getattr(asset, "visual_id", ""))
+
+
+def _asset_type(asset) -> str:
+    return getattr(asset, "image_type", getattr(asset, "visual_type", "unknown"))
+
+
+def _build_validation_structured_fields(
+    *,
+    title: str,
+    validation_blocks: list[dict],
+    validation_assets: list,
+    page_width: float,
+) -> dict[str, object]:
+    left_side_blocks = [
+        block
+        for block in validation_blocks
+        if block["bbox"]["x0"] < page_width * 0.55 and normalize_label(block["text"]) not in {"validation_medicale"}
+    ]
+    validated_by = None
+    specialty = None
+    for block in left_side_blocks:
+        text = normalize_inline_text(block["text"])
+        label = normalize_label(text)
+        if not text or label in {"cachet_du_service", "validation_medicale"}:
+            continue
+        if validated_by is None:
+            validated_by = text
+            continue
+        if specialty is None:
+            specialty = text
+            break
+
+    signature_present = any(_asset_type(asset) == "signature" for asset in validation_assets)
+    stamp_present = any(_asset_type(asset) == "stamp_or_seal" for asset in validation_assets)
+    return {
+        "validation_title": title,
+        "validated_by": validated_by,
+        "specialty": specialty,
+        "stamp_present": stamp_present,
+        "signature_present": signature_present,
+    }
+
+
+def build_blocks(page_text_data: list[dict], tables: list, images: list, ocr_visuals: list | None = None) -> list[DocumentBlock]:
     blocks: list[DocumentBlock] = []
     block_index = 1
     tables_by_page: dict[int, list] = defaultdict(list)
     images_by_page: dict[int, list] = defaultdict(list)
+    ocr_visuals_by_page: dict[int, list] = defaultdict(list)
 
     for table in tables:
         tables_by_page[table.page_number].append(table)
     for image in images:
         images_by_page[image.page_number].append(image)
+    for visual in ocr_visuals or []:
+        ocr_visuals_by_page[visual.page_number].append(visual)
 
     for page in page_text_data:
         page_number = page["page_number"]
         page_width = page["width"]
         page_height = page["height"]
+        page_text_source = page.get("text_source", "native")
         text_blocks = page.get("text_blocks", [])
         page_tables = tables_by_page.get(page_number, [])
         page_images = images_by_page.get(page_number, [])
+        page_ocr_visuals = ocr_visuals_by_page.get(page_number, [])
 
-        footer_blocks = [
-            block
-            for block in text_blocks
-            if normalize_label(block["text"]).startswith("document_synthetique")
-        ]
+        def scored_kwargs(
+            *,
+            block_type: str,
+            text: str,
+            has_table_source: bool = False,
+            has_image_source: bool = False,
+            source_count: int = 0,
+        ) -> dict:
+            confidence, confidence_score = _compute_block_confidence(
+                page_text_source=page_text_source,
+                block_type=block_type,
+                has_table_source=has_table_source,
+                has_image_source=has_image_source,
+                text_length=len(normalize_inline_text(text)),
+                source_count=source_count,
+            )
+            return {"confidence": confidence, "confidence_score": confidence_score}
+
+        footer_blocks = _select_footer_blocks(text_blocks)
+        footer_top = footer_blocks[0]["bbox"]["y0"] if footer_blocks else page_height * 0.95
 
         if page_number == 1:
             logo = next((image for image in page_images if image.image_type == "logo_or_branding"), None)
@@ -253,6 +461,12 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list) -> list
                         source_image_ids=image_ids,
                         source_text_block_ids=[title_block["text_block_id"]],
                         is_indexable=False,
+                        **scored_kwargs(
+                            block_type="document_header",
+                            text=title_block["text"],
+                            has_image_source=bool(image_ids),
+                            source_count=1 + len(image_ids),
+                        ),
                     )
                 )
                 block_index += 1
@@ -273,6 +487,11 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list) -> list
                         bboxes=[block["bbox"] for block in facility_blocks],
                         source_text_block_ids=[block["text_block_id"] for block in facility_blocks],
                         is_indexable=False,
+                        **scored_kwargs(
+                            block_type="facility_block",
+                            text="\n".join(block["text"] for block in facility_blocks),
+                            source_count=len(facility_blocks),
+                        ),
                     )
                 )
                 block_index += 1
@@ -289,6 +508,12 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list) -> list
                             bboxes=[table.bbox] if table.bbox else [],
                             source_table_ids=[table.table_id],
                             is_indexable=False,
+                            **scored_kwargs(
+                                block_type="patient_info_block",
+                                text=_table_to_text(table),
+                                has_table_source=True,
+                                source_count=1,
+                            ),
                         )
                     )
                     block_index += 1
@@ -303,6 +528,12 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list) -> list
                             bboxes=[table.bbox] if table.bbox else [],
                             source_table_ids=[table.table_id],
                             is_indexable=False,
+                            **scored_kwargs(
+                                block_type="report_info_block",
+                                text=_table_to_text(table),
+                                has_table_source=True,
+                                source_count=1,
+                            ),
                         )
                     )
                     block_index += 1
@@ -317,6 +548,12 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list) -> list
                             bboxes=[table.bbox] if table.bbox else [],
                             source_table_ids=[table.table_id],
                             is_indexable=True,
+                            **scored_kwargs(
+                                block_type="results_table_block",
+                                text=_table_to_text(table),
+                                has_table_source=True,
+                                source_count=1,
+                            ),
                         )
                     )
                     block_index += 1
@@ -336,6 +573,7 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list) -> list
                     end_y=top_end,
                     page_width=page_width,
                     block_index=block_index,
+                    page_text_source=page_text_source,
                 )
                 blocks.extend(fallback_blocks)
 
@@ -346,6 +584,7 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list) -> list
                     title_candidates=["Resultats selectionnes", "Analyse / Observation"],
                     stop_candidates=["Validation medicale", "Interpretation biologique"],
                     block_index=block_index,
+                    page_text_source=page_text_source,
                 )
                 blocks.extend(fallback_results)
 
@@ -356,10 +595,16 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list) -> list
         )
         if interpretation_title:
             companion_title = _find_companion_title(text_blocks, interpretation_title)
-            boundary_y = min(
-                [block["bbox"]["y0"] for block in text_blocks if block["bbox"]["y0"] > interpretation_title["bbox"]["y0"] and block["max_font_size"] >= interpretation_title["max_font_size"] and block["is_bold"]]
-                + [table.bbox["y0"] for table in page_tables if table.bbox and table.bbox["y0"] > interpretation_title["bbox"]["y0"]]
-                + [page_height * 0.95]
+            summary_title = _find_text_block(text_blocks, "Resume du dossier")
+            validation_title = _find_text_block(text_blocks, "Validation medicale")
+            stamp_title = _find_text_block(text_blocks, "Cachet du service")
+            boundary_y = _next_boundary_y(
+                text_blocks=text_blocks,
+                page_tables=page_tables,
+                start_block=interpretation_title,
+                companion_title=companion_title,
+                page_height=page_height,
+                explicit_stops=[summary_title, validation_title, stamp_title, *footer_blocks],
             )
             section_blocks = _collect_text_blocks_between(
                 text_blocks,
@@ -367,6 +612,7 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list) -> list
                 boundary_y,
                 max_x=(companion_title["bbox"]["x0"] - 10) if companion_title else None,
             )
+            section_blocks = _filter_content_blocks(section_blocks)
             blocks.append(
                 _make_block(
                     block_id=f"block_{block_index:03d}",
@@ -377,18 +623,28 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list) -> list
                     bboxes=[block["bbox"] for block in section_blocks],
                     source_text_block_ids=[block["text_block_id"] for block in section_blocks],
                     is_indexable=True,
+                    **scored_kwargs(
+                        block_type="clinical_interpretation_block",
+                        text="\n".join(block["text"] for block in section_blocks),
+                        source_count=len(section_blocks),
+                    ),
                 )
             )
             block_index += 1
 
         summary_title = _find_text_block(text_blocks, "Resume du dossier")
         if summary_title:
-            boundary_y = min(
-                [block["bbox"]["y0"] for block in text_blocks if block["bbox"]["y0"] > summary_title["bbox"]["y0"] and block["max_font_size"] >= summary_title["max_font_size"] and block["is_bold"]]
-                + [table.bbox["y0"] for table in page_tables if table.bbox and table.bbox["y0"] > summary_title["bbox"]["y0"]]
-                + [page_height * 0.95]
+            validation_title = _find_text_block(text_blocks, "Validation medicale")
+            stamp_title = _find_text_block(text_blocks, "Cachet du service")
+            boundary_y = _next_boundary_y(
+                text_blocks=text_blocks,
+                page_tables=page_tables,
+                start_block=summary_title,
+                page_height=page_height,
+                explicit_stops=[validation_title, stamp_title, *footer_blocks],
             )
             section_blocks = _collect_text_blocks_between(text_blocks, summary_title["bbox"]["y0"], boundary_y)
+            section_blocks = _filter_content_blocks(section_blocks)
             blocks.append(
                 _make_block(
                     block_id=f"block_{block_index:03d}",
@@ -399,21 +655,26 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list) -> list
                     bboxes=[block["bbox"] for block in section_blocks],
                     source_text_block_ids=[block["text_block_id"] for block in section_blocks],
                     is_indexable=True,
+                    **scored_kwargs(
+                        block_type="summary_block",
+                        text="\n".join(block["text"] for block in section_blocks),
+                        source_count=len(section_blocks),
+                    ),
                 )
             )
             block_index += 1
 
         analytics_image = next(
             (
-                image
-                for image in page_images
-                if image.image_type in {"clinical_chart", "medical_illustration"}
+                asset
+                for asset in [*page_images, *page_ocr_visuals]
+                if _asset_type(asset) in {"clinical_chart", "medical_illustration"}
             ),
             None,
         )
         analytics_title = (
             _find_text_block(text_blocks, "Vue analytique synthetique")
-            if analytics_image and analytics_image.image_type == "clinical_chart"
+            if analytics_image and _asset_type(analytics_image) == "clinical_chart"
             else (_find_title_above_image(text_blocks, analytics_image.bbox) if analytics_image and analytics_image.bbox else None)
         )
         if analytics_title and analytics_image:
@@ -426,17 +687,26 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list) -> list
                     min_x=analytics_image.bbox["x0"] - 10 if analytics_image.bbox else None,
                 )
             )
+            context_parts = _dedupe_text_parts(
+                [block["text"] for block in caption_blocks] + [getattr(analytics_image, "context_text", "")]
+            )
             blocks.append(
                 _make_block(
                     block_id=f"block_{block_index:03d}",
                     page_number=page_number,
                     block_type="image_context_block",
                     section_title=analytics_title["text"],
-                    text="\n".join([block["text"] for block in caption_blocks] + [analytics_image.context_text]),
+                    text="\n".join(context_parts),
                     bboxes=[block["bbox"] for block in caption_blocks] + ([analytics_image.bbox] if analytics_image.bbox else []),
-                    source_image_ids=[analytics_image.image_id],
+                    source_image_ids=[_asset_id(analytics_image)],
                     source_text_block_ids=[block["text_block_id"] for block in caption_blocks],
                     is_indexable=True,
+                    **scored_kwargs(
+                        block_type="image_context_block",
+                        text="\n".join(context_parts),
+                        has_image_source=True,
+                        source_count=len(caption_blocks) + 1,
+                    ),
                 )
             )
             block_index += 1
@@ -454,6 +724,12 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list) -> list
                         bboxes=[table.bbox] if table.bbox else [],
                         source_table_ids=[table.table_id],
                         is_indexable=True,
+                        **scored_kwargs(
+                            block_type="results_table_block",
+                            text=_table_to_text(table),
+                            has_table_source=True,
+                            source_count=1,
+                        ),
                     )
                 )
                 block_index += 1
@@ -464,24 +740,37 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list) -> list
                     title_candidates=["Analyse / Observation"],
                     stop_candidates=["Validation medicale", "Cachet du service"],
                     block_index=block_index,
+                    page_text_source=page_text_source,
                 )
                 blocks.extend(fallback_results)
 
         validation_title = _find_text_block(text_blocks, "Validation medicale")
         stamp_title = _find_text_block(text_blocks, "Cachet du service")
-        validation_images = [image for image in page_images if image.role == "validation"]
-        if validation_title or validation_images or stamp_title:
+        validation_assets = [
+            asset
+            for asset in [*page_images, *page_ocr_visuals]
+            if getattr(asset, "role", "") == "validation" or _asset_type(asset) in {"signature", "stamp_or_seal"}
+        ]
+        if validation_title or validation_assets or stamp_title:
             validation_blocks = [
                 block
                 for block in text_blocks
                 if block["bbox"]["y0"] >= (validation_title["bbox"]["y0"] if validation_title else page_height * 0.32)
-                and block["bbox"]["y0"] < page_height * 0.7
+                and block["bbox"]["y0"] < min(page_height * 0.7, footer_top)
             ]
-            validation_text = "\n".join(block["text"] for block in validation_blocks)
+            validation_blocks = _filter_content_blocks(validation_blocks)
+            validation_parts = _dedupe_text_parts([block["text"] for block in validation_blocks])
+            validation_text = "\n".join(validation_parts)
             validation_bboxes = [block["bbox"] for block in validation_blocks]
-            validation_image_ids = [image.image_id for image in validation_images]
-            validation_bboxes.extend([image.bbox for image in validation_images if image.bbox])
+            validation_image_ids = [_asset_id(asset) for asset in validation_assets]
+            validation_bboxes.extend([asset.bbox for asset in validation_assets if asset.bbox])
             title = validation_title["text"] if validation_title else "Validation"
+            structured_fields = _build_validation_structured_fields(
+                title=title,
+                validation_blocks=validation_blocks,
+                validation_assets=validation_assets,
+                page_width=page_width,
+            )
             blocks.append(
                 _make_block(
                     block_id=f"block_{block_index:03d}",
@@ -492,7 +781,14 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list) -> list
                     bboxes=validation_bboxes,
                     source_image_ids=validation_image_ids,
                     source_text_block_ids=[block["text_block_id"] for block in validation_blocks],
+                    structured_fields=structured_fields,
                     is_indexable=False,
+                    **scored_kwargs(
+                        block_type="validation_block",
+                        text=validation_text,
+                        has_image_source=bool(validation_image_ids),
+                        source_count=len(validation_blocks) + len(validation_image_ids),
+                    ),
                 )
             )
             block_index += 1
@@ -508,6 +804,11 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list) -> list
                     bboxes=[footer["bbox"]],
                     source_text_block_ids=[footer["text_block_id"]],
                     is_indexable=False,
+                    **scored_kwargs(
+                        block_type="footer_block",
+                        text=footer["text"],
+                        source_count=1,
+                    ),
                 )
             )
             block_index += 1
