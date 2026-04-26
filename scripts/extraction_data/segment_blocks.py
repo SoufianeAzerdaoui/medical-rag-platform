@@ -1,9 +1,31 @@
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 
 from schemas import DocumentBlock
 from utils import bbox_union, normalize_inline_text, normalize_label
+
+
+OCR_NOISE_PATTERNS = (
+    r"=~\s*\w+",
+    r"\b\d+\s*:\s*[A-Z]\s+\w+\b",
+    r"(?:[~=_-]\s*){2,}",
+    r"\b[a-zA-Z]\s*[-_]{2,}\w*\b",
+)
+
+OCR_INDEX_NOISE_PATTERNS = (
+    r"\ba\s+on\b",
+    r"\bNormal\s+i\b",
+    r"\bMiscarria\s+je\s+in\s+first\b",
+    r"\ba\s*,?\s*trimester\b",
+    r"\bols\s+der\b",
+    r"\bwr\b",
+    r"\bfr\b",
+    r"\bI\s+Te\b",
+    r"\b\d+\s+so\s+R\b",
+    r"\bve\s+Social\b",
+)
 
 
 def _table_to_text(table) -> str:
@@ -38,6 +60,14 @@ def _make_block(
     confidence_score: float = 0.5,
     structured_fields: dict | None = None,
 ) -> DocumentBlock:
+    normalized_text = _normalize_block_text_for_indexing(
+        text,
+        apply_ocr_cleanup=confidence_score < 0.75 or confidence == "low",
+    )
+    index_text = _build_index_text(
+        normalized_text,
+        apply_ocr_cleanup=confidence_score < 0.75 or confidence == "low",
+    )
     return DocumentBlock(
         block_id=block_id,
         page_number=page_number,
@@ -45,6 +75,8 @@ def _make_block(
         section_title=section_title,
         text=normalize_inline_text(text),
         bbox=bbox_union([bbox for bbox in bboxes if bbox]),
+        normalized_text=normalized_text,
+        index_text=index_text,
         confidence=confidence,
         confidence_score=round(confidence_score, 3),
         structured_fields=structured_fields or {},
@@ -53,6 +85,50 @@ def _make_block(
         source_text_block_ids=source_text_block_ids or [],
         is_indexable=is_indexable,
     )
+
+
+def _normalize_block_text_for_indexing(text: str, *, apply_ocr_cleanup: bool) -> str:
+    normalized = normalize_inline_text(text)
+    if not apply_ocr_cleanup:
+        return normalized
+
+    for pattern in OCR_NOISE_PATTERNS:
+        normalized = re.sub(pattern, " ", normalized)
+    normalized = re.sub(r"\s{2,}", " ", normalized)
+    return normalized.strip()
+
+
+def _build_index_text(text: str, *, apply_ocr_cleanup: bool) -> str:
+    index_text = normalize_inline_text(text)
+    if not apply_ocr_cleanup:
+        return index_text
+
+    for pattern in (*OCR_NOISE_PATTERNS, *OCR_INDEX_NOISE_PATTERNS):
+        index_text = re.sub(pattern, " ", index_text, flags=re.IGNORECASE)
+
+    index_text = re.sub(r"[~=_]+", " ", index_text)
+    index_text = re.sub(r"[^\w\s.,;:()/\[\]'%-]", " ", index_text)
+    index_text = re.sub(r"\s+[a-zA-Z]\s+[a-zA-Z]\s+", " ", index_text)
+    index_text = re.sub(r"\b[a-zA-Z]\s*,\s*", " ", index_text)
+    index_text = re.sub(r"\s{2,}", " ", index_text).strip()
+
+    sentences = re.split(r"(?<=[.;:])\s+", index_text)
+    kept: list[str] = []
+    for sentence in sentences:
+        cleaned = sentence.strip(" -;,")
+        if not cleaned:
+            continue
+        symbol_count = len(re.findall(r"[~=_{}|]", cleaned))
+        word_count = len(re.findall(r"[A-Za-zÀ-ÿ]{2,}", cleaned))
+        if symbol_count:
+            continue
+        if word_count < 4 and not re.search(r"\b(patient|rapport|validation|image|resultat|antecedents)\b", cleaned, flags=re.IGNORECASE):
+            continue
+        if re.search(r"\b(?:je|wr|ols|der|fr|trimester)\b", cleaned, flags=re.IGNORECASE):
+            continue
+        kept.append(cleaned)
+
+    return " ".join(kept) if kept else index_text
 
 
 def _score_to_confidence(score: float) -> str:
@@ -373,7 +449,7 @@ def _build_validation_structured_fields(
     for block in left_side_blocks:
         text = normalize_inline_text(block["text"])
         label = normalize_label(text)
-        if not text or label in {"cachet_du_service", "validation_medicale"}:
+        if not text or "cachet_du_service" in label or "validation_medicale" in label:
             continue
         if validated_by is None:
             validated_by = text

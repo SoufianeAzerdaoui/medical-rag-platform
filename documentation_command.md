@@ -22,4 +22,5 @@ done
 ### chunking  (soon)
 ### anonymisation  (soon)
 ### indexing (soon)
-### retrieval (soon)
+### hybrid retrieval (soon)
+### multimodal RAG (soon)

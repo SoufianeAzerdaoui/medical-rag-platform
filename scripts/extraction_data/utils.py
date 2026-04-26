@@ -380,7 +380,7 @@ def normalize_named_field(field_name: str, value: str | None) -> dict[str, Any]:
     elif field_name == "alert_flag":
         candidate = normalize_flag(raw_value)
         raw_flag = _raw_business_value(value)
-        valid = raw_flag in {None, "", "-", "N", "H", "L"}
+        valid = raw_flag in {None, "", "-", "N", "H", "L", "nan", "NaN", "None"}
         canonical_value = candidate
     elif field_name == "sex":
         candidate = normalize_sex_text(raw_value)

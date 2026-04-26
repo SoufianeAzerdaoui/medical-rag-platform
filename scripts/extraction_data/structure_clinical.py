@@ -436,6 +436,11 @@ def _collect_raw_results_from_tables(tables: list) -> list[dict]:
         for row_index, record in enumerate(table.records, start=1):
             analyte = _normalize_result_analyte(str(record.get("Analyse / Observation", "")))
             value_raw = normalize_inline_text(str(record.get("Resultat", "")))
+            table_correction_applied = bool(record.get("Correction OCR appliquee") is True)
+            raw_ocr_value = normalize_inline_text(str(record.get("Resultat OCR brut", ""))) if table_correction_applied else None
+            table_normalization_reason = (
+                normalize_inline_text(str(record.get("Raison normalisation", ""))) if table_correction_applied else None
+            )
             unit_raw = normalize_inline_text(str(record.get("Unites", "")))
             unit_meta = normalize_named_field("unit", unit_raw)
             reference = parse_reference_range(str(record.get("Valeurs de reference", "")))
@@ -444,40 +449,61 @@ def _collect_raw_results_from_tables(tables: list) -> list[dict]:
             observation_date_raw = normalize_inline_text(str(record.get("Date", "")))
             observation_date_meta = normalize_named_field("observation_date", observation_date_raw)
             value_numeric_raw = parse_float(value_raw)
-            value_numeric, canonical_flag, is_abnormal = _normalize_result_measurements(
+            is_ocr_source = getattr(table, "bbox", None) is None
+            measurement = _normalize_result_measurements(
                 value_raw=value_raw,
                 value_numeric=value_numeric_raw,
                 reference_range=reference,
                 alert_flag=alert_meta["canonical"],
-                is_ocr_source=getattr(table, "bbox", None) is None,
+                is_ocr_source=is_ocr_source,
             )
-            results.append(
-                {
+            result = {
                     "page_number": table.page_number,
                     "source_page_number": table.page_number,
                     "source_table_id": table.table_id,
-                    "source_kind": "results_table",
+                    "source_kind": "ocr_results_table" if is_ocr_source else "results_table",
                     "row_index": row_index,
                     "analyte": analyte,
-                    "value_raw": value_raw,
-                    "value_numeric": value_numeric,
+                    "value_raw": measurement["value_raw"],
+                    "value_numeric": measurement["value_numeric"],
                     "unit_raw": unit_meta["raw"],
                     "unit": unit_meta["canonical"],
                     "unit_normalization_status": unit_meta["normalization_status"],
                     "reference_range": reference,
                     "alert_flag_raw": alert_meta["raw"],
-                    "alert_flag": canonical_flag,
+                    "alert_flag": measurement["alert_flag"],
                     "alert_flag_normalization_status": (
                         "canonicalized"
-                        if canonical_flag != alert_meta["canonical"]
+                        if measurement["alert_flag"] != alert_meta["canonical"]
                         else alert_meta["normalization_status"]
                     ),
-                    "is_abnormal": is_abnormal,
+                    "is_abnormal": measurement["is_abnormal"],
                     "observation_date_raw": observation_date_meta["raw"],
                     "observation_date": observation_date_meta["canonical"],
                     "observation_date_normalization_status": observation_date_meta["normalization_status"],
                 }
-            )
+            if table_correction_applied:
+                result.update(
+                    {
+                        "ocr_correction_applied": True,
+                        "raw_ocr_value": raw_ocr_value,
+                        "normalized_value": measurement["value_numeric"],
+                        "normalization_reason": table_normalization_reason
+                        or "decimal inferred from reference range and expected numeric format",
+                    }
+                )
+            elif measurement["ocr_correction_applied"]:
+                result.update(
+                    {
+                        "ocr_correction_applied": True,
+                        "raw_ocr_value": measurement["raw_ocr_value"],
+                        "normalized_value": measurement["normalized_value"],
+                        "normalization_reason": measurement["normalization_reason"],
+                    }
+                )
+            else:
+                result["ocr_correction_applied"] = False
+            results.append(result)
     return results
 
 
@@ -492,20 +518,26 @@ def _collect_raw_results_from_blocks(blocks: list) -> list[dict]:
                 continue
             parsed["analyte"] = _normalize_result_analyte(parsed.get("analyte", ""))
             parsed["unit"] = _normalize_result_unit(parsed.get("unit"))
-            value_numeric, canonical_flag, is_abnormal = _normalize_result_measurements(
+            measurement = _normalize_result_measurements(
                 value_raw=parsed.get("value_raw", ""),
                 value_numeric=parsed.get("value_numeric"),
                 reference_range=parsed.get("reference_range", {}) or {},
                 alert_flag=parsed.get("alert_flag"),
                 is_ocr_source=True,
             )
-            parsed["value_numeric"] = value_numeric
-            parsed["alert_flag"] = canonical_flag
-            parsed["is_abnormal"] = is_abnormal
+            parsed["value_raw"] = measurement["value_raw"]
+            parsed["value_numeric"] = measurement["value_numeric"]
+            parsed["alert_flag"] = measurement["alert_flag"]
+            parsed["is_abnormal"] = measurement["is_abnormal"]
+            parsed["ocr_correction_applied"] = measurement["ocr_correction_applied"]
+            if measurement["ocr_correction_applied"]:
+                parsed["raw_ocr_value"] = measurement["raw_ocr_value"]
+                parsed["normalized_value"] = measurement["normalized_value"]
+                parsed["normalization_reason"] = measurement["normalization_reason"]
             parsed["page_number"] = block.page_number
             parsed["source_page_number"] = block.page_number
             parsed["source_table_id"] = None
-            parsed["source_kind"] = "derived_text"
+            parsed["source_kind"] = "ocr_derived_text"
             parsed["row_index"] = row_index
             results.append(parsed)
     return results
@@ -532,7 +564,11 @@ def _result_completeness_score(result: dict) -> int:
 
 
 def _result_source_priority(result: dict) -> int:
-    return 3 if result.get("source_kind") == "results_table" else 1
+    if result.get("source_kind") == "results_table":
+        return 3
+    if result.get("source_kind") == "ocr_results_table":
+        return 2
+    return 1
 
 
 def _canonical_sort_tuple(result: dict) -> tuple[int, int, int, int, float]:
@@ -567,17 +603,34 @@ def _infer_flag_and_abnormal(value_numeric: float | None, reference_range: dict 
     return (None, False)
 
 
-def _normalize_result_measurements(*, value_raw: str, value_numeric: float | None, reference_range: dict, alert_flag: str | None, is_ocr_source: bool) -> tuple[float | None, str | None, bool]:
+def _normalize_result_measurements(*, value_raw: str, value_numeric: float | None, reference_range: dict, alert_flag: str | None, is_ocr_source: bool) -> dict:
+    raw_ocr_value = normalize_inline_text(value_raw) if is_ocr_source else None
+    normalized_value_raw = normalize_inline_text(value_raw)
     normalized_value = value_numeric
+    ocr_correction_applied = False
+    normalization_reason = None
     if is_ocr_source:
-        _, repaired_numeric = repair_numeric_with_reference(value_raw, reference_range, flag=alert_flag)
+        repaired_raw, repaired_numeric = repair_numeric_with_reference(value_raw, reference_range, flag=alert_flag)
         if repaired_numeric is not None:
             normalized_value = repaired_numeric
+        if repaired_raw and repaired_raw != normalized_value_raw:
+            normalized_value_raw = repaired_raw
+            ocr_correction_applied = True
+            normalization_reason = "decimal inferred from reference range and expected numeric format"
 
     inferred_flag, inferred_abnormal = _infer_flag_and_abnormal(normalized_value, reference_range)
     canonical_flag = alert_flag if alert_flag in {"H", "L"} else inferred_flag
     is_abnormal = canonical_flag in {"H", "L"} if canonical_flag is not None else inferred_abnormal
-    return (normalized_value, canonical_flag, is_abnormal)
+    return {
+        "value_raw": normalized_value_raw,
+        "value_numeric": normalized_value,
+        "alert_flag": canonical_flag,
+        "is_abnormal": is_abnormal,
+        "ocr_correction_applied": ocr_correction_applied,
+        "raw_ocr_value": raw_ocr_value if ocr_correction_applied else None,
+        "normalized_value": normalized_value if ocr_correction_applied else None,
+        "normalization_reason": normalization_reason,
+    }
 
 
 def _build_structured_vs_raw_validation(results: list[dict], raw_results: list[dict]) -> dict:
@@ -685,9 +738,13 @@ def _deduplicate_results(results: list[dict]) -> tuple[list[dict], dict]:
         if not _is_result_reliable(result, score):
             continue
         normalized_score = _round_score(score / 10.0)
+        if str(result.get("source_kind", "")).startswith("ocr_"):
+            normalized_score = min(normalized_score, 0.92)
+        if result.get("ocr_correction_applied"):
+            normalized_score = min(normalized_score, 0.88)
         dedup_key = result.get("dedup_key") or _result_dedup_key(result)
         result["confidence_score"] = normalized_score
-        result["confidence"] = _score_to_confidence(score)
+        result["confidence"] = _score_band(normalized_score)
         result["dedup_key"] = dedup_key
         result["source_page_number"] = result.get("source_page_number", result.get("page_number"))
         result["is_canonical"] = True
@@ -758,6 +815,19 @@ def extract_validation(page_text_data: list[dict], images: list, ocr_visuals: li
 
     clinician = structured_fields.get("validated_by")
     specialty = structured_fields.get("specialty")
+    report_prescriber = report.get("prescriber")
+    report_specialty = report.get("specialty")
+
+    clinician_label = normalize_label(clinician or "")
+    specialty_label = normalize_label(specialty or "")
+    if clinician_label and ("validation_medicale" in clinician_label or "cachet_du_service" in clinician_label):
+        clinician = None
+    if specialty and report_prescriber and normalize_label(specialty) == normalize_label(report_prescriber):
+        clinician = report_prescriber
+        specialty = report_specialty
+    if specialty_label and ("validation_medicale" in specialty_label or "cachet_du_service" in specialty_label):
+        specialty = None
+
     if not clinician or not specialty:
         for page in page_text_data:
             text_blocks = page.get("text_blocks", [])
@@ -780,21 +850,39 @@ def extract_validation(page_text_data: list[dict], images: list, ocr_visuals: li
             if clinician or specialty:
                 break
 
-    report_specialty = report.get("specialty")
+    clinician_label = normalize_label(clinician or "")
+    specialty_label = normalize_label(specialty or "")
+    if clinician_label and ("validation_medicale" in clinician_label or "cachet_du_service" in clinician_label):
+        clinician = None
+    if specialty and report_prescriber and normalize_label(specialty) == normalize_label(report_prescriber):
+        clinician = report_prescriber
+        specialty = report_specialty
+    if specialty_label and ("validation_medicale" in specialty_label or "cachet_du_service" in specialty_label):
+        specialty = None
+
     if specialty and report_specialty and normalize_label(report_specialty) in normalize_label(specialty):
         specialty = report_specialty
+    if not clinician and report_prescriber:
+        clinician = report_prescriber
+    if not specialty and report_specialty:
+        specialty = report_specialty
+
+    validation_title = structured_fields.get("validation_title", "Validation")
+    validation_title_label = normalize_label(validation_title)
+    if "validation_medicale" in validation_title_label:
+        validation_title = "Validation medicale"
 
     field_confidence = {
-        "validation_title": _field_confidence(structured_fields.get("validation_title"), float(getattr(validation_block, "confidence_score", 0.65)) if validation_block else 0.0),
-        "validated_by": _field_confidence(clinician or report.get("prescriber"), _source_score(block=validation_block) if validation_block else 0.65),
+        "validation_title": _field_confidence(validation_title, float(getattr(validation_block, "confidence_score", 0.65)) if validation_block else 0.0),
+        "validated_by": _field_confidence(clinician or report_prescriber, _source_score(block=validation_block) if validation_block else 0.65),
         "specialty": _field_confidence(specialty or report_specialty, _source_score(block=validation_block) if validation_block else 0.65),
         "signature_present": _field_confidence(bool(signature_ids), 0.92 if signature_ids else 0.0),
         "stamp_present": _field_confidence(bool(stamp_ids), 0.92 if stamp_ids else 0.0),
     }
     confidence, confidence_score = _aggregate_field_confidence(field_confidence)
     return {
-        "validation_title": structured_fields.get("validation_title", "Validation"),
-        "validated_by": clinician or report.get("prescriber"),
+        "validation_title": validation_title,
+        "validated_by": clinician or report_prescriber,
         "specialty": specialty or report_specialty,
         "signature_image_ids": signature_ids,
         "stamp_image_ids": stamp_ids,
