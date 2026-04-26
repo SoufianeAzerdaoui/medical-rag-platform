@@ -70,6 +70,8 @@ class DocumentBlock:
     section_title: str
     text: str
     bbox: dict[str, float] | None
+    normalized_text: str = ""
+    index_text: str = ""
     confidence: str = "medium"
     confidence_score: float = 0.5
     structured_fields: dict[str, Any] = field(default_factory=dict)

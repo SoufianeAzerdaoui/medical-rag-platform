@@ -17,6 +17,8 @@ from utils import (
     normalize_label,
     normalize_ocr_analyte_text,
     normalize_result_unit_text,
+    parse_reference_range,
+    repair_numeric_with_reference,
     optional_import,
     sanitize_json_data,
 )
@@ -629,6 +631,30 @@ def _parse_ocr_result_rows(ocr_asset) -> list[dict]:
     return records
 
 
+def _annotate_ocr_result_corrections(records: list[dict]) -> list[dict]:
+    annotated: list[dict] = []
+    for record in records:
+        enriched = dict(record)
+        raw_value = normalize_inline_text(str(enriched.get("Resultat", "")))
+        reference_range = parse_reference_range(str(enriched.get("Valeurs de reference", "")))
+        flag = normalize_inline_text(str(enriched.get("Alerte", enriched.get("Alert\ne", "")))) or None
+        repaired_raw, repaired_numeric = repair_numeric_with_reference(raw_value, reference_range, flag=flag)
+        corrected = bool(repaired_raw and repaired_raw != raw_value)
+        if corrected:
+            enriched["Resultat"] = repaired_raw
+            enriched["Correction OCR appliquee"] = True
+            enriched["Resultat OCR brut"] = raw_value
+            enriched["Valeur normalisee"] = repaired_numeric
+            enriched["Raison normalisation"] = "decimal inferred from reference range and expected numeric format"
+        else:
+            enriched["Correction OCR appliquee"] = False
+            enriched["Resultat OCR brut"] = raw_value
+            enriched["Valeur normalisee"] = repaired_numeric
+            enriched["Raison normalisation"] = ""
+        annotated.append(enriched)
+    return annotated
+
+
 def extract_tables_from_ocr(output_dir: str | Path, ocr_results: dict[int, object]) -> list[TableAsset]:
     tables_dir = ensure_dir(Path(output_dir) / "tables")
     assets: list[TableAsset] = []
@@ -700,9 +726,21 @@ def extract_tables_from_ocr(output_dir: str | Path, ocr_results: dict[int, objec
         result_records = _parse_ocr_result_rows(asset)
         if not result_records:
             continue
+        result_records = _annotate_ocr_result_corrections(result_records)
         frame = pd.DataFrame(
             result_records,
-            columns=["Analyse / Observation", "Resultat", "Unites", "Valeurs de reference", "Alerte", "Date"],
+            columns=[
+                "Analyse / Observation",
+                "Resultat",
+                "Unites",
+                "Valeurs de reference",
+                "Alerte",
+                "Date",
+                "Correction OCR appliquee",
+                "Resultat OCR brut",
+                "Valeur normalisee",
+                "Raison normalisation",
+            ],
         )
         assets.append(
             _write_table_asset(

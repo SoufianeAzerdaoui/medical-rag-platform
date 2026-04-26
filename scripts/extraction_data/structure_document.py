@@ -6,6 +6,28 @@ from schemas import DocumentData, PageData
 from utils import page_name, write_json
 
 
+def _promote_ocr_visual_to_image_dict(visual) -> dict:
+    visual_dict = visual.to_dict()
+    return {
+        "image_id": visual.visual_id,
+        "page_number": visual.page_number,
+        "file_path": visual.file_path,
+        "width": visual.width,
+        "height": visual.height,
+        "ext": visual.ext,
+        "bbox": visual.bbox,
+        "xref": None,
+        "page_coverage": None,
+        "image_type": visual.visual_type,
+        "role": visual.role,
+        "is_indexable": visual.is_indexable,
+        "context_text": visual.context_text,
+        "source": "ocr_visual",
+        "source_visual_id": visual.visual_id,
+        "ocr_visual": visual_dict,
+    }
+
+
 def structure_document(
     ingest_result: dict,
     classify_result: dict,
@@ -32,6 +54,8 @@ def structure_document(
     ocr_visual_map: dict[int, list[str]] = {}
     for visual in ocr_visuals:
         ocr_visual_map.setdefault(visual.page_number, []).append(visual.visual_id)
+        if visual.is_indexable and visual.visual_type in {"clinical_chart", "medical_illustration"}:
+            image_map.setdefault(visual.page_number, []).append(visual.visual_id)
 
     block_map: dict[int, list[dict]] = {}
     for block in blocks:
@@ -99,7 +123,12 @@ def structure_document(
         document.pages.append(page_record.to_dict())
 
     document.tables = [table.to_dict() for table in tables]
-    document.images = [image.to_dict() for image in images]
+    promoted_ocr_visual_images = [
+        _promote_ocr_visual_to_image_dict(visual)
+        for visual in ocr_visuals
+        if visual.is_indexable and visual.visual_type in {"clinical_chart", "medical_illustration"}
+    ]
+    document.images = [image.to_dict() for image in images] + promoted_ocr_visual_images
     document.ocr_visuals = [visual.to_dict() for visual in ocr_visuals]
     document.blocks = [block.to_dict() for block in blocks]
     write_json(out_dir / "document.json", document.to_dict())
