@@ -23,6 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from pipeline.extraction_pipeline import inject_consistency_checks_in_output_dir
+from scripts.chunking.chunk_pipeline import process_json_file
 
 
 def _merge_ocr_into_pages(page_text_data: list[dict], ocr_results: dict[int, object]) -> list[dict]:
@@ -104,6 +105,13 @@ def run_pipeline(pdf_path: str | Path, output_root: str | Path | None = None) ->
         output_dir=output_dir,
     )
     inject_consistency_checks_in_output_dir(output_dir)
+    
+    # Génération automatique des chunks pour ce rapport
+    try:
+        process_json_file(str(output_dir / "document.json"), str(output_dir / "chunks.jsonl"))
+    except Exception as e:
+        print(f"Erreur lors du chunking pour {doc_id}: {e}")
+        
     return output_dir
 
 
