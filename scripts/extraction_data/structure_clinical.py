@@ -1516,6 +1516,117 @@ def _parasitology_result_semantics(section: str, analyte: str, value: str) -> tu
         return ("microscopy_finding", "normal_or_absent_finding", False)
     return ("qualitative", "not_significant_or_expected", False)
 
+PARASITE_ENTITY_PATTERNS = {
+    "ankylostoma duodenale": (
+        r"\bankylostoma\s+duodenale\b",
+        r"\bankylostome\s+duodenale\b",
+    ),
+    "ankylostoma": (
+        r"\bankylostoma\b",
+        r"\bankylostome\b",
+    ),
+    "trichuris trichiura": (
+        r"\btrichuris\s+trichiura\b",
+    ),
+    "trichuris": (
+        r"\btrichuris\b",
+    ),
+}
+
+
+PARASITE_ENTITY_PARENTS = {
+    "ankylostoma duodenale": "ankylostoma",
+    "trichuris trichiura": "trichuris",
+}
+
+
+def _extract_parasite_entities(text: str | None) -> list[str]:
+    normalized = normalize_label(text or "").replace("_", " ")
+    entities: set[str] = set()
+
+    for canonical_name, patterns in PARASITE_ENTITY_PATTERNS.items():
+        for pattern in patterns:
+            if re.search(pattern, normalized, flags=re.IGNORECASE):
+                entities.add(canonical_name)
+                break
+
+    # If a species is present, remove the generic genus to avoid duplicate output:
+    # ["ankylostoma", "ankylostoma duodenale"] -> ["ankylostoma duodenale"]
+    for species_name, genus_name in PARASITE_ENTITY_PARENTS.items():
+        if species_name in entities and genus_name in entities:
+            entities.remove(genus_name)
+
+    return sorted(entities)
+
+
+def _check_parasite_consistency(results: list[dict]) -> dict:
+    sections = {
+        "staining_exam": [],
+        "enrichment_exam": [],
+        "microscopic_exam": [],
+        "final_result": [],
+    }
+
+    for result in results:
+        section = result.get("section")
+        if section not in sections:
+            continue
+
+        text = " ".join(
+            str(value or "")
+            for value in (
+                result.get("analyte"),
+                result.get("value_raw"),
+                result.get("parameter"),
+                result.get("result"),
+            )
+        )
+
+        entities = _extract_parasite_entities(text)
+        for entity in entities:
+            if entity not in sections[section]:
+                sections[section].append(entity)
+
+    final_entities = set(sections["final_result"])
+    prior_entities = set(
+        sections["staining_exam"]
+        + sections["enrichment_exam"]
+        + sections["microscopic_exam"]
+    )
+
+    if not final_entities and not prior_entities:
+        status = "consistent"
+        message = "No parasite entities detected in final or previous sections."
+    elif final_entities and not prior_entities:
+        status = "consistent"
+        message = "Final result contains parasite entity, with no previous parasite entity to compare."
+    elif not final_entities and prior_entities:
+        status = "needs_review"
+        message = "Parasite entity detected in previous sections, but no parasite entity detected in final result."
+    elif final_entities == prior_entities:
+        status = "consistent"
+        message = "Final result matches parasite entities detected in previous sections."
+    elif final_entities.intersection(prior_entities):
+        status = "partial_overlap"
+        message = (
+            "Final result overlaps with previous parasite findings, but not all parasite "
+            "entities are identical. This may indicate multiple findings or reporting prioritization."
+        )
+    else:
+        status = "discordant_findings"
+        message = (
+            "Final result mentions parasite entity/entities different from earlier section findings. "
+            "This is a document-level discordance and should be surfaced to the RAG layer as a warning, "
+            "not used to overwrite extracted values."
+        )
+
+    return {
+        "status": status,
+        "detected_in_sections": sections,
+        "message": message,
+        "check_type": "rule_based_extraction_validation",
+    }
+
 
 def _parasitology_dedup_key(section: str, analyte: str, value: str | None) -> str:
     return "|".join(
@@ -2131,6 +2242,13 @@ def build_structured_document(
     validation = extract_validation(page_text_data, images, ocr_visuals, report, blocks)
     validation_report = build_validation_report(results=results, raw_results=raw_results)
     validation_report["deduplication"] = dedup_stats
+    consistency_checks = {}
+
+    if document_type == "parasitology_stool_report":
+        consistency_checks["parasite_consistency"] = _check_parasite_consistency(results)
+
+    if consistency_checks:
+        validation_report["consistency_checks"] = consistency_checks
     validation_report.update(
         {
             "false_positive_result_rows": dedup_stats.get("false_positive_result_rows", 0),
@@ -2155,4 +2273,5 @@ def build_structured_document(
         "logical_tables": logical_tables,
         "validation": validation,
         "validation_report": validation_report,
+        "consistency_checks": consistency_checks,
     }

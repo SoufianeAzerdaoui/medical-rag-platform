@@ -24,3 +24,20 @@ done
 ### indexing (soon)
 ### hybrid retrieval (soon)
 ### multimodal RAG (soon)
+
+
+
+Clinical Structuring
+        ↓
+Chunk Builder
+        ↓
+1. Atomic result chunks
+2. Section chunks
+3. Document summary chunks
+4. Visual/table reference chunks
+        ↓
+Anonymization
+        ↓
+Embedding + Keyword indexing
+        ↓
+Hybrid retrieval

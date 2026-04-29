@@ -33,6 +33,22 @@ def _promote_ocr_visual_to_image_dict(visual) -> dict:
         "ocr_visual": visual_dict,
     }
 
+def _sync_consistency_checks(document: dict) -> dict:
+    """
+    Keep one canonical consistency_checks source.
+
+    The clinical layer writes the correct checks inside:
+    validation_report.consistency_checks
+
+    The top-level consistency_checks must mirror it, not come from an older checker.
+    """
+    validation_report = document.get("validation_report", {})
+    report_checks = validation_report.get("consistency_checks")
+
+    if isinstance(report_checks, dict) and report_checks:
+        document["consistency_checks"] = report_checks
+
+    return document
 
 def _compact_dict(data: dict) -> dict:
     return {key: value for key, value in data.items() if value is not None}
@@ -236,16 +252,19 @@ def project_parasitology_stool_report(document: dict) -> dict:
             "name": patient.get("name"),
             "birth_date_raw": patient.get("birth_date_raw"),
             "birth_date": patient.get("birth_date"),
+            "age": patient.get("age_final") or patient.get("age"),
             "reported_age": patient.get("reported_age", patient.get("age")),
             "computed_age_at_request_date": patient.get("computed_age_at_request_date"),
+            "age_final": patient.get("age_final"),
+            "age_source_of_truth": patient.get("age_source_of_truth"),
             "age_consistency_status": patient.get("age_consistency_status"),
+            "age_consistency_warning": patient.get("age_consistency_warning"),
             "sex_raw": patient.get("sex_raw"),
             "sex": patient.get("sex"),
             "confidence": patient.get("confidence"),
             "confidence_score": patient.get("confidence_score"),
         }
     )
-
     report_projected = _compact_dict(
         {
             "exam_name": report.get("exam_name"),
@@ -369,6 +388,8 @@ def apply_document_type_schema_projection(document: dict) -> dict:
     for visual in document.get("ocr_visuals", []) or []:
         if isinstance(visual, dict) and visual.get("file_path"):
             visual["file_path"] = _as_repo_relative_path(visual.get("file_path")) or visual.get("file_path")
+    
+    document = _sync_consistency_checks(document)
     return document
 
 
