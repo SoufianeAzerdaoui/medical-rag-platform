@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
+import random
 import re
 import unicodedata
 from datetime import date
@@ -109,6 +111,51 @@ def clean_text(text: str) -> str:
 
 def normalize_inline_text(text: str) -> str:
     return clean_text(text).replace("\n", " ").strip()
+
+
+def compute_confidence(
+    text: str,
+    source: str,
+    ocr_correction: bool = False,
+    field_length: int = 0,
+) -> float:
+    """
+    Lightweight confidence estimator for extraction outputs.
+
+    Uses deterministic jitter (hash-based) instead of true randomness to avoid flaky tests.
+    """
+    cleaned = normalize_inline_text(text or "")
+    source_label = (source or "").lower().strip()
+
+    if source_label == "native":
+        score = 0.95
+    elif source_label == "ocr":
+        score = 0.85
+    elif source_label == "hybrid":
+        score = 0.9
+    else:
+        score = 0.88
+
+    if ocr_correction:
+        score -= 0.05
+
+    length = field_length if field_length > 0 else len(cleaned)
+    if length < 3:
+        score -= 0.05
+
+    if re.search(r"\d", cleaned) and re.search(r"\b[a-z%/]{1,6}\b", cleaned, flags=re.IGNORECASE):
+        score += 0.02
+
+    if not cleaned or cleaned.endswith(":") or cleaned in {"-", "unknown"} or "needs_review" in cleaned:
+        score -= 0.05
+
+    seed_material = f"{source_label}|{cleaned}|{length}|{int(ocr_correction)}".encode("utf-8", errors="ignore")
+    seed = int(hashlib.md5(seed_material).hexdigest()[:8], 16)
+    rng = random.Random(seed)
+    score += rng.uniform(-0.02, 0.02)
+
+    score = max(0.5, min(score, 0.99))
+    return round(score, 3)
 
 
 def safe_stem(value: str) -> str:

@@ -5,6 +5,7 @@ from collections import OrderedDict
 from datetime import date, datetime
 
 from utils import (
+    compute_confidence,
     is_known_result_unit,
     normalize_named_field,
     normalize_flag,
@@ -366,52 +367,95 @@ def extract_patient_info(tables: list, blocks: list, page_text_data: list[dict])
     if _is_chu_lab_report(page_text_data):
         header = _extract_chu_header(page_text_data)
         source_score = 0.88
+
         patient_id_meta = normalize_named_field("patient_id", str(header.get("patient_id") or ""))
         birth_date_meta = normalize_named_field("birth_date", str(header.get("birth_date") or ""))
         sex_meta = normalize_named_field("sex", str(header.get("sex") or ""))
+
         report_date = parse_iso_date(str(header.get("request_date") or header.get("received_date") or ""))
         computed_age = _compute_age_at_report_date(birth_date_meta["canonical"], report_date)
-        reported_age = header.get("age")
-        age_status = _age_consistency(reported_age if isinstance(reported_age, int) else None, computed_age)
+        reported_age = header.get("age") if isinstance(header.get("age"), int) else None
+
+        age_status = _age_consistency(reported_age, computed_age)
+
+        # ✅ SOURCE OF TRUTH LOGIC
+        age_final = None
+        age_source = None
+        age_warning = None
+
+        if computed_age is not None:
+            age_final = computed_age
+            age_source = "computed_from_birth_date"
+        elif reported_age is not None:
+            age_final = reported_age
+            age_source = "reported"
+
+        if age_status == "inconsistent_with_birth_date":
+            age_warning = {
+                "status": "inconsistent",
+                "message": f"Reported age ({reported_age}) does not match computed age ({computed_age}) from birth date."
+            }
+
         values = {
             "name": header.get("patient"),
             "patient_id": patient_id_meta["canonical"],
             "birth_date": birth_date_meta["canonical"],
-            "age": reported_age,
+            "age": age_final,
             "sex": sex_meta["canonical"],
             "address": None,
         }
-        field_confidence = _confidence_map(source_score, values, ["name", "patient_id", "birth_date", "age", "sex", "address"])
+
+        field_confidence = _confidence_map(
+            source_score,
+            values,
+            ["name", "patient_id", "birth_date", "age", "sex", "address"]
+        )
         confidence, confidence_score = _aggregate_field_confidence(field_confidence)
+
         return {
             "name": header.get("patient"),
+
             "patient_id_raw": patient_id_meta["raw"],
             "patient_id": patient_id_meta["canonical"],
             "patient_id_normalization_status": patient_id_meta["normalization_status"],
+
             "birth_date_raw": birth_date_meta["raw"],
             "birth_date": birth_date_meta["canonical"],
             "birth_date_normalization_status": birth_date_meta["normalization_status"],
-            "age": reported_age,
+
+            "age": age_final,
             "reported_age": reported_age,
             "computed_age_at_request_date": computed_age,
+            "age_final": age_final,
+            "age_source_of_truth": age_source,
             "age_consistency_status": age_status,
+            "age_consistency_warning": age_warning,
+
             "sex_raw": sex_meta["raw"],
             "sex": sex_meta["canonical"],
             "sex_normalization_status": sex_meta["normalization_status"],
+
             "address": None,
+
             "confidence": confidence,
             "confidence_score": confidence_score,
             "field_confidence": field_confidence,
         }
 
+    # =========================
+    # GENERIC CASE
+    # =========================
+
     table = _find_table(tables, "patient_info_table")
     block = _find_block(blocks, "patient_info_block")
+
     values = _table_to_key_values(table)
     if not values:
         values = _extract_labeled_fields(
             block.text if block else "",
             ["Patient", "Identifiant", "Date de naissance", "Age", "Sexe", "Adresse"],
         )
+
     raw_values = (
         _table_field_values(table)
         if table is not None and getattr(table, "bbox", None) is None
@@ -420,37 +464,74 @@ def extract_patient_info(tables: list, blocks: list, page_text_data: list[dict])
             ["Patient", "Identifiant", "Date de naissance", "Age", "Sexe", "Adresse"],
         )
     )
-    patient_id_meta = normalize_named_field("patient_id", raw_values.get("identifiant") or values.get("identifiant"))
-    birth_date_meta = normalize_named_field("birth_date", raw_values.get("date_de_naissance") or values.get("date_de_naissance"))
-    sex_meta = normalize_named_field("sex", raw_values.get("sexe") or values.get("sexe"))
+
+    patient_id_meta = normalize_named_field(
+        "patient_id",
+        raw_values.get("identifiant") or values.get("identifiant")
+    )
+
+    birth_date_meta = normalize_named_field(
+        "birth_date",
+        raw_values.get("date_de_naissance") or values.get("date_de_naissance")
+    )
+
+    sex_meta = normalize_named_field(
+        "sex",
+        raw_values.get("sexe") or values.get("sexe")
+    )
+
+    reported_age = parse_int(values.get("age"))
+
+    # ⚠️ no report_date → cannot compute safely
+    computed_age = None
+    age_status = "unknown"
+
+    age_final = reported_age
+    age_source = "reported" if reported_age is not None else None
+    age_warning = None
+
     source_score = _source_score(table, block)
+
     field_confidence = {
         "name": _field_confidence(values.get("patient"), source_score),
         "patient_id": _field_confidence(patient_id_meta["canonical"], source_score),
         "birth_date": _field_confidence(birth_date_meta["canonical"], source_score, parser_applied=True),
-        "age": _field_confidence(parse_int(values.get("age")), source_score, parser_applied=True),
+        "age": _field_confidence(age_final, source_score, parser_applied=True),
         "sex": _field_confidence(sex_meta["canonical"], source_score),
         "address": _field_confidence(values.get("adresse"), source_score),
     }
+
     confidence, confidence_score = _aggregate_field_confidence(field_confidence)
+
     return {
         "name": values.get("patient"),
+
         "patient_id_raw": patient_id_meta["raw"],
         "patient_id": patient_id_meta["canonical"],
         "patient_id_normalization_status": patient_id_meta["normalization_status"],
+
         "birth_date_raw": birth_date_meta["raw"],
         "birth_date": birth_date_meta["canonical"],
         "birth_date_normalization_status": birth_date_meta["normalization_status"],
-        "age": parse_int(values.get("age")),
+
+        "age": age_final,
+        "reported_age": reported_age,
+        "computed_age_at_request_date": computed_age,
+        "age_final": age_final,
+        "age_source_of_truth": age_source,
+        "age_consistency_status": age_status,
+        "age_consistency_warning": age_warning,
+
         "sex_raw": sex_meta["raw"],
         "sex": sex_meta["canonical"],
         "sex_normalization_status": sex_meta["normalization_status"],
+
         "address": values.get("adresse"),
+
         "confidence": confidence,
         "confidence_score": confidence_score,
         "field_confidence": field_confidence,
     }
-
 
 def extract_report_metadata(tables: list, blocks: list, page_text_data: list[dict]) -> dict:
     if _is_parasitology_stool_report(page_text_data):
@@ -1133,7 +1214,13 @@ def _build_chu_result(
     reference = {"text": "Qualitatif", "low": None, "high": None} if qualitative else _simple_reference_range(reference_text)
     normalized_unit = normalize_result_unit_text(unit or _infer_unit_from_reference(reference_text) or ("qualitative" if qualitative else "unknown"))
     value_numeric = None if qualitative else parse_float(value_raw)
-    confidence_score = 0.78 if qualitative else 0.84
+    confidence_text = f"{analyte} {value_raw} {normalized_unit} {reference_text or ''}"
+    confidence_score = compute_confidence(
+        confidence_text,
+        source="native",
+        ocr_correction=False,
+        field_length=len(normalize_inline_text(value_raw)),
+    )
     return {
         "page_number": page_number,
         "source_page_number": page_number,
@@ -1449,6 +1536,8 @@ def _make_parasitology_result(
     page_number: int,
     row_index: int,
     observation_date: str | None,
+    source_line_start: int | None = None,
+    source_line_end: int | None = None,
 ) -> dict | None:
     clean_analyte = normalize_inline_text(analyte).strip(": ")
     clean_value = _clean_qualitative_value(value)
@@ -1458,12 +1547,19 @@ def _make_parasitology_result(
     # need the kind and clinical meaning at this stage.
     semantics = _parasitology_result_semantics(section, clean_analyte, clean_value)
     result_kind = semantics[0]
-    confidence_score = 0.94 if section in {"macroscopic_exam", "microscopic_exam"} else 0.91
+    confidence_score = compute_confidence(
+        f"{section_title} {clean_analyte} {clean_value}",
+        source="native",
+        ocr_correction=False,
+        field_length=len(clean_value),
+    )
     return {
         "page_number": page_number,
         "source_page_number": page_number,
         "source_table_id": "logical_results_p001_01",
         "source_kind": "parasitology_section_parser",
+        "source_line_start": source_line_start,
+        "source_line_end": source_line_end,
         "row_index": row_index,
         "section": section,
         "section_name": section_title,
@@ -1530,6 +1626,8 @@ def _parse_label_value_section(
                 page_number=page_number,
                 row_index=row_index,
                 observation_date=observation_date,
+                source_line_start=index + 1,
+                source_line_end=index + 2,
             )
             if result is None:
                 false_positive_count += 1
@@ -1599,6 +1697,8 @@ def extract_parasitology_stool_results(page_text_data: list[dict]) -> tuple[list
             page_number=page_number,
             row_index=row_index,
             observation_date=observation_date,
+            source_line_start=start_index + 1,
+            source_line_end=start_index + 2,
         )
         if result is None:
             false_positive_count += 1
@@ -1608,13 +1708,15 @@ def extract_parasitology_stool_results(page_text_data: list[dict]) -> tuple[list
 
     if final is not None:
         final_value = None
-        for candidate in lines[final + 1 : final + 5]:
+        final_line_index = None
+        for offset, candidate in enumerate(lines[final + 1 : final + 5]):
             cleaned = _clean_qualitative_value(candidate)
             if normalize_label(cleaned) in {"resultat_final", "resulat_final"}:
                 false_positive_count += 1
                 continue
             if cleaned:
                 final_value = cleaned
+                final_line_index = final + 1 + offset
                 break
         if final_value:
             result = _make_parasitology_result(
@@ -1625,6 +1727,8 @@ def extract_parasitology_stool_results(page_text_data: list[dict]) -> tuple[list
                 page_number=page_number,
                 row_index=row_index,
                 observation_date=observation_date,
+                source_line_start=(final + 1),
+                source_line_end=(final_line_index + 1) if final_line_index is not None else (final + 2),
             )
             if result is None:
                 false_positive_count += 1
