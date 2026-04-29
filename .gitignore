@@ -19,4 +19,9 @@ medical-rag-codex-skills/
 # Generated extraction outputs
 data
 
+# Anonymization private/sensitive artifacts
+data/private/
+data/chunks/chunks.raw.jsonl
+data/chunks/anonymization_mapping.xlsx
+data/chunks/anonymization_mapping.csv
 
