@@ -559,6 +559,7 @@ def _create_parasitology_stool_blocks(
     final = _find_line_index(lines, "RÉSULTAT FINAL")
     footer = _find_line_index(lines, "Adresse Web")
     sample = _find_line_index(lines, "ECHANTILLON BIOLOGIQUE")
+    service_value = _metadata_value(lines, "Service")
     patient_info_lines = [
         _format_metadata_line("IP Patient", _metadata_value(lines, "IP Patient")),
         _format_metadata_line("Patient", _metadata_value(lines, "Patient")),
@@ -566,13 +567,14 @@ def _create_parasitology_stool_blocks(
         _metadata_value(lines, "Né(e) le") or "",
         _format_metadata_line("Sexe", _metadata_value(lines, "Sexe")),
         _format_metadata_line("Origine", _metadata_value(lines, "Origine")),
-        _format_metadata_line("Service", _metadata_value(lines, "Service")),
         _format_metadata_line("Prescripteur", _metadata_value(lines, "Prescripteur")),
         _format_metadata_line("Date Demande", _metadata_value(lines, "Date Demande")),
         _format_metadata_line("Date Réception", _metadata_value(lines, "Date Réception")),
         _format_metadata_line("N° d'échantillon", _metadata_value(lines, "N° d'échantillon")),
         _format_metadata_line("Nature", _metadata_value(lines, "Nature")),
     ]
+    if service_value:
+        patient_info_lines.insert(6, _format_metadata_line("Service", service_value))
 
     facility_lines = [
         line
@@ -616,7 +618,6 @@ def _create_parasitology_stool_blocks(
 
     metadata_lines = [
         _format_metadata_line("Origine", _metadata_value(lines, "Origine")),
-        _format_metadata_line("Service", _metadata_value(lines, "Service")),
         _format_metadata_line("Prescripteur", _metadata_value(lines, "Prescripteur")),
         _format_metadata_line("Date Demande", _metadata_value(lines, "Date Demande")),
         _format_metadata_line("Date Réception", _metadata_value(lines, "Date Réception")),
@@ -627,6 +628,8 @@ def _create_parasitology_stool_blocks(
         _format_metadata_line("Edité par", _metadata_value(lines, "Edité(e) par")),
         _format_metadata_line("Date édition", _metadata_value(lines[-6:] if len(lines) >= 6 else lines, "Le")),
     ]
+    if service_value:
+        metadata_lines.insert(1, _format_metadata_line("Service", service_value))
     block_index = _append_simple_block(
         created,
         block_index=block_index,

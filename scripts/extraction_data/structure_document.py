@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from schemas import DocumentData, PageData
 from utils import page_name, write_json
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 
 def _promote_ocr_visual_to_image_dict(visual) -> dict:
@@ -56,6 +60,8 @@ def _parasitology_result_view(result: dict) -> dict:
         "source_page_number": result.get("source_page_number"),
         "source_table_id": result.get("source_table_id"),
         "source_kind": result.get("source_kind"),
+        "source_line_start": result.get("source_line_start"),
+        "source_line_end": result.get("source_line_end"),
         "row_index": result.get("row_index"),
         "section": result.get("section"),
         "section_name": result.get("section_name"),
@@ -177,17 +183,17 @@ def _parasitology_block_fields(document: dict) -> dict[str, dict]:
         ),
         "final_result_block": _compact_dict(
             {
-                "result": first_result("final_result"),
                 "parameter": "RÉSULTAT FINAL",
-                "pathogen_detected": first_result("final_result").get("result") if first_result("final_result") else None,
+                "result": first_result("final_result").get("result") if first_result("final_result") else None,
                 "result_kind": first_result("final_result").get("result_kind") if first_result("final_result") else None,
+                "clinical_significance": first_result("final_result").get("clinical_significance") if first_result("final_result") else None,
                 "source": "native_text_section_parser",
             }
         ),
         "edition_block": _compact_dict(
             {
                 "edited_by": validation.get("edited_by"),
-                "edited_date": validation.get("edit_date"),
+                "edited_date": validation.get("edited_date"),
                 "printed_by": validation.get("printed_by"),
                 "print_date": report.get("print_date"),
                 "source": "native_text_section_parser",
@@ -223,8 +229,10 @@ def project_parasitology_stool_report(document: dict) -> dict:
 
     patient_projected = _compact_dict(
         {
+            "ip_patient": patient.get("patient_id") or patient.get("ip_patient"),
             "patient_id": patient.get("patient_id"),
             "patient_id_raw": patient.get("patient_id_raw"),
+            "patient_id_source_label": "IP Patient" if (patient.get("patient_id") or patient.get("patient_id_raw")) else None,
             "name": patient.get("name"),
             "birth_date_raw": patient.get("birth_date_raw"),
             "birth_date": patient.get("birth_date"),
@@ -280,12 +288,21 @@ def project_parasitology_stool_report(document: dict) -> dict:
 
     projected_results = [_parasitology_result_view(result) for result in document.get("results", [])]
     document["results"] = projected_results
-    projected_result_by_key = {
-        (result.get("section"), result.get("parameter"), result.get("result")): result for result in projected_results
-    }
+    projected_result_by_key: dict[tuple[object, object, object], dict] = {}
+    for result in projected_results:
+        key_core = (result.get("section"), result.get("parameter"), result.get("result"))
+        projected_result_by_key[key_core] = result
+        # Some logical tables store section titles (section_name) instead of section codes.
+        key_title = (result.get("section_name"), result.get("parameter"), result.get("result"))
+        projected_result_by_key[key_title] = result
     for table in document.get("tables", []):
         if table.get("table_id") != "logical_results_p001_01" or table.get("table_role") != "parasitology_results":
             continue
+        # Logical tables are not written as separate files; omit null paths in export.
+        if table.get("csv_path") in {None, ""}:
+            table.pop("csv_path", None)
+        if table.get("json_path") in {None, ""}:
+            table.pop("json_path", None)
         table["columns"] = ["section", "parameter", "result", "result_kind"]
         projected_records: list[dict] = []
         for record in table.get("records", []):
@@ -317,7 +334,7 @@ def project_parasitology_stool_report(document: dict) -> dict:
         {
             "validation_title": validation.get("validation_title"),
             "edited_by": validation.get("edited_by"),
-            "edit_date": validation.get("edit_date"),
+            "edited_date": validation.get("edit_date") or validation.get("edited_date"),
             "printed_by": validation.get("printed_by"),
             "print_date": report_projected.get("print_date"),
             "is_signed": validation.get("is_signed"),
@@ -345,6 +362,13 @@ def apply_document_type_schema_projection(document: dict) -> dict:
     output_dir = _as_repo_relative_path(document.get("output_dir"))
     if output_dir:
         document["output_dir"] = output_dir
+
+    for image in document.get("images", []) or []:
+        if isinstance(image, dict) and image.get("file_path"):
+            image["file_path"] = _as_repo_relative_path(image.get("file_path")) or image.get("file_path")
+    for visual in document.get("ocr_visuals", []) or []:
+        if isinstance(visual, dict) and visual.get("file_path"):
+            visual["file_path"] = _as_repo_relative_path(visual.get("file_path")) or visual.get("file_path")
     return document
 
 

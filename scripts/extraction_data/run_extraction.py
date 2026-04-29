@@ -4,6 +4,8 @@ import argparse
 import shutil
 from pathlib import Path
 
+import sys
+
 from classify_pdf import classify_pdf
 from extract_images import extract_images
 from extract_ocr import extract_ocr
@@ -16,6 +18,11 @@ from structure_document import structure_document
 from utils import ensure_dir, strip_page_boilerplate
 
 DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parents[2] / "data" / "extraction"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from pipeline.extraction_pipeline import inject_consistency_checks_in_output_dir
 
 
 def _merge_ocr_into_pages(page_text_data: list[dict], ocr_results: dict[int, object]) -> list[dict]:
@@ -96,6 +103,7 @@ def run_pipeline(pdf_path: str | Path, output_root: str | Path | None = None) ->
         ocr_results=ocr_results,
         output_dir=output_dir,
     )
+    inject_consistency_checks_in_output_dir(output_dir)
     return output_dir
 
 
