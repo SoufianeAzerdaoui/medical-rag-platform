@@ -42,11 +42,27 @@ KNOWN_RESULT_UNITS = {
     "cm",
     "fL",
     "g/dL",
+    "g/l",
+    "g/L",
     "kg",
     "mg/dL",
+    "mg/l",
+    "mg/L",
     "mm[Hg]",
     "mmol/L",
+    "mUI/L",
+    "ng/ml",
+    "pg/ml",
+    "pg/mL",
+    "pmol/l",
+    "qualitative",
     "10*3/uL",
+    "U/L",
+    "UI/L",
+    "UI/l",
+    "UI/ml",
+    "uU/mL",
+    "µg/dl",
 }
 
 PAGE_BOILERPLATE_PATTERNS = (
@@ -129,6 +145,15 @@ def parse_iso_date(value: str | None) -> str | None:
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
         return raw
 
+    numeric_match = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b", raw)
+    if numeric_match:
+        day_text, month_text, year_text = numeric_match.groups()
+        try:
+            parsed = date(int(year_text), int(month_text), int(day_text))
+        except ValueError:
+            return None
+        return parsed.isoformat()
+
     normalized = unicodedata.normalize("NFKD", raw)
     normalized = "".join(char for char in normalized if not unicodedata.combining(char))
     normalized = normalized.replace(".", "")
@@ -208,10 +233,16 @@ def normalize_result_unit_text(unit: str | None) -> str | None:
         "10°3/uL": "10*3/uL",
         "10°3/uL,": "10*3/uL",
         "10°3/uL.": "10*3/uL",
+        "g/l": "g/l",
+        "g/L": "g/L",
         "mg/d": "mg/dL",
         "mg/dl": "mg/dL",
         "mg/dL.": "mg/dL",
         "mg/dl.": "mg/dL",
+        "mUI/l": "mUI/L",
+        "pg/mL": "pg/mL",
+        "qualitatif": "qualitative",
+        "Qualitatif": "qualitative",
         "mm{[Hg]": "mm[Hg]",
         "wml:": "mmol/L",
     }
@@ -323,9 +354,11 @@ def normalize_encounter_type_text(value: str | None) -> str | None:
     raw = normalize_label(value)
     mapping = {
         "ambulatory": "Ambulatory",
+        "externe": "External",
         "wellness": "Wellness",
         "outpatient": "Outpatient",
         "inpatient": "Inpatient",
+        "urgence": "Emergency",
         "emergency": "Emergency",
         "urgent_care": "Urgent care",
     }
@@ -377,11 +410,6 @@ def normalize_named_field(field_name: str, value: str | None) -> dict[str, Any]:
         candidate = normalize_result_unit_text(raw_value)
         valid = candidate is not None
         canonical_value = candidate if valid else raw_value
-    elif field_name == "alert_flag":
-        candidate = normalize_flag(raw_value)
-        raw_flag = _raw_business_value(value)
-        valid = raw_flag in {None, "", "-", "N", "H", "L", "nan", "NaN", "None"}
-        canonical_value = candidate
     elif field_name == "sex":
         candidate = normalize_sex_text(raw_value)
         valid = candidate is not None

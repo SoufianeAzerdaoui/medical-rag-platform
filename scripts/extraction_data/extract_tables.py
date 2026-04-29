@@ -550,7 +550,7 @@ def _parse_ocr_result_rows(ocr_asset) -> list[dict]:
     rows = _ocr_lines_in_page_band(
         ocr_asset,
         start_pattern="analyse_observation",
-        end_patterns=["document_synthetique", "validation_medicale", "interpretation_biologique", "resume_du_dossier"],
+        end_patterns=["document_synthetique", "validation_medicale", "resume_du_dossier"],
     )
     row_candidates: list[dict[str, object]] = []
     prefix_buffer: list[str] = []

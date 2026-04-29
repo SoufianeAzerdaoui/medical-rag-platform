@@ -5,6 +5,8 @@ from pathlib import Path
 from schemas import DocumentData, PageData
 from utils import page_name, write_json
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 
 def _promote_ocr_visual_to_image_dict(visual) -> dict:
     visual_dict = visual.to_dict()
@@ -28,6 +30,324 @@ def _promote_ocr_visual_to_image_dict(visual) -> dict:
     }
 
 
+def _compact_dict(data: dict) -> dict:
+    return {key: value for key, value in data.items() if value is not None}
+
+
+def _as_repo_relative_path(value: object) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        path = Path(value).expanduser().resolve()
+    except OSError:
+        return value
+    if not path.is_absolute():
+        return value
+    try:
+        rel = path.relative_to(PROJECT_ROOT)
+    except ValueError:
+        return value
+    return rel.as_posix()
+
+
+def _parasitology_result_view(result: dict) -> dict:
+    view = {
+        "page_number": result.get("page_number"),
+        "source_page_number": result.get("source_page_number"),
+        "source_table_id": result.get("source_table_id"),
+        "source_kind": result.get("source_kind"),
+        "row_index": result.get("row_index"),
+        "section": result.get("section"),
+        "section_name": result.get("section_name"),
+        "parameter": result.get("parameter") or result.get("analyte"),
+        "result": result.get("result") or result.get("value_raw"),
+        "result_kind": result.get("result_kind"),
+        "confidence": result.get("confidence"),
+        "confidence_score": result.get("confidence_score"),
+        "dedup_key": result.get("dedup_key"),
+        "is_canonical": result.get("is_canonical"),
+    }
+    if result.get("duplicate_sources"):
+        view["duplicate_sources"] = result.get("duplicate_sources")
+    return _compact_dict(view)
+
+
+def _find_block(document: dict, block_type: str) -> dict | None:
+    return next((block for block in document.get("blocks", []) if block.get("block_type") == block_type), None)
+
+
+def _parasitology_block_fields(document: dict) -> dict[str, dict]:
+    patient = document.get("patient", {})
+    report = document.get("report", {})
+    facility = document.get("facility", {})
+    validation = document.get("validation", {})
+    results = document.get("results", [])
+
+    result_views = [_parasitology_result_view(result) for result in results]
+    results_by_section: dict[str, list[dict]] = {}
+    for result in result_views:
+        results_by_section.setdefault(result.get("section", ""), []).append(result)
+
+    def first_result(section: str) -> dict | None:
+        items = results_by_section.get(section, [])
+        return items[0] if items else None
+
+    return {
+        "facility_block": _compact_dict(
+            {
+                "country": facility.get("country"),
+                "ministry": facility.get("ministry"),
+                "organization": facility.get("organization"),
+                "department": facility.get("department"),
+                "laboratory": facility.get("laboratory"),
+                "website": facility.get("website"),
+                "phone": facility.get("phone"),
+                "fax": facility.get("fax"),
+                "source": "native_text_section_parser",
+            }
+        ),
+        "patient_info_block": _compact_dict(
+            {
+                "patient_id": patient.get("patient_id"),
+                "patient_name": patient.get("name"),
+                "birth_date": patient.get("birth_date"),
+                "reported_age": patient.get("reported_age"),
+                "computed_age_at_request_date": patient.get("computed_age_at_request_date"),
+                "age_consistency_status": patient.get("age_consistency_status"),
+                "sex": patient.get("sex"),
+                "origin": report.get("origin"),
+                "service": report.get("service"),
+                "prescriber": report.get("prescriber"),
+                "request_date": report.get("request_date"),
+                "received_date": report.get("received_date"),
+                "sample_id": report.get("sample_id"),
+                "sample_type": report.get("sample_type"),
+                "sample_label": report.get("sample_label"),
+                "source": "native_text_section_parser",
+            }
+        ),
+        "report_metadata_block": _compact_dict(
+            {
+                "exam_name": report.get("exam_name"),
+                "sample_id": report.get("sample_id"),
+                "request_date": report.get("request_date"),
+                "received_date": report.get("received_date"),
+                "origin": report.get("origin"),
+                "service": report.get("service"),
+                "prescriber": report.get("prescriber"),
+                "sample_type": report.get("sample_type"),
+                "sample_label": report.get("sample_label"),
+                "print_date": report.get("print_date"),
+                "printed_by": report.get("printed_by"),
+                "edited_date": report.get("edited_date"),
+                "edited_by": report.get("edited_by"),
+                "source": "native_text_section_parser",
+            }
+        ),
+        "sample_block": _compact_dict(
+            {
+                "exam_name": report.get("exam_name"),
+                "sample_id": report.get("sample_id"),
+                "sample_type": report.get("sample_type"),
+                "sample_label": report.get("sample_label") or "SELLES N°1",
+                "source": "native_text_section_parser",
+            }
+        ),
+        "macroscopic_exam_block": {
+            "results": results_by_section.get("macroscopic_exam", []),
+            "result_count": len(results_by_section.get("macroscopic_exam", [])),
+            "source": "native_text_section_parser",
+        },
+        "microscopic_exam_block": {
+            "results": results_by_section.get("microscopic_exam", []),
+            "result_count": len(results_by_section.get("microscopic_exam", [])),
+            "source": "native_text_section_parser",
+        },
+        "enrichment_exam_block": _compact_dict(
+            {
+                "result": first_result("enrichment_exam"),
+                "source": "native_text_section_parser",
+            }
+        ),
+        "staining_exam_block": _compact_dict(
+            {
+                "result": first_result("staining_exam"),
+                "source": "native_text_section_parser",
+            }
+        ),
+        "final_result_block": _compact_dict(
+            {
+                "result": first_result("final_result"),
+                "parameter": "RÉSULTAT FINAL",
+                "pathogen_detected": first_result("final_result").get("result") if first_result("final_result") else None,
+                "result_kind": first_result("final_result").get("result_kind") if first_result("final_result") else None,
+                "source": "native_text_section_parser",
+            }
+        ),
+        "edition_block": _compact_dict(
+            {
+                "edited_by": validation.get("edited_by"),
+                "edited_date": validation.get("edit_date"),
+                "printed_by": validation.get("printed_by"),
+                "print_date": report.get("print_date"),
+                "source": "native_text_section_parser",
+            }
+        ),
+    }
+
+
+def _project_parasitology_blocks(document: dict) -> None:
+    block_fields = _parasitology_block_fields(document)
+    for block in document.get("blocks", []):
+        block_type = block.get("block_type")
+        if block_type not in block_fields:
+            continue
+        block["structured_fields"] = block_fields[block_type]
+        block["normalized_text"] = block.get("text", "")
+        block["index_text"] = block.get("text", "")
+    for page in document.get("pages", []):
+        for block in page.get("blocks", []):
+            block_type = block.get("block_type")
+            if block_type not in block_fields:
+                continue
+            block["structured_fields"] = block_fields[block_type]
+            block["normalized_text"] = block.get("text", "")
+            block["index_text"] = block.get("text", "")
+
+
+def project_parasitology_stool_report(document: dict) -> dict:
+    patient = document.get("patient", {})
+    report = document.get("report", {})
+    facility = document.get("facility", {})
+    validation = document.get("validation", {})
+
+    patient_projected = _compact_dict(
+        {
+            "patient_id": patient.get("patient_id"),
+            "patient_id_raw": patient.get("patient_id_raw"),
+            "name": patient.get("name"),
+            "birth_date_raw": patient.get("birth_date_raw"),
+            "birth_date": patient.get("birth_date"),
+            "reported_age": patient.get("reported_age", patient.get("age")),
+            "computed_age_at_request_date": patient.get("computed_age_at_request_date"),
+            "age_consistency_status": patient.get("age_consistency_status"),
+            "sex_raw": patient.get("sex_raw"),
+            "sex": patient.get("sex"),
+            "confidence": patient.get("confidence"),
+            "confidence_score": patient.get("confidence_score"),
+        }
+    )
+
+    report_projected = _compact_dict(
+        {
+            "exam_name": report.get("exam_name"),
+            "origin": report.get("origin"),
+            "service": report.get("service"),
+            "prescriber": report.get("prescriber"),
+            "request_date_raw": report.get("request_date_raw"),
+            "request_date": report.get("request_date"),
+            "received_date_raw": report.get("received_date_raw"),
+            "received_date": report.get("received_date"),
+            "sample_id_raw": report.get("sample_id") or report.get("report_id"),
+            "sample_id": report.get("sample_id") or report.get("report_id"),
+            "sample_type": report.get("sample_type"),
+            "sample_label": report.get("sample_label") or ("SELLES N°1" if (report.get("sample_type") or "").upper() == "SELLES" else None),
+            "print_date_raw": report.get("print_date_raw"),
+            "print_date": report.get("print_date"),
+            "printed_by": report.get("printed_by"),
+            "edited_date_raw": report.get("edited_date_raw"),
+            "edited_date": report.get("edited_date"),
+            "edited_by": report.get("edited_by"),
+            "confidence": report.get("confidence"),
+            "confidence_score": report.get("confidence_score"),
+        }
+    )
+
+    facility_projected = _compact_dict(
+        {
+            "country": facility.get("country"),
+            "ministry": facility.get("ministry"),
+            "organization": facility.get("organization"),
+            "department": facility.get("department"),
+            "laboratory": facility.get("laboratory"),
+            "website": facility.get("website"),
+            "phone": facility.get("phone"),
+            "fax": facility.get("fax"),
+            "confidence": facility.get("confidence"),
+            "confidence_score": facility.get("confidence_score"),
+        }
+    )
+
+    projected_results = [_parasitology_result_view(result) for result in document.get("results", [])]
+    document["results"] = projected_results
+    projected_result_by_key = {
+        (result.get("section"), result.get("parameter"), result.get("result")): result for result in projected_results
+    }
+    for table in document.get("tables", []):
+        if table.get("table_id") != "logical_results_p001_01" or table.get("table_role") != "parasitology_results":
+            continue
+        table["columns"] = ["section", "parameter", "result", "result_kind"]
+        projected_records: list[dict] = []
+        for record in table.get("records", []):
+            section = record.get("section")
+            parameter = record.get("parameter") or record.get("analyte")
+            result_value = record.get("result") or record.get("value")
+            projected_match = projected_result_by_key.get((section, parameter, result_value))
+            projected_records.append(
+                _compact_dict(
+                    {
+                        "section": section,
+                        "parameter": parameter,
+                        "result": result_value,
+                        "result_kind": (
+                            projected_match.get("result_kind")
+                            if projected_match
+                            else record.get("result_kind")
+                        ),        
+                    }
+                )
+            )
+        table["records"] = projected_records
+        table["column_count"] = len(table["columns"])
+        table["preview"] = table["records"][:5]
+    document["patient"] = patient_projected
+    document["report"] = report_projected
+    document["facility"] = facility_projected
+    document["validation"] = _compact_dict(
+        {
+            "validation_title": validation.get("validation_title"),
+            "edited_by": validation.get("edited_by"),
+            "edit_date": validation.get("edit_date"),
+            "printed_by": validation.get("printed_by"),
+            "print_date": report_projected.get("print_date"),
+            "is_signed": validation.get("is_signed"),
+            "is_stamped": validation.get("is_stamped"),
+            "confidence": validation.get("confidence"),
+            "confidence_score": validation.get("confidence_score"),
+        }
+    )
+    _project_parasitology_blocks(document)
+    return document
+
+
+def apply_document_type_schema_projection(document: dict) -> dict:
+    if document.get("document_type") == "parasitology_stool_report":
+        document = project_parasitology_stool_report(document)
+
+    # Export cleanup: if the PDF had no OCR, don't emit an empty ocr_visuals array.
+    if not document.get("ocr_available"):
+        document.pop("ocr_visuals", None)
+
+    # Export cleanup: avoid absolute, machine-specific paths in production exports.
+    source_pdf = _as_repo_relative_path(document.get("source_pdf"))
+    if source_pdf:
+        document["source_pdf"] = source_pdf
+    output_dir = _as_repo_relative_path(document.get("output_dir"))
+    if output_dir:
+        document["output_dir"] = output_dir
+    return document
+
+
 def structure_document(
     ingest_result: dict,
     classify_result: dict,
@@ -42,10 +362,16 @@ def structure_document(
 ) -> DocumentData:
     out_dir = Path(output_dir).expanduser().resolve()
     pages_dir = out_dir / "pages"
+    logical_tables = structured_data.get("logical_tables", [])
 
     table_map: dict[int, list[str]] = {}
     for table in tables:
         table_map.setdefault(table.page_number, []).append(table.table_id)
+    for table in logical_tables:
+        page_number = int(table.get("page_number", 1))
+        table_id = table.get("table_id")
+        if table_id:
+            table_map.setdefault(page_number, []).append(table_id)
 
     image_map: dict[int, list[str]] = {}
     for image in images:
@@ -90,7 +416,6 @@ def structure_document(
         patient=structured_data.get("patient", {}),
         report=structured_data.get("report", {}),
         results=structured_data.get("results", []),
-        interpretation=structured_data.get("interpretation", {}),
         validation=structured_data.get("validation", {}),
         validation_report=structured_data.get("validation_report", {}),
     )
@@ -122,7 +447,7 @@ def structure_document(
         write_json(pages_dir / f"{page_name(page_number)}.json", page_record.to_dict())
         document.pages.append(page_record.to_dict())
 
-    document.tables = [table.to_dict() for table in tables]
+    document.tables = [table.to_dict() for table in tables] + logical_tables
     promoted_ocr_visual_images = [
         _promote_ocr_visual_to_image_dict(visual)
         for visual in ocr_visuals
@@ -131,5 +456,10 @@ def structure_document(
     document.images = [image.to_dict() for image in images] + promoted_ocr_visual_images
     document.ocr_visuals = [visual.to_dict() for visual in ocr_visuals]
     document.blocks = [block.to_dict() for block in blocks]
-    write_json(out_dir / "document.json", document.to_dict())
+    projected_document = apply_document_type_schema_projection(document.to_dict())
+    for page in projected_document.get("pages", []):
+        page_number = int(page.get("page_number", 0))
+        if page_number:
+            write_json(pages_dir / f"{page_name(page_number)}.json", page)
+    write_json(out_dir / "document.json", projected_document)
     return document

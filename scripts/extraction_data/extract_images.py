@@ -94,6 +94,13 @@ def _find_last_text_block(text_blocks: list[dict], patterns: list[str]) -> dict 
     return max(matches, key=lambda block: block["bbox"]["y0"])
 
 
+def _is_chu_lab_text(text_blocks: list[dict]) -> bool:
+    label = normalize_label(" ".join(block.get("text", "") for block in text_blocks[:20]))
+    return "laboratoire_central" in label and (
+        "centre_hospitalo_universitaire_mohammed_vi_oujda" in label or "ip_patient" in label
+    )
+
+
 def _clamp_bbox(
     bbox: dict[str, float],
     *,
@@ -333,6 +340,10 @@ def extract_images(
                     image_bbox=bbox,
                     context_text=context_text,
                 )
+                if _is_chu_lab_text(text_blocks) and image_type in {"unknown", "logo_or_branding"}:
+                    image_type = "logo_or_branding"
+                    role = "institutional_header"
+                    is_indexable = False
 
                 assets.append(
                     _save_native_image_asset(

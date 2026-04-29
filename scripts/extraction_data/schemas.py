@@ -57,6 +57,7 @@ class TableAsset:
     bbox: dict[str, float] | None = None
     table_role: str = "unknown"
     is_indexable: bool = False
+    source: str = "pdf_table"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -136,7 +137,6 @@ class DocumentData:
     patient: dict[str, Any] = field(default_factory=dict)
     report: dict[str, Any] = field(default_factory=dict)
     results: list[dict[str, Any]] = field(default_factory=list)
-    interpretation: dict[str, Any] = field(default_factory=dict)
     validation: dict[str, Any] = field(default_factory=dict)
     validation_report: dict[str, Any] = field(default_factory=dict)
     pages: list[dict[str, Any]] = field(default_factory=list)

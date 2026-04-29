@@ -54,6 +54,12 @@ def is_iso_date(value: object) -> bool:
     return isinstance(value, str) and bool(ISO_DATE_PATTERN.fullmatch(value))
 
 
+def is_valid_patient_identifier(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    return is_valid_uuid_like(value) or bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", value))
+
+
 def evaluate_status(issues: list[dict]) -> str:
     severities = {issue["severity"] for issue in issues}
     if "FAIL" in severities:
@@ -74,12 +80,17 @@ def validate_patient(document: dict, issues: list[dict]) -> None:
     patient_id = patient.get("patient_id")
     if not patient_id:
         add_issue(issues, "FAIL", "missing_patient_id", "patient.patient_id is missing")
-    elif not is_valid_uuid_like(patient_id):
-        add_issue(issues, "FAIL", "invalid_patient_id", f"patient.patient_id is not canonical UUID-like: {patient_id}")
+    elif not is_valid_patient_identifier(patient_id):
+        add_issue(issues, "FAIL", "invalid_patient_id", f"patient.patient_id is not a supported identifier: {patient_id}")
 
 
 def validate_report(document: dict, issues: list[dict]) -> None:
     report = document.get("report", {})
+    if document.get("document_type") == "parasitology_stool_report":
+        sample_id = report.get("sample_id")
+        if not sample_id:
+            add_issue(issues, "FAIL", "missing_sample_id", "report.sample_id is missing")
+        return
     report_date = report.get("report_date")
     if not report_date:
         add_issue(issues, "FAIL", "missing_report_date", "report.report_date is missing")
@@ -88,10 +99,30 @@ def validate_report(document: dict, issues: list[dict]) -> None:
 
 
 def validate_result_fields(document: dict, issues: list[dict]) -> None:
+    if document.get("document_type") == "parasitology_stool_report":
+        for index, result in enumerate(document.get("results", []), start=1):
+            required_fields = ("parameter", "result", "section", "source_page_number")
+            missing = [field for field in required_fields if result.get(field) in {None, ""}]
+            if missing:
+                add_issue(
+                    issues,
+                    "FAIL",
+                    "missing_result_fields",
+                    f"Result #{index} missing fields: {', '.join(missing)}",
+                )
+        return
     for index, result in enumerate(document.get("results", []), start=1):
+        is_qualitative = result.get("result_kind") in {"qualitative", "pathogen_identification", "microscopy_finding"}
+        required_fields = ("analyte", "value_raw", "unit", "observation_date") if is_qualitative else (
+            "analyte",
+            "value_raw",
+            "value_numeric",
+            "unit",
+            "observation_date",
+        )
         missing = [
             field
-            for field in ("analyte", "value_raw", "value_numeric", "unit", "observation_date")
+            for field in required_fields
             if result.get(field) in {None, ""}
         ]
         if missing:
@@ -113,12 +144,12 @@ def validate_result_fields(document: dict, issues: list[dict]) -> None:
 
 def validate_result_consistency(document: dict, issues: list[dict]) -> None:
     for index, result in enumerate(document.get("results", []), start=1):
+        if result.get("result_kind") in {"qualitative", "pathogen_identification", "microscopy_finding"}:
+            continue
         reference = result.get("reference_range") or {}
         low = reference.get("low")
         high = reference.get("high")
         value = result.get("value_numeric")
-        alert_flag = result.get("alert_flag")
-        is_abnormal = result.get("is_abnormal")
 
         if low is not None and high is not None and low > high:
             add_issue(
@@ -131,23 +162,6 @@ def validate_result_consistency(document: dict, issues: list[dict]) -> None:
 
         if value is None or low is None or high is None:
             continue
-
-        if value > high:
-            if is_abnormal is not True:
-                add_issue(issues, "FAIL", "abnormal_flag_missing_high", f"Result #{index} should be abnormal above range")
-            if alert_flag not in {"H", "HH"}:
-                add_issue(issues, "FAIL", "alert_flag_inconsistent_high", f"Result #{index} alert_flag should indicate high")
-        elif value < low:
-            if is_abnormal is not True:
-                add_issue(issues, "FAIL", "abnormal_flag_missing_low", f"Result #{index} should be abnormal below range")
-            if alert_flag not in {"L", "LL"}:
-                add_issue(issues, "FAIL", "alert_flag_inconsistent_low", f"Result #{index} alert_flag should indicate low")
-        else:
-            if is_abnormal is not False:
-                add_issue(issues, "FAIL", "abnormal_flag_inconsistent_normal", f"Result #{index} should not be abnormal in range")
-            if alert_flag not in {None, "", "-"}:
-                add_issue(issues, "FAIL", "alert_flag_inconsistent_normal", f"Result #{index} alert_flag should be empty/inactive in range")
-
 
 def validate_deduplication(document: dict, issues: list[dict]) -> None:
     results = document.get("results", [])

@@ -167,10 +167,12 @@ def _compute_block_confidence(
         score += 0.05
     if text_length > 80:
         score += 0.05
-    if block_type in {"clinical_interpretation_block", "summary_block"} and page_text_source == "ocr":
-        score -= 0.15
     if block_type == "validation_block" and not (has_image_source or source_count):
         score -= 0.1
+
+    # Some native-text sections are short but highly deterministic in CHU reports.
+    if page_text_source == "native" and block_type in {"staining_exam_block", "final_result_block"} and text_length > 0:
+        score = max(score, 0.9)
 
     score = max(0.0, min(1.0, score))
     return (_score_to_confidence(score), score)
@@ -432,6 +434,414 @@ def _asset_type(asset) -> str:
     return getattr(asset, "image_type", getattr(asset, "visual_type", "unknown"))
 
 
+def _page_lines(page: dict) -> list[str]:
+    text = page.get("final_text") or page.get("native_text") or ""
+    return [normalize_inline_text(line) for line in text.splitlines() if normalize_inline_text(line)]
+
+
+def _is_chu_lab_page(page: dict) -> bool:
+    label = normalize_label("\n".join(_page_lines(page)[:30]))
+    return "laboratoire_central" in label and ("ip_patient" in label or "n_d_echantillon" in label or "n_echantillon" in label)
+
+
+def _is_parasitology_stool_page(page: dict) -> bool:
+    label = normalize_label("\n".join(_page_lines(page)))
+    return all(
+        marker in label
+        for marker in (
+            "laboratoire_de_parasitologie_mycologie",
+            "examen_parasitologique_des_selles",
+            "examen_macroscopique",
+            "examen_microscopique",
+            "resultat_final",
+        )
+    )
+
+
+def _find_line_index(lines: list[str], target: str) -> int | None:
+    target_label = normalize_label(target)
+    for index, line in enumerate(lines):
+        label = normalize_label(line)
+        if label == target_label or target_label in label:
+            return index
+    return None
+
+
+def _metadata_value(lines: list[str], label: str) -> str | None:
+    label_pattern = re.compile(rf"^{re.escape(label)}\s*:?\s*(.*)$", flags=re.IGNORECASE)
+    for index, line in enumerate(lines):
+        match = label_pattern.match(line)
+        if not match:
+            continue
+        value = normalize_inline_text(match.group(1)).strip()
+        if value:
+            return value
+        if index + 1 < len(lines):
+            next_line = normalize_inline_text(lines[index + 1])
+            if next_line and ":" not in next_line:
+                return next_line
+        return None
+    return None
+
+
+def _format_metadata_line(label: str, value: str | None) -> str:
+    return f"{label}: {value}" if value else f"{label}:"
+
+
+def _slice_lines(lines: list[str], start: int | None, end: int | None = None) -> list[str]:
+    if start is None:
+        return []
+    return lines[start : end if end is not None else len(lines)]
+
+
+def _first_meaningful_value(lines: list[str]) -> str | None:
+    for line in lines:
+        cleaned = normalize_inline_text(line).lstrip(": ").strip()
+        if cleaned and normalize_label(cleaned) not in {"resultat_final", "resulat_final"}:
+            return cleaned
+    return None
+
+
+def _append_simple_block(
+    blocks: list[DocumentBlock],
+    *,
+    block_index: int,
+    page_number: int,
+    block_type: str,
+    section_title: str,
+    lines: list[str],
+    page_text_source: str,
+    is_indexable: bool,
+    structured_fields: dict | None = None,
+) -> int:
+    text = "\n".join(line for line in lines if normalize_inline_text(line))
+    if not text:
+        return block_index
+    confidence, confidence_score = _compute_block_confidence(
+        page_text_source=page_text_source,
+        block_type=block_type,
+        text_length=len(normalize_inline_text(text)),
+        source_count=max(1, len(lines)),
+    )
+    blocks.append(
+        _make_block(
+            block_id=f"block_{block_index:03d}",
+            page_number=page_number,
+            block_type=block_type,
+            section_title=section_title,
+            text=text,
+            bboxes=[],
+            is_indexable=is_indexable,
+            confidence=confidence,
+            confidence_score=confidence_score,
+            structured_fields={
+                "source": "native_text_section_parser",
+                **(structured_fields or {}),
+            },
+        )
+    )
+    return block_index + 1
+
+
+def _create_parasitology_stool_blocks(
+    *,
+    page: dict,
+    page_number: int,
+    block_index: int,
+    page_text_source: str,
+) -> tuple[list[DocumentBlock], int]:
+    created: list[DocumentBlock] = []
+    lines = _page_lines(page)
+    macro = _find_line_index(lines, "EXAMEN MACROSCOPIQUE")
+    micro = _find_line_index(lines, "EXAMEN MICROSCOPIQUE")
+    enrichment = _find_line_index(lines, "EXAMEN APRÈS ENRICHISSEMENT")
+    staining = _find_line_index(lines, "EXAMEN APRÈS COLORATION")
+    final = _find_line_index(lines, "RÉSULTAT FINAL")
+    footer = _find_line_index(lines, "Adresse Web")
+    sample = _find_line_index(lines, "ECHANTILLON BIOLOGIQUE")
+    patient_info_lines = [
+        _format_metadata_line("IP Patient", _metadata_value(lines, "IP Patient")),
+        _format_metadata_line("Patient", _metadata_value(lines, "Patient")),
+        "Né(e) le:",
+        _metadata_value(lines, "Né(e) le") or "",
+        _format_metadata_line("Sexe", _metadata_value(lines, "Sexe")),
+        _format_metadata_line("Origine", _metadata_value(lines, "Origine")),
+        _format_metadata_line("Service", _metadata_value(lines, "Service")),
+        _format_metadata_line("Prescripteur", _metadata_value(lines, "Prescripteur")),
+        _format_metadata_line("Date Demande", _metadata_value(lines, "Date Demande")),
+        _format_metadata_line("Date Réception", _metadata_value(lines, "Date Réception")),
+        _format_metadata_line("N° d'échantillon", _metadata_value(lines, "N° d'échantillon")),
+        _format_metadata_line("Nature", _metadata_value(lines, "Nature")),
+    ]
+
+    facility_lines = [
+        line
+        for line in lines
+        if any(
+            token in normalize_label(line)
+            for token in (
+                "laboratoire_central",
+                "royaume_du_maroc",
+                "ministere_de_la_sante",
+                "centre_hospitalo_universitaire",
+                "laboratoire_de_parasitologie_mycologie",
+                "adresse_web",
+                "tel",
+            )
+        )
+        or "المملكة" in line
+        or "وزارة" in line
+    ]
+    block_index = _append_simple_block(
+        created,
+        block_index=block_index,
+        page_number=page_number,
+        block_type="facility_block",
+        section_title="Facility",
+        lines=facility_lines,
+        page_text_source=page_text_source,
+        is_indexable=False,
+    )
+
+    block_index = _append_simple_block(
+        created,
+        block_index=block_index,
+        page_number=page_number,
+        block_type="patient_info_block",
+        section_title="Patient information",
+        lines=[line for line in patient_info_lines if line],
+        page_text_source=page_text_source,
+        is_indexable=False,
+    )
+
+    metadata_lines = [
+        _format_metadata_line("Origine", _metadata_value(lines, "Origine")),
+        _format_metadata_line("Service", _metadata_value(lines, "Service")),
+        _format_metadata_line("Prescripteur", _metadata_value(lines, "Prescripteur")),
+        _format_metadata_line("Date Demande", _metadata_value(lines, "Date Demande")),
+        _format_metadata_line("Date Réception", _metadata_value(lines, "Date Réception")),
+        _format_metadata_line("N° d'échantillon", _metadata_value(lines, "N° d'échantillon")),
+        _format_metadata_line("Nature", _metadata_value(lines, "Nature")),
+        _format_metadata_line("Imprimé par", _metadata_value(lines, "Imprimé par")),
+        _format_metadata_line("Date impression", _metadata_value(lines, "Le")),
+        _format_metadata_line("Edité par", _metadata_value(lines, "Edité(e) par")),
+        _format_metadata_line("Date édition", _metadata_value(lines[-6:] if len(lines) >= 6 else lines, "Le")),
+    ]
+    block_index = _append_simple_block(
+        created,
+        block_index=block_index,
+        page_number=page_number,
+        block_type="report_metadata_block",
+        section_title="Report metadata",
+        lines=metadata_lines,
+        page_text_source=page_text_source,
+        is_indexable=False,
+    )
+
+    block_index = _append_simple_block(
+        created,
+        block_index=block_index,
+        page_number=page_number,
+        block_type="sample_block",
+        section_title="ECHANTILLON BIOLOGIQUE",
+        lines=_slice_lines(lines, sample, macro),
+        page_text_source=page_text_source,
+        is_indexable=True,
+    )
+    block_index = _append_simple_block(
+        created,
+        block_index=block_index,
+        page_number=page_number,
+        block_type="macroscopic_exam_block",
+        section_title="EXAMEN MACROSCOPIQUE",
+        lines=_slice_lines(lines, macro, micro),
+        page_text_source=page_text_source,
+        is_indexable=True,
+    )
+    block_index = _append_simple_block(
+        created,
+        block_index=block_index,
+        page_number=page_number,
+        block_type="microscopic_exam_block",
+        section_title="EXAMEN MICROSCOPIQUE",
+        lines=_slice_lines(lines, micro, enrichment),
+        page_text_source=page_text_source,
+        is_indexable=True,
+    )
+    block_index = _append_simple_block(
+        created,
+        block_index=block_index,
+        page_number=page_number,
+        block_type="enrichment_exam_block",
+        section_title="EXAMEN APRÈS ENRICHISSEMENT",
+        lines=_slice_lines(lines, enrichment, staining),
+        page_text_source=page_text_source,
+        is_indexable=True,
+    )
+    block_index = _append_simple_block(
+        created,
+        block_index=block_index,
+        page_number=page_number,
+        block_type="staining_exam_block",
+        section_title="EXAMEN APRÈS COLORATION",
+        lines=(
+            [f"EXAMEN APRÈS COLORATION : {_first_meaningful_value(_slice_lines(lines, staining + 1, final))}"]
+            if staining is not None and final is not None and _first_meaningful_value(_slice_lines(lines, staining + 1, final))
+            else []
+        ),
+        page_text_source=page_text_source,
+        is_indexable=True,
+    )
+    final_value = _first_meaningful_value(_slice_lines(lines, final + 1, footer)[:5]) if final is not None else None
+    block_index = _append_simple_block(
+        created,
+        block_index=block_index,
+        page_number=page_number,
+        block_type="final_result_block",
+        section_title="RÉSULTAT FINAL",
+        lines=[f"RÉSULTAT FINAL : {final_value}"] if final_value else [],
+        page_text_source=page_text_source,
+        is_indexable=True,
+    )
+
+    edition_start = None
+    for index, line in enumerate(lines):
+        label = normalize_label(line)
+        if label.startswith("edite_e_par") or (label.startswith("le_") and index > (final or 0)):
+            edition_start = min(index, edition_start) if edition_start is not None else index
+    block_index = _append_simple_block(
+        created,
+        block_index=block_index,
+        page_number=page_number,
+        block_type="edition_block",
+        section_title="Edition laboratoire",
+        lines=[
+            line
+            for line in _slice_lines(lines, edition_start, footer)
+            if not normalize_label(line).startswith("resultat_final")
+        ],
+        page_text_source=page_text_source,
+        is_indexable=False,
+    )
+    return created, block_index
+
+
+def _trim_chu_results_text(page: dict) -> str:
+    lines = _page_lines(page)
+    if not lines:
+        return ""
+
+    start = None
+    for index, line in enumerate(lines):
+        label = normalize_label(line)
+        if label == "parametres" or label.startswith("examen_"):
+            start = index + 1
+            break
+    if start is None:
+        for index, line in enumerate(lines):
+            label = normalize_label(line)
+            if "centre_hospitalo_universitaire_mohammed_vi_oujda" in label:
+                start = index + 1
+                break
+    if start is None:
+        return ""
+
+    end = len(lines)
+    for index in range(start, len(lines)):
+        label = normalize_label(lines[index])
+        if label.startswith("le_") or label.startswith("page_") or label.startswith("adresse_web") or label.startswith("tel"):
+            end = index
+            break
+
+    kept = []
+    for line in lines[start:end]:
+        label = normalize_label(line)
+        if not line or label in {"resultats", "valeurs_physiologiques", "resultats_ant", "parametres"}:
+            continue
+        if label.startswith(("chef", "professeur", "medecins", "infirmier", "vice_major", "technicien", "imprime")):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def _create_chu_lab_blocks(
+    *,
+    page: dict,
+    page_number: int,
+    block_index: int,
+    page_text_source: str,
+) -> tuple[list[DocumentBlock], int]:
+    created: list[DocumentBlock] = []
+    lines = _page_lines(page)
+
+    def score(block_type: str, text: str, source_count: int = 1) -> dict:
+        confidence, confidence_score = _compute_block_confidence(
+            page_text_source=page_text_source,
+            block_type=block_type,
+            text_length=len(normalize_inline_text(text)),
+            source_count=source_count,
+        )
+        return {"confidence": confidence, "confidence_score": confidence_score}
+
+    if page_number == 1:
+        header_lines = []
+        for line in lines[:18]:
+            label = normalize_label(line)
+            if label.startswith("royaume_du_maroc") or "المملكة" in line:
+                break
+            header_lines.append(line)
+        if header_lines:
+            text = "\n".join(header_lines)
+            created.append(
+                _make_block(
+                    block_id=f"block_{block_index:03d}",
+                    page_number=page_number,
+                    block_type="patient_info_block",
+                    section_title="CHU laboratory patient header",
+                    text=text,
+                    bboxes=[],
+                    is_indexable=False,
+                    **score("patient_info_block", text, len(header_lines)),
+                )
+            )
+            block_index += 1
+
+    results_text = _trim_chu_results_text(page)
+    if results_text:
+        created.append(
+            _make_block(
+                block_id=f"block_{block_index:03d}",
+                page_number=page_number,
+                block_type="results_table_block",
+                section_title="Laboratory results",
+                text=results_text,
+                bboxes=[],
+                is_indexable=True,
+                **score("results_table_block", results_text, max(1, len(results_text.splitlines()))),
+            )
+        )
+        block_index += 1
+
+    validation_lines = [line for line in lines if "Validé(e) par" in line or "Valide(e) par" in line]
+    if validation_lines:
+        text = "\n".join(validation_lines)
+        created.append(
+            _make_block(
+                block_id=f"block_{block_index:03d}",
+                page_number=page_number,
+                block_type="validation_block",
+                section_title="Laboratory validation",
+                text=text,
+                bboxes=[],
+                is_indexable=False,
+                **score("validation_block", text, len(validation_lines)),
+            )
+        )
+        block_index += 1
+
+    return created, block_index
+
+
 def _build_validation_structured_fields(
     *,
     title: str,
@@ -513,6 +923,26 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list, ocr_vis
 
         footer_blocks = _select_footer_blocks(text_blocks)
         footer_top = footer_blocks[0]["bbox"]["y0"] if footer_blocks else page_height * 0.95
+
+        if _is_parasitology_stool_page(page):
+            parasitology_blocks, block_index = _create_parasitology_stool_blocks(
+                page=page,
+                page_number=page_number,
+                block_index=block_index,
+                page_text_source=page_text_source,
+            )
+            blocks.extend(parasitology_blocks)
+            continue
+
+        if _is_chu_lab_page(page):
+            chu_blocks, block_index = _create_chu_lab_blocks(
+                page=page,
+                page_number=page_number,
+                block_index=block_index,
+                page_text_source=page_text_source,
+            )
+            blocks.extend(chu_blocks)
+            continue
 
         if page_number == 1:
             logo = next((image for image in page_images if image.image_type == "logo_or_branding"), None)
@@ -658,19 +1088,15 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list, ocr_vis
                     page_number=page_number,
                     text_blocks=text_blocks,
                     title_candidates=["Resultats selectionnes", "Analyse / Observation"],
-                    stop_candidates=["Validation medicale", "Interpretation biologique"],
+                    stop_candidates=["Validation medicale"],
                     block_index=block_index,
                     page_text_source=page_text_source,
                 )
                 blocks.extend(fallback_results)
 
-        interpretation_title = (
-            _find_text_block(text_blocks, "Interpretation biologique")
-            or _find_text_block(text_blocks, "Interpretation et validation")
-            or _find_text_block(text_blocks, "Synthese radioclinique")
-        )
+        
         if interpretation_title:
-            companion_title = _find_companion_title(text_blocks, interpretation_title)
+           """  companion_title = _find_companion_title(text_blocks, interpretation_title)
             summary_title = _find_text_block(text_blocks, "Resume du dossier")
             validation_title = _find_text_block(text_blocks, "Validation medicale")
             stamp_title = _find_text_block(text_blocks, "Cachet du service")
@@ -706,7 +1132,7 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list, ocr_vis
                     ),
                 )
             )
-            block_index += 1
+            block_index += 1 """
 
         summary_title = _find_text_block(text_blocks, "Resume du dossier")
         if summary_title:
