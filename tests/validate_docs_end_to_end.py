@@ -7,20 +7,19 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TESTS_DIR = Path(__file__).resolve().parent
 DOCS_DIR = PROJECT_ROOT / "docs"
 OUTPUT_ROOT = PROJECT_ROOT / "data" / "extraction"
 
 EXTRACTION_SCRIPT_ROOT = PROJECT_ROOT / "scripts" / "extraction_data"
 
-if str(EXTRACTION_SCRIPT_ROOT) not in sys.path:
-    sys.path.insert(0, str(EXTRACTION_SCRIPT_ROOT))
-
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+for path in (TESTS_DIR, EXTRACTION_SCRIPT_ROOT, PROJECT_ROOT):
+    path_str = str(path)
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
 
 from run_extraction import run_pipeline
 from validate_extraction_outputs import evaluate_status, make_issue, validate_document
-
 
 def _load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -58,68 +57,166 @@ def _extra_checks(document: dict) -> list[dict]:
     # Parasitology-specific checks
     # -------------------------------
     if doc_type == "parasitology_stool_report":
-        checks = document.get("consistency_checks")
+        top_checks = document.get("consistency_checks")
+        report_checks = document.get("validation_report", {}).get("consistency_checks")
 
-        if not isinstance(checks, dict):
+        if not isinstance(report_checks, dict):
+            issues.append(
+                make_issue(
+                    "WARNING",
+                    "missing_validation_report_consistency_checks",
+                    "validation_report.consistency_checks is missing for parasitology_stool_report",
+                )
+            )
+
+        if not isinstance(top_checks, dict):
             issues.append(
                 make_issue(
                     "WARNING",
                     "missing_consistency_checks",
-                    "consistency_checks is missing for parasitology_stool_report",
+                    "top-level consistency_checks is missing for parasitology_stool_report",
                 )
             )
-        else:
-            parasite = checks.get("parasite_consistency")
 
-            if not isinstance(parasite, dict):
+        if isinstance(top_checks, dict) and isinstance(report_checks, dict):
+            if top_checks != report_checks:
+                issues.append(
+                    make_issue(
+                        "FAIL",
+                        "consistency_checks_mismatch",
+                        "Top-level consistency_checks does not match validation_report.consistency_checks",
+                    )
+                )
+
+        checks = report_checks if isinstance(report_checks, dict) else top_checks
+
+        if not isinstance(checks, dict):
+            return issues
+
+        parasite = checks.get("parasite_consistency")
+
+        if not isinstance(parasite, dict):
+            issues.append(
+                make_issue(
+                    "WARNING",
+                    "missing_parasite_consistency",
+                    "parasite_consistency is missing",
+                )
+            )
+            return issues
+
+        status = parasite.get("status")
+        detected = parasite.get("detected_in_sections")
+
+        allowed_statuses = {
+            "consistent",
+            "needs_review",
+            "partial_overlap",
+            "discordant_findings",
+        }
+
+        if status == "inconsistent":
+            issues.append(
+                make_issue(
+                    "FAIL",
+                    "legacy_parasite_consistency_status",
+                    "Legacy status 'inconsistent' should be replaced by 'discordant_findings', 'partial_overlap', or 'needs_review'",
+                )
+            )
+        elif status not in allowed_statuses:
+            issues.append(
+                make_issue(
+                    "FAIL",
+                    "invalid_parasite_consistency_status",
+                    f"Invalid parasite consistency status: {status}",
+                )
+            )
+
+        if not isinstance(detected, dict) or not detected:
+            issues.append(
+                make_issue(
+                    "WARNING",
+                    "missing_detected_sections",
+                    "detected_in_sections is missing or empty",
+                )
+            )
+            return issues
+
+        expected_sections = {
+            "staining_exam",
+            "enrichment_exam",
+            "microscopic_exam",
+            "final_result",
+        }
+
+        missing_sections = expected_sections - set(detected.keys())
+        if missing_sections:
+            issues.append(
+                make_issue(
+                    "WARNING",
+                    "missing_detected_section_keys",
+                    "detected_in_sections is missing keys: "
+                    + ", ".join(sorted(missing_sections)),
+                )
+            )
+
+        for section, values in detected.items():
+            if not isinstance(values, list):
                 issues.append(
                     make_issue(
                         "WARNING",
-                        "missing_parasite_consistency",
-                        "consistency_checks.parasite_consistency is missing",
+                        "invalid_detected_section_values",
+                        f"detected_in_sections.{section} must be a list",
                     )
                 )
-            else:
-                status = parasite.get("status")
-                detected = parasite.get("detected_in_sections")
+                continue
 
-                # Validate status value
-                if status not in {"consistent", "inconsistent"}:
-                    issues.append(
-                        make_issue(
-                            "WARNING",
-                            "invalid_parasite_consistency_status",
-                            f"Invalid status: {status}",
-                        )
+            normalized_values = [
+                value.lower().strip()
+                for value in values
+                if isinstance(value, str)
+            ]
+
+            if len(normalized_values) != len(set(normalized_values)):
+                issues.append(
+                    make_issue(
+                        "WARNING",
+                        "duplicate_detected_entities",
+                        f"Duplicate parasite entities found in detected_in_sections.{section}",
                     )
+                )
 
-                # Validate detected sections structure
-                if not isinstance(detected, dict) or not detected:
-                    issues.append(
-                        make_issue(
-                            "WARNING",
-                            "missing_detected_sections",
-                            "detected_in_sections is missing or empty",
-                        )
-                    )
-                else:
-                    # Check logical consistency of inconsistency flag
-                    unique_values = set()
+        final_values = {
+            value.lower().strip()
+            for value in detected.get("final_result", [])
+            if isinstance(value, str)
+        }
 
-                    for values in detected.values():
-                        if isinstance(values, list):
-                            for v in values:
-                                if isinstance(v, str):
-                                    unique_values.add(v.lower().strip())
+        prior_values: set[str] = set()
+        for section in ("staining_exam", "enrichment_exam", "microscopic_exam"):
+            prior_values.update(
+                value.lower().strip()
+                for value in detected.get(section, [])
+                if isinstance(value, str)
+            )
 
-                    if status == "inconsistent" and len(unique_values) <= 1:
-                        issues.append(
-                            make_issue(
-                                "WARNING",
-                                "false_inconsistency",
-                                "Marked inconsistent but only one unique value found",
-                            )
-                        )
+        if status == "discordant_findings" and final_values.intersection(prior_values):
+            issues.append(
+                make_issue(
+                    "WARNING",
+                    "discordance_has_overlap",
+                    "Status is discordant_findings but final_result overlaps with previous parasite findings",
+                )
+            )
+
+        if status == "consistent" and final_values and prior_values and final_values != prior_values:
+            issues.append(
+                make_issue(
+                    "WARNING",
+                    "false_consistent_parasite_status",
+                    "Status is consistent but final_result differs from previous parasite findings",
+                )
+            )
 
     return issues
 
