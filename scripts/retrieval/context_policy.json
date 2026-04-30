@@ -1,0 +1,49 @@
+{
+  "exact_entity": {
+    "strict_context": true,
+    "allow_other_docs": false,
+    "require_explicit_entity_match": true,
+    "min_evidence_score": 0.45,
+    "max_context_chunks": 8,
+    "must_include_same_doc": [
+      "document_summary",
+      "validation_status"
+    ],
+    "must_include_parasitology_related_sections": true,
+    "weights": {
+      "exact_entity_match": 0.45,
+      "keyword_match": 0.20,
+      "vector_match": 0.10,
+      "same_main_doc": 0.15,
+      "document_summary": 0.15,
+      "validation_status": 0.25,
+      "warning": 0.30,
+      "related_section": 0.20,
+      "parasitology_related_section": 0.20,
+      "final_result_related": 0.20,
+      "staining_exam_related": 0.20,
+      "parent_or_sibling": 0.10,
+      "other_doc_penalty": -0.50,
+      "vector_only_penalty": -0.25
+    }
+  },
+  "semantic": {
+    "strict_context": true,
+    "allow_other_docs": true,
+    "require_explicit_entity_match": false,
+    "min_evidence_score": 0.35,
+    "max_context_chunks": 8,
+    "weights": {
+      "keyword_match": 0.15,
+      "vector_match": 0.25,
+      "same_main_doc": 0.20,
+      "document_summary": 0.10,
+      "validation_status": 0.10,
+      "warning": 0.15,
+      "related_section": 0.15,
+      "parent_or_sibling": 0.10,
+      "other_doc_penalty": -0.15,
+      "vector_only_penalty": -0.05
+    }
+  }
+}

@@ -55,6 +55,27 @@ LOW_VALUE_SECTION_TITLES = {
     "report metadata",
 }
 
+TECHNICAL_BLOCK_LABELS = {
+    "results_table_block",
+    "patient_info_block",
+    "validation_block",
+    "facility_block",
+    "document_header",
+    "footer_block",
+}
+
+TECHNICAL_SUFFIX_PATTERNS = [
+    re.compile(r":\s*Laboratory results\s+results_table_block\b", re.IGNORECASE),
+    re.compile(r"\bLaboratory results\s+results_table_block\b", re.IGNORECASE),
+    re.compile(r"\bresults_table_block\b", re.IGNORECASE),
+    re.compile(r"\bpatient_info_block\b", re.IGNORECASE),
+    re.compile(r"\bvalidation_block\b", re.IGNORECASE),
+    re.compile(r"\bfacility_block\b", re.IGNORECASE),
+    re.compile(r"\bdocument_header\b", re.IGNORECASE),
+    re.compile(r"\bfooter_block\b", re.IGNORECASE),
+    re.compile(r"\bLaboratory results\s+Laboratory results\b", re.IGNORECASE),
+]
+
 TRUNCATED_REFERENCE_ENDING_PATTERN = re.compile(
     r"(?:\b(de|du|des|d'|avec|sans|pour|chez|car|si|ou|et|à|a|le|la|les|un|une|pas de)\s*)$",
     re.IGNORECASE,
@@ -405,6 +426,23 @@ def build_keyword_text(text: str, extra_terms: Iterable[Any]) -> str:
     return clean(f"{joined} {accentless}")
 
 
+def clean_index_text(text: str) -> str:
+    """
+    Remove technical chunking/block artifacts from searchable text while preserving clinical content.
+    """
+    cleaned = clean(text)
+    if not cleaned:
+        return ""
+
+    for pattern in TECHNICAL_SUFFIX_PATTERNS:
+        cleaned = pattern.sub(" ", cleaned)
+
+    cleaned = re.sub(r"\s+([:;,\.\)])", r"\1", cleaned)
+    cleaned = re.sub(r"([(\[])\s+", r"\1", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    return cleaned
+
+
 def enrich_short_embedding_text(text: str, metadata: Dict[str, Any]) -> str:
     """
     Enrich short chunks for vector search.
@@ -516,8 +554,8 @@ def make_chunk(
     chunk_id_parts: Iterable[Any] = (),
     modality: str = "text",
 ) -> Dict[str, Any]:
-    clean_embedding = clean(text_for_embedding)
-    clean_keyword = clean(text_for_keyword)
+    clean_embedding = clean_index_text(text_for_embedding)
+    clean_keyword = clean_index_text(text_for_keyword)
     chunk_id = make_chunk_id(doc_id, chunk_type, *chunk_id_parts)
 
     normalized_quality = dict(quality or {})
@@ -904,7 +942,7 @@ def build_section_chunks_from_blocks(
                     doc_id=doc_id,
                     chunk_type="exam_section",
                     text_for_embedding=part_embedding,
-                    text_for_keyword=build_keyword_text(part_text, [section_title, block_type]),
+                    text_for_keyword=build_keyword_text(part_text, [section_title]),
                     metadata=part_metadata,
                     provenance={
                         "doc_id": doc_id,

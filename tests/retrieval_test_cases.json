@@ -1,0 +1,142 @@
+[
+  {
+    "id": "CTX_TRICHURIS_DISCORDANCE",
+    "query": "trichuris trichiura",
+    "query_type": "exact_entity",
+    "expected_doc_id": "report",
+    "expected_chunk_contains": "TRICHURIS",
+    "strict_context": true,
+    "expected_context_doc_ids": ["report"],
+    "forbidden_context_doc_ids": ["report_12", "report_16", "report_10"],
+    "expected_context_contains": "TRICHURIS",
+    "expected_related_context_contains": ["ANKYLOSTOMA"],
+    "expected_context_chunk_types": ["document_summary", "validation_status"]
+  },
+  {
+    "id": "CTX_ANKYLOSTOMA_DISCORDANCE",
+    "query": "ankylostoma duodenale",
+    "query_type": "exact_entity",
+    "expected_doc_id": "report",
+    "expected_chunk_contains": "ANKYLOSTOMA",
+    "strict_context": true,
+    "expected_context_doc_ids": ["report"],
+    "forbidden_context_doc_ids": ["report_12", "report_16"],
+    "expected_context_contains": "ANKYLOSTOMA",
+    "expected_related_context_contains": ["TRICHURIS"],
+    "expected_context_chunk_types": ["document_summary", "validation_status"]
+  },
+  {
+    "id": "RET003",
+    "query": "oeufs ankylostoma après coloration",
+    "query_type": "exact_entity",
+    "expected_doc_id": "report",
+    "expected_chunk_type": "exam_section"
+  },
+  {
+    "id": "RET004",
+    "query": "résultat final parasite",
+    "query_type": "semantic",
+    "expected_doc_id": "report",
+    "expected_chunk_contains": "TRICHURIS"
+  },
+  {
+    "id": "CTX_ALBUMINE_STRICT",
+    "query": "albumine 5 g/l",
+    "query_type": "exact_entity",
+    "expected_doc_id": "report_8",
+    "expected_chunk_contains": "Albumine",
+    "strict_context": true,
+    "expected_context_doc_ids": ["report_8"],
+    "expected_context_contains": "Albumine",
+    "forbidden_context_doc_ids": ["report_10", "report_12", "report_29"],
+    "expected_related_context_contains": ["5 g/l"]
+  },
+  {
+    "id": "RET006",
+    "query": "acide urique 12 mg/l",
+    "query_type": "exact_entity",
+    "expected_doc_id": "report_2",
+    "expected_chunk_contains": "ACIDE URIQUE",
+    "strict_context": true,
+    "expected_context_doc_ids": ["report_2"],
+    "expected_context_contains": "ACIDE URIQUE"
+  },
+  {
+    "id": "RET007",
+    "query": "ammonium 13 µg/dl",
+    "query_type": "exact_entity",
+    "expected_doc_id": "report_2",
+    "expected_chunk_contains": "AMMONIUM"
+  },
+  {
+    "id": "RET008",
+    "query": "calcium 5 mg/l",
+    "query_type": "exact_entity",
+    "expected_doc_id": "report_22",
+    "expected_chunk_contains": "Calcium"
+  },
+  {
+    "id": "RET009",
+    "query": "ferritine",
+    "query_type": "exact_entity",
+    "expected_chunk_contains": "Ferritine"
+  },
+  {
+    "id": "RET010",
+    "query": "CRP",
+    "query_type": "exact_entity",
+    "expected_chunk_contains": "CRP"
+  },
+  {
+    "id": "RET011",
+    "query": "ammonium",
+    "query_type": "exact_entity",
+    "filters": {
+      "patient_id": "53"
+    },
+    "expected_doc_id_any": true
+  },
+  {
+    "id": "RET012",
+    "query": "trichuris",
+    "query_type": "exact_entity",
+    "filters": {
+      "document_type": "parasitology_stool_report"
+    },
+    "expected_doc_id": "report"
+  },
+  {
+    "id": "RET013",
+    "query": "albumine",
+    "query_type": "exact_entity",
+    "filters": {
+      "sample_id": "240527025"
+    },
+    "expected_doc_id": "report_8"
+  },
+  {
+    "id": "RET014",
+    "query": "acide urique",
+    "query_type": "exact_entity",
+    "filters": {
+      "sample_id": "240711594"
+    },
+    "expected_doc_id": "report_2"
+  },
+  {
+    "id": "RET015",
+    "query": "calcium",
+    "query_type": "exact_entity",
+    "filters": {
+      "document_type": "biology_report"
+    },
+    "expected_chunk_contains": "Calcium"
+  },
+  {
+    "id": "RET016",
+    "query": "rapport avec parasite intestinal",
+    "query_type": "semantic",
+    "strict_context": true,
+    "expected_doc_id_any": true
+  }
+]

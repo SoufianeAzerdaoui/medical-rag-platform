@@ -79,6 +79,8 @@ class ReplaceSpec:
     original: str
     replacement: str
     is_explicit_id: bool = False
+    entity_type: str = ""
+    field_name: str = ""
 
 
 class MappingStore:
@@ -293,28 +295,137 @@ def save_mapping(mapping_xlsx: Path, store: MappingStore) -> Tuple[str, List[str
     return str(mapping_csv), warnings
 
 
-def replace_safe(text: str, specs: Sequence[ReplaceSpec]) -> Tuple[str, int]:
+TOKEN_RE = re.compile(r"\b(?:PAT|SAMPLE|REPORT)_\d{6}\b")
+SHORT_NUMERIC_BLOCKLIST = {"0", "1", "2", "53"}
+
+
+def is_safe_global_replacement(value: str) -> bool:
+    v = clean(value)
+    if not v:
+        return False
+    if v in SHORT_NUMERIC_BLOCKLIST:
+        return False
+    if re.fullmatch(r"\d+", v) and len(v) < 6:
+        return False
+    return True
+
+
+def _mask_existing_tokens(text: str) -> Tuple[str, Dict[str, str]]:
+    placeholders: Dict[str, str] = {}
+
+    def _repl(m: re.Match[str]) -> str:
+        key = f"__ANON_TOKEN_{len(placeholders)}__"
+        placeholders[key] = m.group(0)
+        return key
+
+    return TOKEN_RE.sub(_repl, text), placeholders
+
+
+def _unmask_existing_tokens(text: str, placeholders: Dict[str, str]) -> str:
+    restored = text
+    for key, value in placeholders.items():
+        restored = restored.replace(key, value)
+    return restored
+
+
+def replace_short_id_with_context(text: str, field_labels: Sequence[str], original_value: str, token: str) -> Tuple[str, int]:
+    if not text:
+        return text, 0
+    value = clean(original_value)
+    if not value:
+        return text, 0
+
+    labels = [lbl for lbl in field_labels if clean(lbl)]
+    if not labels:
+        return text, 0
+
+    label_pattern = "|".join(re.escape(lbl) for lbl in labels)
+    pattern = re.compile(rf"(?i)\b({label_pattern})\b(\s*(?::|=|-)?\s*){re.escape(value)}(?=\b|$)")
+
+    return pattern.subn(rf"\1\2{token}", text)
+
+
+def _context_labels_for(spec: ReplaceSpec) -> List[str]:
+    if spec.entity_type == "patient":
+        return [
+            "IP Patient",
+            "Patient ID",
+            "patient_id",
+            "patient_id_raw",
+            "ip_patient",
+            "N° patient",
+            "Identifiant patient",
+        ]
+    if spec.entity_type == "sample":
+        return ["sample_id", "sample id", "id échantillon", "identifiant echantillon"]
+    if spec.entity_type == "report":
+        return ["report_id", "report id", "id rapport", "identifiant rapport"]
+    return []
+
+
+def anonymize_text_safely(text: str, replacements: Sequence[ReplaceSpec], counters: Dict[str, int]) -> Tuple[str, int]:
     if not text:
         return text, 0
 
-    ordered = sorted(specs, key=lambda s: len(s.original), reverse=True)
-    current = text
+    masked_text, placeholders = _mask_existing_tokens(text)
+    ordered = sorted(
+        [r for r in replacements if clean(r.original)],
+        key=lambda s: len(clean(s.original)),
+        reverse=True,
+    )
+
+    current = masked_text
     total = 0
-
     for spec in ordered:
-        value = clean(spec.original)
-        if not value:
+        original = clean(spec.original)
+        if not original:
             continue
 
-        # Avoid dangerous broad replacement for very short values, unless explicit ID field.
-        if len(value) < 4 and not spec.is_explicit_id:
+        if is_safe_global_replacement(original):
+            current, count = re.subn(re.escape(original), spec.replacement, current)
+            total += count
             continue
 
-        pattern = re.escape(value)
-        current, count = re.subn(pattern, spec.replacement, current)
-        total += count
+        if re.fullmatch(r"\d+", original) and len(original) < 6:
+            counters["skipped_short_numeric_replacements_count"] += 1
+            labels = _context_labels_for(spec)
+            current, count = replace_short_id_with_context(current, labels, original, spec.replacement)
+            total += count
 
-    return current, total
+    return _unmask_existing_tokens(current, placeholders), total
+
+
+ADMIN_LABEL_PATTERNS = [
+    r"\bEdit(?:e|é|e\u0301)(?:\(e\)|e)?\s+par\b",
+    r"\bValid(?:e|é|e\u0301)(?:\(e\)|e)?\s+par\b",
+    r"\bImprim(?:e|é|e\u0301)(?:e)?\s+par\b",
+    r"\bPrescripteur\b",
+    r"\bDr\.",
+    r"\bPr\.",
+    r"\bM(?:e|é|e\u0301)decin\b",
+    r"\bTechnicien\b",
+    r"\bBiologiste\b",
+]
+
+BLOCKING_ADMIN_PATTERNS = [
+    r"\bEdit(?:e|é|e\u0301)(?:\(e\)|e)?\s+par\b",
+    r"\bValid(?:e|é|e\u0301)(?:\(e\)|e)?\s+par\b",
+    r"\bImprim(?:e|é|e\u0301)(?:e)?\s+par\b",
+    r"\bPrescripteur\b",
+    r"\bDr\.",
+]
+
+
+def sanitize_administrative_text(text: str) -> str:
+    if not text:
+        return ""
+    out = text
+    for pattern in ADMIN_LABEL_PATTERNS:
+        out = re.sub(pattern, " ", out, flags=re.IGNORECASE)
+    out = re.sub(r"\s+([:;,\.\)])", r"\1", out)
+    out = re.sub(r"([(\[])\s+", r"\1", out)
+    out = re.sub(r"\s{2,}", " ", out).strip()
+    return out
 
 
 def maybe_sensitive_website(value: str, sensitive_values: Sequence[str]) -> bool:
@@ -335,19 +446,33 @@ def build_replacement_specs(
     specs: List[ReplaceSpec] = []
     originals: List[str] = []
 
-    def add(value: Any, replacement: str, explicit_id: bool = False) -> None:
+    def add(
+        value: Any,
+        replacement: str,
+        explicit_id: bool = False,
+        entity_type: str = "",
+        field_name: str = "",
+    ) -> None:
         val = clean(value)
         if not val:
             return
-        specs.append(ReplaceSpec(original=val, replacement=replacement, is_explicit_id=explicit_id))
+        specs.append(
+            ReplaceSpec(
+                original=val,
+                replacement=replacement,
+                is_explicit_id=explicit_id,
+                entity_type=entity_type,
+                field_name=field_name,
+            )
+        )
         originals.append(val)
 
     for field in TOKEN_TARGETS["patient"]:
-        add(metadata.get(field), tokens.get("patient_token", ""), explicit_id=True)
+        add(metadata.get(field), tokens.get("patient_token", ""), explicit_id=True, entity_type="patient", field_name=field)
     for field in TOKEN_TARGETS["sample"]:
-        add(metadata.get(field), tokens.get("sample_token", ""), explicit_id=True)
+        add(metadata.get(field), tokens.get("sample_token", ""), explicit_id=True, entity_type="sample", field_name=field)
     for field in TOKEN_TARGETS["report"]:
-        add(metadata.get(field), tokens.get("report_token", ""), explicit_id=True)
+        add(metadata.get(field), tokens.get("report_token", ""), explicit_id=True, entity_type="report", field_name=field)
 
     add(metadata.get("patient_name"), "PATIENT_ANON")
     add(metadata.get("patient_birth_date"), "[REDACTED_BIRTH_DATE]")
@@ -368,6 +493,7 @@ def build_replacement_specs(
 def anonymize_provenance(
     provenance: Dict[str, Any],
     specs: Sequence[ReplaceSpec],
+    counters: Dict[str, int],
 ) -> Tuple[Dict[str, Any], int]:
     p = dict(provenance or {})
     replacements = 0
@@ -375,7 +501,7 @@ def anonymize_provenance(
     for key in ("source_pdf", "extraction_json"):
         value = p.get(key)
         if isinstance(value, str):
-            replaced, count = replace_safe(value, specs)
+            replaced, count = anonymize_text_safely(value, specs, counters)
             if count > 0:
                 p[key] = replaced
                 p[f"{key}_anonymized"] = replaced
@@ -485,14 +611,16 @@ def anonymize_chunk(
     embedding = clean(out.get("text_for_embedding"))
     keyword = clean(out.get("text_for_keyword"))
 
-    embedding_replaced, c1 = replace_safe(embedding, specs)
-    keyword_replaced, c2 = replace_safe(keyword, specs)
+    embedding_replaced, c1 = anonymize_text_safely(embedding, specs, counters)
+    keyword_replaced, c2 = anonymize_text_safely(keyword, specs, counters)
+    embedding_replaced = sanitize_administrative_text(embedding_replaced)
+    keyword_replaced = sanitize_administrative_text(keyword_replaced)
     counters["text_replacements_count"] += c1 + c2
 
     out["text_for_embedding"] = embedding_replaced
     out["text_for_keyword"] = keyword_replaced
 
-    anon_prov, cp = anonymize_provenance(provenance, specs)
+    anon_prov, cp = anonymize_provenance(provenance, specs, counters)
     counters["text_replacements_count"] += cp
     out["provenance"] = anon_prov
 
@@ -518,12 +646,24 @@ def anonymize_chunk(
 def validate_anonymized(
     chunks: Sequence[Dict[str, Any]],
     sensitive_values_by_chunk: Dict[str, List[str]],
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int]:
     errors: List[Dict[str, Any]] = []
     warnings: List[Dict[str, Any]] = []
 
     seen_ids: Set[str] = set()
     dup_ids: Set[str] = set()
+
+    corrupted_patterns = [
+        r"PAT_PAT_",
+        r"SAMPLE_SAMPLE_",
+        r"REPORT_REPORT_",
+        r"PAT_[0-9]{6}PAT_",
+        r"SAMPLE_[0-9]{6}SAMPLE_",
+        r"REPORT_[0-9]{6}REPORT_",
+        r"\d*PAT_[0-9]{6}\d*",
+        r"PAT_[0-9]{6},\d+",
+    ]
+    corrupted_token_patterns_count = 0
 
     for chunk in chunks:
         chunk_id = clean(chunk.get("chunk_id"))
@@ -566,6 +706,27 @@ def validate_anonymized(
                 })
                 break
 
+        for pattern in corrupted_patterns:
+            if re.search(pattern, text_blob):
+                corrupted_token_patterns_count += 1
+                errors.append({
+                    "chunk_id": chunk_id,
+                    "doc_id": doc_id,
+                    "issue": "corrupted_token_pattern_detected",
+                    "pattern": pattern,
+                })
+                break
+
+        for pattern in BLOCKING_ADMIN_PATTERNS:
+            if re.search(pattern, text_blob, flags=re.IGNORECASE):
+                errors.append({
+                    "chunk_id": chunk_id,
+                    "doc_id": doc_id,
+                    "issue": "administrative_label_found_in_indexable_text",
+                    "pattern": pattern,
+                })
+                break
+
         if clean(metadata.get("validation_status")) == "unknown":
             warnings.append({"chunk_id": chunk_id, "doc_id": doc_id, "issue": "validation_status_unknown"})
 
@@ -593,7 +754,7 @@ def validate_anonymized(
                 "parent_chunk_id": parent,
             })
 
-    return errors, warnings
+    return errors, warnings, corrupted_token_patterns_count
 
 
 def parse_args() -> argparse.Namespace:
@@ -630,6 +791,8 @@ def main() -> int:
             "fields_tokenized_count": 0,
             "fields_redacted_count": 0,
             "text_replacements_count": 0,
+            "skipped_short_numeric_replacements_count": 0,
+            "corrupted_token_patterns_count": 0,
             "validation_errors": [{"issue": f"json_invalid:{exc}"}],
             "validation_warnings": [],
             "readiness_status": "blocked",
@@ -660,7 +823,10 @@ def main() -> int:
             print(f"WARNING - {w}")
 
     print("INFO - validating anonymized chunks")
-    validation_errors, validation_warnings = validate_anonymized(anonymized_chunks, sensitive_values_by_chunk)
+    validation_errors, validation_warnings, corrupted_token_patterns_count = validate_anonymized(
+        anonymized_chunks,
+        sensitive_values_by_chunk,
+    )
 
     readiness_status = "ready_for_indexing" if not validation_errors else "blocked"
 
@@ -682,6 +848,8 @@ def main() -> int:
         "fields_tokenized_count": counters["fields_tokenized_count"],
         "fields_redacted_count": counters["fields_redacted_count"],
         "text_replacements_count": counters["text_replacements_count"],
+        "skipped_short_numeric_replacements_count": counters["skipped_short_numeric_replacements_count"],
+        "corrupted_token_patterns_count": corrupted_token_patterns_count,
         "validation_errors": validation_errors,
         "validation_warnings": validation_warnings,
         "readiness_status": readiness_status,
