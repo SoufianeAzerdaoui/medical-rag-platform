@@ -1,5 +1,5 @@
 charset-normalizer==3.4.7
-numpy==2.4.4
+numpy<2.0.0
 packaging==26.1
 pandas==3.0.2
 pillow==12.2.0
@@ -8,3 +8,5 @@ pytesseract==0.3.13
 python-dateutil==2.9.0.post0
 reportlab==4.4.10
 six==1.17.0
+sentence-transformers==3.3.1
+chromadb==0.5.23
