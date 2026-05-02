@@ -125,6 +125,16 @@ class QdrantStore:
             must.append(qm.FieldCondition(key="chunk_type", match=qm.MatchValue(value=filters.chunk_type)))
         if filters.source_pdf:
             must.append(qm.FieldCondition(key="source_pdf", match=qm.MatchValue(value=filters.source_pdf)))
+        if filters.analyte_norm:
+            must.append(qm.FieldCondition(key="analyte_norm", match=qm.MatchValue(value=filters.analyte_norm)))
+        if filters.section:
+            must.append(qm.FieldCondition(key="section", match=qm.MatchValue(value=filters.section)))
+        if filters.source_kind:
+            must.append(qm.FieldCondition(key="source_kind", match=qm.MatchValue(value=filters.source_kind)))
+        if filters.interpretation_status:
+            must.append(qm.FieldCondition(key="interpretation_status", match=qm.MatchValue(value=filters.interpretation_status)))
+        if filters.reference_quality_status:
+            must.append(qm.FieldCondition(key="reference_quality_status", match=qm.MatchValue(value=filters.reference_quality_status)))
         if filters.patient_token:
             must.append(qm.FieldCondition(key="patient_token", match=qm.MatchValue(value=filters.patient_token)))
         if filters.sample_token:

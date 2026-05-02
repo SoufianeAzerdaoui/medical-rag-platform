@@ -115,6 +115,16 @@ def build_sql_filter_clauses(filters: RetrievalFilters) -> tuple[list[str], list
         add("c.chunk_type = ?", filters.chunk_type)
     if filters.source_pdf:
         add("COALESCE(m.source_pdf, o.source_pdf) = ?", filters.source_pdf)
+    if filters.analyte_norm:
+        add("m.analyte_norm = ?", filters.analyte_norm)
+    if filters.section:
+        add("m.section = ?", filters.section)
+    if filters.source_kind:
+        add("m.source_kind = ?", filters.source_kind)
+    if filters.interpretation_status:
+        add("m.interpretation_status = ?", filters.interpretation_status)
+    if filters.reference_quality_status:
+        add("m.reference_quality_status = ?", filters.reference_quality_status)
 
     if filters.request_date:
         add("substr(m.request_date, 1, 10) = ?", filters.request_date)
@@ -149,6 +159,16 @@ def row_matches_filters(row: dict[str, Any], filters: RetrievalFilters) -> bool:
     if filters.chunk_type and getv("chunk_type") != filters.chunk_type:
         return False
     if filters.source_pdf and getv("source_pdf") != filters.source_pdf:
+        return False
+    if filters.analyte_norm and getv("analyte_norm") != filters.analyte_norm:
+        return False
+    if filters.section and getv("section") != filters.section:
+        return False
+    if filters.source_kind and getv("source_kind") != filters.source_kind:
+        return False
+    if filters.interpretation_status and getv("interpretation_status") != filters.interpretation_status:
+        return False
+    if filters.reference_quality_status and getv("reference_quality_status") != filters.reference_quality_status:
         return False
 
     req_date = getv("request_date")

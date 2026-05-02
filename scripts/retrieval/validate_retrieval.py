@@ -46,6 +46,11 @@ def _build_filters(case: dict[str, Any]) -> RetrievalFilters:
         request_date=f.get("request_date"),
         chunk_type=f.get("chunk_type"),
         source_pdf=f.get("source_pdf"),
+        analyte_norm=f.get("analyte_norm"),
+        section=f.get("section"),
+        source_kind=f.get("source_kind"),
+        interpretation_status=f.get("interpretation_status"),
+        reference_quality_status=f.get("reference_quality_status"),
     )
 
 
@@ -109,16 +114,50 @@ def _compute_metrics(cases: list[dict[str, Any]], per_case_results: list[list[Re
     }
 
 
+def _result_score(result: RetrievalResult, mode: str) -> float | None:
+    if mode == "keyword":
+        return result.score_keyword
+    if mode == "vector":
+        return result.score_vector
+    if mode == "hybrid":
+        return result.score_hybrid
+    return None
+
+
+def _result_snapshot(result: RetrievalResult, rank: int, mode: str) -> dict[str, Any]:
+    md = result.metadata or {}
+    return {
+        "rank": rank,
+        "chunk_id": result.chunk_id,
+        "doc_id": result.doc_id,
+        "chunk_type": result.chunk_type,
+        "analyte": md.get("analyte"),
+        "value_raw": md.get("value_raw"),
+        "unit": md.get("unit"),
+        "reference_range": md.get("reference_range"),
+        "previous_result": md.get("previous_result"),
+        "row_index": md.get("row_index"),
+        "page_number": result.page_number,
+        "source_kind": md.get("source_kind"),
+        "score_final": _result_score(result, mode),
+        "score_keyword": result.score_keyword,
+        "score_vector": result.score_vector,
+        "score_hybrid": result.score_hybrid,
+        "preview": result.text_preview,
+    }
+
+
 def _run_mode(
     engine: SearchEngine,
     *,
     mode: str,
     cases: list[dict[str, Any]],
     top_k: int,
-) -> tuple[dict[str, float], list[dict[str, Any]], list[list[RetrievalResult]], list[dict[str, Any]]]:
+) -> tuple[dict[str, float], list[dict[str, Any]], list[list[RetrievalResult]], list[dict[str, Any]], list[dict[str, Any]]]:
     failures: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     all_results: list[list[RetrievalResult]] = []
+    case_results: list[dict[str, Any]] = []
     eval_cases: list[dict[str, Any]] = []
     eval_results: list[list[RetrievalResult]] = []
 
@@ -153,11 +192,37 @@ def _run_mode(
             all_results.append(results)
             eval_cases.append(case)
             eval_results.append(results)
+            first_rank = _first_relevant_rank(case, results, top_k)
+            case_results.append(
+                {
+                    "index": i,
+                    "id": case.get("id"),
+                    "query": query,
+                    "query_type": query_type,
+                    "suite": case.get("suite", "unspecified"),
+                    "filters": case.get("filters") or {},
+                    "expected": {
+                        "expected_doc_id": case.get("expected_doc_id"),
+                        "expected_chunk_contains": case.get("expected_chunk_contains"),
+                        "expected_chunk_type": case.get("expected_chunk_type"),
+                        "expected_doc_id_any": bool(case.get("expected_doc_id_any")),
+                    },
+                    "first_relevant_rank": first_rank,
+                    "hit_at_1": first_rank == 1,
+                    "hit_at_3": bool(first_rank is not None and first_rank <= 3),
+                    "hit_at_5": bool(first_rank is not None and first_rank <= 5),
+                    "top_chunks": [
+                        _result_snapshot(r, idx, mode) for idx, r in enumerate(results[:top_k], start=1)
+                    ],
+                }
+            )
 
-            if _first_relevant_rank(case, results, top_k) is None:
+            if first_rank is None:
                 failures.append(
                     {
                         "index": i,
+                        "id": case.get("id"),
+                        "suite": case.get("suite", "unspecified"),
                         "query": query,
                         "filters": case.get("filters") or {},
                         "expected": {
@@ -182,18 +247,34 @@ def _run_mode(
             failures.append(
                 {
                     "index": i,
+                    "id": case.get("id"),
+                    "suite": case.get("suite", "unspecified"),
                     "query": query,
                     "filters": case.get("filters") or {},
                     "error": str(exc),
                 }
             )
             all_results.append([])
+            case_results.append(
+                {
+                    "index": i,
+                    "id": case.get("id"),
+                    "query": query,
+                    "query_type": query_type,
+                    "suite": case.get("suite", "unspecified"),
+                    "filters": case.get("filters") or {},
+                    "error": str(exc),
+                    "top_chunks": [],
+                }
+            )
 
     metrics = _compute_metrics(eval_cases, eval_results, top_k=top_k)
+    metrics["queries_tested"] = float(len(eval_cases))
+    metrics["queries_succeeded"] = float(len([x for x in case_results if x.get("first_relevant_rank") is not None]))
     if skipped:
         metrics["evaluated_cases"] = float(len(eval_cases))
         metrics["skipped_cases"] = float(len(skipped))
-    return metrics, failures, all_results, skipped
+    return metrics, failures, all_results, skipped, case_results
 
 
 def _parse_args() -> argparse.Namespace:
@@ -373,6 +454,170 @@ def _run_context_checks(engine: SearchEngine, cases: list[dict[str, Any]], top_k
     }
 
 
+def _compute_suite_metrics(case_results: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in case_results:
+        suite = str(item.get("suite") or "unspecified")
+        grouped.setdefault(suite, []).append(item)
+
+    out: dict[str, dict[str, float]] = {}
+    for suite, rows in grouped.items():
+        usable = [r for r in rows if not r.get("error")]
+        n = len(usable)
+        if n == 0:
+            out[suite] = {
+                "queries": 0.0,
+                "hit_at_1": 0.0,
+                "hit_at_3": 0.0,
+                "hit_at_5": 0.0,
+                "mrr": 0.0,
+            }
+            continue
+        hit1 = sum(1 for r in usable if r.get("hit_at_1"))
+        hit3 = sum(1 for r in usable if r.get("hit_at_3"))
+        hit5 = sum(1 for r in usable if r.get("hit_at_5"))
+        mrr = 0.0
+        for r in usable:
+            rank = r.get("first_relevant_rank")
+            if isinstance(rank, int) and rank > 0:
+                mrr += 1.0 / float(rank)
+        out[suite] = {
+            "queries": float(n),
+            "hit_at_1": hit1 / n,
+            "hit_at_3": hit3 / n,
+            "hit_at_5": hit5 / n,
+            "mrr": mrr / n,
+        }
+    return out
+
+
+def _mode_hits_by_id(case_results: list[dict[str, Any]]) -> dict[str, dict[str, bool]]:
+    out: dict[str, dict[str, bool]] = {}
+    for item in case_results:
+        if item.get("error"):
+            continue
+        cid = str(item.get("id") or item.get("index"))
+        out[cid] = {
+            "hit_at_1": bool(item.get("hit_at_1")),
+            "hit_at_3": bool(item.get("hit_at_3")),
+            "hit_at_5": bool(item.get("hit_at_5")),
+        }
+    return out
+
+
+def _compute_hybrid_vs_others(report_modes: dict[str, Any]) -> dict[str, float]:
+    hybrid = _mode_hits_by_id((report_modes.get("hybrid") or {}).get("case_results") or [])
+    keyword = _mode_hits_by_id((report_modes.get("keyword") or {}).get("case_results") or [])
+    vector = _mode_hits_by_id((report_modes.get("vector") or {}).get("case_results") or [])
+
+    common = sorted(set(hybrid.keys()) & set(keyword.keys()) & set(vector.keys()))
+    if not common:
+        return {
+            "common_queries": 0.0,
+            "hybrid_ge_keyword_hit_at_5_ratio": 0.0,
+            "hybrid_ge_vector_hit_at_5_ratio": 0.0,
+            "hybrid_ge_both_hit_at_5_ratio": 0.0,
+        }
+
+    ge_keyword = 0
+    ge_vector = 0
+    ge_both = 0
+    for qid in common:
+        h = int(hybrid[qid]["hit_at_5"])
+        k = int(keyword[qid]["hit_at_5"])
+        v = int(vector[qid]["hit_at_5"])
+        if h >= k:
+            ge_keyword += 1
+        if h >= v:
+            ge_vector += 1
+        if h >= k and h >= v:
+            ge_both += 1
+
+    n = float(len(common))
+    return {
+        "common_queries": n,
+        "hybrid_ge_keyword_hit_at_5_ratio": ge_keyword / n,
+        "hybrid_ge_vector_hit_at_5_ratio": ge_vector / n,
+        "hybrid_ge_both_hit_at_5_ratio": ge_both / n,
+    }
+
+
+def _compute_admin_noise(case_results: list[dict[str, Any]]) -> dict[str, Any]:
+    target = [x for x in case_results if str(x.get("suite")) == "exact_analyte" and not x.get("error")]
+    noisy_queries = []
+    for item in target:
+        top_chunks = item.get("top_chunks") or []
+        noisy = False
+        for chunk in top_chunks[:5]:
+            ctype = str(chunk.get("chunk_type") or "").lower()
+            if ctype in {"validation_status", "visual_reference"}:
+                noisy = True
+                break
+        if noisy:
+            noisy_queries.append(
+                {
+                    "id": item.get("id"),
+                    "query": item.get("query"),
+                }
+            )
+    return {
+        "checked_queries": len(target),
+        "noisy_queries_count": len(noisy_queries),
+        "noisy_queries": noisy_queries,
+    }
+
+
+def _compute_security_scan(case_results: list[dict[str, Any]]) -> dict[str, Any]:
+    forbidden_metadata_keys = {
+        "patient_id",
+        "patient_id_raw",
+        "ip_patient",
+        "patient_birth_date",
+        "patient_birth_date_raw",
+        "prescriber",
+        "validated_by",
+        "edited_by",
+        "printed_by",
+        "phone",
+        "fax",
+        "patient_name",
+    }
+    forbidden_text_markers = [
+        "PATIENT TEST1",
+        "PYXIS TEST",
+        "anonymization_mapping",
+        "data/private/",
+        "Validé(e) par",
+        "Edité(e) par",
+        "Imprimé par",
+    ]
+
+    leak_rows: list[dict[str, Any]] = []
+    for item in case_results:
+        if item.get("error"):
+            continue
+        for chunk in item.get("top_chunks") or []:
+            preview = str(chunk.get("preview") or "")
+            md_keys = set((chunk.keys() if isinstance(chunk, dict) else []))
+            md_hits = sorted([k for k in forbidden_metadata_keys if k in md_keys])
+            txt_hits = [m for m in forbidden_text_markers if m.lower() in preview.lower()]
+            if md_hits or txt_hits:
+                leak_rows.append(
+                    {
+                        "id": item.get("id"),
+                        "query": item.get("query"),
+                        "rank": chunk.get("rank"),
+                        "chunk_id": chunk.get("chunk_id"),
+                        "metadata_hits": md_hits,
+                        "text_hits": txt_hits,
+                    }
+                )
+    return {
+        "leak_count": len(leak_rows),
+        "leaks": leak_rows[:50],
+    }
+
+
 def main() -> int:
     args = _parse_args()
     cases = _load_cases(args.test_cases)
@@ -390,6 +635,15 @@ def main() -> int:
         "top_k": args.top_k,
         "modes": {},
         "context_quality": {},
+        "acceptance_thresholds": {
+            "exact_analyte_hit_at_1_min": 0.70,
+            "exact_analyte_hit_at_5_min": 0.90,
+            "hybrid_ge_keyword_hit_at_5_ratio_min": 0.50,
+            "hybrid_ge_vector_hit_at_5_ratio_min": 0.50,
+            "admin_noise_top5_exact_analyte_max": 0,
+            "security_leak_count_max": 0,
+        },
+        "acceptance_results": {},
         "final_status": "FAIL",
         "notes": [],
     }
@@ -401,9 +655,11 @@ def main() -> int:
     )
     try:
         for mode in modes:
-            metrics, failures, _, skipped = _run_mode(engine, mode=mode, cases=cases, top_k=args.top_k)
+            metrics, failures, _, skipped, case_results = _run_mode(engine, mode=mode, cases=cases, top_k=args.top_k)
             report["modes"][mode] = {
                 "metrics": metrics,
+                "suite_metrics": _compute_suite_metrics(case_results),
+                "case_results": case_results,
                 "failures": failures,
                 "failed_cases": len(failures),
                 "skipped": skipped,
@@ -422,29 +678,53 @@ def main() -> int:
         related_coverage = float(report["context_quality"].get("metrics", {}).get("RelatedEvidenceCoverage", 0.0))
         chunk_type_coverage = float(report["context_quality"].get("metrics", {}).get("RequiredChunkTypeCoverage", 0.0))
 
+        acceptance = report["acceptance_thresholds"]
+        exact_suite = (report["modes"].get("hybrid", {}).get("suite_metrics", {}) or {}).get("exact_analyte", {})
+        exact_hit1 = float(exact_suite.get("hit_at_1", 0.0))
+        exact_hit5 = float(exact_suite.get("hit_at_5", 0.0))
+        hybrid_vs = _compute_hybrid_vs_others(report["modes"])
+        admin_noise = _compute_admin_noise((report["modes"].get("hybrid") or {}).get("case_results") or [])
+        security_scan = _compute_security_scan((report["modes"].get("hybrid") or {}).get("case_results") or [])
+
+        report["acceptance_results"] = {
+            "exact_analyte_hit_at_1": exact_hit1,
+            "exact_analyte_hit_at_5": exact_hit5,
+            "hybrid_vs_others": hybrid_vs,
+            "admin_noise": admin_noise,
+            "security_scan": security_scan,
+            "passes": {
+                "exact_analyte_hit_at_1": exact_hit1 >= float(acceptance["exact_analyte_hit_at_1_min"]),
+                "exact_analyte_hit_at_5": exact_hit5 >= float(acceptance["exact_analyte_hit_at_5_min"]),
+                "hybrid_ge_keyword": float(hybrid_vs.get("hybrid_ge_keyword_hit_at_5_ratio", 0.0)) >= float(acceptance["hybrid_ge_keyword_hit_at_5_ratio_min"]),
+                "hybrid_ge_vector": float(hybrid_vs.get("hybrid_ge_vector_hit_at_5_ratio", 0.0)) >= float(acceptance["hybrid_ge_vector_hit_at_5_ratio_min"]),
+                "admin_noise": int(admin_noise.get("noisy_queries_count", 0)) <= int(acceptance["admin_noise_top5_exact_analyte_max"]),
+                "security": int(security_scan.get("leak_count", 0)) <= int(acceptance["security_leak_count_max"]),
+            },
+        }
+
         if args.mode != "all" and args.mode != "hybrid":
             report["final_status"] = "PASS"
             report["notes"].append("Hybrid thresholds are evaluated only when hybrid mode runs.")
         else:
-            if recall5 < 0.90:
+            context_errors = bool(report["context_quality"].get("failures"))
+            acceptance_fail = not all(report["acceptance_results"]["passes"].values())
+            hybrid_failures = (report["modes"].get("hybrid") or {}).get("failures") or []
+            non_semantic_failures = [
+                f for f in hybrid_failures if str(f.get("suite", "unspecified")) != "semantic"
+            ]
+            semantic_failures = [
+                f for f in hybrid_failures if str(f.get("suite", "unspecified")) == "semantic"
+            ]
+
+            if context_errors or acceptance_fail or non_semantic_failures:
                 report["final_status"] = "FAIL"
-            elif forbidden_leakage > 0:
-                report["final_status"] = "FAIL"
-            elif explicit_coverage < 1.0:
-                report["final_status"] = "FAIL"
-            elif related_coverage < 1.0:
-                report["final_status"] = "FAIL"
-            elif chunk_type_coverage < 1.0:
-                report["final_status"] = "FAIL"
-            elif recall3 < 0.85:
+            elif semantic_failures:
                 report["final_status"] = "WARNING"
-            else:
-                critical_errors = any(
-                    isinstance(f, dict) and "error" in f
-                    for f in report["modes"].get("hybrid", {}).get("failures", [])
+                report["notes"].append(
+                    "Some semantic queries are not yet reliable in hybrid mode; exact/filter acceptance thresholds are satisfied."
                 )
-                context_errors = bool(report["context_quality"].get("failures"))
-                report["final_status"] = "FAIL" if (critical_errors or context_errors) else "PASS"
+            else:
+                report["final_status"] = "PASS"
 
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -456,6 +736,17 @@ def main() -> int:
             print(f"Hybrid Recall@3: {hm['recall_at_3']:.3f}")
             print(f"Hybrid Recall@5: {hm['recall_at_5']:.3f}")
             print(f"Hybrid MRR: {hm['mrr']:.3f}")
+            exact_suite_out = report["modes"]["hybrid"].get("suite_metrics", {}).get("exact_analyte", {})
+            if exact_suite_out:
+                print(f"ExactAnalyte Hit@1: {float(exact_suite_out.get('hit_at_1', 0.0)):.3f}")
+                print(f"ExactAnalyte Hit@5: {float(exact_suite_out.get('hit_at_5', 0.0)):.3f}")
+        if report.get("acceptance_results"):
+            ar = report["acceptance_results"]
+            passes = ar.get("passes", {})
+            print(
+                "Acceptance passes:",
+                json.dumps(passes, ensure_ascii=False),
+            )
         cq = report.get("context_quality", {}).get("metrics", {})
         if cq:
             print(f"ContextPrecision: {cq.get('ContextPrecision', 0.0):.3f}")

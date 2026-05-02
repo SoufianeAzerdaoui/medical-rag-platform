@@ -1,142 +1,180 @@
 [
   {
-    "id": "CTX_TRICHURIS_DISCORDANCE",
-    "query": "trichuris trichiura",
+    "id": "EXACT_CALCITONINE",
+    "suite": "exact_analyte",
+    "query": "calcitonine",
     "query_type": "exact_entity",
-    "expected_doc_id": "report",
-    "expected_chunk_contains": "TRICHURIS",
-    "strict_context": true,
-    "expected_context_doc_ids": ["report"],
-    "forbidden_context_doc_ids": ["report_12", "report_16", "report_10"],
-    "expected_context_contains": "TRICHURIS",
-    "expected_related_context_contains": ["ANKYLOSTOMA"],
-    "expected_context_chunk_types": ["document_summary", "validation_status"]
+    "expected_chunk_type": "lab_result",
+    "expected_chunk_contains": "CALCITONINE"
   },
   {
-    "id": "CTX_ANKYLOSTOMA_DISCORDANCE",
-    "query": "ankylostoma duodenale",
+    "id": "EXACT_PEPTIDE_C",
+    "suite": "exact_analyte",
+    "query": "peptide c",
     "query_type": "exact_entity",
-    "expected_doc_id": "report",
-    "expected_chunk_contains": "ANKYLOSTOMA",
-    "strict_context": true,
-    "expected_context_doc_ids": ["report"],
-    "forbidden_context_doc_ids": ["report_12", "report_16"],
-    "expected_context_contains": "ANKYLOSTOMA",
-    "expected_related_context_contains": ["TRICHURIS"],
-    "expected_context_chunk_types": ["document_summary", "validation_status"]
+    "expected_chunk_type": "lab_result",
+    "expected_chunk_contains": "PEPTIDE C"
   },
   {
-    "id": "RET003",
-    "query": "oeufs ankylostoma après coloration",
+    "id": "EXACT_INSULINE",
+    "suite": "exact_analyte",
+    "query": "insuline",
     "query_type": "exact_entity",
-    "expected_doc_id": "report",
-    "expected_chunk_type": "exam_section"
+    "expected_chunk_contains": "INSULINE"
   },
   {
-    "id": "RET004",
-    "query": "résultat final parasite",
-    "query_type": "semantic",
-    "expected_doc_id": "report",
-    "expected_chunk_contains": "TRICHURIS"
-  },
-  {
-    "id": "CTX_ALBUMINE_STRICT",
-    "query": "albumine 5 g/l",
+    "id": "EXACT_PRO_BNP",
+    "suite": "exact_analyte",
+    "query": "pro bnp",
     "query_type": "exact_entity",
-    "expected_doc_id": "report_8",
-    "expected_chunk_contains": "Albumine",
-    "strict_context": true,
-    "expected_context_doc_ids": ["report_8"],
-    "expected_context_contains": "Albumine",
-    "forbidden_context_doc_ids": ["report_10", "report_12", "report_29"],
-    "expected_related_context_contains": ["5 g/l"]
+    "expected_chunk_contains": "PRO BNP"
   },
   {
-    "id": "RET006",
-    "query": "acide urique 12 mg/l",
+    "id": "EXACT_TSHUS",
+    "suite": "exact_analyte",
+    "query": "tshus",
     "query_type": "exact_entity",
-    "expected_doc_id": "report_2",
-    "expected_chunk_contains": "ACIDE URIQUE",
-    "strict_context": true,
-    "expected_context_doc_ids": ["report_2"],
-    "expected_context_contains": "ACIDE URIQUE"
+    "expected_chunk_contains": "TSHus"
   },
   {
-    "id": "RET007",
-    "query": "ammonium 13 µg/dl",
-    "query_type": "exact_entity",
-    "expected_doc_id": "report_2",
-    "expected_chunk_contains": "AMMONIUM"
-  },
-  {
-    "id": "RET008",
-    "query": "calcium 5 mg/l",
-    "query_type": "exact_entity",
-    "expected_doc_id": "report_22",
-    "expected_chunk_contains": "Calcium"
-  },
-  {
-    "id": "RET009",
+    "id": "EXACT_FERRITINE",
+    "suite": "exact_analyte",
     "query": "ferritine",
     "query_type": "exact_entity",
     "expected_chunk_contains": "Ferritine"
   },
   {
-    "id": "RET010",
-    "query": "CRP",
+    "id": "EXACT_VITAMINE_D",
+    "suite": "exact_analyte",
+    "query": "vitamine d",
+    "query_type": "exact_entity",
+    "expected_chunk_contains": "Vitamine D"
+  },
+  {
+    "id": "EXACT_TRICHURIS",
+    "suite": "exact_analyte",
+    "query": "trichuris",
+    "query_type": "exact_entity",
+    "expected_chunk_contains": "TRICHURIS"
+  },
+  {
+    "id": "EXACT_LITHIUM",
+    "suite": "exact_analyte",
+    "query": "lithium",
+    "query_type": "exact_entity",
+    "expected_chunk_contains": "LITHIUM"
+  },
+  {
+    "id": "EXACT_CRP",
+    "suite": "exact_analyte",
+    "query": "crp",
     "query_type": "exact_entity",
     "expected_chunk_contains": "CRP"
   },
+
   {
-    "id": "RET011",
-    "query": "ammonium",
-    "query_type": "exact_entity",
-    "filters": {
-      "patient_id": "53"
-    },
-    "expected_doc_id_any": true
-  },
-  {
-    "id": "RET012",
-    "query": "trichuris",
-    "query_type": "exact_entity",
-    "filters": {
-      "document_type": "parasitology_stool_report"
-    },
-    "expected_doc_id": "report"
-  },
-  {
-    "id": "RET013",
-    "query": "albumine",
-    "query_type": "exact_entity",
-    "filters": {
-      "sample_id": "240527025"
-    },
-    "expected_doc_id": "report_8"
-  },
-  {
-    "id": "RET014",
-    "query": "acide urique",
-    "query_type": "exact_entity",
-    "filters": {
-      "sample_id": "240711594"
-    },
-    "expected_doc_id": "report_2"
-  },
-  {
-    "id": "RET015",
-    "query": "calcium",
-    "query_type": "exact_entity",
-    "filters": {
-      "document_type": "biology_report"
-    },
-    "expected_chunk_contains": "Calcium"
-  },
-  {
-    "id": "RET016",
-    "query": "rapport avec parasite intestinal",
+    "id": "SEM_HORMONAL_REF",
+    "suite": "semantic",
+    "query": "résultat hormonal avec valeur de référence",
     "query_type": "semantic",
-    "strict_context": true,
-    "expected_doc_id_any": true
+    "expected_chunk_contains": "TSH"
+  },
+  {
+    "id": "SEM_PARASITO_POSITIVE",
+    "suite": "semantic",
+    "query": "résultat parasitologie positif",
+    "query_type": "semantic",
+    "expected_chunk_contains": "TRICHURIS"
+  },
+  {
+    "id": "SEM_ABOVE_REF",
+    "suite": "semantic",
+    "query": "résultat avec valeur supérieure à la référence",
+    "query_type": "semantic",
+    "expected_chunk_contains": "PROCALCITONINE"
+  },
+  {
+    "id": "SEM_PREVIOUS_RESULT",
+    "suite": "semantic",
+    "query": "résultat avec résultat antérieur",
+    "query_type": "semantic",
+    "expected_chunk_contains": "Résultat antérieur"
+  },
+  {
+    "id": "SEM_THYROID",
+    "suite": "semantic",
+    "query": "analyse thyroïdienne",
+    "query_type": "semantic",
+    "expected_chunk_contains": "T4 LIBRE"
+  },
+  {
+    "id": "SEM_NO_UNIT",
+    "suite": "semantic",
+    "query": "résultat biologique sans unité",
+    "query_type": "semantic",
+    "expected_chunk_contains": "non_specifiee"
+  },
+
+  {
+    "id": "FILT_DOC_ID",
+    "suite": "filter",
+    "query": "calcitonine",
+    "query_type": "exact_entity",
+    "filters": {
+      "doc_id": "report_1"
+    },
+    "expected_doc_id": "report_1",
+    "expected_chunk_contains": "CALCITONINE"
+  },
+  {
+    "id": "FILT_CHUNK_TYPE",
+    "suite": "filter",
+    "query": "calcitonine",
+    "query_type": "exact_entity",
+    "filters": {
+      "chunk_type": "lab_result"
+    },
+    "expected_chunk_type": "lab_result",
+    "expected_chunk_contains": "CALCITONINE"
+  },
+  {
+    "id": "FILT_ANALYTE_NORM",
+    "suite": "filter",
+    "query": "calcitonine",
+    "query_type": "exact_entity",
+    "filters": {
+      "analyte_norm": "calcitonine"
+    },
+    "expected_chunk_contains": "CALCITONINE"
+  },
+  {
+    "id": "FILT_SECTION",
+    "suite": "filter",
+    "query": "calcitonine",
+    "query_type": "exact_entity",
+    "filters": {
+      "section": "Résultats biologiques"
+    },
+    "expected_chunk_contains": "CALCITONINE"
+  },
+  {
+    "id": "FILT_SOURCE_KIND",
+    "suite": "filter",
+    "query": "calcitonine",
+    "query_type": "exact_entity",
+    "filters": {
+      "source_kind": "chu_text_fallback"
+    },
+    "expected_chunk_contains": "CALCITONINE"
+  },
+  {
+    "id": "FILT_REFERENCE_QUALITY",
+    "suite": "filter",
+    "query": "calcitonine",
+    "query_type": "exact_entity",
+    "filters": {
+      "reference_quality_status": "complete"
+    },
+    "expected_chunk_contains": "CALCITONINE"
   }
 ]

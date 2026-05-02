@@ -16,6 +16,11 @@ class RetrievalFilters:
     sample_type: str | None = None
     chunk_type: str | None = None
     source_pdf: str | None = None
+    analyte_norm: str | None = None
+    section: str | None = None
+    source_kind: str | None = None
+    interpretation_status: str | None = None
+    reference_quality_status: str | None = None
 
     # Resolved token values (after optional mapping lookup)
     patient_token: str | None = None
@@ -35,6 +40,11 @@ class RetrievalFilters:
                 self.sample_type,
                 self.chunk_type,
                 self.source_pdf,
+                self.analyte_norm,
+                self.section,
+                self.source_kind,
+                self.interpretation_status,
+                self.reference_quality_status,
                 self.patient_token,
                 self.sample_token,
                 self.report_token,

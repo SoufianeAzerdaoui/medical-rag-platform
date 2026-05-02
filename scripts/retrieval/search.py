@@ -173,6 +173,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--request-date")
     parser.add_argument("--chunk-type")
     parser.add_argument("--source-pdf")
+    parser.add_argument("--analyte-norm")
+    parser.add_argument("--section")
+    parser.add_argument("--source-kind")
+    parser.add_argument("--interpretation-status")
+    parser.add_argument("--reference-quality-status")
 
     parser.add_argument("--expand-context", dest="expand_context", action="store_true", default=True)
     parser.add_argument("--no-expand-context", dest="expand_context", action="store_false")
@@ -253,6 +258,11 @@ def _build_filters(args: argparse.Namespace) -> RetrievalFilters:
         request_date=args.request_date,
         chunk_type=args.chunk_type,
         source_pdf=args.source_pdf,
+        analyte_norm=args.analyte_norm,
+        section=args.section,
+        source_kind=args.source_kind,
+        interpretation_status=args.interpretation_status,
+        reference_quality_status=args.reference_quality_status,
     )
 
 

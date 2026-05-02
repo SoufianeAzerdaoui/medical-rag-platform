@@ -1,48 +1,31 @@
-# Indexing Phase - Medical RAG Platform
+# Indexing - build hybrid retrieval stores
 
-## Objectif
-La phase `indexing` construit les index necessaires pour la retrieval (plus tard), a partir des chunks deja anonymises.
+## Role
+This stage builds the retrieval indexes from anonymized chunks.
 
-Pipeline:
+Pipeline position:
 
-`data/extraction/**/document.json` -> chunking -> anonymization -> `data/chunks/chunks.anonymized.jsonl` -> indexing
+`data/chunks/chunks.anonymized.jsonl -> indexing -> data/indexes/*`
 
-## Regle de securite critique
-- Seul fichier autorise: `data/chunks/chunks.anonymized.jsonl`
-- Interdit: `data/chunks/chunks.raw.jsonl`
-- Interdit: tout `data/private/` (dont mapping anonymization)
+## Security gate
+`build_indexes.py` blocks:
+- `data/chunks/chunks.raw.jsonl`
+- any `data/private/` path
+- any chunk file other than `data/chunks/chunks.anonymized.jsonl`
 
-Ces regles evitent toute fuite de donnees brutes sensibles.
+## Stores created
+- Qdrant local: vector index
+- SQLite FTS5: keyword index
+- SQLite tables: metadata + provenance/object references
 
-## Composants indexes
-- Qdrant local: vector store semantique (embeddings)
-- SQLite FTS5: keyword store lexical
-- SQLite metadata: filtres structuraux cliniques
-- SQLite object_references: provenance et references objets
-
-Pas de reranker pour le moment.
-Pas de retrieval fusion pour le moment.
-
-## Installation
-
-Installation complete:
-
+## Dependencies
 ```bash
 pip install qdrant-client FlagEmbedding sentence-transformers numpy torch
 ```
 
-Fallback plus leger:
-
+## Build indexes (full hybrid)
 ```bash
-pip install qdrant-client sentence-transformers numpy torch
-```
-
-## Build des index
-
-Mode par defaut (BAAI/bge-m3):
-
-```bash
-python3 scripts/indexing/build_indexes.py \
+python scripts/indexing/build_indexes.py \
   --chunks data/chunks/chunks.anonymized.jsonl \
   --index-dir data/indexes \
   --collection medical_chunks \
@@ -51,10 +34,9 @@ python3 scripts/indexing/build_indexes.py \
   --reset
 ```
 
-Fallback (intfloat/multilingual-e5-base):
-
+Fallback embedding model:
 ```bash
-python3 scripts/indexing/build_indexes.py \
+python scripts/indexing/build_indexes.py \
   --chunks data/chunks/chunks.anonymized.jsonl \
   --index-dir data/indexes \
   --collection medical_chunks \
@@ -63,18 +45,27 @@ python3 scripts/indexing/build_indexes.py \
   --reset
 ```
 
-## Validation des index
-
+Keyword+metadata only (skip vectors):
 ```bash
-python3 scripts/indexing/validate_indexes.py \
+python scripts/indexing/build_indexes.py \
+  --chunks data/chunks/chunks.anonymized.jsonl \
+  --index-dir data/indexes \
+  --collection medical_chunks \
+  --skip-vector \
+  --reset
+```
+
+## Validate built indexes
+```bash
+python scripts/indexing/validate_indexes.py \
   --index-dir data/indexes \
   --collection medical_chunks \
   --smoke-test
 ```
 
-## Conseils laptop CPU
-- `BAAI/bge-m3`: batch-size recommande `2`
-- fallback `intfloat/multilingual-e5-base`: batch-size recommande `8`
-
-Le script detecte automatiquement `cuda` si disponible, sinon `cpu`.
-
+## Expected artifacts
+- `data/indexes/medical_rag.sqlite`
+- `data/indexes/qdrant/`
+- `data/indexes/indexing_report.json`
+- `data/indexes/index_manifest.json`
+- `data/indexes/index_validation_report.json` (after validation script)
