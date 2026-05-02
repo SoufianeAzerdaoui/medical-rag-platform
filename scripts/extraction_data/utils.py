@@ -64,6 +64,8 @@ KNOWN_RESULT_UNITS = {
     "UI/l",
     "UI/ml",
     "uU/mL",
+    "IU/ml",
+    "µIU/mL",
     "µg/dl",
 }
 
@@ -248,23 +250,109 @@ def normalize_flag(value: str | None) -> str | None:
     return flag
 
 
-def parse_reference_range(value: str | None) -> dict[str, float | str | None]:
+REFERENCE_INTERVAL_WITH_UNIT_PATTERN = re.compile(
+    r"\(?\s*(-?\d+(?:[.,]\d+)?)\s*(?P<sep>-|à|a|et)\s*(-?\d+(?:[.,]\d+)?)\s*\)?\s*(?P<unit>10\*3/uL|[A-Za-zµμ]+(?:/[A-Za-zµμ]+)+|%)\)?",
+    flags=re.IGNORECASE,
+)
+
+
+def _parse_between_reference(text: str) -> tuple[float | None, float | None, str | None]:
+    normalized = text.replace(",", ".")
+    range_match = re.search(
+        r"\(?\s*(-?\d+(?:\.\d+)?)\s*(?P<sep>-|à|a|et)\s*(-?\d+(?:\.\d+)?)\s*\)?",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if not range_match:
+        return (None, None, None)
+    low = float(range_match.group(1))
+    high = float(range_match.group(3))
+    separator = normalize_inline_text(range_match.group("sep")).lower()
+    return (low, high, separator)
+
+
+def parse_reference_range(value: str | None) -> dict[str, object]:
     text = normalize_inline_text(value or "")
+    if not text:
+        return {
+            "text": None,
+            "operator": None,
+            "separator": None,
+            "unit": None,
+            "low": None,
+            "high": None,
+            "complexity": None,
+        }
+
+    interval_matches = list(REFERENCE_INTERVAL_WITH_UNIT_PATTERN.finditer(text))
+    if len(interval_matches) >= 2:
+        reference_ranges: list[dict[str, object]] = []
+        for match in interval_matches:
+            span_text = normalize_inline_text(match.group(0))
+            low = parse_float(match.group(1))
+            high = parse_float(match.group(3))
+            separator = normalize_inline_text(match.group("sep")).lower()
+            unit = normalize_result_unit_text(match.group("unit"))
+            reference_ranges.append(
+                {
+                    "text": span_text or None,
+                    "operator": "between",
+                    "separator": separator,
+                    "unit": unit,
+                    "low": low,
+                    "high": high,
+                }
+            )
+        return {
+            "text": text or None,
+            "operator": "multiple",
+            "separator": None,
+            "unit": None,
+            "low": None,
+            "high": None,
+            "reference_ranges": reference_ranges,
+            "complexity": "multi_interval_multi_unit",
+        }
+
     normalized = text.replace(",", ".")
     low = None
     high = None
-    range_match = re.search(r"(-?\d+(?:\.\d+)?)\s*-\s*(-?\d+(?:\.\d+)?)", normalized)
-    if range_match:
-        low = float(range_match.group(1))
-        high = float(range_match.group(2))
+    operator = None
+    separator = None
+    comparator_match = re.match(r"^(<=|>=|<|>)\s*(-?\d+(?:[.,]\d+)?)", text)
+    if comparator_match:
+        operator = comparator_match.group(1)
+        numeric_value = parse_float(comparator_match.group(2))
+        if operator in {"<", "<="}:
+            high = numeric_value
+        else:
+            low = numeric_value
     else:
-        parts = re.findall(r"-?\d+(?:\.\d+)?", normalized)
-        low = float(parts[0]) if len(parts) >= 1 else None
-        high = float(parts[1]) if len(parts) >= 2 else None
+        low, high, separator = _parse_between_reference(text)
+        if low is not None and high is not None and separator is not None:
+            operator = "between"
+        else:
+            parts = re.findall(r"-?\d+(?:\.\d+)?", normalized)
+            low = float(parts[0]) if len(parts) >= 1 else None
+            high = float(parts[1]) if len(parts) >= 2 else None
+
+    unit = None
+    unit_match = re.search(
+        r"(10\*3/uL|[A-Za-zµμ]+(?:/[A-Za-zµμ]+)+|%)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if unit_match:
+        unit = normalize_result_unit_text(unit_match.group(1))
+
     return {
         "text": text or None,
+        "operator": operator,
+        "separator": separator,
+        "unit": unit,
         "low": low,
         "high": high,
+        "complexity": None,
     }
 
 

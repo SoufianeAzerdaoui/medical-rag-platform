@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import re
 import sys
@@ -209,6 +210,17 @@ def write_json(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def compute_content_hash(chunk: Dict[str, Any]) -> str:
+    """
+    Deterministic content hash for the final anonymized chunk payload.
+    The hash must reflect anonymized content, so content_hash itself is excluded.
+    """
+    payload = dict(chunk or {})
+    payload.pop("content_hash", None)
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def try_load_openpyxl():
@@ -639,6 +651,7 @@ def anonymize_chunk(
 
     out["metadata"] = metadata
     out["schema_version"] = SCHEMA_VERSION
+    out["content_hash"] = compute_content_hash(out)
 
     return out, sensitive_originals
 
@@ -678,6 +691,20 @@ def validate_anonymized(
 
         if not clean(chunk.get("text_for_keyword")):
             errors.append({"chunk_id": chunk_id, "doc_id": doc_id, "issue": "empty_text_for_keyword"})
+
+        stored_hash = clean(chunk.get("content_hash"))
+        if not stored_hash:
+            errors.append({"chunk_id": chunk_id, "doc_id": doc_id, "issue": "missing_content_hash"})
+        else:
+            expected_hash = compute_content_hash(chunk)
+            if stored_hash != expected_hash:
+                errors.append(
+                    {
+                        "chunk_id": chunk_id,
+                        "doc_id": doc_id,
+                        "issue": "content_hash_mismatch",
+                    }
+                )
 
         if chunk_id in seen_ids:
             dup_ids.add(chunk_id)

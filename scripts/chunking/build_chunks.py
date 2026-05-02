@@ -47,12 +47,14 @@ NON_INDEXABLE_BLOCK_TYPES = {
     "facility_block",
     "patient_info_block",
     "report_metadata_block",
+    "laboratory_staff_block",
 }
 
 LOW_VALUE_SECTION_TITLES = {
     "facility",
     "patient information",
     "report metadata",
+    "laboratory staff",
 }
 
 TECHNICAL_BLOCK_LABELS = {
@@ -230,6 +232,31 @@ def reference_range_text(reference_range: Any) -> str:
         return value
 
     return ""
+
+
+def reference_range_structured_fields(reference_range: Any) -> Dict[str, Any]:
+    """
+    Keep a flattened, backward-compatible view of structured reference fields.
+    """
+    if isinstance(reference_range, dict):
+        return {
+            "reference_range_text": clean(reference_range.get("text")),
+            "reference_operator": clean(reference_range.get("operator")) or None,
+            "reference_separator": clean(reference_range.get("separator")) or None,
+            "reference_unit": clean(reference_range.get("unit")) or None,
+            "reference_low": reference_range.get("low"),
+            "reference_high": reference_range.get("high"),
+        }
+
+    text = reference_range_text(reference_range)
+    return {
+        "reference_range_text": text,
+        "reference_operator": None,
+        "reference_separator": None,
+        "reference_unit": None,
+        "reference_low": None,
+        "reference_high": None,
+    }
 
 
 def reference_quality_status(reference_range: Any) -> str:
@@ -692,6 +719,12 @@ def build_result_chunk(
 
     value_raw = clean(result.get("value_raw") or result.get("result"))
     value_numeric = result.get("value_numeric")
+    previous_result_obj = result.get("previous_result") or None
+    previous_value_raw = clean(previous_result_obj.get("value_raw")) if isinstance(previous_result_obj, dict) else ""
+    previous_value_numeric = (
+        previous_result_obj.get("value_numeric") if isinstance(previous_result_obj, dict) else None
+    )
+    previous_unit = clean(previous_result_obj.get("unit")) if isinstance(previous_result_obj, dict) else ""
 
     unit = clean(result.get("unit"))
     if unit.lower() == "unknown":
@@ -704,6 +737,7 @@ def build_result_chunk(
     section_key, section_name = section_key_for_result(result, doc)
 
     reference = reference_range_text(result.get("reference_range"))
+    reference_structured = reference_range_structured_fields(result.get("reference_range"))
     reference_complexity_status = reference_complexity(result.get("reference_range"))
     reference_quality = reference_quality_status(result.get("reference_range"))
 
@@ -754,6 +788,12 @@ def build_result_chunk(
     if section_name:
         text += f" Section: {section_name}."
 
+    if previous_value_raw:
+        text += f" Résultat antérieur: {previous_value_raw}"
+        if previous_unit:
+            text += f" {previous_unit}"
+        text += "."
+
     confidence = clean(result.get("confidence"))
     confidence_score = result.get("confidence_score")
 
@@ -782,6 +822,12 @@ def build_result_chunk(
         "value_numeric": value_numeric,
         "unit": unit,
         "reference_range": reference,
+        "reference_range_text": reference_structured.get("reference_range_text") or reference,
+        "reference_operator": reference_structured.get("reference_operator"),
+        "reference_separator": reference_structured.get("reference_separator"),
+        "reference_unit": reference_structured.get("reference_unit"),
+        "reference_low": reference_structured.get("reference_low"),
+        "reference_high": reference_structured.get("reference_high"),
         "reference_complexity": reference_complexity_status,
         "reference_quality_status": reference_quality,
         "result_kind": result_kind,
@@ -790,6 +836,15 @@ def build_result_chunk(
         "observation_date": observation_date,
         "page_number": page_number,
         "row_index": result.get("row_index"),
+        "previous_result": (
+            {
+                "value_raw": previous_value_raw,
+                "value_numeric": previous_value_numeric,
+                "unit": previous_unit or None,
+            }
+            if previous_value_raw
+            else None
+        ),
         "dedup_key": clean(
             f"{dedup_label}|{dedup_value}|{dedup_unit}|{doc_id}"
         ),
@@ -830,6 +885,8 @@ def build_result_chunk(
         section_name,
         sample_type,
         observation_date,
+        previous_value_raw,
+        previous_unit,
         patient_sex,
         patient_age,
         interpretation_status,
