@@ -36,14 +36,37 @@ def _row_to_result(row: dict[str, Any], retrieval_mode: str) -> RetrievalResult:
             "section",
             "section_norm",
             "analyte",
+            "analyte_norm",
+            "parameter",
+            "parameter_norm",
             "value_raw",
+            "value_numeric",
             "unit",
+            "reference_range",
+            "reference_complexity",
+            "reference_operator",
+            "reference_unit",
+            "reference_low",
+            "reference_high",
+            "interpretation_status",
+            "result_kind",
+            "result_quality_status",
+            "previous_result_present",
+            "previous_result_value_raw",
+            "previous_result_value_numeric",
+            "previous_result_unit",
+            "source_kind",
+            "source_table_id",
+            "row_index",
+            "previous_result",
             "source_pdf",
             "page_number",
             "parent_chunk_id",
         ]
         if k in row
     }
+    if metadata.get("previous_result") in (None, ""):
+        metadata["previous_result"] = metadata.get("previous_result_value_raw")
 
     bm25 = row.get("bm25_score")
     score_keyword = -float(bm25) if bm25 is not None else None

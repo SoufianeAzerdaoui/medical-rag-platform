@@ -129,12 +129,25 @@ class QdrantStore:
             must.append(qm.FieldCondition(key="analyte_norm", match=qm.MatchValue(value=filters.analyte_norm)))
         if filters.section:
             must.append(qm.FieldCondition(key="section", match=qm.MatchValue(value=filters.section)))
+        if filters.section_norm:
+            must.append(qm.FieldCondition(key="section_norm", match=qm.MatchValue(value=filters.section_norm)))
         if filters.source_kind:
             must.append(qm.FieldCondition(key="source_kind", match=qm.MatchValue(value=filters.source_kind)))
+        if filters.source_table_id:
+            must.append(qm.FieldCondition(key="source_table_id", match=qm.MatchValue(value=filters.source_table_id)))
         if filters.interpretation_status:
             must.append(qm.FieldCondition(key="interpretation_status", match=qm.MatchValue(value=filters.interpretation_status)))
         if filters.reference_quality_status:
             must.append(qm.FieldCondition(key="reference_quality_status", match=qm.MatchValue(value=filters.reference_quality_status)))
+        if filters.result_quality_status:
+            must.append(qm.FieldCondition(key="result_quality_status", match=qm.MatchValue(value=filters.result_quality_status)))
+        if filters.previous_result_present is not None:
+            must.append(
+                qm.FieldCondition(
+                    key="previous_result_present",
+                    match=qm.MatchValue(value=bool(int(filters.previous_result_present))),
+                )
+            )
         if filters.patient_token:
             must.append(qm.FieldCondition(key="patient_token", match=qm.MatchValue(value=filters.patient_token)))
         if filters.sample_token:

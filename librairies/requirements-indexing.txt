@@ -1,5 +1,0 @@
-qdrant-client
-FlagEmbedding
-sentence-transformers
-numpy
-torch

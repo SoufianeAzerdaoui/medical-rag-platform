@@ -18,9 +18,13 @@ class RetrievalFilters:
     source_pdf: str | None = None
     analyte_norm: str | None = None
     section: str | None = None
+    section_norm: str | None = None
     source_kind: str | None = None
+    source_table_id: str | None = None
     interpretation_status: str | None = None
     reference_quality_status: str | None = None
+    result_quality_status: str | None = None
+    previous_result_present: int | None = None
 
     # Resolved token values (after optional mapping lookup)
     patient_token: str | None = None
@@ -42,9 +46,13 @@ class RetrievalFilters:
                 self.source_pdf,
                 self.analyte_norm,
                 self.section,
+                self.section_norm,
                 self.source_kind,
+                self.source_table_id,
                 self.interpretation_status,
                 self.reference_quality_status,
+                self.result_quality_status,
+                self.previous_result_present,
                 self.patient_token,
                 self.sample_token,
                 self.report_token,
@@ -70,6 +78,9 @@ class RetrievalResult:
     score_keyword: float | None = None
     score_vector: float | None = None
     score_hybrid: float | None = None
+    rrf_score: float | None = None
+    clinical_rerank_score: float | None = None
+    final_score: float | None = None
 
     rank_keyword: int | None = None
     rank_vector: int | None = None

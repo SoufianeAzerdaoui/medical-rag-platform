@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 set -euo pipefail
 
 PIPELINE_START_TS=$(date +%s)
