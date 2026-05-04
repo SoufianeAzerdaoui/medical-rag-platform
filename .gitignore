@@ -24,4 +24,5 @@ data/private/
 data/chunks/chunks.raw.jsonl
 data/chunks/anonymization_mapping.xlsx
 data/chunks/anonymization_mapping.csv
+.codex
 
