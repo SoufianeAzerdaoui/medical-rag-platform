@@ -132,6 +132,40 @@ def main() -> int:
                     if not points:
                         raise RuntimeError(f"Point Qdrant manquant pour chunk_id={chunk_id}")
 
+            # Ensure source_kind is propagated to Qdrant payload when present in SQLite metadata.
+            cur.execute(
+                """
+                SELECT c.chunk_id
+                FROM chunks c
+                JOIN metadata_chunks m ON m.chunk_id = c.chunk_id
+                WHERE c.vector_index = 1
+                  AND m.source_kind IS NOT NULL
+                  AND TRIM(m.source_kind) <> ''
+                """
+            )
+            expected_source_kind_chunk_ids = [str(r[0]) for r in cur.fetchall()]
+            if expected_source_kind_chunk_ids:
+                missing_source_kind_payload = 0
+                for chunk_id in expected_source_kind_chunk_ids:
+                    pid = uuid_from_chunk_id(chunk_id)
+                    points = qclient.retrieve(
+                        collection_name=args.collection,
+                        ids=[pid],
+                        with_payload=True,
+                        with_vectors=False,
+                    )
+                    if not points:
+                        raise RuntimeError(f"Point Qdrant manquant pour chunk_id={chunk_id}")
+                    payload = points[0].payload or {}
+                    source_kind = payload.get("source_kind")
+                    if source_kind is None or (isinstance(source_kind, str) and source_kind.strip() == ""):
+                        missing_source_kind_payload += 1
+                if missing_source_kind_payload:
+                    raise RuntimeError(
+                        "source_kind absent du payload Qdrant pour "
+                        f"{missing_source_kind_payload}/{len(expected_source_kind_chunk_ids)} chunks vectoriels"
+                    )
+
             technical_patterns = [
                 r"\bresults_table_block\b",
                 r"\bpatient_info_block\b",

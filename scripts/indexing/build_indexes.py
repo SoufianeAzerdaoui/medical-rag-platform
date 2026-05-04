@@ -680,10 +680,12 @@ def main() -> int:
                             "reference_complexity": metadata.get("reference_complexity"),
                             "validation_status": metadata.get("validation_status"),
                             "age_consistency_status": metadata.get("age_consistency_status"),
+                            "row_index": metadata.get("row_index"),
                             "page_number": provenance.get("page_number") or metadata.get("page_number"),
                             "confidence_score": quality.get("confidence_score", 0.70),
                             "source_pdf": provenance.get("source_pdf") or metadata.get("source_pdf"),
                             "source_table_id": get_source_table_id(chunk),
+                            "source_kind": provenance.get("source_kind") or metadata.get("source_kind"),
                         }
                         points.append(
                             qm.PointStruct(
@@ -763,4 +765,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
