@@ -175,9 +175,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--source-pdf")
     parser.add_argument("--analyte-norm")
     parser.add_argument("--section")
+    parser.add_argument("--section-norm")
     parser.add_argument("--source-kind")
+    parser.add_argument("--source-table-id")
     parser.add_argument("--interpretation-status")
     parser.add_argument("--reference-quality-status")
+    parser.add_argument("--result-quality-status")
+    parser.add_argument("--previous-result-present", type=int, choices=[0, 1])
 
     parser.add_argument("--expand-context", dest="expand_context", action="store_true", default=True)
     parser.add_argument("--no-expand-context", dest="expand_context", action="store_false")
@@ -207,6 +211,9 @@ def _print_human(response: SearchResponse) -> None:
         print(f"source_pdf: {r.source_pdf}")
         print(f"page_number: {r.page_number}")
         print(f"score_hybrid: {r.score_hybrid}")
+        print(f"rrf_score: {r.rrf_score}")
+        print(f"clinical_rerank_score: {r.clinical_rerank_score}")
+        print(f"final_score: {r.final_score}")
         print(f"score_keyword: {r.score_keyword}")
         print(f"score_vector: {r.score_vector}")
         print(f"keyword_rank: {r.keyword_rank}")
@@ -260,9 +267,13 @@ def _build_filters(args: argparse.Namespace) -> RetrievalFilters:
         source_pdf=args.source_pdf,
         analyte_norm=args.analyte_norm,
         section=args.section,
+        section_norm=args.section_norm,
         source_kind=args.source_kind,
+        source_table_id=args.source_table_id,
         interpretation_status=args.interpretation_status,
         reference_quality_status=args.reference_quality_status,
+        result_quality_status=args.result_quality_status,
+        previous_result_present=args.previous_result_present,
     )
 
 

@@ -49,14 +49,37 @@ class VectorSearcher:
                 "section",
                 "section_norm",
                 "analyte",
+                "analyte_norm",
+                "parameter",
+                "parameter_norm",
                 "value_raw",
+                "value_numeric",
                 "unit",
+                "reference_range",
+                "reference_complexity",
+                "reference_operator",
+                "reference_unit",
+                "reference_low",
+                "reference_high",
+                "interpretation_status",
+                "result_kind",
+                "result_quality_status",
+                "previous_result_present",
+                "previous_result_value_raw",
+                "previous_result_value_numeric",
+                "previous_result_unit",
+                "source_kind",
+                "source_table_id",
+                "row_index",
+                "previous_result",
                 "source_pdf",
                 "page_number",
                 "parent_chunk_id",
             ]
             if k in row
         }
+        if metadata.get("previous_result") in (None, ""):
+            metadata["previous_result"] = metadata.get("previous_result_value_raw")
 
         return RetrievalResult(
             chunk_id=str(row.get("chunk_id") or point.get("chunk_id") or ""),

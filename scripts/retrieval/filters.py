@@ -119,12 +119,20 @@ def build_sql_filter_clauses(filters: RetrievalFilters) -> tuple[list[str], list
         add("m.analyte_norm = ?", filters.analyte_norm)
     if filters.section:
         add("m.section = ?", filters.section)
+    if filters.section_norm:
+        add("m.section_norm = ?", filters.section_norm)
     if filters.source_kind:
         add("m.source_kind = ?", filters.source_kind)
+    if filters.source_table_id:
+        add("m.source_table_id = ?", filters.source_table_id)
     if filters.interpretation_status:
         add("m.interpretation_status = ?", filters.interpretation_status)
     if filters.reference_quality_status:
         add("m.reference_quality_status = ?", filters.reference_quality_status)
+    if filters.result_quality_status:
+        add("m.result_quality_status = ?", filters.result_quality_status)
+    if filters.previous_result_present is not None:
+        add("m.previous_result_present = ?", int(filters.previous_result_present))
 
     if filters.request_date:
         add("substr(m.request_date, 1, 10) = ?", filters.request_date)
@@ -164,12 +172,25 @@ def row_matches_filters(row: dict[str, Any], filters: RetrievalFilters) -> bool:
         return False
     if filters.section and getv("section") != filters.section:
         return False
+    if filters.section_norm and getv("section_norm") != filters.section_norm:
+        return False
     if filters.source_kind and getv("source_kind") != filters.source_kind:
+        return False
+    if filters.source_table_id and getv("source_table_id") != filters.source_table_id:
         return False
     if filters.interpretation_status and getv("interpretation_status") != filters.interpretation_status:
         return False
     if filters.reference_quality_status and getv("reference_quality_status") != filters.reference_quality_status:
         return False
+    if filters.result_quality_status and getv("result_quality_status") != filters.result_quality_status:
+        return False
+    if filters.previous_result_present is not None:
+        got_prev = getv("previous_result_present")
+        try:
+            if int(got_prev or 0) != int(filters.previous_result_present):
+                return False
+        except Exception:
+            return False
 
     req_date = getv("request_date")
     req_day = req_date[:10] if req_date else ""

@@ -75,6 +75,28 @@ def get_source_table_id(chunk: dict[str, Any]) -> str | None:
     return None
 
 
+def extract_previous_result(metadata: dict[str, Any]) -> tuple[int, str | None, float | None, str | None]:
+    raw_prev = metadata.get("previous_result")
+    if raw_prev is None:
+        return 0, None, None, None
+
+    if isinstance(raw_prev, dict):
+        value_raw = raw_prev.get("value_raw")
+        value_numeric = raw_prev.get("value_numeric")
+        unit = raw_prev.get("unit")
+        present = int(
+            (value_raw is not None and str(value_raw).strip() != "")
+            or (value_numeric is not None and str(value_numeric).strip() != "")
+            or (unit is not None and str(unit).strip() != "")
+        )
+        return present, value_raw, value_numeric, unit
+
+    value_raw = str(raw_prev).strip()
+    if not value_raw:
+        return 0, None, None, None
+    return 1, value_raw, None, None
+
+
 @dataclass
 class ValidationResult:
     chunks: list[dict[str, Any]]
@@ -261,8 +283,14 @@ def iter_batches(items: list[Any], batch_size: int) -> Iterable[list[Any]]:
 
 
 def setup_sqlite(db_path: Path, reset: bool) -> sqlite3.Connection:
-    if reset and db_path.exists():
-        db_path.unlink()
+    if reset:
+        for candidate in (
+            db_path,
+            db_path.with_name(f"{db_path.name}-wal"),
+            db_path.with_name(f"{db_path.name}-shm"),
+        ):
+            if candidate.exists():
+                candidate.unlink()
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
@@ -317,6 +345,10 @@ def setup_sqlite(db_path: Path, reset: bool) -> sqlite3.Connection:
           result_kind TEXT,
           interpretation_status TEXT,
           result_quality_status TEXT,
+          previous_result_present INTEGER,
+          previous_result_value_raw TEXT,
+          previous_result_value_numeric REAL,
+          previous_result_unit TEXT,
           validation_status TEXT,
           age_consistency_status TEXT,
           patient_age REAL,
@@ -371,6 +403,7 @@ def setup_sqlite(db_path: Path, reset: bool) -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_metadata_validation_status ON metadata_chunks(validation_status);
         CREATE INDEX IF NOT EXISTS idx_metadata_reference_quality_status ON metadata_chunks(reference_quality_status);
         CREATE INDEX IF NOT EXISTS idx_metadata_unit_quality_status ON metadata_chunks(unit_quality_status);
+        CREATE INDEX IF NOT EXISTS idx_metadata_previous_result_present ON metadata_chunks(previous_result_present);
         CREATE INDEX IF NOT EXISTS idx_metadata_page_number ON metadata_chunks(page_number);
         """
     )
@@ -492,6 +525,7 @@ def main() -> int:
                 )
 
                 if not args.skip_metadata:
+                    previous_result_present, previous_result_value_raw, previous_result_value_numeric, previous_result_unit = extract_previous_result(metadata)
                     meta_rows.append(
                         (
                             chunk["chunk_id"],
@@ -525,6 +559,10 @@ def main() -> int:
                             metadata.get("result_kind"),
                             metadata.get("interpretation_status"),
                             metadata.get("result_quality_status"),
+                            previous_result_present,
+                            previous_result_value_raw,
+                            previous_result_value_numeric,
+                            previous_result_unit,
                             metadata.get("validation_status"),
                             metadata.get("age_consistency_status"),
                             metadata.get("patient_age"),
@@ -592,11 +630,12 @@ def main() -> int:
                           organization, country, ministry, section, section_norm, analyte, analyte_norm,
                           parameter, parameter_norm, value_raw, value_numeric, unit, unit_quality_status,
                           reference_range, reference_quality_status, reference_complexity, result_kind,
-                          interpretation_status, result_quality_status, validation_status, age_consistency_status,
+                          interpretation_status, result_quality_status, previous_result_present, previous_result_value_raw,
+                          previous_result_value_numeric, previous_result_unit, validation_status, age_consistency_status,
                           patient_age, patient_sex, observation_date, report_date, request_date, received_date,
                           validation_date, page_number, row_index, confidence, confidence_score, source_pdf,
                           source_table_id, source_kind
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         meta_rows,
                     )
@@ -654,6 +693,7 @@ def main() -> int:
                         metadata = chunk.get("metadata") or {}
                         provenance = chunk.get("provenance") or {}
                         quality = chunk.get("quality") or {}
+                        previous_result_present, previous_result_value_raw, previous_result_value_numeric, previous_result_unit = extract_previous_result(metadata)
                         payload = {
                             "chunk_id": chunk.get("chunk_id"),
                             "doc_id": chunk.get("doc_id"),
@@ -678,6 +718,11 @@ def main() -> int:
                             "interpretation_status": metadata.get("interpretation_status"),
                             "reference_quality_status": metadata.get("reference_quality_status"),
                             "reference_complexity": metadata.get("reference_complexity"),
+                            "previous_result_present": bool(previous_result_present),
+                            "previous_result": previous_result_value_raw,
+                            "previous_result_value_raw": previous_result_value_raw,
+                            "previous_result_value_numeric": previous_result_value_numeric,
+                            "previous_result_unit": previous_result_unit,
                             "validation_status": metadata.get("validation_status"),
                             "age_consistency_status": metadata.get("age_consistency_status"),
                             "row_index": metadata.get("row_index"),

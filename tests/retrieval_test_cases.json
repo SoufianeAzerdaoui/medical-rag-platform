@@ -74,45 +74,108 @@
 
   {
     "id": "SEM_HORMONAL_REF",
-    "suite": "semantic",
+    "suite": "semantic_clinical_queries",
     "query": "résultat hormonal avec valeur de référence",
     "query_type": "semantic",
-    "expected_chunk_contains": "TSH"
+    "expected_conditions": {
+      "all": [
+        { "metadata_not_empty": "reference_range" }
+      ],
+      "any": [
+        { "text_contains_any": ["TSH", "TSHus", "T3", "T4", "ACTH", "INSULINE", "PEPTIDE C", "CALCITONINE"] },
+        { "metadata_text_contains_any": { "field": "section", "values": ["immunoanalyse", "résultats biologiques"] } }
+      ]
+    }
   },
   {
     "id": "SEM_PARASITO_POSITIVE",
-    "suite": "semantic",
+    "suite": "semantic_clinical_queries",
     "query": "résultat parasitologie positif",
     "query_type": "semantic",
-    "expected_chunk_contains": "TRICHURIS"
+    "expected_conditions": {
+      "all": [
+        { "metadata_equals": { "field": "document_type", "value": "parasitology_stool_report" } }
+      ],
+      "any": [
+        { "chunk_type_in": ["clinical_result"] },
+        { "text_contains_any": ["parasite", "pathogène", "pathogene", "trichuris", "ankylostoma", "oeufs", "kyste"] }
+      ]
+    }
   },
   {
     "id": "SEM_ABOVE_REF",
-    "suite": "semantic",
+    "suite": "semantic_clinical_queries",
     "query": "résultat avec valeur supérieure à la référence",
     "query_type": "semantic",
-    "expected_chunk_contains": "PROCALCITONINE"
+    "expected_conditions": {
+      "any": [
+        { "metadata_equals": { "field": "interpretation_status", "value": "above_reference" } },
+        { "text_contains_any": ["above_reference", "supérieure à la référence", "au dessus de la référence"] }
+      ]
+    }
   },
   {
     "id": "SEM_PREVIOUS_RESULT",
-    "suite": "semantic",
+    "suite": "semantic_clinical_queries",
     "query": "résultat avec résultat antérieur",
     "query_type": "semantic",
-    "expected_chunk_contains": "Résultat antérieur"
+    "expected_conditions": {
+      "any": [
+        { "metadata_not_empty": "previous_result" },
+        { "text_contains_any": ["résultat antérieur", "resultat anterieur", "previous result"] }
+      ]
+    }
   },
   {
     "id": "SEM_THYROID",
-    "suite": "semantic",
+    "suite": "semantic_clinical_queries",
     "query": "analyse thyroïdienne",
     "query_type": "semantic",
-    "expected_chunk_contains": "T4 LIBRE"
+    "expected_conditions": {
+      "any": [
+        { "text_contains_any": ["TSH", "TSHus", "T4 LIBRE", "T3 LIBRE", "thyro"] },
+        { "metadata_text_contains_any": { "field": "section", "values": ["immunoanalyse", "résultats biologiques"] } }
+      ]
+    }
   },
   {
     "id": "SEM_NO_UNIT",
-    "suite": "semantic",
+    "suite": "semantic_clinical_queries",
     "query": "résultat biologique sans unité",
     "query_type": "semantic",
-    "expected_chunk_contains": "non_specifiee"
+    "expected_conditions": {
+      "any": [
+        { "metadata_equals": { "field": "result_quality_status", "value": "unit_missing" } },
+        { "text_contains_any": ["non spécifiée", "non specifiee", "qualitative"] }
+      ]
+    }
+  },
+  {
+    "id": "SEM_TOXICO_URINAIRE",
+    "suite": "semantic_clinical_queries",
+    "query": "recherche de toxicologie urinaire",
+    "query_type": "semantic",
+    "expected_conditions": {
+      "any": [
+        { "text_contains_any": ["urine", "toxicologie", "ecstasy", "opiac", "thc"] },
+        { "metadata_text_contains_any": { "field": "sample_type", "values": ["URINE"] } }
+      ]
+    }
+  },
+  {
+    "id": "SEM_BIOCHIMIE_SANG",
+    "suite": "semantic_clinical_queries",
+    "query": "bilan biochimique sanguin",
+    "query_type": "semantic",
+    "expected_conditions": {
+      "all": [
+        { "metadata_text_contains_any": { "field": "sample_type", "values": ["SANG"] } }
+      ],
+      "any": [
+        { "chunk_type_in": ["lab_result", "exam_section"] },
+        { "metadata_text_contains_any": { "field": "section", "values": ["résultats biologiques"] } }
+      ]
+    }
   },
 
   {

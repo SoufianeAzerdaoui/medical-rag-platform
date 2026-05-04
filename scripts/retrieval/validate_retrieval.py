@@ -48,9 +48,12 @@ def _build_filters(case: dict[str, Any]) -> RetrievalFilters:
         source_pdf=f.get("source_pdf"),
         analyte_norm=f.get("analyte_norm"),
         section=f.get("section"),
+        section_norm=f.get("section_norm"),
         source_kind=f.get("source_kind"),
+        source_table_id=f.get("source_table_id"),
         interpretation_status=f.get("interpretation_status"),
         reference_quality_status=f.get("reference_quality_status"),
+        result_quality_status=f.get("result_quality_status"),
     )
 
 
@@ -77,7 +80,80 @@ def _match_expected(case: dict[str, Any], result: RetrievalResult) -> bool:
     return True
 
 
+def _result_matches_rule(result: RetrievalResult, rule: dict[str, Any]) -> bool:
+    md = result.metadata or {}
+    blob = f"{result.text_preview}\n{result.text}".lower()
+
+    metadata_equals = rule.get("metadata_equals")
+    if isinstance(metadata_equals, dict) and metadata_equals:
+        field = str(metadata_equals.get("field") or "")
+        expected = metadata_equals.get("value")
+        if not field:
+            return False
+        return md.get(field) == expected
+
+    metadata_in = rule.get("metadata_in")
+    if isinstance(metadata_in, dict) and metadata_in:
+        field = str(metadata_in.get("field") or "")
+        values = metadata_in.get("values") or []
+        if not field or not isinstance(values, list):
+            return False
+        got = md.get(field)
+        return any(got == v for v in values)
+
+    metadata_not_empty = rule.get("metadata_not_empty")
+    if isinstance(metadata_not_empty, str) and metadata_not_empty:
+        v = md.get(metadata_not_empty)
+        return v is not None and str(v).strip() != ""
+
+    metadata_text_contains_any = rule.get("metadata_text_contains_any")
+    if isinstance(metadata_text_contains_any, dict) and metadata_text_contains_any:
+        field = str(metadata_text_contains_any.get("field") or "")
+        values = metadata_text_contains_any.get("values") or []
+        if not field or not isinstance(values, list):
+            return False
+        got = str(md.get(field) or "").lower()
+        return any(str(v).lower() in got for v in values)
+
+    text_contains_any = rule.get("text_contains_any")
+    if isinstance(text_contains_any, list) and text_contains_any:
+        return any(str(tok).lower() in blob for tok in text_contains_any)
+
+    chunk_type_in = rule.get("chunk_type_in")
+    if isinstance(chunk_type_in, list) and chunk_type_in:
+        return any(result.chunk_type == str(v) for v in chunk_type_in)
+
+    return False
+
+
+def _results_match_expected_conditions(results: list[RetrievalResult], conditions: dict[str, Any]) -> bool:
+    if not isinstance(conditions, dict):
+        return False
+    all_rules = conditions.get("all") or []
+    any_rules = conditions.get("any") or []
+
+    if not isinstance(all_rules, list) or not isinstance(any_rules, list):
+        return False
+
+    for rule in all_rules:
+        if not any(_result_matches_rule(r, rule) for r in results):
+            return False
+
+    if any_rules:
+        if not any(any(_result_matches_rule(r, rule) for r in results) for rule in any_rules):
+            return False
+
+    return bool(all_rules or any_rules)
+
+
 def _first_relevant_rank(case: dict[str, Any], results: list[RetrievalResult], k: int) -> int | None:
+    expected_conditions = case.get("expected_conditions")
+    if isinstance(expected_conditions, dict) and expected_conditions:
+        for i in range(1, min(k, len(results)) + 1):
+            if _results_match_expected_conditions(results[:i], expected_conditions):
+                return i
+        return None
+
     for i, r in enumerate(results[:k], start=1):
         if _match_expected(case, r):
             return i
@@ -120,7 +196,7 @@ def _result_score(result: RetrievalResult, mode: str) -> float | None:
     if mode == "vector":
         return result.score_vector
     if mode == "hybrid":
-        return result.score_hybrid
+        return result.final_score if result.final_score is not None else result.score_hybrid
     return None
 
 
@@ -132,13 +208,21 @@ def _result_snapshot(result: RetrievalResult, rank: int, mode: str) -> dict[str,
         "doc_id": result.doc_id,
         "chunk_type": result.chunk_type,
         "analyte": md.get("analyte"),
+        "analyte_norm": md.get("analyte_norm"),
         "value_raw": md.get("value_raw"),
+        "value_numeric": md.get("value_numeric"),
         "unit": md.get("unit"),
         "reference_range": md.get("reference_range"),
+        "previous_result_present": md.get("previous_result_present"),
         "previous_result": md.get("previous_result"),
         "row_index": md.get("row_index"),
         "page_number": result.page_number,
         "source_kind": md.get("source_kind"),
+        "source_table_id": md.get("source_table_id"),
+        "interpretation_status": md.get("interpretation_status"),
+        "rrf_score": result.rrf_score,
+        "clinical_rerank_score": result.clinical_rerank_score,
+        "final_score": result.final_score if result.final_score is not None else result.score_hybrid,
         "score_final": _result_score(result, mode),
         "score_keyword": result.score_keyword,
         "score_vector": result.score_vector,
@@ -638,6 +722,9 @@ def main() -> int:
         "acceptance_thresholds": {
             "exact_analyte_hit_at_1_min": 0.70,
             "exact_analyte_hit_at_5_min": 0.90,
+            "semantic_hit_at_1_min": 0.60,
+            "semantic_hit_at_5_min": 0.80,
+            "hybrid_recall_at_5_min": 0.90,
             "hybrid_ge_keyword_hit_at_5_ratio_min": 0.50,
             "hybrid_ge_vector_hit_at_5_ratio_min": 0.50,
             "admin_noise_top5_exact_analyte_max": 0,
@@ -682,6 +769,13 @@ def main() -> int:
         exact_suite = (report["modes"].get("hybrid", {}).get("suite_metrics", {}) or {}).get("exact_analyte", {})
         exact_hit1 = float(exact_suite.get("hit_at_1", 0.0))
         exact_hit5 = float(exact_suite.get("hit_at_5", 0.0))
+        semantic_suite = (
+            (report["modes"].get("hybrid", {}).get("suite_metrics", {}) or {}).get("semantic_clinical_queries")
+            or (report["modes"].get("hybrid", {}).get("suite_metrics", {}) or {}).get("semantic")
+            or {}
+        )
+        semantic_hit1 = float(semantic_suite.get("hit_at_1", 0.0))
+        semantic_hit5 = float(semantic_suite.get("hit_at_5", 0.0))
         hybrid_vs = _compute_hybrid_vs_others(report["modes"])
         admin_noise = _compute_admin_noise((report["modes"].get("hybrid") or {}).get("case_results") or [])
         security_scan = _compute_security_scan((report["modes"].get("hybrid") or {}).get("case_results") or [])
@@ -689,12 +783,18 @@ def main() -> int:
         report["acceptance_results"] = {
             "exact_analyte_hit_at_1": exact_hit1,
             "exact_analyte_hit_at_5": exact_hit5,
+            "semantic_hit_at_1": semantic_hit1,
+            "semantic_hit_at_5": semantic_hit5,
+            "hybrid_recall_at_5": recall5,
             "hybrid_vs_others": hybrid_vs,
             "admin_noise": admin_noise,
             "security_scan": security_scan,
             "passes": {
                 "exact_analyte_hit_at_1": exact_hit1 >= float(acceptance["exact_analyte_hit_at_1_min"]),
                 "exact_analyte_hit_at_5": exact_hit5 >= float(acceptance["exact_analyte_hit_at_5_min"]),
+                "semantic_hit_at_1": semantic_hit1 >= float(acceptance["semantic_hit_at_1_min"]),
+                "semantic_hit_at_5": semantic_hit5 >= float(acceptance["semantic_hit_at_5_min"]),
+                "hybrid_recall_at_5": recall5 >= float(acceptance["hybrid_recall_at_5_min"]),
                 "hybrid_ge_keyword": float(hybrid_vs.get("hybrid_ge_keyword_hit_at_5_ratio", 0.0)) >= float(acceptance["hybrid_ge_keyword_hit_at_5_ratio_min"]),
                 "hybrid_ge_vector": float(hybrid_vs.get("hybrid_ge_vector_hit_at_5_ratio", 0.0)) >= float(acceptance["hybrid_ge_vector_hit_at_5_ratio_min"]),
                 "admin_noise": int(admin_noise.get("noisy_queries_count", 0)) <= int(acceptance["admin_noise_top5_exact_analyte_max"]),
@@ -709,11 +809,12 @@ def main() -> int:
             context_errors = bool(report["context_quality"].get("failures"))
             acceptance_fail = not all(report["acceptance_results"]["passes"].values())
             hybrid_failures = (report["modes"].get("hybrid") or {}).get("failures") or []
+            semantic_suites = {"semantic", "semantic_clinical_queries"}
             non_semantic_failures = [
-                f for f in hybrid_failures if str(f.get("suite", "unspecified")) != "semantic"
+                f for f in hybrid_failures if str(f.get("suite", "unspecified")) not in semantic_suites
             ]
             semantic_failures = [
-                f for f in hybrid_failures if str(f.get("suite", "unspecified")) == "semantic"
+                f for f in hybrid_failures if str(f.get("suite", "unspecified")) in semantic_suites
             ]
 
             if context_errors or acceptance_fail or non_semantic_failures:
