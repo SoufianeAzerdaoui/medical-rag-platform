@@ -16,6 +16,15 @@ done
 ./venv/bin/python tests/validate_extraction_outputs.py
 
 
+## pour executer l'Anonymization
+
+python3 scripts/anonymization/anonymize_chunks.py \
+  --input data/chunks/chunks.raw.jsonl \
+  --output data/chunks/chunks.anonymized.jsonl \
+  --mapping-xlsx data/private/anonymization_mapping.xlsx \
+  --report data/chunks/anonymization_report.json
+
+
 # Status
 
 ### extraction (done)
@@ -26,6 +35,16 @@ done
 ### multimodal RAG (soon)
 
 
+# Ce que j'ai  déjà validé
+
+
+### document.json → chunks → anonymization → vector index → keyword index → metadata index → hybrid retrieval → strict context
+
+
+#### Offline pipeline : prêt
+#### Retrieval layer  : prêt
+#### Context gating   : prêt
+#### LLM generation   : prochaine étape
 
 Clinical Structuring
         ↓
@@ -41,3 +60,5 @@ Anonymization
 Embedding + Keyword indexing
         ↓
 Hybrid retrieval
+
+

@@ -1174,15 +1174,86 @@ def _looks_like_chu_analyte(line: str) -> bool:
 def _simple_reference_range(reference_text: str) -> dict[str, float | str | None]:
     text = normalize_inline_text(reference_text)
     if not text:
-        return {"text": None, "low": None, "high": None}
-    numeric_values = re.findall(r"-?\d+(?:[,.]\d+)?", text)
-    if text.startswith("<") and numeric_values:
-        return {"text": text, "low": None, "high": parse_float(numeric_values[0])}
-    if text.startswith(">") and numeric_values:
-        return {"text": text, "low": parse_float(numeric_values[0]), "high": None}
-    if len(numeric_values) == 2 and re.search(r"\d+(?:[,.]\d+)?\s*(?:-|à|a|et)\s*\d+(?:[,.]\d+)?", text, flags=re.IGNORECASE):
-        return parse_reference_range(text)
-    return {"text": text, "low": None, "high": None}
+        return {"text": None, "operator": None, "separator": None, "unit": None, "low": None, "high": None}
+    parsed = parse_reference_range(text)
+    if parsed.get("operator") is not None or parsed.get("low") is not None or parsed.get("high") is not None:
+        return parsed
+    if parsed.get("reference_ranges"):
+        return parsed
+    return {"text": text, "operator": None, "separator": None, "unit": None, "low": None, "high": None}
+
+
+def _parse_chu_value_token(line: str) -> dict | None:
+    match = _looks_like_chu_result_value(line)
+    if not match:
+        return None
+    normalized_line = normalize_inline_text(line)
+    comparator = normalize_inline_text(match.group("comparator") or "")
+    value_text = normalize_inline_text(match.group("value") or "")
+    unit_text = normalize_result_unit_text(match.group("unit"))
+    raw_text = normalize_inline_text(f"{comparator}{value_text}") if comparator else value_text
+    return {
+        "raw": raw_text,
+        "raw_with_unit": normalize_inline_text(f"{raw_text} {unit_text}") if unit_text else raw_text,
+        "raw_line": normalized_line,
+        "numeric": parse_float(value_text),
+        "unit": unit_text,
+        "has_comparator": bool(comparator),
+    }
+
+
+def _select_chu_current_token(tokens: list[dict]) -> dict | None:
+    if not tokens:
+        return None
+
+    non_comparator = [token for token in tokens if not token.get("has_comparator")]
+    with_unit = [token for token in non_comparator if token.get("unit")]
+
+    if with_unit:
+        return with_unit[-1]
+    if non_comparator:
+        return non_comparator[-1]
+    return tokens[-1]
+
+
+def _resolve_chu_reference_text(reference_parts: list[str], tokens: list[dict], current_token: dict | None) -> str:
+    if reference_parts:
+        return normalize_inline_text(" ".join(reference_parts))
+    if not tokens:
+        return ""
+
+    for token in tokens:
+        if current_token is not None and token is current_token:
+            continue
+        if token.get("has_comparator"):
+            return normalize_inline_text(
+                str(
+                    token.get("raw_line")
+                    or token.get("raw_with_unit")
+                    or token.get("raw")
+                    or ""
+                )
+            )
+    return ""
+
+
+def _resolve_chu_previous_result(tokens: list[dict], current_token: dict | None) -> dict | None:
+    if not tokens:
+        return None
+    remaining = [token for token in tokens if current_token is None or token is not current_token]
+    numeric_candidates = [token for token in remaining if not token.get("has_comparator")]
+    if not numeric_candidates:
+        return None
+
+    previous = numeric_candidates[0]
+    previous_raw = normalize_inline_text(str(previous.get("raw") or ""))
+    if not previous_raw:
+        return None
+    return {
+        "value_raw": previous_raw,
+        "value_numeric": previous.get("numeric"),
+        "unit": previous.get("unit"),
+    }
 
 
 def _infer_unit_from_reference(reference_text: str) -> str | None:
@@ -1209,6 +1280,7 @@ def _build_chu_result(
     page_number: int,
     row_index: int,
     observation_date: str | None,
+    previous_result: dict | None = None,
     qualitative: bool = False,
 ) -> dict:
     reference = {"text": "Qualitatif", "low": None, "high": None} if qualitative else _simple_reference_range(reference_text)
@@ -1221,6 +1293,20 @@ def _build_chu_result(
         ocr_correction=False,
         field_length=len(normalize_inline_text(value_raw)),
     )
+    normalized_previous = None
+    if previous_result:
+        previous_raw = normalize_inline_text(str(previous_result.get("value_raw") or ""))
+        previous_numeric = previous_result.get("value_numeric")
+        if previous_numeric is None:
+            previous_numeric = parse_float(previous_raw)
+        previous_unit = normalize_result_unit_text(previous_result.get("unit"))
+        if previous_raw:
+            normalized_previous = {
+                "value_raw": previous_raw,
+                "value_numeric": previous_numeric,
+                "unit": previous_unit,
+            }
+
     return {
         "page_number": page_number,
         "source_page_number": page_number,
@@ -1234,6 +1320,7 @@ def _build_chu_result(
         "unit": normalized_unit,
         "unit_normalization_status": "as_extracted" if normalized_unit and normalized_unit != "unknown" else "needs_review",
         "reference_range": reference,
+        "previous_result": normalized_previous,
         "observation_date_raw": observation_date,
         "observation_date": observation_date,
         "observation_date_normalization_status": "as_extracted" if observation_date else "missing",
@@ -1256,6 +1343,7 @@ def _build_chu_result(
             "value_numeric": _field_confidence(value_numeric if not qualitative else value_raw, confidence_score, parser_applied=not qualitative),
             "unit": _field_confidence(normalized_unit, confidence_score),
             "reference_range": _field_confidence(reference.get("text"), confidence_score),
+            "previous_result": _field_confidence(normalized_previous.get("value_raw") if normalized_previous else None, confidence_score),
             "observation_date": _field_confidence(observation_date, confidence_score, parser_applied=True),
         },
     }
@@ -1383,32 +1471,40 @@ def extract_chu_lab_results(page_text_data: list[dict]) -> tuple[list[dict], lis
     results: list[dict] = []
     current_name_parts: list[str] = []
     reference_parts: list[str] = []
-    pending_values: list[tuple[str, str | None]] = []
+    pending_tokens: list[dict] = []
     row_index = 1
 
     def flush(page_number: int) -> None:
-        nonlocal current_name_parts, reference_parts, pending_values, row_index
-        if not current_name_parts or not pending_values:
+        nonlocal current_name_parts, reference_parts, pending_tokens, row_index
+        if not current_name_parts or not pending_tokens:
             current_name_parts = []
             reference_parts = []
-            pending_values = []
+            pending_tokens = []
             return
-        value_raw, unit = pending_values[-1]
+        current_token = _select_chu_current_token(pending_tokens)
+        if current_token is None:
+            current_name_parts = []
+            reference_parts = []
+            pending_tokens = []
+            return
+        reference_text = _resolve_chu_reference_text(reference_parts, pending_tokens, current_token)
+        previous_result = _resolve_chu_previous_result(pending_tokens, current_token)
         results.append(
             _build_chu_result(
                 analyte=" ".join(current_name_parts),
-                value_raw=value_raw,
-                unit=unit,
-                reference_text=" ".join(reference_parts),
+                value_raw=normalize_inline_text(str(current_token.get("raw") or "")),
+                unit=current_token.get("unit"),
+                reference_text=reference_text,
                 page_number=page_number,
                 row_index=row_index,
                 observation_date=observation_date,
+                previous_result=previous_result,
             )
         )
         row_index += 1
         current_name_parts = []
         reference_parts = []
-        pending_values = []
+        pending_tokens = []
 
     for page in page_text_data:
         page_number = page["page_number"]
@@ -1431,22 +1527,27 @@ def extract_chu_lab_results(page_text_data: list[dict]) -> tuple[list[dict], lis
                 continue
             if _looks_like_chu_admin_line(line) or label.startswith("automate"):
                 continue
-            value_match = _looks_like_chu_result_value(line)
-            if value_match and current_name_parts:
-                pending_values.append(
-                    (
+            value_token = _parse_chu_value_token(line)
+            if value_token and current_name_parts:
+                pending_tokens.append(value_token)
+                # Comparator-only numeric tokens can represent reference thresholds.
+                if value_token.get("has_comparator"):
+                    reference_parts.append(
                         normalize_inline_text(
-                            f"{value_match.group('comparator') or ''}{value_match.group('value')}"
-                        ),
-                        normalize_result_unit_text(value_match.group("unit")),
+                            str(
+                                value_token.get("raw_line")
+                                or value_token.get("raw_with_unit")
+                                or value_token.get("raw")
+                                or ""
+                            )
+                        )
                     )
-                )
                 continue
             if _looks_like_chu_reference(line) and current_name_parts:
                 reference_parts.append(line)
                 continue
             if _looks_like_chu_analyte(line):
-                if current_name_parts and (reference_parts or pending_values):
+                if current_name_parts and (reference_parts or pending_tokens):
                     flush(page_number)
                 current_name_parts.append(line)
 
@@ -2000,6 +2101,8 @@ def _deduplicate_results(results: list[dict]) -> tuple[list[dict], dict]:
 
     deduped: list[dict] = []
     for result in best_by_key.values():
+        if "previous_result" not in result:
+            result["previous_result"] = None
         score = _result_quality_score(result)
         if not _is_result_reliable(result, score):
             continue
@@ -2021,6 +2124,7 @@ def _deduplicate_results(results: list[dict]) -> tuple[list[dict], dict]:
             "value_numeric": _field_confidence(result.get("value_numeric"), normalized_score, parser_applied=True),
             "unit": _field_confidence(result.get("unit"), normalized_score),
             "reference_range": _field_confidence(result.get("reference_range", {}).get("text"), normalized_score),
+            "previous_result": _field_confidence((result.get("previous_result") or {}).get("value_raw"), normalized_score),
             "observation_date": _field_confidence(result.get("observation_date"), normalized_score, parser_applied=True),
         }
         deduped.append(result)

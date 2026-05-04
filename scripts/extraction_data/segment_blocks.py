@@ -289,14 +289,14 @@ def _create_results_block_from_ocr(
     stop_candidates: list[str],
     block_index: int,
     page_text_source: str,
-) -> tuple[list[DocumentBlock], int]:
+) -> tuple[list[DocumentBlock], list[str], int]:
     start_block = None
     for title in title_candidates:
         start_block = _find_text_block(text_blocks, title)
         if start_block:
             break
     if start_block is None:
-        return [], block_index
+        return [], [], block_index
 
     stop_y = None
     for title in stop_candidates:
@@ -313,9 +313,13 @@ def _create_results_block_from_ocr(
         and not normalize_label(block["text"]).startswith("document_synthetique")
     ]
     if not candidate_blocks:
-        return [], block_index
+        return [], [], block_index
 
-    results_text = "\n".join(item["text"] for item in candidate_blocks)
+    raw_lines = [item["text"] for item in candidate_blocks]
+    result_lines, admin_lines = _split_results_and_admin_tail(raw_lines)
+    results_text = "\n".join(result_lines)
+    if not results_text.strip():
+        return [], admin_lines, block_index
     confidence, confidence_score = _compute_block_confidence(
         page_text_source=page_text_source,
         block_type="results_table_block",
@@ -334,7 +338,7 @@ def _create_results_block_from_ocr(
         confidence=confidence,
         confidence_score=confidence_score,
     )
-    return [block], block_index + 1
+    return [block], admin_lines, block_index + 1
 
 
 def _find_companion_title(text_blocks: list[dict], title_block: dict) -> dict | None:
@@ -502,6 +506,376 @@ def _first_meaningful_value(lines: list[str]) -> str | None:
     return None
 
 
+STAFF_START_PREFIXES = (
+    "chef_de_service",
+    "chef_du_laboratoire",
+    "chef_de_laboratoire",
+    "professeur_assistant",
+    "professeur_assistante",
+    "medecins_residents",
+    "medecin_specialiste",
+    "assistant_medical",
+    "infirmier_chef",
+    "infirmier_major",
+    "vice_major",
+    "technicien",
+    "technicienne",
+    "techniciens",
+    "techniciennes",
+)
+
+STAFF_STOP_PREFIXES = (
+    "resultats",
+    "valeurs_physiologiques",
+    "resultats_ant",
+    "parametres",
+    "examen_",
+    "cytologie",
+    "immuno",
+    "pharmaco",
+    "edite_e_par",
+    "valide_e_par",
+    "page_",
+    "adresse_web",
+    "tel",
+)
+
+RESULTS_ADMIN_STRONG_PREFIXES = (
+    "edite_e_par",
+    "valide_e_par",
+    "imprime_par",
+    "page_",
+    "adresse_web",
+    "tel",
+    "fax",
+)
+
+
+def _is_results_admin_strong_label(label: str) -> bool:
+    if any(label.startswith(prefix) for prefix in RESULTS_ADMIN_STRONG_PREFIXES):
+        return True
+    return label.startswith("le_") and "sur_" in label
+
+
+def _split_results_and_admin_tail(lines: list[str]) -> tuple[list[str], list[str]]:
+    cleaned_lines = [normalize_inline_text(line) for line in lines if normalize_inline_text(line)]
+    if not cleaned_lines:
+        return [], []
+
+    labels = [normalize_label(line) for line in cleaned_lines]
+    strong_indices = [index for index, label in enumerate(labels) if _is_results_admin_strong_label(label)]
+
+    admin_start: int | None = None
+    if strong_indices:
+        admin_start = strong_indices[0]
+        # Include an immediate leading "Le : <date>" when it belongs to footer metadata.
+        cursor = admin_start - 1
+        while cursor >= 0 and labels[cursor].startswith("le_"):
+            admin_start = cursor
+            cursor -= 1
+
+    if admin_start is None:
+        tail_date_indices = [index for index, label in enumerate(labels) if label.startswith("le_")]
+        if tail_date_indices and tail_date_indices[0] >= max(0, len(cleaned_lines) - 3):
+            admin_start = tail_date_indices[0]
+
+    if admin_start is None:
+        return cleaned_lines, []
+    return cleaned_lines[:admin_start], cleaned_lines[admin_start:]
+
+
+def _sanitize_results_text(text: str) -> str:
+    lines = [line for line in str(text).splitlines() if normalize_inline_text(line)]
+    medical_lines, _admin_lines = _split_results_and_admin_tail(lines)
+    return "\n".join(medical_lines)
+
+
+def _admin_person_value(lines: list[str], *labels: str) -> str | None:
+    for label in labels:
+        label_pattern = re.compile(rf"^{re.escape(label)}\s*:?\s*(.*)$", flags=re.IGNORECASE)
+        for index, line in enumerate(lines):
+            match = label_pattern.match(normalize_inline_text(line))
+            if not match:
+                continue
+            value = normalize_inline_text(match.group(1)).strip()
+            if value:
+                value_label = normalize_label(value)
+                if not _is_results_admin_strong_label(value_label) and not value_label.startswith("le_"):
+                    return value
+            if index + 1 < len(lines):
+                next_line = normalize_inline_text(lines[index + 1])
+                next_label = normalize_label(next_line)
+                if (
+                    next_line
+                    and ":" not in next_line
+                    and not _is_results_admin_strong_label(next_label)
+                    and not next_label.startswith("le_")
+                ):
+                    return next_line
+            return None
+    return None
+
+
+def _admin_date_value(lines: list[str], *labels: str) -> str | None:
+    for label in labels:
+        value = _metadata_value(lines, label)
+        if value and re.search(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", value):
+            return value
+    return None
+
+
+def _has_label_prefix(lines: list[str], prefix: str) -> bool:
+    return any(normalize_label(line).startswith(prefix) for line in lines)
+
+
+def _is_staff_role_header(label: str) -> bool:
+    return (
+        label.startswith("chef_de_service_du")
+        or label.startswith("chef_du_laboratoire_de")
+        or label.startswith("chef_de_laboratoire_de")
+        or label.startswith("chef_de_laboratoire_d")
+        or label.startswith("professeur_assistant")
+        or label.startswith("professeur_assistante")
+        or label.startswith("medecins_residents")
+        or label.startswith("medecin_specialiste")
+        or label.startswith("assistant_medical")
+        or label.startswith("infirmier_chef")
+        or label.startswith("infirmier_major")
+        or label.startswith("vice_major")
+        or label.startswith("technicien")
+        or label.startswith("technicienne")
+        or label.startswith("techniciens")
+        or label.startswith("techniciennes")
+    )
+
+
+def _is_person_like_line(text: str) -> bool:
+    normalized = normalize_inline_text(text)
+    if not normalized:
+        return False
+
+    label = normalize_label(normalized)
+    if not label:
+        return False
+
+    if label.startswith(("dr", "pr", "mme", "mr")):
+        return True
+
+    # Fallback for names without explicit prefix (e.g. "Nora BANANA").
+    words = [w for w in re.split(r"\s+", normalized) if w]
+    if len(words) < 2:
+        return False
+    if any(char.isdigit() for char in normalized):
+        return False
+    if _is_staff_role_header(label):
+        return False
+    if any(label.startswith(prefix) for prefix in STAFF_STOP_PREFIXES):
+        return False
+    return True
+
+
+def _append_name(target: list[str], candidate: str) -> None:
+    candidate = normalize_inline_text(candidate)
+    if not candidate:
+        return
+
+    label = normalize_label(candidate)
+    if not label:
+        return
+
+    if target and not label.startswith(("dr", "pr", "mme", "mr")):
+        # Continuation line (surname on next line).
+        target[-1] = normalize_inline_text(f"{target[-1]} {candidate}")
+        return
+
+    target.append(candidate)
+
+
+def _extract_laboratory_staff_lines(lines: list[str]) -> list[str]:
+    if not lines:
+        return []
+
+    labels = [normalize_label(line) for line in lines]
+    start_index = None
+    for index, label in enumerate(labels):
+        if any(label.startswith(prefix) for prefix in STAFF_START_PREFIXES):
+            start_index = index
+            break
+
+    if start_index is None:
+        return []
+
+    end_index = len(lines)
+    for index in range(start_index + 1, len(lines)):
+        label = labels[index]
+        if any(label.startswith(prefix) for prefix in STAFF_STOP_PREFIXES):
+            end_index = index
+            break
+
+    staff_lines: list[str] = []
+    for line in lines[start_index:end_index]:
+        text = normalize_inline_text(line)
+        if not text:
+            continue
+        label = normalize_label(text)
+        if label.startswith("le_") or label.startswith("imprime_par"):
+            continue
+        if label.startswith("laboratoire_de_"):
+            continue
+        staff_lines.append(text)
+
+    return staff_lines
+
+
+def _build_laboratory_staff_structured_fields(lines: list[str]) -> dict[str, object]:
+    labels = [normalize_label(line) for line in lines]
+    fields: dict[str, object] = {
+        "central_lab_chief": "",
+        "parasitology_lab_chief": "",
+        "department_lab_chief": "",
+        "residents": [],
+        "chief_nurse": "",
+        "vice_major": "",
+        "technicians": [],
+        "source": "native_text_section_parser",
+    }
+
+    residents: list[str] = []
+    technicians: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = normalize_inline_text(lines[i])
+        label = labels[i]
+        next_line = normalize_inline_text(lines[i + 1]) if i + 1 < len(lines) else ""
+        next_label = labels[i + 1] if i + 1 < len(lines) else ""
+
+        if label.startswith("chef_de_service_du"):
+            j = i + 1
+            if j < len(lines) and next_label.startswith("laboratoire_central"):
+                j += 1
+            while j < len(lines):
+                if _is_staff_role_header(labels[j]):
+                    break
+                if _is_person_like_line(lines[j]):
+                    fields["central_lab_chief"] = normalize_inline_text(lines[j])
+                    break
+                j += 1
+            i = j
+            continue
+
+        if (
+            label.startswith("chef_du_laboratoire_de")
+            or label.startswith("chef_de_laboratoire_de")
+            or label.startswith("chef_de_laboratoire_d")
+        ):
+            j = i + 1
+            if j < len(lines) and not _is_person_like_line(lines[j]) and not _is_staff_role_header(labels[j]):
+                # Header continuation line.
+                line = normalize_inline_text(f"{line} {lines[j]}")
+                label = normalize_label(line)
+                j += 1
+            while j < len(lines):
+                if _is_staff_role_header(labels[j]):
+                    break
+                if _is_person_like_line(lines[j]):
+                    key = "parasitology_lab_chief" if "parasitologie" in label else "department_lab_chief"
+                    fields[key] = normalize_inline_text(lines[j])
+                    break
+                j += 1
+            i = j
+            continue
+
+        if label.startswith("medecins_residents"):
+            j = i + 1
+            while j < len(lines):
+                lj = labels[j]
+                if _is_staff_role_header(lj) or any(lj.startswith(prefix) for prefix in STAFF_STOP_PREFIXES):
+                    break
+                if _is_person_like_line(lines[j]) or residents:
+                    _append_name(residents, lines[j])
+                j += 1
+            i = j
+            continue
+
+        if label.startswith("infirmier_chef") or label.startswith("infirmier_major"):
+            nurse_parts: list[str] = []
+            j = i + 1
+            while j < len(lines):
+                lj = labels[j]
+                if _is_staff_role_header(lj) or any(lj.startswith(prefix) for prefix in STAFF_STOP_PREFIXES):
+                    break
+                nurse_parts.append(normalize_inline_text(lines[j]))
+                j += 1
+            fields["chief_nurse"] = normalize_inline_text(" ".join(nurse_parts))
+            i = j
+            continue
+
+        if label.startswith("vice_major"):
+            vice_parts: list[str] = []
+            j = i + 1
+            while j < len(lines):
+                lj = labels[j]
+                if _is_staff_role_header(lj) or any(lj.startswith(prefix) for prefix in STAFF_STOP_PREFIXES):
+                    break
+                vice_parts.append(normalize_inline_text(lines[j]))
+                j += 1
+            fields["vice_major"] = normalize_inline_text(" ".join(vice_parts))
+            i = j
+            continue
+
+        if label.startswith("technicien") or label.startswith("technicienne") or label.startswith("techniciens") or label.startswith("techniciennes"):
+            j = i + 1
+            while j < len(lines):
+                lj = labels[j]
+                if _is_staff_role_header(lj) or any(lj.startswith(prefix) for prefix in STAFF_STOP_PREFIXES):
+                    break
+                if _is_person_like_line(lines[j]) or technicians:
+                    _append_name(technicians, lines[j])
+                j += 1
+            i = j
+            continue
+
+        # Handle compact single-line "Techniciens: Nora BANANA".
+        if ":" in line and (label.startswith("techniciens") or label.startswith("techniciennes")):
+            _, value = line.split(":", 1)
+            if normalize_inline_text(value):
+                _append_name(technicians, value)
+
+        i += 1
+
+    fields["residents"] = residents
+    fields["technicians"] = technicians
+    return fields
+
+
+def _build_laboratory_staff_text(structured_fields: dict[str, object]) -> str:
+    parts: list[str] = []
+    central = normalize_inline_text(str(structured_fields.get("central_lab_chief") or ""))
+    parasitology = normalize_inline_text(str(structured_fields.get("parasitology_lab_chief") or ""))
+    department = normalize_inline_text(str(structured_fields.get("department_lab_chief") or ""))
+    chief_nurse = normalize_inline_text(str(structured_fields.get("chief_nurse") or ""))
+    vice_major = normalize_inline_text(str(structured_fields.get("vice_major") or ""))
+    residents = [normalize_inline_text(str(x)) for x in (structured_fields.get("residents") or []) if normalize_inline_text(str(x))]
+    technicians = [normalize_inline_text(str(x)) for x in (structured_fields.get("technicians") or []) if normalize_inline_text(str(x))]
+
+    if central:
+        parts.append(f"Chef de Service du Laboratoire Central : {central}")
+    if parasitology:
+        parts.append(f"Chef du Laboratoire de Parasitologie : {parasitology}")
+    elif department:
+        parts.append(f"Chef du Laboratoire : {department}")
+    if residents:
+        parts.append("Médecins Résidents : " + " ".join(residents))
+    if chief_nurse:
+        parts.append(f"Infirmier Major : {chief_nurse}")
+    if vice_major:
+        parts.append(f"Vice Major : {vice_major}")
+    if technicians:
+        parts.append("Techniciens : " + " ".join(technicians))
+
+    return normalize_inline_text(" ".join(parts))
+
+
 def _append_simple_block(
     blocks: list[DocumentBlock],
     *,
@@ -523,23 +897,24 @@ def _append_simple_block(
         text_length=len(normalize_inline_text(text)),
         source_count=max(1, len(lines)),
     )
-    blocks.append(
-        _make_block(
-            block_id=f"block_{block_index:03d}",
-            page_number=page_number,
-            block_type=block_type,
-            section_title=section_title,
-            text=text,
-            bboxes=[],
-            is_indexable=is_indexable,
-            confidence=confidence,
-            confidence_score=confidence_score,
-            structured_fields={
-                "source": "native_text_section_parser",
-                **(structured_fields or {}),
-            },
-        )
+    block = _make_block(
+        block_id=f"block_{block_index:03d}",
+        page_number=page_number,
+        block_type=block_type,
+        section_title=section_title,
+        text=text,
+        bboxes=[],
+        is_indexable=is_indexable,
+        confidence=confidence,
+        confidence_score=confidence_score,
+        structured_fields={
+            "source": "native_text_section_parser",
+            **(structured_fields or {}),
+        },
     )
+    if block_type == "laboratory_staff_block":
+        block.index_text = ""
+    blocks.append(block)
     return block_index + 1
 
 
@@ -641,6 +1016,21 @@ def _create_parasitology_stool_blocks(
         is_indexable=False,
     )
 
+    staff_lines = _extract_laboratory_staff_lines(lines)
+    staff_structured = _build_laboratory_staff_structured_fields(staff_lines)
+    staff_text = _build_laboratory_staff_text(staff_structured)
+    block_index = _append_simple_block(
+        created,
+        block_index=block_index,
+        page_number=page_number,
+        block_type="laboratory_staff_block",
+        section_title="Laboratory staff",
+        lines=[staff_text] if staff_text else staff_lines,
+        page_text_source=page_text_source,
+        is_indexable=False,
+        structured_fields=staff_structured,
+    )
+
     block_index = _append_simple_block(
         created,
         block_index=block_index,
@@ -729,10 +1119,10 @@ def _create_parasitology_stool_blocks(
     return created, block_index
 
 
-def _trim_chu_results_text(page: dict) -> str:
+def _trim_chu_results_text(page: dict) -> tuple[str, list[str]]:
     lines = _page_lines(page)
     if not lines:
-        return ""
+        return "", []
 
     start = None
     for index, line in enumerate(lines):
@@ -747,16 +1137,25 @@ def _trim_chu_results_text(page: dict) -> str:
                 start = index + 1
                 break
     if start is None:
-        return ""
+        return "", []
 
     end = len(lines)
     for index in range(start, len(lines)):
         label = normalize_label(lines[index])
-        if label.startswith("le_") or label.startswith("page_") or label.startswith("adresse_web") or label.startswith("tel"):
+        if (
+            label.startswith("le_")
+            or label.startswith("edite_e_par")
+            or label.startswith("valide_e_par")
+            or label.startswith("imprime_par")
+            or label.startswith("page_")
+            or label.startswith("adresse_web")
+            or label.startswith("tel")
+            or label.startswith("fax")
+        ):
             end = index
             break
 
-    kept = []
+    kept: list[str] = []
     for line in lines[start:end]:
         label = normalize_label(line)
         if not line or label in {"resultats", "valeurs_physiologiques", "resultats_ant", "parametres"}:
@@ -764,7 +1163,8 @@ def _trim_chu_results_text(page: dict) -> str:
         if label.startswith(("chef", "professeur", "medecins", "infirmier", "vice_major", "technicien", "imprime")):
             continue
         kept.append(line)
-    return "\n".join(kept)
+    result_lines, admin_lines = _split_results_and_admin_tail(kept + lines[end:])
+    return "\n".join(result_lines), admin_lines
 
 
 def _create_chu_lab_blocks(
@@ -809,7 +1209,22 @@ def _create_chu_lab_blocks(
             )
             block_index += 1
 
-    results_text = _trim_chu_results_text(page)
+    staff_lines = _extract_laboratory_staff_lines(lines)
+    staff_structured = _build_laboratory_staff_structured_fields(staff_lines)
+    staff_text = _build_laboratory_staff_text(staff_structured)
+    block_index = _append_simple_block(
+        created,
+        block_index=block_index,
+        page_number=page_number,
+        block_type="laboratory_staff_block",
+        section_title="Laboratory staff",
+        lines=[staff_text] if staff_text else staff_lines,
+        page_text_source=page_text_source,
+        is_indexable=False,
+        structured_fields=staff_structured,
+    )
+
+    results_text, admin_lines = _trim_chu_results_text(page)
     if results_text:
         created.append(
             _make_block(
@@ -825,9 +1240,51 @@ def _create_chu_lab_blocks(
         )
         block_index += 1
 
-    validation_lines = [line for line in lines if "Validé(e) par" in line or "Valide(e) par" in line]
-    if validation_lines:
-        text = "\n".join(validation_lines)
+    admin_source_lines = admin_lines or lines[-12:]
+
+    edition_present = _has_label_prefix(admin_source_lines, "edite_e_par")
+    edited_by = _admin_person_value(admin_source_lines, "Edité(e) par", "Edite(e) par")
+    edited_date_raw = _admin_date_value(admin_source_lines, "Le")
+    printed_by = _admin_person_value(admin_source_lines, "Imprimé par", "Imprime par")
+    if edition_present:
+        edition_text_lines = [
+            _format_metadata_line("Edité(e) par", edited_by),
+        ]
+        if edited_date_raw:
+            edition_text_lines.append(_format_metadata_line("Le", edited_date_raw))
+        if printed_by:
+            edition_text_lines.append(_format_metadata_line("Imprimé par", printed_by))
+        text = "\n".join(edition_text_lines)
+        created.append(
+            _make_block(
+                block_id=f"block_{block_index:03d}",
+                page_number=page_number,
+                block_type="edition_block",
+                section_title="Laboratory edition",
+                text=text,
+                bboxes=[],
+                is_indexable=False,
+                structured_fields={
+                    "edited_by": edited_by,
+                    "edited_date_raw": edited_date_raw,
+                    "printed_by": printed_by,
+                    "source": "native_text_section_parser",
+                },
+                **score("edition_block", text, len(edition_text_lines)),
+            )
+        )
+        block_index += 1
+
+    validation_present = _has_label_prefix(admin_source_lines, "valide_e_par")
+    validated_by = _admin_person_value(admin_source_lines, "Validé(e) par", "Valide(e) par")
+    validated_date_raw = _admin_date_value(admin_source_lines, "Le")
+    if validation_present:
+        validation_text_lines = [
+            _format_metadata_line("Validé(e) par", validated_by),
+        ]
+        if validated_date_raw:
+            validation_text_lines.append(_format_metadata_line("Le", validated_date_raw))
+        text = "\n".join(validation_text_lines)
         created.append(
             _make_block(
                 block_id=f"block_{block_index:03d}",
@@ -837,7 +1294,12 @@ def _create_chu_lab_blocks(
                 text=text,
                 bboxes=[],
                 is_indexable=False,
-                **score("validation_block", text, len(validation_lines)),
+                structured_fields={
+                    "validated_by": validated_by,
+                    "validated_date_raw": validated_date_raw,
+                    "source": "native_text_section_parser",
+                },
+                **score("validation_block", text, len(validation_text_lines)),
             )
         )
         block_index += 1
@@ -1047,19 +1509,22 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list, ocr_vis
                     )
                     block_index += 1
                 elif table.table_role == "results_table":
+                    table_text = _sanitize_results_text(_table_to_text(table))
+                    if not table_text.strip():
+                        continue
                     blocks.append(
                         _make_block(
                             block_id=f"block_{block_index:03d}",
                             page_number=page_number,
                             block_type="results_table_block",
                             section_title="Selected results",
-                            text=_table_to_text(table),
+                            text=table_text,
                             bboxes=[table.bbox] if table.bbox else [],
                             source_table_ids=[table.table_id],
                             is_indexable=True,
                             **scored_kwargs(
                                 block_type="results_table_block",
-                                text=_table_to_text(table),
+                                text=table_text,
                                 has_table_source=True,
                                 source_count=1,
                             ),
@@ -1087,7 +1552,7 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list, ocr_vis
                 blocks.extend(fallback_blocks)
 
             if not any(table.table_role == "results_table" for table in page_tables):
-                fallback_results, block_index = _create_results_block_from_ocr(
+                fallback_results, _admin_lines, block_index = _create_results_block_from_ocr(
                     page_number=page_number,
                     text_blocks=text_blocks,
                     title_candidates=["Resultats selectionnes", "Analyse / Observation"],
@@ -1219,19 +1684,22 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list, ocr_vis
         results_tables = [table for table in page_tables if table.table_role == "results_table"]
         if page_number != 1:
             for table in results_tables:
+                table_text = _sanitize_results_text(_table_to_text(table))
+                if not table_text.strip():
+                    continue
                 blocks.append(
                     _make_block(
                         block_id=f"block_{block_index:03d}",
                         page_number=page_number,
                         block_type="results_table_block",
                         section_title="Selected results",
-                        text=_table_to_text(table),
+                        text=table_text,
                         bboxes=[table.bbox] if table.bbox else [],
                         source_table_ids=[table.table_id],
                         is_indexable=True,
                         **scored_kwargs(
                             block_type="results_table_block",
-                            text=_table_to_text(table),
+                            text=table_text,
                             has_table_source=True,
                             source_count=1,
                         ),
@@ -1239,7 +1707,7 @@ def build_blocks(page_text_data: list[dict], tables: list, images: list, ocr_vis
                 )
                 block_index += 1
             if not results_tables:
-                fallback_results, block_index = _create_results_block_from_ocr(
+                fallback_results, _admin_lines, block_index = _create_results_block_from_ocr(
                     page_number=page_number,
                     text_blocks=text_blocks,
                     title_candidates=["Analyse / Observation"],

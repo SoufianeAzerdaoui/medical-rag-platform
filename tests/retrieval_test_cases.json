@@ -1,0 +1,180 @@
+[
+  {
+    "id": "EXACT_CALCITONINE",
+    "suite": "exact_analyte",
+    "query": "calcitonine",
+    "query_type": "exact_entity",
+    "expected_chunk_type": "lab_result",
+    "expected_chunk_contains": "CALCITONINE"
+  },
+  {
+    "id": "EXACT_PEPTIDE_C",
+    "suite": "exact_analyte",
+    "query": "peptide c",
+    "query_type": "exact_entity",
+    "expected_chunk_type": "lab_result",
+    "expected_chunk_contains": "PEPTIDE C"
+  },
+  {
+    "id": "EXACT_INSULINE",
+    "suite": "exact_analyte",
+    "query": "insuline",
+    "query_type": "exact_entity",
+    "expected_chunk_contains": "INSULINE"
+  },
+  {
+    "id": "EXACT_PRO_BNP",
+    "suite": "exact_analyte",
+    "query": "pro bnp",
+    "query_type": "exact_entity",
+    "expected_chunk_contains": "PRO BNP"
+  },
+  {
+    "id": "EXACT_TSHUS",
+    "suite": "exact_analyte",
+    "query": "tshus",
+    "query_type": "exact_entity",
+    "expected_chunk_contains": "TSHus"
+  },
+  {
+    "id": "EXACT_FERRITINE",
+    "suite": "exact_analyte",
+    "query": "ferritine",
+    "query_type": "exact_entity",
+    "expected_chunk_contains": "Ferritine"
+  },
+  {
+    "id": "EXACT_VITAMINE_D",
+    "suite": "exact_analyte",
+    "query": "vitamine d",
+    "query_type": "exact_entity",
+    "expected_chunk_contains": "Vitamine D"
+  },
+  {
+    "id": "EXACT_TRICHURIS",
+    "suite": "exact_analyte",
+    "query": "trichuris",
+    "query_type": "exact_entity",
+    "expected_chunk_contains": "TRICHURIS"
+  },
+  {
+    "id": "EXACT_LITHIUM",
+    "suite": "exact_analyte",
+    "query": "lithium",
+    "query_type": "exact_entity",
+    "expected_chunk_contains": "LITHIUM"
+  },
+  {
+    "id": "EXACT_CRP",
+    "suite": "exact_analyte",
+    "query": "crp",
+    "query_type": "exact_entity",
+    "expected_chunk_contains": "CRP"
+  },
+
+  {
+    "id": "SEM_HORMONAL_REF",
+    "suite": "semantic",
+    "query": "résultat hormonal avec valeur de référence",
+    "query_type": "semantic",
+    "expected_chunk_contains": "TSH"
+  },
+  {
+    "id": "SEM_PARASITO_POSITIVE",
+    "suite": "semantic",
+    "query": "résultat parasitologie positif",
+    "query_type": "semantic",
+    "expected_chunk_contains": "TRICHURIS"
+  },
+  {
+    "id": "SEM_ABOVE_REF",
+    "suite": "semantic",
+    "query": "résultat avec valeur supérieure à la référence",
+    "query_type": "semantic",
+    "expected_chunk_contains": "PROCALCITONINE"
+  },
+  {
+    "id": "SEM_PREVIOUS_RESULT",
+    "suite": "semantic",
+    "query": "résultat avec résultat antérieur",
+    "query_type": "semantic",
+    "expected_chunk_contains": "Résultat antérieur"
+  },
+  {
+    "id": "SEM_THYROID",
+    "suite": "semantic",
+    "query": "analyse thyroïdienne",
+    "query_type": "semantic",
+    "expected_chunk_contains": "T4 LIBRE"
+  },
+  {
+    "id": "SEM_NO_UNIT",
+    "suite": "semantic",
+    "query": "résultat biologique sans unité",
+    "query_type": "semantic",
+    "expected_chunk_contains": "non_specifiee"
+  },
+
+  {
+    "id": "FILT_DOC_ID",
+    "suite": "filter",
+    "query": "calcitonine",
+    "query_type": "exact_entity",
+    "filters": {
+      "doc_id": "report_1"
+    },
+    "expected_doc_id": "report_1",
+    "expected_chunk_contains": "CALCITONINE"
+  },
+  {
+    "id": "FILT_CHUNK_TYPE",
+    "suite": "filter",
+    "query": "calcitonine",
+    "query_type": "exact_entity",
+    "filters": {
+      "chunk_type": "lab_result"
+    },
+    "expected_chunk_type": "lab_result",
+    "expected_chunk_contains": "CALCITONINE"
+  },
+  {
+    "id": "FILT_ANALYTE_NORM",
+    "suite": "filter",
+    "query": "calcitonine",
+    "query_type": "exact_entity",
+    "filters": {
+      "analyte_norm": "calcitonine"
+    },
+    "expected_chunk_contains": "CALCITONINE"
+  },
+  {
+    "id": "FILT_SECTION",
+    "suite": "filter",
+    "query": "calcitonine",
+    "query_type": "exact_entity",
+    "filters": {
+      "section": "Résultats biologiques"
+    },
+    "expected_chunk_contains": "CALCITONINE"
+  },
+  {
+    "id": "FILT_SOURCE_KIND",
+    "suite": "filter",
+    "query": "calcitonine",
+    "query_type": "exact_entity",
+    "filters": {
+      "source_kind": "chu_text_fallback"
+    },
+    "expected_chunk_contains": "CALCITONINE"
+  },
+  {
+    "id": "FILT_REFERENCE_QUALITY",
+    "suite": "filter",
+    "query": "calcitonine",
+    "query_type": "exact_entity",
+    "filters": {
+      "reference_quality_status": "complete"
+    },
+    "expected_chunk_contains": "CALCITONINE"
+  }
+]

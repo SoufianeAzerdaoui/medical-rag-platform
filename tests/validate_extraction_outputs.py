@@ -27,6 +27,15 @@ REQUIRED_TOP_LEVEL_SECTIONS = {
     "images",
 }
 ISO_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+RESULTS_ADMIN_NOISE_PATTERNS = (
+    re.compile(r"\bedit[ée]\(e\)\s+par\b", flags=re.IGNORECASE),
+    re.compile(r"\bvalid[ée]\(e\)\s+par\b", flags=re.IGNORECASE),
+    re.compile(r"\ble\s*:\s*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", flags=re.IGNORECASE),
+    re.compile(r"\bpage\s+\d+\s+sur\s+\d+\b", flags=re.IGNORECASE),
+    re.compile(r"\badresse\s+web\b", flags=re.IGNORECASE),
+    re.compile(r"\bt[ée]l\b", flags=re.IGNORECASE),
+    re.compile(r"\bfax\b", flags=re.IGNORECASE),
+)
 
 
 def load_document(document_path: Path) -> dict:
@@ -255,6 +264,24 @@ def detect_repeated_indexable_block_text(document: dict, issues: list[dict]) -> 
         )
 
 
+def detect_admin_noise_in_results_blocks(document: dict, issues: list[dict]) -> None:
+    for block in document.get("blocks", []):
+        if block.get("block_type") != "results_table_block" or not block.get("is_indexable"):
+            continue
+        for field in ("text", "normalized_text", "index_text"):
+            value = str(block.get(field) or "")
+            if not value.strip():
+                continue
+            if any(pattern.search(value) for pattern in RESULTS_ADMIN_NOISE_PATTERNS):
+                add_issue(
+                    issues,
+                    "FAIL",
+                    "admin_noise_in_results_table_block",
+                    f"results_table_block@p{block.get('page_number')} contains administrative text in {field}",
+                )
+                break
+
+
 def validate_document(document_path: Path) -> dict:
     document = load_document(document_path)
     issues: list[dict] = []
@@ -269,6 +296,7 @@ def validate_document(document_path: Path) -> dict:
     detect_uniform_confidence(document, issues)
     detect_boilerplate(document, issues)
     detect_repeated_indexable_block_text(document, issues)
+    detect_admin_noise_in_results_blocks(document, issues)
 
     status = evaluate_status(issues)
     return {
