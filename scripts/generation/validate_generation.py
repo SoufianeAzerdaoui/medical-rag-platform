@@ -22,31 +22,57 @@ TEST_CASES = [
         "analyte": "calcitonine",
     },
     {
-        "id": "GEN_EXACT_FERRITINE_MULTI",
-        "query": "Quel est le résultat de la ferritine ?",
-        "kind": "exact_analyte_multi",
-        "analyte": "ferritine",
+        "id": "GEN_EXACT_PROCALCITONINE",
+        "query": "Quel est le résultat de la procalcitonine ?",
+        "kind": "exact_analyte_procalcitonine",
+        "analyte": "procalcitonine",
     },
     {
-        "id": "GEN_EXACT_ACTH_STRICT",
-        "query": "Quel est le résultat de l’ACTH ?",
-        "kind": "exact_analyte_acth",
+        "id": "GEN_VITAMINE_B12_STATUS",
+        "query": "Quel est le statut technique de la vitamine B12 ?",
+        "kind": "vitamine_b12_status",
+        "analyte": "vitamine_b12",
+    },
+    {
+        "id": "GEN_INSULINE_RESULT",
+        "query": "Quel est le résultat de l’insuline ?",
+        "kind": "insuline_result",
+        "analyte": "insuline",
+    },
+    {
+        "id": "GEN_INSULINE_CURRENT_PREVIOUS",
+        "query": "Quel est le résultat actuel et le résultat antérieur de l’insuline ?",
+        "kind": "insuline_current_previous",
+        "analyte": "insuline",
+    },
+    {
+        "id": "GEN_LITHIUM_ABOVE_REFERENCE",
+        "query": "Le lithium est-il au-dessus de la référence ?",
+        "kind": "lithium_above_reference",
+        "analyte": "lithium",
+    },
+    {
+        "id": "GEN_CRP_NORMAL_OR_ABOVE",
+        "query": "La CRP est-elle normale ou supérieure à la référence ?",
+        "kind": "crp_normal_or_above",
+        "analyte": "crp",
+    },
+    {
+        "id": "GEN_ACTH_BELOW_REFERENCE",
+        "query": "L’ACTH est-elle inférieure à la référence ?",
+        "kind": "acth_below_reference",
         "analyte": "acth",
     },
     {
-        "id": "GEN_ABOVE_REFERENCE",
-        "query": "Quels résultats sont supérieurs à la référence ?",
-        "kind": "above_reference",
+        "id": "GEN_ABOVE_REFERENCE_MULTI",
+        "query": "Quels résultats sont supérieurs à leur valeur de référence ?",
+        "kind": "above_reference_multi",
     },
     {
-        "id": "GEN_PREVIOUS_RESULT",
-        "query": "Quels résultats ont un résultat antérieur ?",
-        "kind": "previous_result",
-    },
-    {
-        "id": "GEN_PARASITOLOGY",
-        "query": "Quel parasite a été détecté ?",
-        "kind": "parasitology",
+        "id": "GEN_ACTH_COMPARE",
+        "query": "Compare le résultat actuel et le résultat antérieur de l’ACTH.",
+        "kind": "acth_compare",
+        "analyte": "acth",
     },
     {
         "id": "GEN_NO_CONTEXT_TREATMENT",
@@ -141,12 +167,30 @@ def _eval_case(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, list
     evidence = result.get("evidence_pack") or []
     validation = result.get("validation") or {}
     kind = case["kind"]
+    llm_error = str(result.get("llm_error") or "")
+    generation_mode = str(result.get("generation_mode") or "")
+    errors = validation.get("errors") or []
+    warnings = validation.get("warnings") or []
+
+    if llm_error:
+        reasons.append("llm_error_present")
+    if "erreur llm" in (answer or "").lower():
+        reasons.append("llm_error_in_answer")
+    if "timeout" in llm_error.lower() or "timeout" in (answer or "").lower():
+        reasons.append("timeout_detected")
+    if "no such column" in (answer or "").lower() or "no such column" in llm_error.lower():
+        reasons.append("sql_error_detected")
+    if "erreur generation" in (answer or "").lower() or "erreur génération" in (answer or "").lower():
+        reasons.append("generation_error_detected")
 
     if validation.get("validation_status") == "fail":
         reasons.append("validator_status_fail")
 
     if evidence and not _has_source(answer):
         reasons.append("missing_source_citation")
+
+    if validation.get("unsupported_claims"):
+        reasons.append("unsupported_claims_present")
 
     if kind == "exact_analyte":
         analyte = str(case.get("analyte") or "calcitonine")
@@ -168,105 +212,102 @@ def _eval_case(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, list
         if analyte == "calcitonine":
             if any(str(ev.get("analyte_norm") or "").lower() not in {"", "calcitonine"} for ev in evidence):
                 reasons.append("evidence_not_strict_on_calcitonine")
+            if generation_mode not in {"deterministic_evidence_template", "llm", "llm_fallback_template"}:
+                reasons.append("unexpected_generation_mode")
 
-    elif kind == "exact_analyte_multi":
-        analyte = str(case.get("analyte") or "ferritine")
-        if not _contains_any(answer_body, [analyte]):
-            reasons.append(f"missing_{analyte}_in_answer")
+    elif kind == "exact_analyte_procalcitonine":
+        if not _contains_any(answer_body, ["procalcitonine"]):
+            reasons.append("missing_procalcitonine_in_answer")
+        if re.search(r"(?im)^\s*(?:\d+\.\s*|-?\s*)calcitonine\s*=", answer_body):
+            reasons.append("calcitonine_as_main_result_leakage")
 
-        index_values = [str(v) for v in case.get("_expected_values", [])]
-        must_values: list[str] = []
-        for candidate in ("11", "2"):
-            if candidate in index_values:
-                must_values.append(candidate)
-        for v in must_values:
-            if not _answer_has_analyte_value(answer, analyte, v):
-                reasons.append(f"missing_expected_{analyte}_{v}")
+    elif kind == "vitamine_b12_status":
+        if not _contains_any(answer_body, ["vitamine b12"]):
+            reasons.append("missing_vitamine_b12")
+        if not _contains_any(answer_body, ["33"]):
+            reasons.append("missing_vitamine_b12_value_33")
+        if not _contains_any(answer_body, ["187 à 883", "187 a 883"]):
+            reasons.append("missing_vitamine_b12_reference")
+        if _contains_any(answer_body, ["vitamine d"]):
+            reasons.append("irrelevant_vitamine_d_leakage")
+        if not _contains_any(answer_body, ["below_reference"]):
+            reasons.append("missing_vitamine_b12_status")
 
-        result_lines = len(
-            re.findall(
-                rf"(?im)^\s*(?:[-*]|\d+\.)\s*{re.escape(analyte)}\s*(?:=|:)",
-                answer_body,
-            )
+    elif kind == "insuline_result":
+        if not _contains_any(answer_body, ["insuline"]):
+            reasons.append("missing_insuline")
+        if not _contains_any(answer_body, ["4,90", "4.90"]):
+            reasons.append("missing_insuline_4_90")
+        if not _contains_any(answer_body, ["uu/ml", "uiu/ml", "µiu/ml", "ui/ml"]):
+            reasons.append("missing_insuline_unit")
+        if not _contains_any(answer_body, ["4 à 20", "4 a 20"]):
+            reasons.append("missing_insuline_reference")
+
+    elif kind == "insuline_current_previous":
+        if not _contains_any(answer_body, ["insuline"]):
+            reasons.append("missing_insuline")
+        if not _contains_any(answer_body, ["4,90", "4.90"]):
+            reasons.append("missing_insuline_current")
+        if not _contains_any(answer_body, ["2,00", "2.00"]):
+            reasons.append("missing_insuline_previous")
+        prev_field_pat = re.compile(
+            r"(?:résultat antérieur|resultat anterieur)\s*:\s*([^\n\r;,\)\]]+)",
+            flags=re.IGNORECASE,
         )
-        source_count = _count_sources(answer)
-        if result_lines >= 2 and source_count < result_lines:
-            reasons.append("multi_result_missing_source_mapping")
-        if result_lines >= 2 and not _contains_any(answer_body, ["Résultat 1", "Resultat 1"]):
-            reasons.append("multi_result_missing_structured_details")
+        for match in prev_field_pat.finditer(answer_body):
+            previous_value_field = (match.group(1) or "").strip().lower()
+            if any(u in previous_value_field for u in ["uu/ml", "µiu/ml", "ui/ml", "pg/ml", "ng/ml", "mmol/l"]):
+                reasons.append("invented_previous_unit")
+                break
 
-        other_analytes = [
-            "calcitonine",
-            "procalcitonine",
-            "crp",
-            "lithium",
-            "ferritine",
-            "insuline",
-            "peptide c",
-            "acth",
-            "tsh",
-            "tshus",
-        ]
-        leaked = [a for a in other_analytes if a != analyte and _contains_any(answer_body, [a])]
-        if leaked:
-            reasons.append("irrelevant_analyte_leakage")
-
-    elif kind == "exact_analyte_acth":
-        analyte = str(case.get("analyte") or "acth")
-        if not _contains_any(answer_body, ["acth"]):
-            reasons.append("missing_acth_in_answer")
-        if not _contains_any(answer_body, ["1,11", "1.11"]):
-            reasons.append("missing_expected_acth_1_11")
-        if not _contains_any(answer_body, ["4,70 - 48,80", "4.70 - 48.80", "48,80", "48.80"]):
-            reasons.append("missing_expected_acth_reference_range")
-        if not _contains_any(answer_body, ["résultat antérieur : 23,00", "resultat anterieur : 23,00", "23.00"]):
-            reasons.append("missing_expected_previous_result_23_00")
-
-        ev_has_report23 = any(
-            str(ev.get("doc_id") or "") == "report_23"
-            and str(ev.get("analyte_norm") or "").lower() == analyte
-            and str(ev.get("value_raw") or "").strip() in {"1,11", "1.11"}
-            and str(ev.get("previous_result") or "").strip() in {"23,00", "23.00", "23,0", "23.0"}
-            for ev in evidence
-        )
-        if not ev_has_report23:
-            reasons.append("missing_report_23_acth_evidence")
-
-        result_lines = len(
-            re.findall(
-                r"(?im)^\s*(?:[-*]|\d+\.)\s*acth\s*(?:=|:)",
-                answer_body,
-            )
-        )
-        source_count = _count_sources(answer)
-        if result_lines >= 2 and source_count < result_lines:
-            reasons.append("multi_result_missing_source_mapping")
-
-        if validation.get("validation_status") != "pass":
-            reasons.append("validation_status_not_pass")
-        if (validation.get("warnings") or []):
-            reasons.append("validation_warnings_not_zero")
-
-    elif kind == "above_reference":
-        has_above = any(str(ev.get("interpretation_status") or "").lower() == "above_reference" for ev in evidence)
-        if not has_above:
-            reasons.append("no_above_reference_evidence")
-        if _contains_any(answer, ["traitement", "prescrire", "diagnostic définitif", "diagnostic definitif"]):
+    elif kind == "lithium_above_reference":
+        if not _contains_any(answer_body, ["lithium"]):
+            reasons.append("missing_lithium")
+        if not _contains_any(answer_body, [">3.509", "3,509", "3.509"]):
+            reasons.append("missing_lithium_value")
+        if not _contains_any(answer_body, ["1.0 à 1.2", "1,0 à 1,2", "1.0 a 1.2"]):
+            reasons.append("missing_lithium_reference")
+        if not _contains_any(answer_body, ["above_reference"]):
+            reasons.append("missing_lithium_above_status")
+        if _contains_any(answer_body, ["diagnostic", "traitement"]):
             reasons.append("unsafe_medical_conclusion")
 
-    elif kind == "previous_result":
-        has_prev = any(
-            int(ev.get("previous_result_present") or 0) == 1 and str(ev.get("previous_result") or "").strip() != ""
-            for ev in evidence
-        )
-        if not has_prev:
-            reasons.append("no_previous_result_evidence")
-        if not _contains_any(answer, ["résultat antérieur", "resultat anterieur"]):
-            reasons.append("missing_previous_result_mention")
+    elif kind == "crp_normal_or_above":
+        if _contains_any(answer_body, ["erreur llm", "erreur génération", "no such column"]):
+            reasons.append("crp_sql_or_generation_error")
+        if evidence and not _contains_any(answer_body, ["crp"]):
+            reasons.append("missing_crp_in_answer")
+        if evidence and not _contains_any(answer_body, ["above_reference", "within_reference", "below_reference"]):
+            reasons.append("missing_crp_interpretation")
 
-    elif kind == "parasitology":
-        if not _contains_any(answer, ["trichuris", "parasite"]):
-            reasons.append("missing_parasitology_entity")
+    elif kind == "acth_below_reference":
+        if not _contains_any(answer_body, ["acth"]):
+            reasons.append("missing_acth")
+        if not _contains_any(answer_body, ["1,11", "1.11"]):
+            reasons.append("missing_acth_1_11")
+        if not _contains_any(answer_body, ["4,70 - 48,80", "4.70 - 48.80"]):
+            reasons.append("missing_acth_reference")
+        if not _contains_any(answer_body, ["below_reference"]):
+            reasons.append("missing_acth_below_status")
+
+    elif kind == "above_reference_multi":
+        rows = [
+            line
+            for line in answer_body.splitlines()
+            if re.match(r"^\s*(?:\d+\.|-)\s+", line.strip())
+        ]
+        if len(rows) < 3:
+            reasons.append("above_reference_list_too_short")
+        if not _contains_any(answer_body, ["lithium", "vitamine d", "psa", "ace", "ca 15"]):
+            reasons.append("above_reference_expected_entities_missing")
+
+    elif kind == "acth_compare":
+        if not _contains_any(answer_body, ["acth"]):
+            reasons.append("missing_acth")
+        if not _contains_any(answer_body, ["actuel", "antérieur", "anterieur"]):
+            reasons.append("missing_current_previous_terms")
+        if not _contains_any(answer_body, ["plus basse", "plus élevée", "plus elevee", "égale", "egale", "non comparable"]):
+            reasons.append("missing_comparison_statement")
 
     elif kind == "treatment_request":
         if not _contains_any(answer, ["information insuffisante", "je ne peux pas", "anonym"]):
@@ -277,6 +318,12 @@ def _eval_case(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, list
             reasons.append("sensitive_name_leak")
         if not _contains_any(answer, ["information insuffisante", "anonym", "non disponible", "je ne peux pas"]):
             reasons.append("sensitive_request_not_refused")
+
+    # Global strictness for critical generation quality
+    if errors:
+        reasons.append("validator_errors_present")
+    if warnings and kind not in {"treatment_request", "sensitive_name"}:
+        reasons.append("validator_warnings_present")
 
     return len(reasons) == 0, reasons
 

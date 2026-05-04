@@ -25,7 +25,7 @@ from citation_builder import append_citations, build_citations
 from evidence_builder import build_evidence_pack
 from llm_client import LLMClient, LLMClientError
 from prompt_builder import INSUFFICIENT_CONTEXT_SENTENCE, build_prompt
-from query_understanding import contains_exact_term, detect_exact_analyte, norm_text
+from query_understanding import contains_exact_term, detect_exact_analyte, detect_exact_analytes, norm_text
 
 
 def normalize_query(query: str) -> str:
@@ -190,6 +190,288 @@ def _answer_needs_fallback(text: str) -> bool:
     return False
 
 
+def _is_above_reference_query(qn: str) -> bool:
+    return any(
+        k in qn
+        for k in [
+            "au dessus de la reference",
+            "au-dessus de la reference",
+            "superieur a la reference",
+            "superieure a la reference",
+            "above reference",
+            "above_reference",
+            "superieur",
+            "supérieure",
+        ]
+    )
+
+
+def _is_normal_or_above_query(qn: str) -> bool:
+    return ("normale ou superieure" in qn) or ("normal or above" in qn)
+
+
+def _is_below_reference_query(qn: str) -> bool:
+    return any(
+        k in qn
+        for k in [
+            "inferieur a la reference",
+            "inferieure a la reference",
+            "en dessous de la reference",
+            "below reference",
+            "below_reference",
+            "inferieur",
+            "inférieure",
+        ]
+    )
+
+
+def _is_previous_result_query(qn: str) -> bool:
+    return any(k in qn for k in ["resultat anterieur", "previous result", "ancien resultat", "antérieur"])
+
+
+def _is_compare_query(qn: str) -> bool:
+    return ("compare" in qn or "compar" in qn) and ("actuel" in qn and ("anterieur" in qn or "previous" in qn))
+
+
+def _is_status_query(qn: str) -> bool:
+    return "statut technique" in qn or "interpretation technique" in qn
+
+
+def _is_global_above_reference_query(qn: str, exact_analytes: list[str]) -> bool:
+    if exact_analytes:
+        return False
+    if not _is_above_reference_query(qn):
+        return False
+    return any(k in qn for k in ["quels resultats", "quelles", "liste", "tous", "resultats sont", "valeur de reference"])
+
+
+def _to_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    s = s.replace(",", ".")
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def _comparison_label(current: Any, previous: Any) -> str:
+    cf = _to_float(current)
+    pf = _to_float(previous)
+    if cf is None or pf is None:
+        return "non comparable numériquement"
+    if cf > pf:
+        return "plus élevée"
+    if cf < pf:
+        return "plus basse"
+    return "égale"
+
+
+def _load_interpretation_rows(
+    *,
+    sqlite_path: Path,
+    interpretation_status: str,
+    limit: int,
+    analyte_norm: str | None = None,
+) -> list[dict[str, Any]]:
+    if not sqlite_path.exists():
+        return []
+
+    conn = sqlite3.connect(str(sqlite_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        where = "WHERE lower(m.interpretation_status) = lower(?)"
+        params: list[Any] = [interpretation_status]
+        if analyte_norm:
+            where += " AND lower(m.analyte_norm) = lower(?)"
+            params.append(analyte_norm)
+        params.append(int(limit))
+        cur.execute(
+            f"""
+            SELECT
+              c.chunk_id,
+              c.doc_id,
+              c.chunk_type,
+              c.parent_chunk_id,
+              c.text_for_embedding,
+              c.text_for_keyword,
+              m.document_type,
+              m.sample_type,
+              m.patient_token,
+              m.sample_token,
+              m.report_token,
+              m.analyte,
+              m.analyte_norm,
+              m.parameter,
+              m.parameter_norm,
+              m.value_raw,
+              m.value_numeric,
+              m.unit,
+              m.reference_range,
+              m.interpretation_status,
+              m.previous_result_present,
+              m.previous_result_value_raw,
+              m.previous_result_unit,
+              m.section,
+              m.section_norm,
+              m.source_kind,
+              m.source_table_id,
+              m.row_index,
+              COALESCE(m.source_pdf, o.source_pdf) AS source_pdf,
+              COALESCE(m.page_number, o.page_number) AS page_number
+            FROM metadata_chunks m
+            JOIN chunks c ON c.chunk_id = m.chunk_id
+            LEFT JOIN object_references o ON o.chunk_id = c.chunk_id
+            {where}
+            ORDER BY
+              c.doc_id ASC,
+              COALESCE(m.page_number, o.page_number, 999999) ASC,
+              COALESCE(m.row_index, 999999) ASC,
+              c.chunk_id ASC
+            LIMIT ?
+            """,
+            params,
+        )
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _select_deterministic_candidates(
+    *,
+    query_norm: str,
+    evidence_pack: list[dict[str, Any]],
+    exact_analyte: str | None,
+) -> list[dict[str, Any]]:
+    candidates = list(evidence_pack)
+    if exact_analyte:
+        exact = [
+            ev
+            for ev in candidates
+            if contains_exact_term(str(ev.get("analyte_norm") or ""), exact_analyte)
+            or contains_exact_term(str(ev.get("analyte") or ""), exact_analyte)
+        ]
+        if exact:
+            candidates = exact
+        else:
+            candidates = []
+
+    if _is_above_reference_query(query_norm) and not _is_normal_or_above_query(query_norm):
+        above = [ev for ev in candidates if str(ev.get("interpretation_status") or "").lower() == "above_reference"]
+        if above:
+            candidates = above
+    elif _is_below_reference_query(query_norm):
+        below = [ev for ev in candidates if str(ev.get("interpretation_status") or "").lower() == "below_reference"]
+        if below:
+            candidates = below
+
+    if _is_previous_result_query(query_norm) or _is_compare_query(query_norm):
+        with_prev = [
+            ev
+            for ev in candidates
+            if int(ev.get("previous_result_present") or 0) == 1 and str(ev.get("previous_result") or "").strip() != ""
+        ]
+        if with_prev:
+            candidates = with_prev
+
+    return candidates
+
+
+def _build_deterministic_evidence_answer(
+    *,
+    query: str,
+    evidence_pack: list[dict[str, Any]],
+    exact_analyte: str | None,
+    top_n: int,
+) -> str:
+    qn = norm_text(query)
+    candidates = _select_deterministic_candidates(query_norm=qn, evidence_pack=evidence_pack, exact_analyte=exact_analyte)
+    if not candidates:
+        candidates = evidence_pack
+    if not candidates:
+        return INSUFFICIENT_CONTEXT_SENTENCE
+
+    total_candidates = len(candidates)
+    candidates = candidates[: max(1, top_n)]
+
+    lines: list[str] = ["Réponse :"]
+    if _is_compare_query(qn):
+        lines.append("Comparaison technique des résultats actuels et antérieurs :")
+        for idx, ev in enumerate(candidates, start=1):
+            analyte = ev.get("analyte") or ev.get("parameter") or "analyte non précisé"
+            cur = ev.get("value_raw") or "non disponible"
+            unit = ev.get("unit") or ""
+            prev = ev.get("previous_result") or "non disponible"
+            relation = _comparison_label(cur, prev)
+            lines.append(
+                f"{idx}. Pour {ev.get('doc_id')}, {analyte} actuel = {cur} {unit}; "
+                f"résultat antérieur = {prev}. La valeur actuelle est {relation} que l'antérieure."
+            )
+    else:
+        if len(candidates) > 1:
+            title = f"Plusieurs résultats de {exact_analyte.upper()} ont été retrouvés :" if exact_analyte else "Plusieurs résultats ont été retrouvés :"
+            lines.append(title)
+            if total_candidates > len(candidates):
+                lines.append(f"(Liste limitée aux {len(candidates)} résultats les plus pertinents.)")
+        for idx, ev in enumerate(candidates, start=1):
+            analyte = ev.get("analyte") or ev.get("parameter") or "analyte non précisé"
+            value = ev.get("value_raw") or "non disponible"
+            unit = ev.get("unit") or ""
+            ref = ev.get("reference_range") or "non disponible"
+            interp = ev.get("interpretation_status") or "non disponible"
+            prev = ev.get("previous_result")
+            prefix = f"{idx}. " if len(candidates) > 1 else "- "
+            part = f"{prefix}{analyte} = {value}"
+            if unit:
+                part += f" {unit}"
+            part += f" (référence: {ref} ; interprétation technique: {interp}"
+            if prev not in (None, ""):
+                part += f" ; résultat antérieur: {prev}"
+            part += ")"
+            lines.append(part)
+
+    lines.append("")
+    lines.append("Données utilisées :")
+    for idx, ev in enumerate(candidates, start=1):
+        lines.extend(
+            [
+                f"Résultat {idx} :",
+                f"- Analyte : {ev.get('analyte') or ev.get('parameter') or 'non précisé'}",
+                f"- Valeur : {ev.get('value_raw') or 'non disponible'}",
+                f"- Unité : {ev.get('unit') or 'non disponible'}",
+                f"- Référence : {ev.get('reference_range') or 'non disponible'}",
+                f"- Interprétation technique : {ev.get('interpretation_status') or 'non disponible'}",
+                f"- Résultat antérieur : {ev.get('previous_result') or 'non disponible'}",
+                (
+                    f"- Source : [doc_id={ev.get('doc_id')}, page={ev.get('page_number')}, "
+                    f"row={ev.get('row_index')}, chunk_id={ev.get('chunk_id')}]"
+                ),
+            ]
+        )
+    return "\n".join(lines).strip()
+
+
+def _should_use_deterministic_generation(query: str, evidence_pack: list[dict[str, Any]], exact_analyte: str | None) -> bool:
+    if not evidence_pack:
+        return False
+    qn = norm_text(query)
+    if exact_analyte:
+        return True
+    if _is_above_reference_query(qn) or _is_below_reference_query(qn):
+        return True
+    if _is_previous_result_query(qn) or _is_compare_query(qn):
+        return True
+    if _is_status_query(qn):
+        return True
+    if "quel est le resultat" in qn or "quel est le statut" in qn:
+        return True
+    return False
+
+
 def _load_exact_analyte_rows(
     *,
     sqlite_path: Path,
@@ -287,27 +569,40 @@ def run_generation(
     timeout: int = 420,
     index_dir: str | Path = "data/indexes",
     collection: str = "medical_chunks",
+    search_engine: SearchEngine | None = None,
+    llm_client: LLMClient | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
 
     q = normalize_query(query)
+    qn = norm_text(q)
     sensitive_or_treatment = _query_is_sensitive_or_treatment(q)
     idx = Path(index_dir)
     sqlite_path = idx / "medical_rag.sqlite"
     qdrant_dir = idx / "qdrant"
 
     retrieval_filters = RetrievalFilters()
-    ql = q.lower()
-    exact_analyte = detect_exact_analyte(q)
+    exact_analytes = detect_exact_analytes(q)
+    exact_analyte = exact_analytes[0] if exact_analytes else detect_exact_analyte(q)
+    is_above_reference_query = _is_above_reference_query(qn)
+    is_normal_or_above = _is_normal_or_above_query(qn)
+    is_below_reference_query = _is_below_reference_query(qn)
+    is_global_above_query = _is_global_above_reference_query(qn, exact_analytes)
+
     if exact_analyte:
         retrieval_filters.analyte_norm = exact_analyte
-    if any(k in ql for k in ["supérieur", "superieur", "above reference", "au dessus de la référence", "au dessus de la reference"]):
+    if is_above_reference_query and not is_normal_or_above:
         retrieval_filters.interpretation_status = "above_reference"
+    elif is_below_reference_query:
+        retrieval_filters.interpretation_status = "below_reference"
 
     retrieval_response: Any
     max_exact_analyte_results = 10
+    max_above_reference_results = 10
     exact_analyte_expected_count = 0
     exact_analyte_rows: list[dict[str, Any]] = []
+    supplemental_rows: list[dict[str, Any]] = []
+    retrieval_error: str | None = None
     if sensitive_or_treatment:
         retrieval_response = SimpleNamespace(
             answerability={"status": "guardrail_blocked", "reason": "sensitive_or_treatment_query"},
@@ -323,7 +618,14 @@ def run_generation(
                 analyte_norm=exact_analyte,
                 limit=max(top_k, max_exact_analyte_results),
             )
-        engine = SearchEngine(
+        if is_global_above_query:
+            supplemental_rows = _load_interpretation_rows(
+                sqlite_path=sqlite_path,
+                interpretation_status="above_reference",
+                limit=max(top_k, max_above_reference_results),
+            )
+        created_engine = search_engine is None
+        engine = search_engine or SearchEngine(
             sqlite_path=sqlite_path,
             qdrant_dir=qdrant_dir,
             collection=collection,
@@ -354,15 +656,30 @@ def run_generation(
                     filters=RetrievalFilters(),
                     expand_context=True,
                 )
+        except Exception as exc:
+            retrieval_error = str(exc)
+            retrieval_response = SimpleNamespace(
+                answerability={"status": "retrieval_error", "reason": retrieval_error},
+                filters=retrieval_filters.to_dict(),
+                top_results=[],
+                context_chunks=[],
+                sources=[],
+            )
         finally:
-            engine.close()
+            if created_engine:
+                engine.close()
 
     evidence_pack = build_evidence_pack(
         retrieval_response,
         query=q,
-        max_evidence=max(top_k, max_exact_analyte_results) if exact_analyte else top_k,
+        max_evidence=(
+            max(top_k, max_exact_analyte_results)
+            if exact_analyte
+            else max(top_k, max_above_reference_results) if is_global_above_query else top_k
+        ),
         exact_analyte=exact_analyte,
         exact_analyte_rows=exact_analyte_rows,
+        supplemental_rows=supplemental_rows,
         max_exact_analyte_results=max(top_k, max_exact_analyte_results),
     )
 
@@ -374,13 +691,33 @@ def run_generation(
 
     llm_answer = ""
     llm_error = None
+    generation_mode = "llm"
+    error_type: str | None = None
 
     if sensitive_or_treatment:
         llm_answer = INSUFFICIENT_CONTEXT_SENTENCE
+        generation_mode = "guardrail_blocked"
+    elif retrieval_error:
+        llm_error = f"Retrieval error: {retrieval_error}"
+        error_type = "retrieval_error"
+        generation_mode = "error"
     elif not evidence_pack:
         llm_answer = INSUFFICIENT_CONTEXT_SENTENCE
+        generation_mode = "no_evidence"
+    elif _should_use_deterministic_generation(q, evidence_pack, exact_analyte):
+        llm_answer = _build_deterministic_evidence_answer(
+            query=q,
+            evidence_pack=evidence_pack,
+            exact_analyte=exact_analyte,
+            top_n=(
+                max(top_k, max_exact_analyte_results)
+                if exact_analyte
+                else max(top_k, max_above_reference_results) if is_global_above_query else top_k
+            ),
+        )
+        generation_mode = "deterministic_evidence_template"
     else:
-        client = LLMClient(provider=provider)
+        client = llm_client or LLMClient(provider=provider)
         try:
             llm_answer = client.generate(
                 prompt=prompt,
@@ -389,20 +726,24 @@ def run_generation(
                 num_ctx=num_ctx,
                 max_tokens=max_tokens,
                 timeout=timeout,
+                keep_alive="10m",
             )
             llm_answer = sanitize_model_answer(llm_answer)
             if _answer_needs_fallback(llm_answer):
                 llm_answer = _build_structured_fallback_answer(q, evidence_pack, exact_analyte=exact_analyte)
+                generation_mode = "llm_fallback_template"
         except LLMClientError as exc:
             llm_error = str(exc)
+            generation_mode = "error"
+            if "timeout" in llm_error.lower():
+                error_type = "llm_timeout"
+            else:
+                error_type = "llm_error"
 
     citations = build_citations(evidence_pack)
 
     if llm_error:
-        final_answer = append_citations(
-            f"{INSUFFICIENT_CONTEXT_SENTENCE}\n\nErreur LLM: {llm_error}",
-            citations,
-        )
+        final_answer = append_citations(f"Erreur LLM: {llm_error}", citations)
     else:
         final_answer = append_citations(llm_answer, citations)
 
@@ -411,6 +752,9 @@ def run_generation(
         answer_text=final_answer,
         evidence_pack=evidence_pack,
         exact_analyte=exact_analyte,
+        llm_error=llm_error,
+        generation_mode=generation_mode,
+        retrieval_status=(retrieval_response.answerability or {}).get("status"),
     )
 
     elapsed = time.perf_counter() - started
@@ -428,6 +772,8 @@ def run_generation(
         "citations": citations,
         "validation": validation,
         "llm_error": llm_error,
+        "error_type": error_type,
+        "generation_mode": generation_mode,
         "evidence_pack": evidence_pack,
         "retrieval": {
             "answerability": retrieval_response.answerability,

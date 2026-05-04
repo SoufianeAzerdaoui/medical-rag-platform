@@ -6,9 +6,12 @@ import json
 import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from generate_answer import run_generation
+from llm_client import LLMClient
+from retrieval.search import SearchEngine
 
 
 @dataclass
@@ -20,6 +23,7 @@ class ChatState:
     temperature: float
     num_ctx: int
     max_tokens: int
+    timeout: int
     index_dir: str
     collection: str
     show_context: bool = False
@@ -63,6 +67,7 @@ def _print_settings(state: ChatState) -> None:
     print(f"- temperature: {state.temperature}")
     print(f"- num_ctx: {state.num_ctx}")
     print(f"- max_tokens: {state.max_tokens}")
+    print(f"- timeout: {state.timeout}")
     print(f"- index_dir: {state.index_dir}")
     print(f"- collection: {state.collection}")
     print(f"- context: {'on' if state.show_context else 'off'}")
@@ -169,7 +174,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--num-ctx", type=int, default=4096)
-    parser.add_argument("--max-tokens", type=int, default=800)
+    parser.add_argument("--max-tokens", type=int, default=500)
+    parser.add_argument("--timeout", type=int, default=240)
     parser.add_argument("--index-dir", default="data/indexes")
     parser.add_argument("--collection", default="medical_chunks")
     parser.add_argument("--show-context", action="store_true")
@@ -187,6 +193,7 @@ def main() -> int:
         temperature=args.temperature,
         num_ctx=args.num_ctx,
         max_tokens=args.max_tokens,
+        timeout=args.timeout,
         index_dir=args.index_dir,
         collection=args.collection,
         show_context=args.show_context,
@@ -194,57 +201,73 @@ def main() -> int:
     )
 
     _startup_banner(state)
+    index_dir = Path(state.index_dir)
+    sqlite_path = index_dir / "medical_rag.sqlite"
+    qdrant_dir = index_dir / "qdrant"
+    search_engine = SearchEngine(
+        sqlite_path=sqlite_path,
+        qdrant_dir=qdrant_dir,
+        collection=state.collection,
+    )
+    llm_client = LLMClient(provider=state.provider)
 
-    while True:
-        try:
-            raw = input("\n> ")
-        except EOFError:
-            print("\nSession terminée (EOF).")
-            return 0
-        except KeyboardInterrupt:
-            print("\nInterruption détectée. Session terminée.")
-            return 0
-
-        question = raw.strip()
-        if not question:
-            continue
-
-        if question.startswith("/"):
-            keep_running = _handle_command(question, state)
-            if not keep_running:
+    try:
+        while True:
+            try:
+                raw = input("\n> ")
+            except EOFError:
+                print("\nSession terminée (EOF).")
                 return 0
-            continue
+            except KeyboardInterrupt:
+                print("\nInterruption détectée. Session terminée.")
+                return 0
 
-        try:
-            result = run_generation(
-                query=question,
-                top_k=state.top_k,
-                mode=state.mode,
-                provider=state.provider,
-                model=state.model,
-                temperature=state.temperature,
-                num_ctx=state.num_ctx,
-                max_tokens=state.max_tokens,
-                index_dir=state.index_dir,
-                collection=state.collection,
-            )
-        except KeyboardInterrupt:
-            print("\nInterruption détectée pendant la génération.")
-            continue
-        except Exception as exc:
-            print(f"Erreur génération: {exc}")
-            if "Ollama service unavailable" in str(exc):
+            question = raw.strip()
+            if not question:
+                continue
+
+            if question.startswith("/"):
+                keep_running = _handle_command(question, state)
+                if not keep_running:
+                    return 0
+                continue
+
+            print("Génération en cours...")
+            try:
+                result = run_generation(
+                    query=question,
+                    top_k=state.top_k,
+                    mode=state.mode,
+                    provider=state.provider,
+                    model=state.model,
+                    temperature=state.temperature,
+                    num_ctx=state.num_ctx,
+                    max_tokens=state.max_tokens,
+                    timeout=state.timeout,
+                    index_dir=state.index_dir,
+                    collection=state.collection,
+                    search_engine=search_engine,
+                    llm_client=llm_client,
+                )
+            except KeyboardInterrupt:
+                print("\nInterruption détectée pendant la génération.")
+                continue
+            except Exception as exc:
+                print(f"Erreur génération: {exc}")
+                if "Ollama service unavailable" in str(exc):
+                    print("Ollama indisponible. Vérifiez: systemctl status ollama")
+                continue
+
+            if state.json_output:
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            else:
+                _print_human_result(question, result, state.show_context)
+
+            llm_error = str(result.get("llm_error") or "")
+            if "Ollama service unavailable" in llm_error:
                 print("Ollama indisponible. Vérifiez: systemctl status ollama")
-            continue
-
-        if state.json_output:
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-        else:
-            _print_human_result(question, result, state.show_context)
-
-        llm_error = str(result.get("llm_error") or "")
-        if "Ollama service unavailable" in llm_error:
-            print("Ollama indisponible. Vérifiez: systemctl status ollama")
+    finally:
+        search_engine.close()
 
 
 if __name__ == "__main__":

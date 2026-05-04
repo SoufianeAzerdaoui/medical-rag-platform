@@ -98,6 +98,7 @@ def _extract_numeric_tokens_for_validation(core_text: str) -> list[str]:
         line = re.sub(r"^\s*\d+\.\s*", "", line)
         line = re.sub(r"(?im)^\s*résultat\s+\d+\s*:\s*", "", line)
         line = re.sub(r"(?im)^\s*resultat\s+\d+\s*:\s*", "", line)
+        line = re.sub(r"\breport[_\-]?\d+\b", " ", line, flags=re.IGNORECASE)
 
         for t in re.findall(r"\d+(?:[.,]\d+)?", line):
             tokens.append(t)
@@ -232,6 +233,9 @@ def validate_answer(
     answer_text: str,
     evidence_pack: list[dict[str, Any]],
     exact_analyte: str | None = None,
+    llm_error: str | None = None,
+    generation_mode: str | None = None,
+    retrieval_status: str | None = None,
 ) -> dict[str, Any]:
     text = (answer_text or "").strip()
     text_norm = _norm(text)
@@ -258,6 +262,18 @@ def validate_answer(
     # Thinking exposure
     if "<think>" in text_norm or "thinking:" in text_norm:
         errors.append("Model thinking content exposed in final answer.")
+
+    # Generation/retrieval hard errors
+    if llm_error:
+        errors.append(f"LLM error detected: {llm_error}")
+    if "erreur generation" in text_norm or "erreur génération" in text_norm:
+        errors.append("Generation error exposed in final answer.")
+    if "ollama timeout" in text_norm or "timeout" in text_norm and "erreur llm" in text_norm:
+        errors.append("Timeout error detected in final answer.")
+    if "no such column" in text_norm or "sql" in text_norm and "erreur" in text_norm:
+        errors.append("SQL error detected in final answer.")
+    if retrieval_status == "retrieval_error":
+        errors.append("Retrieval error status detected.")
 
     citation_present = "[doc_id=" in text
     if evidence_pack and not citation_present:
@@ -350,14 +366,16 @@ def validate_answer(
     sensitive_query = any(k in qn for k in ["nom du patient", "patient", "date de naissance", "prescripteur"]) or any(
         k in qn for k in ["traitement", "prescrire", "posologie"]
     )
+    is_guardrail_mode = generation_mode == "guardrail_blocked"
+    has_insufficient_sentence = INSUFFICIENT_CONTEXT_SENTENCE.lower() in text_norm
 
     if no_evidence:
-        insufficient_context_handled = INSUFFICIENT_CONTEXT_SENTENCE.lower() in text_norm
+        insufficient_context_handled = has_insufficient_sentence
         if not insufficient_context_handled:
             errors.append("No evidence available but answer did not report insufficient context.")
     elif sensitive_query:
         insufficient_context_handled = (
-            INSUFFICIENT_CONTEXT_SENTENCE.lower() in text_norm
+            has_insufficient_sentence
             or "anonym" in text_norm
             or "non disponible" in text_norm
             or "je ne peux pas" in text_norm
@@ -365,7 +383,9 @@ def validate_answer(
         if not insufficient_context_handled:
             warnings.append("Sensitive query should generally return anonymized or insufficient-context response.")
     else:
-        insufficient_context_handled = INSUFFICIENT_CONTEXT_SENTENCE.lower() in text_norm
+        insufficient_context_handled = has_insufficient_sentence
+        if evidence_pack and has_insufficient_sentence and not is_guardrail_mode:
+            errors.append("Insufficient-context answer returned despite available evidence.")
 
     value_accuracy = len(unsupported_numeric) == 0
     unit_accuracy = len(unsupported_units) == 0

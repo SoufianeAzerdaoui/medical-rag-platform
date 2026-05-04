@@ -24,6 +24,7 @@ class LLMClient:
         num_ctx: int = 4096,
         max_tokens: int = 800,
         timeout: int = 180,
+        keep_alive: str = "10m",
     ) -> str:
         if self.provider != "ollama":
             raise LLMClientError(f"Unsupported provider: {self.provider}")
@@ -34,6 +35,7 @@ class LLMClient:
             num_ctx=num_ctx,
             max_tokens=max_tokens,
             timeout=timeout,
+            keep_alive=keep_alive,
         )
 
     def _generate_ollama(
@@ -45,12 +47,14 @@ class LLMClient:
         num_ctx: int,
         max_tokens: int,
         timeout: int,
+        keep_alive: str,
     ) -> str:
         payload: dict[str, Any] = {
             "model": model,
             "prompt": prompt,
             "stream": False,
             "think": False,
+            "keep_alive": keep_alive,
             "options": {
                 "temperature": temperature,
                 "top_p": 0.8,
@@ -78,7 +82,7 @@ class LLMClient:
             if isinstance(exc.reason, ConnectionRefusedError) or isinstance(exc.reason, socket.error):
                 raise LLMClientError("Ollama service unavailable. Check systemctl status ollama.") from exc
             raise LLMClientError(f"Ollama request failed: {exc.reason}") from exc
-        except TimeoutError as exc:
+        except (TimeoutError, socket.timeout) as exc:
             raise LLMClientError("Ollama timeout. Increase timeout or reduce max_tokens.") from exc
 
         if status >= 400:

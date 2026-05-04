@@ -73,6 +73,73 @@ def _float_or_none(value: Any) -> float | None:
         return None
 
 
+def _clean_reference_range(reference_range: Any, value_raw: Any) -> str | None:
+    ref = str(reference_range or "").strip()
+    if not ref:
+        return None
+    val = str(value_raw or "").strip()
+    if not val:
+        return ref
+    # Fix known polluted patterns where measured value is appended to reference range (typically at end).
+    val_num = re.sub(r"^[<>]=?\s*", "", val).strip()
+    if val_num:
+        num_re = re.escape(val_num).replace(r"\,", "[,.]").replace(r"\.", "[,.]")
+        tail_pattern = re.compile(
+            rf"\s*[<>]=?\s*{num_re}(?:\s*[a-zA-Zµ/%]+(?:/[a-zA-Zµ%]+)?)?\s*$",
+            flags=re.IGNORECASE,
+        )
+        if tail_pattern.search(ref):
+            ref = tail_pattern.sub("", ref).strip(" ;,|-")
+    ref = re.sub(r"\s+", " ", ref).strip()
+    return ref or None
+
+
+def _extract_reference_from_analyte(analyte: Any) -> str | None:
+    text = str(analyte or "")
+    m = re.search(r"\(([^()]*\d[^()]*)\)", text)
+    if not m:
+        return None
+    ref = re.sub(r"\s+", " ", m.group(1)).strip()
+    if "-" in ref and any(ch.isdigit() for ch in ref):
+        return ref
+    return None
+
+
+def _derive_interpretation_status(value_numeric: Any, reference_range: Any, fallback: Any) -> str | None:
+    status = str(fallback or "").strip().lower()
+    if status and status not in {"unknown", "n/a", "none", "null"}:
+        return status
+    ref = str(reference_range or "").strip()
+    if not ref:
+        return status or None
+
+    nums = re.findall(r"\d+(?:[.,]\d+)?", ref)
+    if not nums:
+        return status or None
+    try:
+        val = float(str(value_numeric).replace(",", "."))
+    except Exception:
+        return status or None
+    try:
+        if "<" in ref and nums:
+            hi = float(nums[0].replace(",", "."))
+            return "below_reference" if val < hi else "above_reference"
+        if ">" in ref and nums:
+            lo = float(nums[0].replace(",", "."))
+            return "above_reference" if val > lo else "below_reference"
+        if len(nums) >= 2:
+            lo = float(nums[0].replace(",", "."))
+            hi = float(nums[1].replace(",", "."))
+            if val < lo:
+                return "below_reference"
+            if val > hi:
+                return "above_reference"
+            return "within_reference"
+    except Exception:
+        return status or None
+    return status or None
+
+
 def _int_flag(value: Any) -> int:
     try:
         return 1 if int(value or 0) == 1 else 0
@@ -125,7 +192,7 @@ def _row_to_retrieval_result(row: dict[str, Any]) -> RetrievalResult:
     )
 
 
-def _exact_analyte_sort_key(item: RetrievalResult) -> tuple[str, int, int, float]:
+def _exact_analyte_sort_key(item: RetrievalResult) -> tuple[float, str, int, int]:
     md = item.metadata or {}
     doc_id = str(item.doc_id or "").strip().lower()
     page = item.page_number
@@ -136,8 +203,8 @@ def _exact_analyte_sort_key(item: RetrievalResult) -> tuple[str, int, int, float
         page = 999999
     if row_index is None:
         row_index = 999999
-    final_score = item.final_score if item.final_score is not None else (item.score_hybrid or 0.0)
-    return (doc_id, int(page), int(row_index), -float(final_score or 0.0))
+    final_score = float(item.final_score if item.final_score is not None else (item.score_hybrid or 0.0) or 0.0)
+    return (-final_score, doc_id, int(page), int(row_index))
 
 
 def build_evidence_pack(
@@ -147,6 +214,7 @@ def build_evidence_pack(
     max_evidence: int = 6,
     exact_analyte: str | None = None,
     exact_analyte_rows: list[dict[str, Any]] | None = None,
+    supplemental_rows: list[dict[str, Any]] | None = None,
     max_exact_analyte_results: int = 10,
 ) -> list[dict[str, Any]]:
     candidates = response.context_chunks if response.context_chunks else response.top_results
@@ -163,6 +231,14 @@ def build_evidence_pack(
             -(r.score_vector or 0.0),
         ),
     )
+
+    if supplemental_rows:
+        existing_ids = {x.chunk_id for x in ordered}
+        for row in supplemental_rows:
+            row_result = _row_to_retrieval_result(row)
+            if row_result.chunk_id and row_result.chunk_id not in existing_ids:
+                ordered.append(row_result)
+                existing_ids.add(row_result.chunk_id)
 
     if exact_analyte:
         enriched_by_chunk: dict[str, RetrievalResult] = {}
@@ -209,6 +285,15 @@ def build_evidence_pack(
         previous_result = md.get("previous_result")
         if previous_result in (None, ""):
             previous_result = md.get("previous_result_value_raw")
+        reference_range_raw = md.get("reference_range")
+        reference_range = _clean_reference_range(reference_range_raw, md.get("value_raw"))
+        if not reference_range:
+            reference_range = _extract_reference_from_analyte(md.get("analyte"))
+        interpretation_status = _derive_interpretation_status(
+            md.get("value_numeric"),
+            reference_range,
+            md.get("interpretation_status"),
+        )
 
         evidence_pack.append(
             {
@@ -222,10 +307,11 @@ def build_evidence_pack(
                 "value_raw": md.get("value_raw"),
                 "value_numeric": _float_or_none(md.get("value_numeric")),
                 "unit": md.get("unit"),
-                "reference_range": md.get("reference_range"),
+                "reference_range": reference_range,
+                "reference_range_raw": reference_range_raw,
                 "reference_low": md.get("reference_low"),
                 "reference_high": md.get("reference_high"),
-                "interpretation_status": md.get("interpretation_status"),
+                "interpretation_status": interpretation_status,
                 "previous_result": previous_result,
                 "previous_result_present": _int_flag(md.get("previous_result_present")),
                 "section": md.get("section"),
