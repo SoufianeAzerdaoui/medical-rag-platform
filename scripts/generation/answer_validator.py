@@ -5,7 +5,7 @@ import unicodedata
 from typing import Any
 
 from prompt_builder import INSUFFICIENT_CONTEXT_SENTENCE
-from query_understanding import contains_exact_term, detect_exact_analyte, find_analyte_mentions
+from query_understanding import contains_exact_term, detect_exact_analyte, detect_exact_analytes, find_analyte_mentions
 
 
 _PII_PATTERNS = [
@@ -92,6 +92,10 @@ def _extract_numeric_tokens_for_validation(core_text: str) -> list[str]:
 
         low = _norm(line)
         if any(m in low for m in ["doc_id", "chunk_id", "page=", "row=", "source :"]):
+            continue
+        if "seuls les" in low and "premiers" in low:
+            continue
+        if "utilisez --show-all-results" in low:
             continue
 
         # Remove list ordinals and result section ordinals (non-medical numbering).
@@ -227,20 +231,56 @@ def _extract_main_response_block(answer_text: str) -> str:
     return text[start:end]
 
 
+def _extract_source_chunk_ids(answer_text: str) -> list[str]:
+    return re.findall(r"chunk_id=([^\],\s]+)", answer_text or "", flags=re.IGNORECASE)
+
+
+def _extract_source_doc_ids(answer_text: str) -> list[str]:
+    return re.findall(r"doc_id=([^\],\s]+)", answer_text or "", flags=re.IGNORECASE)
+
+
+def _is_simple_question(query: str) -> bool:
+    qn = _norm(query)
+    if any(k in qn for k in ["tous", "toutes", "liste", "retrouves", "retrouvés", "documents"]):
+        return False
+    return qn.startswith("quel est") or qn.startswith("quelle est")
+
+
 def validate_answer(
     *,
     query: str,
     answer_text: str,
     evidence_pack: list[dict[str, Any]],
+    displayed_evidences: list[dict[str, Any]] | None = None,
     exact_analyte: str | None = None,
     llm_error: str | None = None,
     generation_mode: str | None = None,
     retrieval_status: str | None = None,
+    show_low_quality: bool = False,
+    max_display_results: int = 3,
+    show_all_results: bool = False,
+    query_received: str | None = None,
+    query_used_for_retrieval: str | None = None,
+    query_used_for_prompt: str | None = None,
+    query_stored: str | None = None,
+    detected_analytes: list[str] | None = None,
+    requested_doc_id: str | None = None,
+    requested_analytes: list[str] | None = None,
+    found_requested_analytes: list[str] | None = None,
+    found_requested_analyte_norms: list[str] | None = None,
+    missing_requested_analytes: list[str] | None = None,
+    doc_summary_intent: dict[str, bool] | None = None,
+    summary_section_filter_applied: bool = False,
 ) -> dict[str, Any]:
     text = (answer_text or "").strip()
     text_norm = _norm(text)
     core_text = _split_answer_core(text)
     core_norm = _norm(core_text)
+    displayed = displayed_evidences or []
+    source_chunk_ids = _extract_source_chunk_ids(text)
+    source_doc_ids = _extract_source_doc_ids(text)
+    displayed_chunk_ids = [str(ev.get("chunk_id") or "") for ev in displayed if ev.get("chunk_id")]
+    displayed_doc_ids = [str(ev.get("doc_id") or "") for ev in displayed if ev.get("doc_id")]
 
     errors: list[str] = []
     warnings: list[str] = []
@@ -276,17 +316,17 @@ def validate_answer(
         errors.append("Retrieval error status detected.")
 
     citation_present = "[doc_id=" in text
-    if evidence_pack and not citation_present:
+    if displayed and not citation_present:
         errors.append("Missing citations while evidence exists.")
 
-    allowed = _extract_allowed_sets(evidence_pack)
+    allowed = _extract_allowed_sets(displayed if displayed else evidence_pack)
 
     # Unsupported numerics
     unsupported_numeric: list[str] = []
     for token in _extract_numeric_tokens_for_validation(core_text):
         if _norm(token) in {"0", "1"}:
             continue
-        if not _value_supported_by_evidence(token, allowed, evidence_pack):
+        if not _value_supported_by_evidence(token, allowed, displayed if displayed else evidence_pack):
             unsupported_numeric.append(token)
     if unsupported_numeric:
         unsupported_claims.append(f"Unsupported numeric values: {sorted(set(unsupported_numeric))}")
@@ -304,8 +344,12 @@ def validate_answer(
     # Previous result claim validation
     qn = _norm(query)
     exact_analyte = exact_analyte or detect_exact_analyte(query)
+    requested_analyte_list = [str(a).strip().lower() for a in (requested_analytes or []) if str(a).strip()]
+    found_requested = [str(a).strip().lower() for a in (found_requested_analytes or []) if str(a).strip()]
+    found_requested_norms = [str(a).strip().lower() for a in (found_requested_analyte_norms or []) if str(a).strip()]
+    missing_requested = [str(a).strip().lower() for a in (missing_requested_analytes or []) if str(a).strip()]
 
-    if exact_analyte:
+    if exact_analyte and not requested_analyte_list:
         detected = find_analyte_mentions(core_text)
         irrelevant = sorted(a for a in detected if a != exact_analyte)
         if irrelevant:
@@ -325,6 +369,26 @@ def validate_answer(
             unsupported_claims.append(
                 f"Evidence contains non-exact analyte entries for '{exact_analyte}': {bad_evidence_ids}"
             )
+
+    if requested_analyte_list:
+        requested_set = set(requested_analyte_list)
+        coverage_set = set(found_requested) | set(missing_requested)
+        uncovered = sorted(a for a in requested_set if a not in coverage_set)
+        if uncovered:
+            warnings.append("requested_analyte_coverage_incomplete")
+            unsupported_claims.append(f"Requested analytes without found/missing status: {uncovered}")
+        if missing_requested:
+            warnings.append("controlled_warning_missing_requested_analytes")
+
+        displayed_norms = {str(ev.get("analyte_norm") or "").strip().lower() for ev in displayed if ev.get("analyte_norm")}
+        if found_requested_norms:
+            allowed_norms = set(found_requested_norms)
+            bad_displayed = sorted(n for n in displayed_norms if n not in allowed_norms)
+            if bad_displayed:
+                errors.append("non_exact_analyte_evidence_present")
+                unsupported_claims.append(
+                    f"Displayed analytes not in found_requested_analytes: displayed={sorted(displayed_norms)}, found={sorted(allowed_norms)}"
+                )
 
     # Multi-result source consistency
     main_block = _extract_main_response_block(answer_text)
@@ -348,7 +412,7 @@ def validate_answer(
         raw_prev = match.group(1).strip()
         prev_val = _norm(raw_prev)
         if prev_val and prev_val not in {"non", "aucun", "none", "null", "n/a", "non disponible"}:
-            if not _value_supported_by_evidence(raw_prev, allowed, evidence_pack):
+            if not _value_supported_by_evidence(raw_prev, allowed, displayed if displayed else evidence_pack):
                 unsupported_claims.append(f"Unsupported previous result: {raw_prev}")
                 warnings.append("Previous result in answer not found in evidence.")
 
@@ -362,12 +426,14 @@ def validate_answer(
 
     # Insufficient context handling
     insufficient_context_handled = False
-    no_evidence = len(evidence_pack) == 0
+    no_evidence = len(displayed if displayed else evidence_pack) == 0
     sensitive_query = any(k in qn for k in ["nom du patient", "patient", "date de naissance", "prescripteur"]) or any(
         k in qn for k in ["traitement", "prescrire", "posologie"]
     )
     is_guardrail_mode = generation_mode == "guardrail_blocked"
-    has_insufficient_sentence = INSUFFICIENT_CONTEXT_SENTENCE.lower() in text_norm
+    has_insufficient_sentence = INSUFFICIENT_CONTEXT_SENTENCE.lower() in text_norm or (
+        "information insuffisante dans le contexte fourni" in text_norm
+    )
 
     if no_evidence:
         insufficient_context_handled = has_insufficient_sentence
@@ -384,8 +450,86 @@ def validate_answer(
             warnings.append("Sensitive query should generally return anonymized or insufficient-context response.")
     else:
         insufficient_context_handled = has_insufficient_sentence
-        if evidence_pack and has_insufficient_sentence and not is_guardrail_mode:
+        if (displayed or evidence_pack) and has_insufficient_sentence and not is_guardrail_mode and not missing_requested:
             errors.append("Insufficient-context answer returned despite available evidence.")
+
+    requested_analytes = detected_analytes or detect_exact_analytes(query)
+    mentioned_analytes = find_analyte_mentions(core_text)
+    if requested_analytes:
+        allowed_mentions = set(str(a).strip().lower() for a in requested_analytes if str(a).strip())
+        allowed_mentions.update(found_requested_norms)
+        if "hdl" in allowed_mentions:
+            allowed_mentions.add("cholesterol_hdl")
+        bad_mentions = sorted(a for a in mentioned_analytes if a not in allowed_mentions)
+        if bad_mentions:
+            errors.append("query_answer_alignment_mismatch")
+            unsupported_claims.append(
+                f"Answer mentions analytes not requested: requested={sorted(allowed_mentions)}, mentioned={sorted(mentioned_analytes)}"
+            )
+
+    source_alignment_pass = set(source_chunk_ids) == set(displayed_chunk_ids)
+    if not source_alignment_pass:
+        errors.append("source_alignment_mismatch")
+        unsupported_claims.append(
+            f"source_chunk_ids={sorted(set(source_chunk_ids))}, displayed_evidence_chunk_ids={sorted(set(displayed_chunk_ids))}"
+        )
+    citation_coverage = 1.0
+    if displayed_chunk_ids:
+        citation_coverage = len(set(source_chunk_ids)) / max(1, len(set(displayed_chunk_ids)))
+
+    if not show_low_quality:
+        low_displayed = [
+            str(ev.get("chunk_id") or "unknown_chunk")
+            for ev in displayed
+            if str(ev.get("evidence_display_quality") or "high") == "low"
+        ]
+        if low_displayed:
+            errors.append("low_quality_display_without_opt_in")
+            unsupported_claims.append(f"low_quality_displayed_chunk_ids={low_displayed}")
+
+    if _is_simple_question(query) and (not show_all_results) and len(displayed) > max(1, int(max_display_results)):
+        warnings.append("max_display_results_exceeded_for_simple_query")
+
+    stale_query = False
+    q_ref = _norm(query_received or query)
+    for candidate in [query_used_for_retrieval, query_used_for_prompt, query_stored]:
+        if candidate is None:
+            continue
+        if _norm(candidate) != q_ref:
+            stale_query = True
+            break
+    if stale_query:
+        errors.append("stale_response_detection")
+
+    requested_doc_id_norm = str(requested_doc_id or "").strip().lower()
+    requested_doc_id_mismatch = False
+    if requested_doc_id_norm:
+        bad_display_docs = sorted({d for d in displayed_doc_ids if str(d).strip().lower() != requested_doc_id_norm})
+        bad_source_docs = sorted({d for d in source_doc_ids if str(d).strip().lower() != requested_doc_id_norm})
+        if bad_display_docs or bad_source_docs:
+            requested_doc_id_mismatch = True
+            errors.append("requested_doc_id_mismatch")
+            unsupported_claims.append(
+                f"requested_doc_id={requested_doc_id_norm}, displayed_doc_ids={sorted(set(displayed_doc_ids))}, source_doc_ids={sorted(set(source_doc_ids))}"
+            )
+
+    if generation_mode == "deterministic_doc_summary_sql_template":
+        if llm_error:
+            errors.append("doc_summary_mode_llm_error_present")
+        if citation_coverage < 1.0:
+            errors.append("doc_summary_mode_citation_coverage_not_full")
+        intent = doc_summary_intent or {}
+        if intent.get("wants_immunoanalyse_section") and summary_section_filter_applied:
+            bad_sections = []
+            for ev in displayed:
+                section = _norm(str(ev.get("section_norm") or ev.get("section") or ""))
+                if "immunoanalyse" not in section and "immuno analyse" not in section:
+                    bad_sections.append(str(ev.get("chunk_id") or "unknown_chunk"))
+            if bad_sections:
+                errors.append("doc_summary_immunoanalyse_section_mismatch")
+                unsupported_claims.append(
+                    f"Non-immunoanalyse chunks displayed while section filter applied: {bad_sections}"
+                )
 
     value_accuracy = len(unsupported_numeric) == 0
     unit_accuracy = len(unsupported_units) == 0
@@ -409,4 +553,24 @@ def validate_answer(
         "value_accuracy": value_accuracy,
         "unit_accuracy": unit_accuracy,
         "evidence_count": len(evidence_pack),
+        "displayed_evidence_count": len(displayed),
+        "source_chunk_ids": source_chunk_ids,
+        "displayed_evidence_chunk_ids": displayed_chunk_ids,
+        "source_doc_ids": source_doc_ids,
+        "displayed_evidence_doc_ids": displayed_doc_ids,
+        "source_alignment_pass": source_alignment_pass,
+        "citation_coverage": round(float(citation_coverage), 3),
+        "query_answer_alignment_pass": "query_answer_alignment_mismatch" not in errors,
+        "stale_response_detected": stale_query,
+        "requested_doc_id": requested_doc_id,
+        "requested_doc_id_mismatch": requested_doc_id_mismatch,
+        "found_requested_analytes": found_requested,
+        "found_requested_analyte_norms": found_requested_norms,
+        "missing_requested_analytes": missing_requested,
+        "requested_analyte_coverage": {
+            "requested_count": len(requested_analyte_list),
+            "found_count": len(found_requested),
+            "missing_count": len(missing_requested),
+            "uncovered_count": max(0, len(set(requested_analyte_list) - (set(found_requested) | set(missing_requested)))),
+        },
     }

@@ -26,6 +26,11 @@ _EXPLICIT_ADMIN_HINTS = {
     "source visuelle",
 }
 
+_UNIT_PATTERN = re.compile(
+    r"(?:ug/ml|mg/l|ng/ml|ui/l|iu/l|mmol/l|pg/ml|uui/ml|uu/ml|uiu/ml|mui/l|mui/ml)",
+    re.IGNORECASE,
+)
+
 
 def _norm(text: str) -> str:
     value = (text or "").strip().lower().replace("µ", "u")
@@ -55,6 +60,35 @@ def _chunk_priority(chunk_type: str) -> int:
     if c == "visual_reference":
         return 5
     return 6
+
+
+def _clean_analyte_display(analyte: Any, parameter: Any) -> str:
+    raw = str(analyte or parameter or "").strip()
+    if not raw:
+        return "non précisé"
+    cleaned = re.sub(r"\([^)]*\d[^)]*\)", "", raw)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -;,:")
+    return cleaned or raw
+
+
+def _display_quality(analyte_display: str, unit: Any) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+    analyte_norm = _norm(analyte_display)
+    unit_norm = _norm(str(unit or ""))
+    analyte_compact = analyte_norm.replace(" ", "")
+    unit_compact = unit_norm.replace(" ", "")
+
+    if _UNIT_PATTERN.match(analyte_norm):
+        reasons.append("analyte_starts_with_unit")
+    if len(_UNIT_PATTERN.findall(analyte_norm)) >= 2:
+        reasons.append("analyte_contains_repeated_units")
+
+    if unit_compact:
+        doubled = unit_compact + unit_compact
+        if doubled in analyte_compact or doubled in unit_compact:
+            reasons.append("unit_concatenated")
+
+    return ("low", reasons) if reasons else ("high", [])
 
 
 def _text_excerpt(text: str, max_len: int = 560) -> str:
@@ -192,21 +226,6 @@ def _row_to_retrieval_result(row: dict[str, Any]) -> RetrievalResult:
     )
 
 
-def _exact_analyte_sort_key(item: RetrievalResult) -> tuple[float, str, int, int]:
-    md = item.metadata or {}
-    doc_id = str(item.doc_id or "").strip().lower()
-    page = item.page_number
-    if page is None:
-        page = _int_or_none(md.get("page_number"))
-    row_index = _int_or_none(md.get("row_index"))
-    if page is None:
-        page = 999999
-    if row_index is None:
-        row_index = 999999
-    final_score = float(item.final_score if item.final_score is not None else (item.score_hybrid or 0.0) or 0.0)
-    return (-final_score, doc_id, int(page), int(row_index))
-
-
 def build_evidence_pack(
     response: SearchResponse,
     *,
@@ -218,19 +237,16 @@ def build_evidence_pack(
     max_exact_analyte_results: int = 10,
 ) -> list[dict[str, Any]]:
     candidates = response.context_chunks if response.context_chunks else response.top_results
-    if not candidates:
+    ordered = list(candidates) if candidates else []
+
+    if not ordered and exact_analyte_rows:
+        ordered = [_row_to_retrieval_result(r) for r in exact_analyte_rows]
+    if not ordered and supplemental_rows:
+        ordered = [_row_to_retrieval_result(r) for r in supplemental_rows]
+    if not ordered:
         return []
 
     allow_admin = _explicit_admin_intent(query)
-
-    ordered = sorted(
-        candidates,
-        key=lambda r: (
-            _chunk_priority(r.chunk_type),
-            -(r.final_score if r.final_score is not None else (r.score_hybrid or 0.0)),
-            -(r.score_vector or 0.0),
-        ),
-    )
 
     if supplemental_rows:
         existing_ids = {x.chunk_id for x in ordered}
@@ -241,22 +257,22 @@ def build_evidence_pack(
                 existing_ids.add(row_result.chunk_id)
 
     if exact_analyte:
-        enriched_by_chunk: dict[str, RetrievalResult] = {}
-
+        exact_candidates: list[RetrievalResult] = []
+        exact_chunk_ids: set[str] = set()
         for item in ordered:
             md = item.metadata or {}
             analyte_norm = str(md.get("analyte_norm") or "")
             analyte_text = str(md.get("analyte") or "")
             if contains_exact_term(analyte_norm, exact_analyte) or contains_exact_term(analyte_text, exact_analyte):
-                enriched_by_chunk[item.chunk_id] = item
+                if item.chunk_id not in exact_chunk_ids:
+                    exact_candidates.append(item)
+                    exact_chunk_ids.add(item.chunk_id)
 
         for row in (exact_analyte_rows or []):
             row_result = _row_to_retrieval_result(row)
-            if row_result.chunk_id and row_result.chunk_id not in enriched_by_chunk:
-                enriched_by_chunk[row_result.chunk_id] = row_result
-
-        exact_candidates = list(enriched_by_chunk.values())
-        exact_candidates.sort(key=_exact_analyte_sort_key)
+            if row_result.chunk_id and row_result.chunk_id not in exact_chunk_ids:
+                exact_candidates.append(row_result)
+                exact_chunk_ids.add(row_result.chunk_id)
         if exact_candidates:
             ordered = exact_candidates[: max(1, max_exact_analyte_results)]
 
@@ -294,14 +310,19 @@ def build_evidence_pack(
             reference_range,
             md.get("interpretation_status"),
         )
+        analyte_display = _clean_analyte_display(md.get("analyte"), md.get("parameter"))
+        display_quality, quality_reasons = _display_quality(analyte_display, md.get("unit"))
+        source = "sqlite_exact_match" if "exact_analyte_sqlite_enrichment" in (r.match_reason or []) else "retrieval"
 
         evidence_pack.append(
             {
                 "evidence_id": idx,
+                "rank": idx,
                 "chunk_id": r.chunk_id,
                 "doc_id": r.doc_id,
                 "chunk_type": r.chunk_type,
                 "analyte": md.get("analyte"),
+                "analyte_display": analyte_display,
                 "analyte_norm": md.get("analyte_norm"),
                 "parameter": md.get("parameter"),
                 "value_raw": md.get("value_raw"),
@@ -321,6 +342,9 @@ def build_evidence_pack(
                 "row_index": md.get("row_index"),
                 "final_score": r.final_score if r.final_score is not None else r.score_hybrid,
                 "clinical_rerank_score": r.clinical_rerank_score,
+                "source": source,
+                "evidence_display_quality": display_quality,
+                "evidence_display_quality_reasons": quality_reasons,
                 "text_excerpt": _text_excerpt(r.text or r.text_preview),
             }
         )

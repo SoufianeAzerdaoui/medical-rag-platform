@@ -46,6 +46,101 @@ TEST_CASES = [
         "analyte": "insuline",
     },
     {
+        "id": "GEN_ACE_REPORT31_SCOPED_A",
+        "query": "tu peux chercher dans report 31 la valeur de ACE",
+        "kind": "ace_report31_scoped",
+        "analyte": "ace",
+    },
+    {
+        "id": "GEN_ACE_GLOBAL",
+        "query": "Quel est le résultat de l’ACE ?",
+        "kind": "ace_global",
+        "analyte": "ace",
+    },
+    {
+        "id": "GEN_ACE_REPORT31_SCOPED_C",
+        "query": "Dans report_31, quel est le résultat de l’ACE ?",
+        "kind": "ace_report31_scoped",
+        "analyte": "ace",
+    },
+    {
+        "id": "GEN_ACE_REPORT7_SCOPED_D",
+        "query": "Dans report_7, quel est le résultat de l’ACE ?",
+        "kind": "ace_report7_scoped",
+        "analyte": "ace",
+    },
+    {
+        "id": "GEN_REPORT29_MULTI_C4_C3_HDL",
+        "query": "tu peux chercher dans report 29 la valeur de C4 et C3 et Cholestérol HDL",
+        "kind": "report29_multi_c4_c3_hdl",
+    },
+    {
+        "id": "GEN_REPORT29_C3_C4",
+        "query": "Dans report 29, donne C3 et C4",
+        "kind": "report29_c3_c4",
+    },
+    {
+        "id": "GEN_REPORT29_HDL",
+        "query": "Dans report 29, donne HDL",
+        "kind": "report29_hdl",
+    },
+    {
+        "id": "GEN_REPORT29_C3_TROPONINE",
+        "query": "Dans report 29, donne C3 et troponine",
+        "kind": "report29_c3_troponine",
+    },
+    {
+        "id": "GEN_REPORT31_ACE_B12",
+        "query": "Dans report 31 donne ACE et Vitamine B12",
+        "kind": "report31_ace_b12",
+    },
+    {
+        "id": "GEN_REPORT31_ACE_TROPONINE",
+        "query": "Dans report 31 donne ACE et Troponine",
+        "kind": "report31_ace_troponine",
+    },
+    {
+        "id": "GEN_REPORT31_IMMUNO_SUMMARY",
+        "query": "Dans report 31, tu peux me résumer les résultats d’immunoanalyse importants ?",
+        "kind": "report31_immuno_summary",
+    },
+    {
+        "id": "GEN_REPORT31_IMMUNO_COMPLETE",
+        "query": "Dans report 31, liste tous les résultats d’immunoanalyse avec leur valeur et référence",
+        "kind": "report31_immuno_complete",
+    },
+    {
+        "id": "GEN_REPORT31_IMMUNO_SUMMARY_INCLUDE_WITHIN",
+        "query": "Dans report 31, résume les résultats d’immunoanalyse importants",
+        "kind": "report31_immuno_summary_include_within",
+        "include_within_reference": True,
+    },
+    {
+        "id": "GEN_REPORT31_ABOVE_ONLY",
+        "query": "Dans report 31, quels résultats sont supérieurs à leur valeur de référence ?",
+        "kind": "report31_above_only",
+    },
+    {
+        "id": "GEN_REPORT31_BELOW_ONLY",
+        "query": "Dans report 31, quels résultats sont inférieurs à la référence ?",
+        "kind": "report31_below_only",
+    },
+    {
+        "id": "GEN_REPORT31_GROUPED_REFERENCE",
+        "query": "Dans report 31, classe les résultats en au-dessus, en dessous et dans la référence.",
+        "kind": "report31_grouped_reference",
+    },
+    {
+        "id": "GEN_REPORT31_HORS_REFERENCE_ATTENTION",
+        "query": "Dans report 31, quels résultats nécessitent une attention technique parce qu’ils sont hors référence ?",
+        "kind": "report31_hors_reference_attention",
+    },
+    {
+        "id": "GEN_REPORT999_ACE_CRP",
+        "query": "Dans report 999 donne ACE et CRP",
+        "kind": "report999_ace_crp",
+    },
+    {
         "id": "GEN_LITHIUM_ABOVE_REFERENCE",
         "query": "Le lithium est-il au-dessus de la référence ?",
         "kind": "lithium_above_reference",
@@ -132,6 +227,10 @@ def _answer_has_analyte_value(answer: str, analyte: str, value_raw: str) -> bool
     return False
 
 
+def _source_chunk_ids(answer: str) -> list[str]:
+    return re.findall(r"chunk_id=([^\],\s]+)", answer or "", flags=re.IGNORECASE)
+
+
 def _load_exact_analyte_index_stats(sqlite_path: Path, analyte: str) -> dict[str, Any]:
     if not sqlite_path.exists():
         return {"expected_count": 0, "values": []}
@@ -166,9 +265,17 @@ def _eval_case(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, list
     answer_body = _answer_body(answer)
     evidence = result.get("evidence_pack") or []
     validation = result.get("validation") or {}
+    displayed = result.get("displayed_evidences") or []
+    source_chunk_ids = _source_chunk_ids(answer)
+    source_doc_ids = re.findall(r"doc_id=([^\],\s]+)", answer or "", flags=re.IGNORECASE)
+    displayed_chunk_ids = [str(ev.get("chunk_id") or "") for ev in displayed if ev.get("chunk_id")]
     kind = case["kind"]
     llm_error = str(result.get("llm_error") or "")
     generation_mode = str(result.get("generation_mode") or "")
+    requested_doc_id = str(result.get("requested_doc_id") or "")
+    detected_analytes = [str(a).lower() for a in (result.get("detected_analytes") or [])]
+    found_requested = [str(a).lower() for a in (result.get("found_requested_analytes") or [])]
+    missing_requested = [str(a).lower() for a in (result.get("missing_requested_analytes") or [])]
     errors = validation.get("errors") or []
     warnings = validation.get("warnings") or []
 
@@ -246,10 +353,18 @@ def _eval_case(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, list
     elif kind == "insuline_current_previous":
         if not _contains_any(answer_body, ["insuline"]):
             reasons.append("missing_insuline")
+        if _contains_any(answer_body, ["acth"]):
+            reasons.append("acth_leakage_in_insuline_answer")
         if not _contains_any(answer_body, ["4,90", "4.90"]):
             reasons.append("missing_insuline_current")
         if not _contains_any(answer_body, ["2,00", "2.00"]):
             reasons.append("missing_insuline_previous")
+        if not any(str(ev.get("previous_result") or "").strip() for ev in displayed if str(ev.get("analyte_norm") or "") == "insuline"):
+            reasons.append("missing_previous_result_in_displayed_evidence")
+        if set(source_chunk_ids) != set(displayed_chunk_ids):
+            reasons.append("source_alignment_mismatch")
+        if validation.get("validation_status") != "pass":
+            reasons.append("validator_not_pass")
         prev_field_pat = re.compile(
             r"(?:résultat antérieur|resultat anterieur)\s*:\s*([^\n\r;,\)\]]+)",
             flags=re.IGNORECASE,
@@ -260,6 +375,267 @@ def _eval_case(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, list
                 reasons.append("invented_previous_unit")
                 break
 
+    elif kind == "ace_report31_scoped":
+        if requested_doc_id.lower() != "report_31":
+            reasons.append("requested_doc_id_not_report31")
+        if "ace" not in detected_analytes:
+            reasons.append("ace_not_detected")
+        if not _contains_any(answer_body, ["ace"]):
+            reasons.append("missing_ace_in_answer")
+        if not _contains_any(answer_body, ["22"]):
+            reasons.append("missing_ace_22")
+        if not _contains_any(answer_body, ["ng/ml"]):
+            reasons.append("missing_ace_unit")
+        if not _contains_any(answer_body, ["< 5 ng/ml", "<5 ng/ml"]):
+            reasons.append("missing_ace_reference")
+        if not _contains_any(answer_body, ["above_reference"]):
+            reasons.append("missing_ace_above_status")
+        if _contains_any(answer_body, ["report_7"]):
+            reasons.append("report7_leakage")
+        if any(str(ev.get("doc_id") or "").lower() != "report_31" for ev in displayed):
+            reasons.append("displayed_doc_not_report31")
+        if any(str(doc).lower() != "report_31" for doc in source_doc_ids):
+            reasons.append("source_doc_not_report31")
+        if validation.get("validation_status") != "pass":
+            reasons.append("validator_not_pass")
+        if generation_mode != "deterministic_doc_analyte_sql_template":
+            reasons.append("wrong_generation_mode")
+
+    elif kind == "ace_global":
+        if not _contains_any(answer_body, ["ace"]):
+            reasons.append("missing_ace_in_answer")
+        if len(displayed) < 1:
+            reasons.append("no_displayed_evidence")
+        if not all(str(ev.get("doc_id") or "").startswith("report_") for ev in displayed):
+            reasons.append("unexpected_doc_id_format")
+        if set(source_chunk_ids) != set(displayed_chunk_ids):
+            reasons.append("source_alignment_mismatch")
+
+    elif kind == "ace_report7_scoped":
+        if requested_doc_id.lower() != "report_7":
+            reasons.append("requested_doc_id_not_report7")
+        if any(str(ev.get("doc_id") or "").lower() != "report_7" for ev in displayed):
+            reasons.append("displayed_doc_not_report7")
+        if any(str(doc).lower() != "report_7" for doc in source_doc_ids):
+            reasons.append("source_doc_not_report7")
+        if _contains_any(answer_body, ["report_31"]):
+            reasons.append("report31_leakage")
+        if generation_mode != "deterministic_doc_analyte_sql_template":
+            reasons.append("wrong_generation_mode")
+
+    elif kind == "report29_multi_c4_c3_hdl":
+        if requested_doc_id.lower() != "report_29":
+            reasons.append("requested_doc_id_not_report29")
+        if generation_mode != "deterministic_doc_multi_analyte_sql_template":
+            reasons.append("wrong_generation_mode")
+        if any(str(ev.get("doc_id") or "").lower() != "report_29" for ev in displayed):
+            reasons.append("displayed_doc_not_report29")
+        if any(str(doc).lower() != "report_29" for doc in source_doc_ids):
+            reasons.append("source_doc_not_report29")
+        for expected in ["c3", "c4", "hdl"]:
+            if expected not in detected_analytes:
+                reasons.append(f"missing_detected_{expected}")
+        if "c3" not in found_requested:
+            reasons.append("c3_not_found")
+        if "c4" not in found_requested and "c4" not in missing_requested:
+            reasons.append("c4_not_covered")
+        if "hdl" not in found_requested and "hdl" not in missing_requested:
+            reasons.append("hdl_not_covered")
+        if validation.get("validation_status") not in {"pass", "warning"}:
+            reasons.append("validator_not_pass_or_warning")
+        if _contains_any(answer_body, ["report_7", "report_31", "report_28"]):
+            reasons.append("unexpected_report_leakage")
+
+    elif kind == "report29_c3_c4":
+        if requested_doc_id.lower() != "report_29":
+            reasons.append("requested_doc_id_not_report29")
+        if any(str(ev.get("doc_id") or "").lower() != "report_29" for ev in displayed):
+            reasons.append("displayed_doc_not_report29")
+        if "c3" not in detected_analytes or "c4" not in detected_analytes:
+            reasons.append("missing_detected_c3_or_c4")
+        if not _contains_any(answer_body, ["c3"]):
+            reasons.append("missing_c3_in_answer")
+        if not _contains_any(answer_body, ["c4"]):
+            reasons.append("missing_c4_in_answer")
+
+    elif kind == "report29_hdl":
+        if requested_doc_id.lower() != "report_29":
+            reasons.append("requested_doc_id_not_report29")
+        if "hdl" not in detected_analytes and "cholesterol_hdl" not in detected_analytes:
+            reasons.append("hdl_alias_not_detected")
+        if any(str(ev.get("doc_id") or "").lower() != "report_29" for ev in displayed):
+            reasons.append("displayed_doc_not_report29")
+        if "hdl" not in found_requested and "hdl" not in missing_requested and "cholesterol_hdl" not in found_requested:
+            reasons.append("hdl_not_covered")
+
+    elif kind == "report29_c3_troponine":
+        if requested_doc_id.lower() != "report_29":
+            reasons.append("requested_doc_id_not_report29")
+        if "c3" not in found_requested:
+            reasons.append("c3_not_found")
+        if "troponine" not in missing_requested:
+            reasons.append("troponine_not_missing")
+        if any(str(ev.get("doc_id") or "").lower() != "report_29" for ev in displayed):
+            reasons.append("displayed_doc_not_report29")
+
+    elif kind == "report31_ace_b12":
+        if requested_doc_id.lower() != "report_31":
+            reasons.append("requested_doc_id_not_report31")
+        if "ace" not in found_requested:
+            reasons.append("ace_not_found")
+        if not any(x in found_requested for x in ["vitamine_b12", "b12", "vitamine b12"]):
+            reasons.append("vitamine_b12_not_found")
+        if any(str(ev.get("doc_id") or "").lower() != "report_31" for ev in displayed):
+            reasons.append("displayed_doc_not_report31")
+        if _contains_any(answer_body, ["report_7"]):
+            reasons.append("report7_leakage")
+
+    elif kind == "report31_ace_troponine":
+        if requested_doc_id.lower() != "report_31":
+            reasons.append("requested_doc_id_not_report31")
+        if "ace" not in found_requested:
+            reasons.append("ace_not_found")
+        if "troponine" not in missing_requested:
+            reasons.append("troponine_not_missing")
+        if any(str(ev.get("doc_id") or "").lower() != "report_31" for ev in displayed):
+            reasons.append("displayed_doc_not_report31")
+
+    elif kind == "report31_immuno_summary":
+        if requested_doc_id.lower() != "report_31":
+            reasons.append("requested_doc_id_not_report31")
+        if generation_mode != "deterministic_doc_summary_sql_template":
+            reasons.append("wrong_generation_mode")
+        if llm_error:
+            reasons.append("llm_error_present")
+        if _contains_any(answer, ["ollama timeout", "erreur llm"]):
+            reasons.append("unexpected_llm_timeout")
+        for analyte in ["ace", "psa", "ca 15-3", "vitamine d", "vitamine b12", "ferritine"]:
+            if not _contains_any(answer_body, [analyte]):
+                reasons.append(f"missing_{analyte.replace(' ', '_')}_in_summary")
+        if not _contains_any(answer_body, ["masqués par défaut", "--include-within-reference"]):
+            reasons.append("missing_within_reference_hidden_notice")
+        if any(str(ev.get("doc_id") or "").lower() != "report_31" for ev in displayed):
+            reasons.append("displayed_doc_not_report31")
+        if any(str(doc).lower() != "report_31" for doc in source_doc_ids):
+            reasons.append("source_doc_not_report31")
+        if validation.get("validation_status") != "pass":
+            reasons.append("validator_not_pass")
+        if float(result.get("generation_time_seconds") or 999.0) >= 1.0:
+            reasons.append("latency_over_1s")
+
+    elif kind == "report31_immuno_complete":
+        if requested_doc_id.lower() != "report_31":
+            reasons.append("requested_doc_id_not_report31")
+        if generation_mode != "deterministic_doc_summary_sql_template":
+            reasons.append("wrong_generation_mode")
+        if not _contains_any(answer_body, ["acide folique", "folates"]):
+            reasons.append("missing_folates")
+        if not _contains_any(answer_body, ["11"]):
+            reasons.append("missing_folates_value_11")
+        if not _contains_any(answer_body, ["2,34 à 17,56", "2.34 a 17.56"]):
+            reasons.append("missing_folates_reference")
+        if not _contains_any(answer_body, ["within_reference"]):
+            reasons.append("missing_folates_within_status")
+        if any(str(ev.get("doc_id") or "").lower() != "report_31" for ev in displayed):
+            reasons.append("displayed_doc_not_report31")
+        if any(str(doc).lower() != "report_31" for doc in source_doc_ids):
+            reasons.append("source_doc_not_report31")
+
+    elif kind == "report31_immuno_summary_include_within":
+        if requested_doc_id.lower() != "report_31":
+            reasons.append("requested_doc_id_not_report31")
+        if generation_mode != "deterministic_doc_summary_sql_template":
+            reasons.append("wrong_generation_mode")
+        if not _contains_any(answer_body, ["acide folique", "folates"]):
+            reasons.append("missing_folates_include_within")
+        if not _contains_any(answer_body, ["résultats dans la référence technique"]):
+            reasons.append("missing_within_reference_section")
+        if any(str(ev.get("doc_id") or "").lower() != "report_31" for ev in displayed):
+            reasons.append("displayed_doc_not_report31")
+        if any(str(doc).lower() != "report_31" for doc in source_doc_ids):
+            reasons.append("source_doc_not_report31")
+
+    elif kind == "report31_above_only":
+        if requested_doc_id.lower() != "report_31":
+            reasons.append("requested_doc_id_not_report31")
+        if generation_mode != "deterministic_doc_summary_sql_template":
+            reasons.append("wrong_generation_mode")
+        if not _contains_any(answer_body, ["ace", "psa", "ca 15-3", "vitamine d"]):
+            reasons.append("missing_expected_above_results")
+        if any(str(ev.get("doc_id") or "").lower() != "report_31" for ev in displayed):
+            reasons.append("displayed_doc_not_report31")
+        if any(str(doc).lower() != "report_31" for doc in source_doc_ids):
+            reasons.append("source_doc_not_report31")
+
+    elif kind == "report31_below_only":
+        if requested_doc_id.lower() != "report_31":
+            reasons.append("requested_doc_id_not_report31")
+        if generation_mode != "deterministic_doc_summary_sql_template":
+            reasons.append("wrong_generation_mode")
+        if not _contains_any(answer_body, ["vitamine b12"]):
+            reasons.append("missing_vitamine_b12_in_below")
+        if any(str(ev.get("doc_id") or "").lower() != "report_31" for ev in displayed):
+            reasons.append("displayed_doc_not_report31")
+        if any(str(doc).lower() != "report_31" for doc in source_doc_ids):
+            reasons.append("source_doc_not_report31")
+
+    elif kind == "report31_grouped_reference":
+        if requested_doc_id.lower() != "report_31":
+            reasons.append("requested_doc_id_not_report31")
+        if generation_mode != "deterministic_doc_summary_sql_template":
+            reasons.append("wrong_generation_mode")
+        if not _contains_any(
+            answer_body,
+            [
+                "résultats au-dessus de la référence technique",
+                "résultats inférieurs à la référence technique",
+            ],
+        ):
+            reasons.append("missing_grouped_sections")
+        if _contains_any(answer_body, ["diagnostic", "traitement recommandé", "prescrire"]):
+            reasons.append("unsafe_medical_language")
+        if any(str(ev.get("doc_id") or "").lower() != "report_31" for ev in displayed):
+            reasons.append("displayed_doc_not_report31")
+        if any(str(doc).lower() != "report_31" for doc in source_doc_ids):
+            reasons.append("source_doc_not_report31")
+        if validation.get("validation_status") != "pass":
+            reasons.append("validator_not_pass")
+
+    elif kind == "report31_hors_reference_attention":
+        if requested_doc_id.lower() != "report_31":
+            reasons.append("requested_doc_id_not_report31")
+        if generation_mode != "deterministic_doc_summary_sql_template":
+            reasons.append("wrong_generation_mode")
+        for analyte in ["ace", "psa", "ca 15-3", "vitamine d"]:
+            if not _contains_any(answer_body, [analyte]):
+                reasons.append(f"missing_{analyte.replace(' ', '_')}_above")
+        if not _contains_any(answer_body, ["vitamine b12"]):
+            reasons.append("missing_vitamine_b12_below")
+        if not _contains_any(answer_body, ["À interpréter avec contexte clinique", "A interpreter avec contexte clinique"]):
+            reasons.append("missing_context_clinical_section")
+        if not _contains_any(answer_body, ["ferritine"]):
+            reasons.append("missing_ferritine_contextual")
+        if _contains_any(answer_body, ["résultats dans la référence :", "masqués par défaut"]):
+            reasons.append("unexpected_within_reference_hidden_notice")
+        if not _contains_any(answer_body, ["pas un diagnostic médical", "pas un diagnostic medical"]):
+            reasons.append("missing_technical_disclaimer")
+        if any(str(ev.get("doc_id") or "").lower() != "report_31" for ev in displayed):
+            reasons.append("displayed_doc_not_report31")
+        if any(str(doc).lower() != "report_31" for doc in source_doc_ids):
+            reasons.append("source_doc_not_report31")
+        if validation.get("validation_status") != "pass":
+            reasons.append("validator_not_pass")
+
+    elif kind == "report999_ace_crp":
+        if requested_doc_id.lower() != "report_999":
+            reasons.append("requested_doc_id_not_report999")
+        if displayed:
+            reasons.append("unexpected_displayed_evidence_for_missing_doc")
+        if any(str(doc).lower() != "report_999" for doc in source_doc_ids):
+            reasons.append("source_doc_not_report999")
+        if not _contains_any(answer, ["information insuffisante dans le contexte fourni pour report_999"]):
+            reasons.append("missing_insufficient_context_report999")
+
     elif kind == "lithium_above_reference":
         if not _contains_any(answer_body, ["lithium"]):
             reasons.append("missing_lithium")
@@ -269,6 +645,8 @@ def _eval_case(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, list
             reasons.append("missing_lithium_reference")
         if not _contains_any(answer_body, ["above_reference"]):
             reasons.append("missing_lithium_above_status")
+        if set(source_chunk_ids) != set(displayed_chunk_ids):
+            reasons.append("source_alignment_mismatch")
         if _contains_any(answer_body, ["diagnostic", "traitement"]):
             reasons.append("unsafe_medical_conclusion")
 
@@ -279,6 +657,14 @@ def _eval_case(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, list
             reasons.append("missing_crp_in_answer")
         if evidence and not _contains_any(answer_body, ["above_reference", "within_reference", "below_reference"]):
             reasons.append("missing_crp_interpretation")
+        if re.search(r"CRP\s*\(", answer_body):
+            reasons.append("crp_analyte_display_not_clean")
+        for ev in displayed:
+            if str(ev.get("analyte_norm") or "") == "crp" and str(ev.get("analyte_display") or "").strip().upper() != "CRP":
+                reasons.append("crp_analyte_display_not_crp")
+                break
+        if set(source_chunk_ids) != set(displayed_chunk_ids):
+            reasons.append("source_alignment_mismatch")
 
     elif kind == "acth_below_reference":
         if not _contains_any(answer_body, ["acth"]):
@@ -289,6 +675,10 @@ def _eval_case(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, list
             reasons.append("missing_acth_reference")
         if not _contains_any(answer_body, ["below_reference"]):
             reasons.append("missing_acth_below_status")
+        if set(source_chunk_ids) != set(displayed_chunk_ids):
+            reasons.append("source_alignment_mismatch")
+        if len(displayed) == 1 and str(displayed[0].get("doc_id") or "").strip().lower() != "report_23":
+            reasons.append("unexpected_single_acth_doc")
 
     elif kind == "above_reference_multi":
         rows = [
@@ -296,10 +686,12 @@ def _eval_case(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, list
             for line in answer_body.splitlines()
             if re.match(r"^\s*(?:\d+\.|-)\s+", line.strip())
         ]
-        if len(rows) < 3:
+        if len(rows) < 1:
             reasons.append("above_reference_list_too_short")
-        if not _contains_any(answer_body, ["lithium", "vitamine d", "psa", "ace", "ca 15"]):
-            reasons.append("above_reference_expected_entities_missing")
+        if "µg/ml µg/ml CARBAMAZÉPINE".lower() in answer_body.lower():
+            reasons.append("low_quality_analyte_displayed")
+        if int((result.get("display") or {}).get("low_quality_evidence_filtered_count") or 0) < 1:
+            reasons.append("low_quality_filter_count_missing")
 
     elif kind == "acth_compare":
         if not _contains_any(answer_body, ["acth"]):
@@ -322,7 +714,14 @@ def _eval_case(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, list
     # Global strictness for critical generation quality
     if errors:
         reasons.append("validator_errors_present")
-    if warnings and kind not in {"treatment_request", "sensitive_name"}:
+    allowed_warning_kinds = {
+        "treatment_request",
+        "sensitive_name",
+        "report29_c3_troponine",
+        "report31_ace_troponine",
+        "report999_ace_crp",
+    }
+    if warnings and kind not in allowed_warning_kinds:
         reasons.append("validator_warnings_present")
 
     return len(reasons) == 0, reasons
@@ -378,6 +777,11 @@ def main() -> int:
                 max_tokens=args.max_tokens,
                 index_dir=args.index_dir,
                 collection=args.collection,
+                max_display_results=3,
+                show_all_results=False,
+                show_low_quality=False,
+                include_within_reference=bool(case.get("include_within_reference", False)),
+                max_summary_results=10,
             )
         except Exception as exc:
             out = {

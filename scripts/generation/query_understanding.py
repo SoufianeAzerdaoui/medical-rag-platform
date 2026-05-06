@@ -10,6 +10,9 @@ ANALYTE_ALIASES: dict[str, set[str]] = {
     "procalcitonine": {"procalcitonine"},
     "ferritine": {"ferritine"},
     "lithium": {"lithium"},
+    "c3": {"c3", "complement c3", "complément c3"},
+    "c4": {"c4", "complement c4", "complément c4"},
+    "cholesterol_hdl": {"hdl", "cholesterol hdl", "cholestérol hdl", "cholesterol_hdl"},
     "crp": {"crp"},
     "peptide_c": {"peptide c", "peptide_c", "peptide-c"},
     "insuline": {"insuline"},
@@ -17,6 +20,8 @@ ANALYTE_ALIASES: dict[str, set[str]] = {
     "tshus": {"tshus"},
     "tsh": {"tsh"},
     "acth": {"acth"},
+    "troponine": {"troponine", "troponine i", "troponine t"},
+    "ace": {"ace"},
     "vitamine_b12": {"vitamine b12", "vitamine_b12", "vit b12", "b12"},
     "vitamine_d": {"vitamine d", "vitamine_d"},
     "trichuris": {"trichuris", "trichuris trichiura"},
@@ -66,3 +71,74 @@ def find_analyte_mentions(text: str) -> set[str]:
                 found.add(canonical)
                 break
     return found
+
+
+def detect_doc_summary_intent(query: str) -> dict[str, bool]:
+    qn = norm_text(query)
+
+    summary_keywords = [
+        "resume",
+        "synthese",
+        "resultats importants",
+        "resultats du rapport",
+        "section",
+        "anomalies",
+        "valeurs anormales",
+        "hors reference",
+        "important",
+    ]
+    complete_keywords = [
+        "tous",
+        "toutes",
+        "complet",
+        "complete",
+        "liste tous",
+        "tous les resultats",
+        "liste complete",
+        "liste complete des resultats",
+    ]
+    immunoanalyse_keywords = [
+        "immunoanalyse",
+        "immuno analyse",
+    ]
+    important_keywords = [
+        "important",
+        "importants",
+        "anomalies",
+        "hors reference",
+        "anormaux",
+        "necessitent une attention technique",
+        "necessite une attention technique",
+        "attention technique",
+    ]
+
+    has_summary_intent = any(k in qn for k in summary_keywords)
+    wants_complete = any(k in qn for k in complete_keywords)
+    wants_important = any(k in qn for k in important_keywords)
+    wants_immunoanalyse = any(k in qn for k in immunoanalyse_keywords)
+    wants_above_only = (
+        any(k in qn for k in ["superieur", "superieure", "au dessus", "above reference", "above_reference"])
+        and "reference" in qn
+    )
+    wants_below_only = (
+        any(k in qn for k in ["inferieur", "inferieure", "en dessous", "below reference", "below_reference"])
+        and "reference" in qn
+    )
+    wants_grouped = ("classe" in qn or "classer" in qn) and ("reference" in qn)
+    wants_out_of_reference_focus = (
+        "hors reference" in qn
+        or "anormaux" in qn
+        or "attention technique" in qn
+        or wants_above_only
+        or wants_below_only
+    )
+    return {
+        "is_summary_intent": has_summary_intent or wants_grouped or wants_above_only or wants_below_only or wants_complete,
+        "wants_immunoanalyse_section": wants_immunoanalyse,
+        "wants_above_only": wants_above_only,
+        "wants_below_only": wants_below_only,
+        "wants_grouped": wants_grouped,
+        "wants_complete": wants_complete,
+        "wants_important": wants_important or (has_summary_intent and not wants_complete),
+        "wants_out_of_reference_focus": wants_out_of_reference_focus,
+    }

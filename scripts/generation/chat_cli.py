@@ -9,6 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# Silence HF/Transformers progress noise in terminal mode.
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+
 from generate_answer import run_generation
 from llm_client import LLMClient
 from retrieval.search import SearchEngine
@@ -26,6 +31,12 @@ class ChatState:
     timeout: int
     index_dir: str
     collection: str
+    max_display_results: int
+    show_all_results: bool
+    show_low_quality: bool
+    include_within_reference: bool
+    max_summary_results: int
+    debug: bool
     show_context: bool = False
     json_output: bool = False
 
@@ -70,6 +81,12 @@ def _print_settings(state: ChatState) -> None:
     print(f"- timeout: {state.timeout}")
     print(f"- index_dir: {state.index_dir}")
     print(f"- collection: {state.collection}")
+    print(f"- max_display_results: {state.max_display_results}")
+    print(f"- show_all_results: {state.show_all_results}")
+    print(f"- show_low_quality: {state.show_low_quality}")
+    print(f"- include_within_reference: {state.include_within_reference}")
+    print(f"- max_summary_results: {state.max_summary_results}")
+    print(f"- debug: {state.debug}")
     print(f"- context: {'on' if state.show_context else 'off'}")
     print(f"- json: {'on' if state.json_output else 'off'}")
 
@@ -80,11 +97,11 @@ def _print_evidence(evidence_pack: list[dict[str, Any]]) -> None:
         print("- (aucune evidence)")
         return
     for idx, ev in enumerate(evidence_pack, start=1):
-        print(f"- rank: {idx}")
+        print(f"- rank: {ev.get('rank') or idx}")
         print(f"  chunk_id: {ev.get('chunk_id')}")
         print(f"  doc_id: {ev.get('doc_id')}")
         print(f"  chunk_type: {ev.get('chunk_type')}")
-        print(f"  analyte: {ev.get('analyte') or ev.get('parameter')}")
+        print(f"  analyte: {ev.get('analyte_display') or ev.get('analyte') or ev.get('parameter')}")
         print(f"  value_raw: {ev.get('value_raw')}")
         print(f"  unit: {ev.get('unit')}")
         print(f"  reference_range: {ev.get('reference_range')}")
@@ -92,18 +109,38 @@ def _print_evidence(evidence_pack: list[dict[str, Any]]) -> None:
         print(f"  source_kind: {ev.get('source_kind')}")
         print(f"  page_number: {ev.get('page_number')}")
         print(f"  row_index: {ev.get('row_index')}")
+        print(f"  source: {ev.get('source')}")
         print(f"  final_score: {ev.get('final_score')}")
+        print(f"  clinical_rerank_score: {ev.get('clinical_rerank_score')}")
+        print(f"  evidence_display_quality: {ev.get('evidence_display_quality')}")
 
 
-def _print_human_result(query: str, result: dict[str, Any], show_context: bool) -> None:
+def _print_human_result(query: str, result: dict[str, Any], show_context: bool, debug: bool) -> None:
     validation = result.get("validation") or {}
     warnings = validation.get("warnings") or []
 
     print("\nQuestion :")
     print(query)
 
+    if debug:
+        print(f"- request_id: {result.get('request_id')}")
+        print(f"- requested_doc_id: {result.get('requested_doc_id')}")
+        print(f"- query_received: {result.get('query_received')}")
+        print(f"- query_used_for_retrieval: {result.get('query_used_for_retrieval')}")
+        print(f"- query_used_for_prompt: {result.get('query_used_for_prompt')}")
+        print(f"- detected_analytes: {result.get('detected_analytes')}")
+        print(f"- found_requested_analytes: {result.get('found_requested_analytes')}")
+        print(f"- missing_requested_analytes: {result.get('missing_requested_analytes')}")
+        print(f"- generation_mode: {result.get('generation_mode')}")
+
     print("\nRéponse :")
-    print(result.get("answer") or "")
+    answer = str(result.get("answer") or "").strip()
+    answer_no_prefix = answer
+    if answer.lower().startswith("réponse :"):
+        answer_no_prefix = answer[len("Réponse :") :].lstrip()
+    elif answer.lower().startswith("reponse :"):
+        answer_no_prefix = answer[len("Reponse :") :].lstrip()
+    print(answer_no_prefix)
 
     print("\nValidation :")
     print(f"- status : {validation.get('validation_status')}")
@@ -178,6 +215,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=int, default=240)
     parser.add_argument("--index-dir", default="data/indexes")
     parser.add_argument("--collection", default="medical_chunks")
+    parser.add_argument("--max-display-results", type=int, default=3)
+    parser.add_argument("--show-all-results", action="store_true")
+    parser.add_argument("--show-low-quality", action="store_true")
+    parser.add_argument("--include-within-reference", action="store_true")
+    parser.add_argument("--max-summary-results", type=int, default=10)
+    parser.add_argument("--debug", action="store_true")
     parser.add_argument("--show-context", action="store_true")
     parser.add_argument("--json", action="store_true")
     return parser.parse_args()
@@ -196,6 +239,12 @@ def main() -> int:
         timeout=args.timeout,
         index_dir=args.index_dir,
         collection=args.collection,
+        max_display_results=args.max_display_results,
+        show_all_results=args.show_all_results,
+        show_low_quality=args.show_low_quality,
+        include_within_reference=args.include_within_reference,
+        max_summary_results=args.max_summary_results,
+        debug=args.debug,
         show_context=args.show_context,
         json_output=args.json,
     )
@@ -204,11 +253,15 @@ def main() -> int:
     index_dir = Path(state.index_dir)
     sqlite_path = index_dir / "medical_rag.sqlite"
     qdrant_dir = index_dir / "qdrant"
-    search_engine = SearchEngine(
-        sqlite_path=sqlite_path,
-        qdrant_dir=qdrant_dir,
-        collection=state.collection,
-    )
+    search_engine: SearchEngine | None = None
+    try:
+        search_engine = SearchEngine(
+            sqlite_path=sqlite_path,
+            qdrant_dir=qdrant_dir,
+            collection=state.collection,
+        )
+    except Exception as exc:
+        print(f"Avertissement: SearchEngine hybride indisponible ({exc}). Bascule keyword-only à la demande.")
     llm_client = LLMClient(provider=state.provider)
 
     try:
@@ -248,6 +301,11 @@ def main() -> int:
                     collection=state.collection,
                     search_engine=search_engine,
                     llm_client=llm_client,
+                    max_display_results=state.max_display_results,
+                    show_all_results=state.show_all_results,
+                    show_low_quality=state.show_low_quality,
+                    include_within_reference=state.include_within_reference,
+                    max_summary_results=state.max_summary_results,
                 )
             except KeyboardInterrupt:
                 print("\nInterruption détectée pendant la génération.")
@@ -261,13 +319,14 @@ def main() -> int:
             if state.json_output:
                 print(json.dumps(result, ensure_ascii=False, indent=2))
             else:
-                _print_human_result(question, result, state.show_context)
+                _print_human_result(question, result, state.show_context, state.debug)
 
             llm_error = str(result.get("llm_error") or "")
             if "Ollama service unavailable" in llm_error:
                 print("Ollama indisponible. Vérifiez: systemctl status ollama")
     finally:
-        search_engine.close()
+        if search_engine is not None:
+            search_engine.close()
 
 
 if __name__ == "__main__":
