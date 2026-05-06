@@ -44,6 +44,28 @@ _ANALYTE_ALIASES: dict[str, list[str]] = {
     "c3": ["c3", "complement c3", "complément c3", "complement_c3"],
     "c4": ["c4", "complement c4", "complément c4", "complement_c4"],
     "troponine": ["troponine", "troponin", "troponine i", "troponine t"],
+    "acide_valporoique_depakine": [
+        "acide valproique",
+        "acide valproique",
+        "acide valporoique",
+        "acide valporoique",
+        "depakine",
+        "valproate",
+    ],
+    "g_ml_g_ml_carbamazepine": [
+        "carbamazepine",
+        "carbamazépine",
+        "carbamazepine",
+    ],
+    "lithium": ["lithium"],
+    "ethanol": ["ethanol", "éthanol"],
+    "t4_libre": ["t4 libre", "t4l", "thyroxine libre"],
+    "triglycerides": ["triglycerides", "triglycérides"],
+    "cholesterol_ldl": ["cholesterol ldl", "cholestérol ldl", "ldl"],
+    "microalbuminurie": ["microalbuminurie"],
+    "ckmb": ["ckmb", "cpkmb", "ck mb"],
+    "ckmb_cpkmb": ["ckmb", "cpkmb", "ck mb"],
+    "crp_0_00mg_l_5_00mg_l": ["crp", "c reactive protein", "protéine c réactive"],
 }
 
 
@@ -92,6 +114,99 @@ def extract_requested_doc_id(query: str) -> str | None:
             continue
         return f"report_{n}"
     return None
+
+
+def extract_requested_doc_ids(query: str) -> list[str]:
+    raw = (query or "").strip()
+    if not raw:
+        return []
+    lowered = raw.lower()
+    pattern = re.compile(
+        r"\b(?:report|rapport)\s*[_\-]?\s*\(?\s*(\d{1,6})\s*\)?(?:\s*\.pdf)?\b",
+        flags=re.IGNORECASE,
+    )
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in pattern.finditer(lowered):
+        try:
+            n = int(m.group(1))
+        except Exception:
+            continue
+        if n < 0:
+            continue
+        doc_id = f"report_{n}"
+        if doc_id in seen:
+            continue
+        seen.add(doc_id)
+        out.append(doc_id)
+    return out
+
+
+def _query_requests_raw_values(qn: str) -> bool:
+    return any(k in qn for k in ["valeur brute", "valeurs brutes", "raw value", "raw values", "brutes extraites"])
+
+
+def _query_requests_previous_list(qn: str) -> bool:
+    return (
+        any(k in qn for k in ["liste", "tous", "toutes"])
+        and any(k in qn for k in ["resultat anterieur", "resultats anterieurs", "previous result"])
+    )
+
+
+def _query_is_toxicology_scope(qn: str) -> bool:
+    return any(
+        k in qn
+        for k in [
+            "toxicologie",
+            "pharmacotoxicolog",
+            "toxico",
+            "depakine",
+            "carbamazepine",
+            "carbamazepine",
+            "lithium",
+            "ethanol",
+            "ethanol",
+        ]
+    )
+
+
+def _query_is_current_vs_previous_comparison(qn: str) -> bool:
+    return ("compar" in qn and ("anterieur" in qn or "previous" in qn)) or (
+        "resultat actuel" in qn and ("resultat anterieur" in qn or "previous result" in qn)
+    )
+
+
+def _query_is_measured_value_vs_comment(qn: str) -> bool:
+    return ("valeur mesuree" in qn or "valeur mesurée" in qn) and "commentaire" in qn
+
+
+def _query_is_section_grouped_summary(qn: str) -> bool:
+    return (
+        ("synthese" in qn or "resume" in qn)
+        and ("sanguin" in qn or "sanguins" in qn)
+        and ("urinaire" in qn or "urinaires" in qn)
+        and ("sero" in qn or "sero diagnostic" in qn or "sero-diagnostic" in qn)
+    )
+
+
+def _query_is_diagnostic_safety(qn: str) -> bool:
+    if any(
+        k in qn
+        for k in [
+            "cancer",
+            "conclure",
+            "traitement",
+            "gravite",
+            "severite",
+            "sévérité",
+        ]
+    ):
+        return True
+    if "diagnostic" in qn:
+        if "sero diagnostic" in qn or "sero-diagnostic" in qn or "serodiagnostic" in qn:
+            return False
+        return True
+    return False
 
 
 def _load_index_analyte_norms(sqlite_path: Path) -> list[str]:
@@ -370,6 +485,24 @@ def _build_structured_fallback_answer(query: str, evidence_pack: list[dict[str, 
             part += " (" + " ; ".join(details) + ")"
         lines.append(part)
 
+    comparison_mode = _query_is_current_vs_previous_comparison(qn) or _is_compare_query(qn)
+    if comparison_mode:
+        comparable = [
+            ev
+            for ev in candidates[:max_items]
+            if str(ev.get("previous_result") or "").strip()
+        ]
+        if comparable:
+            lines.append("")
+            lines.append("Comparaison actuelle / antérieure :")
+            for ev in comparable:
+                analyte = ev.get("analyte_display") or ev.get("analyte") or ev.get("parameter") or "analyte non précisé"
+                previous = str(ev.get("previous_result") or "").strip()
+                relation = _comparison_label(ev.get("value_raw"), previous)
+                lines.append(
+                    f"- {analyte} : comparaison: valeur actuelle {relation} que l’antérieure ({previous})."
+                )
+
     lines.extend(["", "Données utilisées :"])
     for idx, ev in enumerate(candidates[:max_items], start=1):
         lines.extend(
@@ -421,6 +554,10 @@ def _is_above_reference_query(qn: str) -> bool:
             "above_reference",
             "superieur",
             "supérieure",
+            "depasse",
+            "dépasse",
+            "depassent",
+            "dépassent",
         ]
     )
 
@@ -449,7 +586,10 @@ def _is_previous_result_query(qn: str) -> bool:
 
 
 def _is_compare_query(qn: str) -> bool:
-    return ("compare" in qn or "compar" in qn) and ("actuel" in qn and ("anterieur" in qn or "previous" in qn))
+    return ("compare" in qn or "compar" in qn) and (
+        ("actuel" in qn and ("anterieur" in qn or "previous" in qn))
+        or ("anterieur" in qn or "previous" in qn)
+    )
 
 
 def _is_status_query(qn: str) -> bool:
@@ -465,7 +605,7 @@ def _is_global_above_reference_query(qn: str, exact_analytes: list[str]) -> bool
 
 
 def _query_requests_multiple_results(qn: str) -> bool:
-    return any(k in qn for k in ["tous", "toutes", "liste", "retrouves", "retrouvés", "documents"])
+    return any(k in qn for k in ["tous", "toutes", "liste", "retrouves", "retrouvés", "documents", "resultat anterieur", "resultats anterieurs"])
 
 
 def _select_displayed_evidences(
@@ -501,7 +641,7 @@ def _select_displayed_evidences(
     notes: list[str] = []
     if hidden_result_count > 0 and not show_all_results:
         notes.append(
-            f"Plusieurs résultats existent pour cet analyte ; seuls les {len(displayed)} premiers sont affichés. "
+            f"Plusieurs résultats existent ; seuls les {len(displayed)} premiers sont affichés. "
             "Utilisez --show-all-results pour tout afficher."
         )
 
@@ -701,7 +841,7 @@ def _build_deterministic_evidence_answer(
     opening = _yes_no_opening_sentence(qn, candidates, exact_analyte)
     if opening:
         lines.append(opening)
-    if _is_compare_query(qn):
+    if _is_compare_query(qn) or _query_is_current_vs_previous_comparison(qn):
         lines.append("Comparaison technique des résultats actuels et antérieurs :")
         for idx, ev in enumerate(candidates, start=1):
             analyte = ev.get("analyte") or ev.get("parameter") or "analyte non précisé"
@@ -786,6 +926,8 @@ def _build_doc_multi_analyte_answer(
     requested_to_resolved: dict[str, str],
     displayed_evidences: list[dict[str, Any]],
     display_by_norm: dict[str, str],
+    comparison_mode: bool = False,
+    raw_values_requested: bool = False,
 ) -> str:
     by_analyte: dict[str, list[dict[str, Any]]] = {}
     for ev in displayed_evidences:
@@ -809,6 +951,14 @@ def _build_doc_multi_analyte_answer(
                 if unit:
                     part += f" {unit}"
                 part += f" (référence: {ref} ; interprétation technique: {interp})"
+                if raw_values_requested:
+                    part += " [valeur brute extraite]"
+                if str(ev.get("evidence_display_quality") or "high") == "low":
+                    part += " [warning qualité: low_quality_evidence]"
+                if comparison_mode and str(ev.get("previous_result") or "").strip():
+                    relation = _comparison_label(ev.get("value_raw"), ev.get("previous_result"))
+                    prev = str(ev.get("previous_result") or "").strip()
+                    part += f" ; comparaison: valeur actuelle {relation} que l’antérieure ({prev})"
                 lines.append(part)
         else:
             lines.append(f"- {label} : information insuffisante dans le contexte fourni pour {requested_doc_id}.")
@@ -1209,6 +1359,469 @@ def _load_doc_summary_rows(
         conn.close()
 
 
+def _load_doc_rows_by_status(
+    *,
+    sqlite_path: Path,
+    doc_id: str,
+    statuses: list[str],
+) -> list[dict[str, Any]]:
+    if not sqlite_path.exists() or not doc_id or not statuses:
+        return []
+    conn = sqlite3.connect(str(sqlite_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        placeholders = ",".join("?" for _ in statuses)
+        params: list[Any] = [doc_id]
+        params.extend([str(s).lower() for s in statuses])
+        cur.execute(
+            f"""
+            SELECT
+              c.chunk_id,
+              c.doc_id,
+              c.chunk_type,
+              c.parent_chunk_id,
+              c.text_for_embedding,
+              c.text_for_keyword,
+              m.document_type,
+              m.sample_type,
+              m.patient_token,
+              m.sample_token,
+              m.report_token,
+              m.analyte,
+              m.analyte_norm,
+              m.parameter,
+              m.parameter_norm,
+              m.value_raw,
+              m.value_numeric,
+              m.unit,
+              m.reference_range,
+              m.interpretation_status,
+              m.previous_result_present,
+              m.previous_result_value_raw,
+              m.previous_result_unit,
+              m.section,
+              m.section_norm,
+              m.source_kind,
+              m.source_table_id,
+              m.row_index,
+              COALESCE(m.source_pdf, o.source_pdf) AS source_pdf,
+              COALESCE(m.page_number, o.page_number) AS page_number
+            FROM metadata_chunks m
+            JOIN chunks c ON c.chunk_id = m.chunk_id
+            LEFT JOIN object_references o ON o.chunk_id = c.chunk_id
+            WHERE lower(c.doc_id) = lower(?)
+              AND c.chunk_type IN ('lab_result','clinical_result')
+              AND lower(COALESCE(m.interpretation_status, '')) IN ({placeholders})
+            ORDER BY COALESCE(m.page_number, o.page_number, 999999), COALESCE(m.row_index, 999999), c.chunk_id
+            """,
+            params,
+        )
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _load_doc_previous_rows(
+    *,
+    sqlite_path: Path,
+    doc_id: str,
+) -> list[dict[str, Any]]:
+    if not sqlite_path.exists() or not doc_id:
+        return []
+    conn = sqlite3.connect(str(sqlite_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+              c.chunk_id,
+              c.doc_id,
+              c.chunk_type,
+              c.parent_chunk_id,
+              c.text_for_embedding,
+              c.text_for_keyword,
+              m.document_type,
+              m.sample_type,
+              m.patient_token,
+              m.sample_token,
+              m.report_token,
+              m.analyte,
+              m.analyte_norm,
+              m.parameter,
+              m.parameter_norm,
+              m.value_raw,
+              m.value_numeric,
+              m.unit,
+              m.reference_range,
+              m.interpretation_status,
+              m.previous_result_present,
+              m.previous_result_value_raw,
+              m.previous_result_unit,
+              m.section,
+              m.section_norm,
+              m.source_kind,
+              m.source_table_id,
+              m.row_index,
+              COALESCE(m.source_pdf, o.source_pdf) AS source_pdf,
+              COALESCE(m.page_number, o.page_number) AS page_number
+            FROM metadata_chunks m
+            JOIN chunks c ON c.chunk_id = m.chunk_id
+            LEFT JOIN object_references o ON o.chunk_id = c.chunk_id
+            WHERE lower(c.doc_id) = lower(?)
+              AND c.chunk_type IN ('lab_result','clinical_result')
+              AND COALESCE(m.previous_result_present, 0) = 1
+            ORDER BY COALESCE(m.page_number, o.page_number, 999999), COALESCE(m.row_index, 999999), c.chunk_id
+            """,
+            (doc_id,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _load_doc_comment_rows(
+    *,
+    sqlite_path: Path,
+    doc_id: str,
+    analyte_hint: str,
+) -> list[dict[str, Any]]:
+    if not sqlite_path.exists() or not doc_id:
+        return []
+    hint = norm_text(analyte_hint or "")
+    conn = sqlite3.connect(str(sqlite_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+              c.chunk_id,
+              c.doc_id,
+              c.chunk_type,
+              c.parent_chunk_id,
+              c.text_for_embedding,
+              c.text_for_keyword,
+              m.document_type,
+              m.sample_type,
+              m.patient_token,
+              m.sample_token,
+              m.report_token,
+              m.analyte,
+              m.analyte_norm,
+              m.parameter,
+              m.parameter_norm,
+              m.value_raw,
+              m.value_numeric,
+              m.unit,
+              m.reference_range,
+              m.interpretation_status,
+              m.previous_result_present,
+              m.previous_result_value_raw,
+              m.previous_result_unit,
+              m.section,
+              m.section_norm,
+              m.source_kind,
+              m.source_table_id,
+              m.row_index,
+              COALESCE(m.source_pdf, o.source_pdf) AS source_pdf,
+              COALESCE(m.page_number, o.page_number) AS page_number
+            FROM metadata_chunks m
+            JOIN chunks c ON c.chunk_id = m.chunk_id
+            LEFT JOIN object_references o ON o.chunk_id = c.chunk_id
+            WHERE lower(c.doc_id) = lower(?)
+              AND c.chunk_type IN ('lab_result','clinical_result')
+            ORDER BY COALESCE(m.page_number, o.page_number, 999999), COALESCE(m.row_index, 999999), c.chunk_id
+            """,
+            (doc_id,),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        if not hint:
+            return rows
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            blob = norm_text(
+                " ".join(
+                    [
+                        str(r.get("analyte") or ""),
+                        str(r.get("analyte_norm") or ""),
+                        str(r.get("parameter") or ""),
+                        str(r.get("value_raw") or ""),
+                        str(r.get("reference_range") or ""),
+                    ]
+                )
+            )
+            if contains_exact_term(blob, hint):
+                out.append(r)
+        return out
+    finally:
+        conn.close()
+
+
+def _resolve_requested_analytes_global(query: str, sqlite_path: Path) -> list[str]:
+    qn = norm_text(query)
+    requested: list[str] = []
+    seen: set[str] = set()
+    for canonical, aliases in _ANALYTE_ALIASES.items():
+        if any(_alias_detected_in_query(qn, alias, canonical) for alias in aliases):
+            if canonical not in seen:
+                requested.append(canonical)
+                seen.add(canonical)
+    for a in _detect_exact_analytes_with_index(query, sqlite_path):
+        na = norm_text(a)
+        if na and na not in seen:
+            requested.append(na)
+            seen.add(na)
+    return requested
+
+
+def _resolve_term_in_doc(term: str, doc_analytes: list[dict[str, str]]) -> str | None:
+    t = norm_text(term)
+    if not t:
+        return None
+    doc_norms = [d["analyte_norm"] for d in doc_analytes if d.get("analyte_norm")]
+    if t in doc_norms:
+        return t
+    for dn in doc_norms:
+        label = norm_text(next((d["analyte"] for d in doc_analytes if d.get("analyte_norm") == dn), ""))
+        if contains_exact_term(dn, t) or contains_exact_term(label, t) or contains_exact_term(t, dn):
+            return dn
+    if t == "hdl":
+        for dn in doc_norms:
+            if "hdl" in dn:
+                return dn
+    if t in {"ckmb", "ck mb", "cpkmb"}:
+        for dn in doc_norms:
+            if "ckmb" in dn or "cpkmb" in dn:
+                return dn
+    if t in {"carbamazepine", "carbamazepine"}:
+        for dn in doc_norms:
+            if "carbamazepine" in dn:
+                return dn
+    return None
+
+
+def _load_multi_doc_analyte_rows(
+    *,
+    sqlite_path: Path,
+    requested_doc_ids: list[str],
+    requested_terms: list[str],
+) -> tuple[list[dict[str, Any]], dict[str, list[str]], dict[str, dict[str, str]]]:
+    all_rows: list[dict[str, Any]] = []
+    missing_by_doc: dict[str, list[str]] = {}
+    resolved_by_doc: dict[str, dict[str, str]] = {}
+    for doc_id in requested_doc_ids:
+        doc_analytes = _load_doc_analytes(sqlite_path, doc_id)
+        mapping: dict[str, str] = {}
+        norms: list[str] = []
+        missing: list[str] = []
+        for term in requested_terms:
+            resolved = _resolve_term_in_doc(term, doc_analytes)
+            if resolved:
+                mapping[term] = resolved
+                if resolved not in norms:
+                    norms.append(resolved)
+            else:
+                missing.append(term)
+        resolved_by_doc[doc_id] = mapping
+        missing_by_doc[doc_id] = missing
+        if norms:
+            rows = _load_doc_analyte_rows(sqlite_path=sqlite_path, doc_id=doc_id, analyte_norms=norms)
+            all_rows.extend(rows)
+    return all_rows, missing_by_doc, resolved_by_doc
+
+
+def _group_section_bucket(ev: dict[str, Any]) -> str:
+    text = norm_text(
+        " ".join(
+            [
+                str(ev.get("section") or ""),
+                str(ev.get("section_norm") or ""),
+                str(ev.get("source_table_id") or ""),
+                str(ev.get("analyte_norm") or ""),
+                str(ev.get("analyte") or ""),
+                str(ev.get("sample_type") or ""),
+            ]
+        )
+    )
+    if any(k in text for k in ["urine", "urinaire", "microalbuminurie"]):
+        return "urinaires"
+    if any(k in text for k in ["sero", "sero diagnostic", "sero-diagnostic", "aslo", "igg", "igm", "ige"]):
+        return "sero_diagnostic"
+    return "sanguins"
+
+
+def _build_section_grouped_summary_answer(
+    *,
+    requested_doc_id: str,
+    displayed_evidences: list[dict[str, Any]],
+) -> str:
+    groups: dict[str, list[dict[str, Any]]] = {"sanguins": [], "urinaires": [], "sero_diagnostic": []}
+    for ev in displayed_evidences:
+        status = str(ev.get("interpretation_status") or "").strip().lower()
+        if status not in {"above_reference", "below_reference", "needs_clinical_context"}:
+            continue
+        groups[_group_section_bucket(ev)].append(ev)
+
+    def _line(ev: dict[str, Any]) -> str:
+        analyte = ev.get("analyte_display") or ev.get("analyte") or ev.get("parameter") or "analyte non précisé"
+        value = ev.get("value_raw") or "non disponible"
+        unit = ev.get("unit") or ""
+        ref = ev.get("reference_range") or "non disponible"
+        interp = ev.get("interpretation_status") or "non disponible"
+        base = f"- {analyte} = {value}"
+        if unit:
+            base += f" {unit}"
+        return f"{base} ; référence: {ref} ; interprétation technique: {interp}"
+
+    lines: list[str] = ["Réponse :", f"Synthèse technique des anomalies principales pour {requested_doc_id} :"]
+    titles = {
+        "sanguins": "Examens sanguins",
+        "urinaires": "Examens urinaires",
+        "sero_diagnostic": "Séro-diagnostic",
+    }
+    for key in ["sanguins", "urinaires", "sero_diagnostic"]:
+        lines.append("")
+        lines.append(f"{titles[key]} :")
+        if groups[key]:
+            lines.extend(_line(ev) for ev in groups[key])
+        else:
+            lines.append("Aucune anomalie technique hors référence retrouvée dans les données indexées.")
+
+    lines.append("")
+    lines.append("Données utilisées :")
+    for idx, ev in enumerate(displayed_evidences, start=1):
+        lines.extend(
+            [
+                f"Résultat {idx} :",
+                f"- Analyte : {ev.get('analyte_display') or ev.get('analyte') or ev.get('parameter') or 'non précisé'}",
+                f"- Valeur : {ev.get('value_raw') or 'non disponible'}",
+                f"- Unité : {ev.get('unit') or 'non disponible'}",
+                f"- Référence : {ev.get('reference_range') or 'non disponible'}",
+                f"- Interprétation technique : {ev.get('interpretation_status') or 'non disponible'}",
+                (
+                    f"- Source : [doc_id={ev.get('doc_id')}, page={ev.get('page_number')}, "
+                    f"row={ev.get('row_index')}, chunk_id={ev.get('chunk_id')}]"
+                ),
+            ]
+        )
+    return "\n".join(lines).strip()
+
+
+def _build_multi_doc_comparison_answer(
+    *,
+    requested_doc_ids: list[str],
+    requested_terms: list[str],
+    rows: list[dict[str, Any]],
+    missing_by_doc: dict[str, list[str]],
+    resolved_by_doc: dict[str, dict[str, str]],
+) -> str:
+    by_doc_norm: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in rows:
+        doc_id = str(r.get("doc_id") or "")
+        analyte_norm = str(r.get("analyte_norm") or "").strip().lower()
+        if not doc_id or not analyte_norm:
+            continue
+        by_doc_norm[(doc_id, analyte_norm)] = r
+
+    lines: list[str] = ["Réponse :", f"Comparaison multi-documents ({', '.join(requested_doc_ids)}) :"]
+    if len(requested_doc_ids) < 2:
+        lines.append("Information insuffisante pour une comparaison multi-documents.")
+    else:
+        d1, d2 = requested_doc_ids[0], requested_doc_ids[1]
+        lines.append("analyte | " + d1 + " valeur/statut | " + d2 + " valeur/statut | différence technique")
+        for term in requested_terms:
+            n1 = resolved_by_doc.get(d1, {}).get(term)
+            n2 = resolved_by_doc.get(d2, {}).get(term)
+            r1 = by_doc_norm.get((d1, n1)) if n1 else None
+            r2 = by_doc_norm.get((d2, n2)) if n2 else None
+            label = term.replace("_", " ").upper()
+            left = "missing"
+            right = "missing"
+            diff = "non comparable"
+            if r1:
+                left = f"{r1.get('value_raw') or 'non disponible'} {r1.get('unit') or ''} ({r1.get('interpretation_status') or 'unknown'})".strip()
+            if r2:
+                right = f"{r2.get('value_raw') or 'non disponible'} {r2.get('unit') or ''} ({r2.get('interpretation_status') or 'unknown'})".strip()
+            if r1 and r2:
+                diff = _comparison_label(r1.get("value_raw"), r2.get("value_raw"))
+            lines.append(f"- {label} | {left} | {right} | {diff}")
+    for doc_id in requested_doc_ids:
+        missing = missing_by_doc.get(doc_id) or []
+        if missing:
+            lines.append(f"- {doc_id} missing: {', '.join(missing)}")
+
+    lines.append("")
+    lines.append("Données utilisées :")
+    for idx, ev in enumerate(rows, start=1):
+        lines.extend(
+            [
+                f"Résultat {idx} :",
+                f"- Analyte : {ev.get('analyte') or ev.get('parameter') or 'non précisé'}",
+                f"- Valeur : {ev.get('value_raw') or 'non disponible'}",
+                f"- Unité : {ev.get('unit') or 'non disponible'}",
+                f"- Référence : {ev.get('reference_range') or 'non disponible'}",
+                f"- Interprétation technique : {ev.get('interpretation_status') or 'non disponible'}",
+                (
+                    f"- Source : [doc_id={ev.get('doc_id')}, page={ev.get('page_number')}, "
+                    f"row={ev.get('row_index')}, chunk_id={ev.get('chunk_id')}]"
+                ),
+            ]
+        )
+    return "\n".join(lines).strip()
+
+
+def _build_measured_value_vs_comment_answer(
+    *,
+    requested_doc_id: str,
+    analyte_label: str,
+    comment_row: dict[str, Any] | None,
+) -> str:
+    label = analyte_label.upper() if analyte_label else "CET ANALYTE"
+    lines = ["Réponse :"]
+    if comment_row:
+        raw_value = str(comment_row.get("value_raw") or "").strip()
+        threshold = ""
+        m = re.search(r"99[èmee]*\s*percentile\s*[:=]?\s*([0-9]+(?:[.,][0-9]+)?)\s*([a-zA-Zµ/]+)", raw_value, flags=re.IGNORECASE)
+        if m:
+            threshold = f"{m.group(1)} {m.group(2)}"
+        if threshold:
+            lines.append(
+                f"Aucune valeur mesurée de {label.lower()} n’est retrouvée dans {requested_doc_id}. "
+                f"Le document contient seulement un commentaire d’interprétation mentionnant le seuil au 99e percentile de {threshold}."
+            )
+        else:
+            lines.append(
+                f"Aucune valeur mesurée de {label.lower()} n’est retrouvée dans {requested_doc_id}. "
+                "Le document contient seulement un commentaire d’interprétation."
+            )
+    else:
+        lines.append(f"Aucune valeur mesurée de {label.lower()} n’est retrouvée dans {requested_doc_id}.")
+    lines.append("")
+    lines.append("Données utilisées :")
+    if comment_row:
+        lines.extend(
+            [
+                "- Type : commentaire d’interprétation",
+                f"- Extrait : {str(comment_row.get('value_raw') or 'non disponible').strip()}",
+                (
+                    f"- Source : [doc_id={comment_row.get('doc_id')}, page={comment_row.get('page_number')}, "
+                    f"row={comment_row.get('row_index')}, chunk_id={comment_row.get('chunk_id')}]"
+                ),
+            ]
+        )
+    return "\n".join(lines).strip()
+
+
+def _prepend_diagnostic_safety(answer_text: str) -> str:
+    base = (answer_text or "").strip()
+    prefix = "Non, on ne peut pas conclure à un diagnostic à partir de ces seuls résultats."
+    if not base:
+        return prefix
+    return prefix + "\n" + base
+
+
 def _build_doc_summary_answer(
     *,
     requested_doc_id: str,
@@ -1220,6 +1833,8 @@ def _build_doc_summary_answer(
     show_within_hidden_notice: bool = True,
     needs_context_heading: str = "Résultats nécessitant un contexte clinique :",
     include_technical_disclaimer: bool = False,
+    comparison_mode: bool = False,
+    raw_values_requested: bool = False,
 ) -> str:
     if not displayed_evidences:
         return _insufficient_context_for_doc(requested_doc_id)
@@ -1233,6 +1848,10 @@ def _build_doc_summary_answer(
         if unit:
             part += f" {unit}"
         part += f" ; référence: {ref} ; interprétation technique: {ev.get('interpretation_status') or 'non disponible'}"
+        if raw_values_requested:
+            part += " [valeur brute extraite]"
+        if str(ev.get("evidence_display_quality") or "high") == "low":
+            part += " [warning qualité: low_quality_evidence]"
         return part
 
     grouped: dict[str, list[dict[str, Any]]] = {
@@ -1285,6 +1904,27 @@ def _build_doc_summary_answer(
         lines.append("")
         lines.append("Résultats avec statut technique non standard :")
         lines.extend(_row_line(ev) for ev in grouped["other"])
+
+    if comparison_mode:
+        comparisons = [
+            ev
+            for ev in displayed_evidences
+            if str(ev.get("previous_result") or "").strip()
+        ]
+        if comparisons:
+            lines.append("")
+            lines.append("Comparaison actuelle / antérieure :")
+            for ev in comparisons:
+                analyte = ev.get("analyte_display") or ev.get("analyte") or ev.get("parameter") or "analyte non précisé"
+                current = ev.get("value_raw") or "non disponible"
+                unit = ev.get("unit") or ""
+                previous = str(ev.get("previous_result") or "").strip()
+                relation = _comparison_label(current, previous)
+                line = f"- {analyte} : valeur actuelle {current}"
+                if unit:
+                    line += f" {unit}"
+                line += f" ; résultat antérieur {previous} ; comparaison: valeur actuelle {relation} que l’antérieure."
+                lines.append(line)
 
     lines.append("")
     lines.append("Données utilisées :")
@@ -1390,21 +2030,39 @@ def run_generation(
     query_used_for_prompt = q
     qn = norm_text(q)
     doc_summary_intent = detect_doc_summary_intent(q)
+    raw_values_requested = _query_requests_raw_values(qn)
+    previous_list_requested = _query_requests_previous_list(qn)
+    toxicology_scope = _query_is_toxicology_scope(qn)
+    current_vs_previous_comparison = _query_is_current_vs_previous_comparison(qn)
+    section_grouped_summary_intent = _query_is_section_grouped_summary(qn)
+    measured_value_vs_comment_intent = _query_is_measured_value_vs_comment(qn)
+    diagnostic_safety_intent = _query_is_diagnostic_safety(qn)
     sensitive_or_treatment = _query_is_sensitive_or_treatment(q)
     idx = Path(index_dir)
     sqlite_path = idx / "medical_rag.sqlite"
     qdrant_dir = idx / "qdrant"
 
     retrieval_filters = RetrievalFilters()
-    requested_doc_id = extract_requested_doc_id(q)
+    requested_doc_ids = extract_requested_doc_ids(q)
+    requested_doc_id = requested_doc_ids[0] if requested_doc_ids else extract_requested_doc_id(q)
+    if requested_doc_id and requested_doc_id not in requested_doc_ids:
+        requested_doc_ids = [requested_doc_id]
+    multi_doc_requested = len(requested_doc_ids) > 1
     requested_analytes: list[str] = []
     found_requested_analytes: list[str] = []
     found_requested_analyte_norms: list[str] = []
     missing_requested_analytes: list[str] = []
+    missing_requested_doc_ids: list[str] = []
     doc_analyte_display_by_norm: dict[str, str] = {}
     requested_to_resolved: dict[str, str] = {}
+    multi_doc_missing_by_doc: dict[str, list[str]] = {}
+    multi_doc_resolved_by_doc: dict[str, dict[str, str]] = {}
     summary_section_filter_applied = False
-    if requested_doc_id:
+    requested_terms_global: list[str] = []
+    if multi_doc_requested:
+        requested_terms_global = _resolve_requested_analytes_global(q, sqlite_path)
+        exact_analytes = list(requested_terms_global)
+    elif requested_doc_id:
         requested_analytes, found_requested_analytes, missing_requested_analytes, doc_analyte_display_by_norm, requested_to_resolved = _resolve_requested_analytes_for_doc(
             query=q,
             sqlite_path=sqlite_path,
@@ -1419,7 +2077,7 @@ def run_generation(
     is_below_reference_query = _is_below_reference_query(qn)
     is_global_above_query = _is_global_above_reference_query(qn, exact_analytes) and not requested_doc_id
 
-    if requested_doc_id:
+    if requested_doc_id and not multi_doc_requested:
         retrieval_filters.doc_id = requested_doc_id
     if exact_analyte and (not requested_doc_id or len(exact_analytes) == 1):
         retrieval_filters.analyte_norm = exact_analyte
@@ -1436,7 +2094,16 @@ def run_generation(
     supplemental_rows: list[dict[str, Any]] = []
     doc_analyte_fast_path_used = False
     doc_summary_fast_path_used = False
+    doc_toxicology_fast_path_used = False
+    doc_previous_list_fast_path_used = False
+    section_grouped_fast_path_used = False
+    multi_doc_fast_path_used = False
+    measured_vs_comment_fast_path_used = False
     retrieval_error: str | None = None
+    used_vector_search = False
+    used_ollama = False
+    fast_path_reason = ""
+    allow_low_quality_display = False
     if sensitive_or_treatment:
         retrieval_response = SimpleNamespace(
             answerability={"status": "guardrail_blocked", "reason": "sensitive_or_treatment_query"},
@@ -1445,7 +2112,30 @@ def run_generation(
             context_chunks=[],
             sources=[],
         )
-    elif requested_doc_id and requested_analytes:
+    elif multi_doc_requested:
+        multi_rows, missing_by_doc, resolved_by_doc = _load_multi_doc_analyte_rows(
+            sqlite_path=sqlite_path,
+            requested_doc_ids=requested_doc_ids,
+            requested_terms=requested_terms_global,
+        )
+        multi_doc_missing_by_doc = missing_by_doc
+        multi_doc_resolved_by_doc = resolved_by_doc
+        multi_doc_fast_path_used = True
+        fast_path_reason = "multi_doc_analyte_sql_template"
+        missing_requested_doc_ids = [doc for doc in requested_doc_ids if not any(str(r.get("doc_id") or "").lower() == doc.lower() for r in multi_rows)]
+        retrieval_response = SimpleNamespace(
+            answerability={
+                "status": "answerable" if multi_rows else "insufficient_context",
+                "reason": "multi_doc_analyte_sql_exact_match" if multi_rows else "multi_doc_analyte_sql_no_match",
+            },
+            filters=retrieval_filters.to_dict(),
+            top_results=[_row_to_retrieval_result_fast(r, "multi_doc_analyte_sql_fast_path") for r in multi_rows],
+            context_chunks=[],
+            sources=[],
+        )
+        exact_analyte_rows = list(multi_rows)
+        exact_analyte_expected_count = len(multi_rows)
+    elif requested_doc_id and requested_analytes and not measured_value_vs_comment_intent:
         direct_rows = _load_doc_analyte_rows(
             sqlite_path=sqlite_path,
             doc_id=requested_doc_id,
@@ -1464,6 +2154,89 @@ def run_generation(
         )
         exact_analyte_expected_count = len(direct_rows)
         exact_analyte_rows = list(direct_rows)
+        fast_path_reason = "doc_multi_analyte_sql_exact_match"
+    elif requested_doc_id and measured_value_vs_comment_intent:
+        comment_rows = _load_doc_comment_rows(sqlite_path=sqlite_path, doc_id=requested_doc_id, analyte_hint="troponine")
+        comment_only_rows = [r for r in comment_rows if str(r.get("analyte_norm") or "").strip().lower() in {"commentaire", "comment"}]
+        measured_vs_comment_fast_path_used = True
+        fast_path_reason = "doc_measured_vs_comment_sql_template"
+        retrieval_response = SimpleNamespace(
+            answerability={
+                "status": "answerable" if comment_only_rows else "insufficient_context",
+                "reason": "doc_comment_sql_match" if comment_only_rows else "doc_comment_sql_no_match",
+            },
+            filters=retrieval_filters.to_dict(),
+            top_results=[_row_to_retrieval_result_fast(r, "doc_comment_sql_fast_path") for r in comment_only_rows],
+            context_chunks=[],
+            sources=[],
+        )
+        exact_analyte_expected_count = len(comment_only_rows)
+        exact_analyte_rows = list(comment_only_rows)
+    elif requested_doc_id and previous_list_requested:
+        previous_rows = _load_doc_previous_rows(sqlite_path=sqlite_path, doc_id=requested_doc_id)
+        doc_previous_list_fast_path_used = True
+        fast_path_reason = "doc_previous_results_sql_template"
+        retrieval_response = SimpleNamespace(
+            answerability={
+                "status": "answerable" if previous_rows else "insufficient_context",
+                "reason": "doc_previous_sql_match" if previous_rows else "doc_previous_sql_no_match",
+            },
+            filters=retrieval_filters.to_dict(),
+            top_results=[_row_to_retrieval_result_fast(r, "doc_previous_sql_fast_path") for r in previous_rows],
+            context_chunks=[],
+            sources=[],
+        )
+        exact_analyte_expected_count = len(previous_rows)
+        exact_analyte_rows = list(previous_rows)
+    elif requested_doc_id and section_grouped_summary_intent:
+        grouped_rows = _load_doc_rows_by_status(
+            sqlite_path=sqlite_path,
+            doc_id=requested_doc_id,
+            statuses=["above_reference", "below_reference", "needs_clinical_context"],
+        )
+        section_grouped_fast_path_used = True
+        fast_path_reason = "deterministic_section_grouped_summary_sql_template"
+        retrieval_response = SimpleNamespace(
+            answerability={
+                "status": "answerable" if grouped_rows else "insufficient_context",
+                "reason": "doc_section_grouped_sql_match" if grouped_rows else "doc_section_grouped_sql_no_match",
+            },
+            filters=retrieval_filters.to_dict(),
+            top_results=[_row_to_retrieval_result_fast(r, "doc_section_grouped_sql_fast_path") for r in grouped_rows],
+            context_chunks=[],
+            sources=[],
+        )
+        exact_analyte_expected_count = len(grouped_rows)
+        exact_analyte_rows = list(grouped_rows)
+    elif requested_doc_id and toxicology_scope:
+        doc_analytes = _load_doc_analytes(sqlite_path, requested_doc_id)
+        toxico_keywords = ["ethanol", "valporo", "valpro", "depakine", "carbamaz", "lithium", "amphetamine", "benzodiazep", "cocaine", "ecstasy"]
+        toxico_norms: list[str] = []
+        for d in doc_analytes:
+            dn = str(d.get("analyte_norm") or "")
+            dl = norm_text(d.get("analyte") or "")
+            if any(k in dn or k in dl for k in toxico_keywords):
+                if dn not in toxico_norms:
+                    toxico_norms.append(dn)
+        toxico_rows: list[dict[str, Any]] = []
+        if toxico_norms:
+            toxico_rows = _load_doc_analyte_rows(sqlite_path=sqlite_path, doc_id=requested_doc_id, analyte_norms=toxico_norms)
+        if (is_above_reference_query or doc_summary_intent.get("wants_out_of_reference_focus")) and toxico_rows:
+            toxico_rows = [r for r in toxico_rows if str(r.get("interpretation_status") or "").lower() in {"above_reference", "below_reference"}]
+        doc_toxicology_fast_path_used = True
+        fast_path_reason = "deterministic_pharmacotoxicology_sql_template"
+        retrieval_response = SimpleNamespace(
+            answerability={
+                "status": "answerable" if toxico_rows else "insufficient_context",
+                "reason": "doc_toxicology_sql_match" if toxico_rows else "doc_toxicology_sql_no_match",
+            },
+            filters=retrieval_filters.to_dict(),
+            top_results=[_row_to_retrieval_result_fast(r, "doc_toxicology_sql_fast_path") for r in toxico_rows],
+            context_chunks=[],
+            sources=[],
+        )
+        exact_analyte_expected_count = len(toxico_rows)
+        exact_analyte_rows = list(toxico_rows)
     elif requested_doc_id and doc_summary_intent.get("is_summary_intent"):
         above_only = bool(doc_summary_intent.get("wants_above_only"))
         below_only = bool(doc_summary_intent.get("wants_below_only"))
@@ -1490,6 +2263,7 @@ def run_generation(
         )
         exact_analyte_expected_count = len(summary_rows)
         exact_analyte_rows = list(summary_rows)
+        fast_path_reason = "deterministic_doc_summary_sql_template"
     else:
         if exact_analyte:
             exact_analyte_expected_count, exact_analyte_rows = _load_exact_analyte_rows(
@@ -1531,6 +2305,7 @@ def run_generation(
                     raise
         try:
             if engine is not None:
+                used_vector_search = True
                 retrieval_response = engine.search(
                     query=query_used_for_retrieval,
                     mode=mode,
@@ -1601,23 +2376,62 @@ def run_generation(
     exact_analyte_for_display = exact_analyte
     if requested_doc_id and len(requested_analytes) > 1:
         exact_analyte_for_display = None
+    effective_show_all_results = bool(show_all_results) or _query_requests_multiple_results(qn) or previous_list_requested
 
     displayed_evidences, display_meta = _select_displayed_evidences(
         query_norm=qn,
         evidence_pack=evidence_pack,
         exact_analyte=exact_analyte_for_display,
         max_display_results=max_display_results,
-        show_all_results=show_all_results,
+        show_all_results=effective_show_all_results,
         show_low_quality=show_low_quality,
     )
 
-    if doc_summary_fast_path_used:
+    if requested_doc_id and requested_analytes and not show_low_quality:
+        requested_norms = set(str(v).strip().lower() for v in requested_to_resolved.values() if str(v).strip())
+        requested_norms.update(str(a).strip().lower() for a in requested_analytes if str(a).strip())
+        low_quality_requested = [
+            ev
+            for ev in evidence_pack
+            if str(ev.get("analyte_norm") or "").strip().lower() in requested_norms
+            and str(ev.get("evidence_display_quality") or "high") == "low"
+        ]
+        displayed_ids = {str(ev.get("chunk_id") or "") for ev in displayed_evidences}
+        for ev in low_quality_requested:
+            cid = str(ev.get("chunk_id") or "")
+            if cid and cid not in displayed_ids:
+                displayed_evidences.append(ev)
+                displayed_ids.add(cid)
+        if low_quality_requested:
+            display_meta.setdefault("display_notes", []).append(
+                "Certaines evidences demandées explicitement sont affichées avec leur valeur brute extraite malgré un warning qualité."
+            )
+
+    if doc_summary_fast_path_used or doc_toxicology_fast_path_used or doc_previous_list_fast_path_used or section_grouped_fast_path_used or measured_vs_comment_fast_path_used or multi_doc_fast_path_used:
         if show_low_quality:
             displayed_evidences = list(evidence_pack)
         else:
-            displayed_evidences = [
-                ev for ev in evidence_pack if str(ev.get("evidence_display_quality") or "high") != "low"
-            ]
+            if doc_toxicology_fast_path_used:
+                displayed_evidences = list(evidence_pack)
+            else:
+                displayed_evidences = [
+                    ev for ev in evidence_pack if str(ev.get("evidence_display_quality") or "high") != "low"
+                ]
+            if requested_doc_id and requested_analytes:
+                requested_norms = set(str(v).strip().lower() for v in requested_to_resolved.values() if str(v).strip())
+                requested_norms.update(str(a).strip().lower() for a in requested_analytes if str(a).strip())
+                keep_low_quality = [
+                    ev
+                    for ev in evidence_pack
+                    if str(ev.get("evidence_display_quality") or "high") == "low"
+                    and str(ev.get("analyte_norm") or "").strip().lower() in requested_norms
+                ]
+                kept = {str(ev.get('chunk_id') or '') for ev in displayed_evidences}
+                for ev in keep_low_quality:
+                    cid = str(ev.get("chunk_id") or "")
+                    if cid and cid not in kept:
+                        displayed_evidences.append(ev)
+                        kept.add(cid)
         display_meta["selected_candidates_count"] = len(evidence_pack)
         display_meta["hidden_result_count"] = 0
         display_meta["display_notes"] = []
@@ -1638,6 +2452,20 @@ def run_generation(
                     missing_ordered.append(requested)
         found_requested_analytes = found_ordered
         missing_requested_analytes = missing_ordered
+
+    if show_low_quality:
+        allow_low_quality_display = True
+    else:
+        requested_norms_all: set[str] = set()
+        requested_norms_all.update(str(v).strip().lower() for v in requested_to_resolved.values() if str(v).strip())
+        requested_norms_all.update(str(a).strip().lower() for a in requested_analytes if str(a).strip())
+        requested_norms_all.update(str(a).strip().lower() for a in requested_terms_global if str(a).strip())
+        for ev in displayed_evidences:
+            ev_quality = str(ev.get("evidence_display_quality") or "high")
+            ev_norm = str(ev.get("analyte_norm") or "").strip().lower()
+            if ev_quality == "low" and (doc_toxicology_fast_path_used or ev_norm in requested_norms_all):
+                allow_low_quality_display = True
+                break
 
     prompt_evidence_pack = displayed_evidences if displayed_evidences else evidence_pack
     prompt = build_prompt(
@@ -1664,6 +2492,52 @@ def run_generation(
     elif not displayed_evidences:
         llm_answer = _insufficient_context_for_doc(requested_doc_id) if requested_doc_id else INSUFFICIENT_CONTEXT_SENTENCE
         generation_mode = "no_displayable_evidence_for_requested_doc" if requested_doc_id else "no_displayable_evidence"
+    elif multi_doc_fast_path_used:
+        llm_answer = _build_multi_doc_comparison_answer(
+            requested_doc_ids=requested_doc_ids,
+            requested_terms=requested_terms_global or requested_analytes,
+            rows=displayed_evidences,
+            missing_by_doc=multi_doc_missing_by_doc,
+            resolved_by_doc=multi_doc_resolved_by_doc,
+        )
+        generation_mode = "deterministic_multi_doc_analyte_comparison_sql_template"
+    elif measured_vs_comment_fast_path_used:
+        comment_row = displayed_evidences[0] if displayed_evidences else None
+        llm_answer = _build_measured_value_vs_comment_answer(
+            requested_doc_id=requested_doc_id or (requested_doc_ids[0] if requested_doc_ids else "document demandé"),
+            analyte_label="troponine",
+            comment_row=comment_row,
+        )
+        generation_mode = "deterministic_measured_value_vs_comment_sql_template"
+    elif section_grouped_fast_path_used:
+        llm_answer = _build_section_grouped_summary_answer(
+            requested_doc_id=requested_doc_id or (requested_doc_ids[0] if requested_doc_ids else "document"),
+            displayed_evidences=displayed_evidences,
+        )
+        generation_mode = "deterministic_section_grouped_summary_sql_template"
+    elif doc_previous_list_fast_path_used:
+        llm_answer = _build_deterministic_evidence_answer(
+            query=q,
+            displayed_evidences=displayed_evidences,
+            exact_analyte=None,
+            display_notes=display_meta.get("display_notes") or [],
+        )
+        generation_mode = "deterministic_previous_results_sql_template"
+    elif doc_toxicology_fast_path_used:
+        llm_answer = _build_doc_summary_answer(
+            requested_doc_id=requested_doc_id or "document demandé",
+            displayed_evidences=displayed_evidences,
+            include_within_reference=False,
+            within_reference_hidden_count=0,
+            section_filter_applied=False,
+            asked_immunoanalyse=False,
+            show_within_hidden_notice=False,
+            needs_context_heading="À interpréter avec contexte clinique :",
+            include_technical_disclaimer=False,
+            comparison_mode=current_vs_previous_comparison,
+            raw_values_requested=raw_values_requested,
+        )
+        generation_mode = "deterministic_pharmacotoxicology_sql_template"
     elif doc_summary_fast_path_used:
         out_of_reference_focus = bool(doc_summary_intent.get("wants_out_of_reference_focus"))
         include_within_reference_effective = (
@@ -1709,6 +2583,8 @@ def run_generation(
             show_within_hidden_notice=not out_of_reference_focus,
             needs_context_heading="À interpréter avec contexte clinique :" if out_of_reference_focus else "Résultats nécessitant un contexte clinique :",
             include_technical_disclaimer=out_of_reference_focus and not bool(doc_summary_intent.get("wants_grouped")),
+            comparison_mode=current_vs_previous_comparison,
+            raw_values_requested=raw_values_requested,
         )
         generation_mode = "deterministic_doc_summary_sql_template"
     elif _should_use_deterministic_generation(q, evidence_pack, exact_analyte):
@@ -1721,6 +2597,8 @@ def run_generation(
                 requested_to_resolved=requested_to_resolved,
                 displayed_evidences=displayed_evidences,
                 display_by_norm=doc_analyte_display_by_norm,
+                comparison_mode=current_vs_previous_comparison,
+                raw_values_requested=raw_values_requested,
             )
             generation_mode = "deterministic_doc_multi_analyte_sql_template"
         else:
@@ -1734,6 +2612,7 @@ def run_generation(
     else:
         client = llm_client or LLMClient(provider=provider)
         try:
+            used_ollama = True
             llm_answer = client.generate(
                 prompt=prompt,
                 model=model,
@@ -1755,6 +2634,11 @@ def run_generation(
             else:
                 error_type = "llm_error"
 
+    if not llm_error and diagnostic_safety_intent:
+        llm_answer = _prepend_diagnostic_safety(llm_answer)
+        if "pas un diagnostic médical" not in norm_text(llm_answer):
+            llm_answer = llm_answer.rstrip() + "\nCes statuts sont des interprétations techniques extraites, pas un diagnostic médical."
+
     citations = build_citations(displayed_evidences)
 
     if llm_error:
@@ -1773,19 +2657,24 @@ def run_generation(
         retrieval_status=(retrieval_response.answerability or {}).get("status"),
         show_low_quality=show_low_quality,
         max_display_results=max_display_results,
-        show_all_results=show_all_results,
+        show_all_results=effective_show_all_results,
         query_received=query_received,
         query_used_for_retrieval=query_used_for_retrieval,
         query_used_for_prompt=query_used_for_prompt,
         query_stored=q,
         detected_analytes=exact_analytes,
         requested_doc_id=requested_doc_id,
+        requested_doc_ids=requested_doc_ids,
+        missing_requested_doc_ids=missing_requested_doc_ids,
         requested_analytes=requested_analytes,
         found_requested_analytes=found_requested_analytes,
         found_requested_analyte_norms=found_requested_analyte_norms,
         missing_requested_analytes=missing_requested_analytes,
         doc_summary_intent=doc_summary_intent,
         summary_section_filter_applied=summary_section_filter_applied,
+        current_vs_previous_requested=current_vs_previous_comparison,
+        diagnostic_safety_intent=diagnostic_safety_intent,
+        allow_low_quality_display=allow_low_quality_display,
     )
 
     elapsed = time.perf_counter() - started
@@ -1798,6 +2687,8 @@ def run_generation(
         "query_used_for_prompt": query_used_for_prompt,
         "query_stored": q,
         "requested_doc_id": requested_doc_id,
+        "requested_doc_ids": requested_doc_ids,
+        "missing_requested_doc_ids": missing_requested_doc_ids,
         "requested_analytes": requested_analytes,
         "found_requested_analytes": found_requested_analytes,
         "found_requested_analyte_norms": found_requested_analyte_norms,
@@ -1814,7 +2705,9 @@ def run_generation(
         "top_k": top_k,
         "max_display_results": int(max_display_results),
         "show_all_results": bool(show_all_results),
+        "effective_show_all_results": bool(effective_show_all_results),
         "show_low_quality": bool(show_low_quality),
+        "allow_low_quality_display": bool(allow_low_quality_display),
         "include_within_reference": bool(include_within_reference),
         "max_summary_results": int(max_summary_results),
         "timeout": timeout,
@@ -1825,6 +2718,9 @@ def run_generation(
         "llm_error": llm_error,
         "error_type": error_type,
         "generation_mode": generation_mode,
+        "used_ollama": bool(used_ollama),
+        "used_vector_search": bool(used_vector_search),
+        "fast_path_reason": fast_path_reason,
         "doc_summary_intent": doc_summary_intent,
         "summary_section_filter_applied": summary_section_filter_applied,
         "detected_analytes": exact_analytes,
@@ -1846,12 +2742,18 @@ def run_generation(
             "query_used_for_prompt": query_used_for_prompt,
             "detected_analytes": exact_analytes,
             "requested_doc_id": requested_doc_id,
+            "requested_doc_ids": requested_doc_ids,
+            "missing_requested_doc_ids": missing_requested_doc_ids,
             "found_requested_analytes": found_requested_analytes,
             "found_requested_analyte_norms": found_requested_analyte_norms,
             "missing_requested_analytes": missing_requested_analytes,
             "doc_summary_intent": doc_summary_intent,
             "summary_section_filter_applied": summary_section_filter_applied,
             "generation_mode": generation_mode,
+            "used_ollama": bool(used_ollama),
+            "used_vector_search": bool(used_vector_search),
+            "fast_path_reason": fast_path_reason,
+            "allow_low_quality_display": bool(allow_low_quality_display),
         },
         "exact_analyte_coverage": {
             "detected_exact_analyte": exact_analyte,

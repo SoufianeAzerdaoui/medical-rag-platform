@@ -265,12 +265,17 @@ def validate_answer(
     query_stored: str | None = None,
     detected_analytes: list[str] | None = None,
     requested_doc_id: str | None = None,
+    requested_doc_ids: list[str] | None = None,
+    missing_requested_doc_ids: list[str] | None = None,
     requested_analytes: list[str] | None = None,
     found_requested_analytes: list[str] | None = None,
     found_requested_analyte_norms: list[str] | None = None,
     missing_requested_analytes: list[str] | None = None,
     doc_summary_intent: dict[str, bool] | None = None,
     summary_section_filter_applied: bool = False,
+    current_vs_previous_requested: bool = False,
+    diagnostic_safety_intent: bool = False,
+    allow_low_quality_display: bool = False,
 ) -> dict[str, Any]:
     text = (answer_text or "").strip()
     text_norm = _norm(text)
@@ -348,8 +353,10 @@ def validate_answer(
     found_requested = [str(a).strip().lower() for a in (found_requested_analytes or []) if str(a).strip()]
     found_requested_norms = [str(a).strip().lower() for a in (found_requested_analyte_norms or []) if str(a).strip()]
     missing_requested = [str(a).strip().lower() for a in (missing_requested_analytes or []) if str(a).strip()]
+    requested_doc_ids_norm = [str(d).strip().lower() for d in (requested_doc_ids or []) if str(d).strip()]
+    multi_doc_requested = len(requested_doc_ids_norm) >= 2
 
-    if exact_analyte and not requested_analyte_list:
+    if exact_analyte and not requested_analyte_list and not multi_doc_requested:
         detected = find_analyte_mentions(core_text)
         irrelevant = sorted(a for a in detected if a != exact_analyte)
         if irrelevant:
@@ -375,9 +382,9 @@ def validate_answer(
         coverage_set = set(found_requested) | set(missing_requested)
         uncovered = sorted(a for a in requested_set if a not in coverage_set)
         if uncovered:
-            warnings.append("requested_analyte_coverage_incomplete")
+            errors.append("requested_analyte_coverage_incomplete")
             unsupported_claims.append(f"Requested analytes without found/missing status: {uncovered}")
-        if missing_requested:
+        if missing_requested and generation_mode != "deterministic_measured_value_vs_comment_sql_template":
             warnings.append("controlled_warning_missing_requested_analytes")
 
         displayed_norms = {str(ev.get("analyte_norm") or "").strip().lower() for ev in displayed if ev.get("analyte_norm")}
@@ -400,7 +407,13 @@ def validate_answer(
         ]
     )
     source_count = len(re.findall(r"\[doc_id=", answer_text or "", flags=re.IGNORECASE))
-    if result_line_count >= 2 and source_count < result_line_count:
+    relaxed_line_source_modes = {
+        "deterministic_doc_summary_sql_template",
+        "deterministic_section_grouped_summary_sql_template",
+        "deterministic_multi_doc_analyte_comparison_sql_template",
+        "deterministic_measured_value_vs_comment_sql_template",
+    }
+    if generation_mode not in relaxed_line_source_modes and result_line_count >= 2 and source_count < result_line_count:
         warnings.append("multi_result_missing_structured_details")
 
     prev_mentions = list(
@@ -477,7 +490,7 @@ def validate_answer(
     if displayed_chunk_ids:
         citation_coverage = len(set(source_chunk_ids)) / max(1, len(set(displayed_chunk_ids)))
 
-    if not show_low_quality:
+    if not show_low_quality and not allow_low_quality_display:
         low_displayed = [
             str(ev.get("chunk_id") or "unknown_chunk")
             for ev in displayed
@@ -513,6 +526,19 @@ def validate_answer(
                 f"requested_doc_id={requested_doc_id_norm}, displayed_doc_ids={sorted(set(displayed_doc_ids))}, source_doc_ids={sorted(set(source_doc_ids))}"
             )
 
+    missing_doc_ids = [str(d).strip().lower() for d in (missing_requested_doc_ids or []) if str(d).strip()]
+    requested_doc_ids_incomplete = False
+    if len(requested_doc_ids_norm) >= 2:
+        represented_docs = {str(d).strip().lower() for d in displayed_doc_ids + source_doc_ids if str(d).strip()}
+        represented_or_missing = represented_docs | set(missing_doc_ids)
+        not_covered = sorted(d for d in requested_doc_ids_norm if d not in represented_or_missing)
+        if not_covered:
+            requested_doc_ids_incomplete = True
+            errors.append("requested_doc_ids_incomplete")
+            unsupported_claims.append(
+                f"requested_doc_ids={requested_doc_ids_norm}, represented_docs={sorted(represented_docs)}, missing_doc_ids={sorted(missing_doc_ids)}, not_covered={not_covered}"
+            )
+
     if generation_mode == "deterministic_doc_summary_sql_template":
         if llm_error:
             errors.append("doc_summary_mode_llm_error_present")
@@ -530,6 +556,14 @@ def validate_answer(
                 unsupported_claims.append(
                     f"Non-immunoanalyse chunks displayed while section filter applied: {bad_sections}"
                 )
+
+    if current_vs_previous_requested:
+        if not any(k in core_norm for k in ["comparaison", "valeur actuelle", "plus elevee", "plus basse", "egale"]):
+            errors.append("missing_current_vs_previous_comparison")
+
+    if diagnostic_safety_intent:
+        if "on ne peut pas conclure a un diagnostic" not in core_norm and "on ne peut pas conclure à un diagnostic" not in core_norm:
+            errors.append("missing_diagnostic_safety_refusal")
 
     value_accuracy = len(unsupported_numeric) == 0
     unit_accuracy = len(unsupported_units) == 0
@@ -564,6 +598,9 @@ def validate_answer(
         "stale_response_detected": stale_query,
         "requested_doc_id": requested_doc_id,
         "requested_doc_id_mismatch": requested_doc_id_mismatch,
+        "requested_doc_ids": requested_doc_ids_norm,
+        "missing_requested_doc_ids": missing_doc_ids,
+        "requested_doc_ids_incomplete": requested_doc_ids_incomplete,
         "found_requested_analytes": found_requested,
         "found_requested_analyte_norms": found_requested_norms,
         "missing_requested_analytes": missing_requested,
