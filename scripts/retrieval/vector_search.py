@@ -31,6 +31,8 @@ class VectorSearcher:
         self.qdrant_store = qdrant_store
         self.sqlite_store = sqlite_store
         self.mapping_resolver = mapping_resolver or MappingResolver()
+    def close(self) -> None:
+        self.qdrant_store.close()
 
     def _result_from_rows(self, point: dict[str, Any], row: dict[str, Any]) -> RetrievalResult:
         text = (row.get("text_for_embedding") or row.get("text_for_keyword") or "").strip()

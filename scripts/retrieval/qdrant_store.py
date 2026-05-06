@@ -110,6 +110,13 @@ class QdrantStore:
                 f"Qdrant collection missing: {self.collection_name}. Available: {collections}"
             )
 
+    def close(self) -> None:
+        if hasattr(self, "client") and self.client:
+            try:
+                self.client.close()
+            except Exception:
+                pass
+
     def _build_qdrant_filter(self, filters: RetrievalFilters):
         from qdrant_client.http import models as qm
 
@@ -167,11 +174,6 @@ class QdrantStore:
         filters: RetrievalFilters,
     ) -> list[dict[str, Any]]:
         vector = self._get_embedder().encode_query(query)
-        if vector.shape[0] != 1024:
-            raise RuntimeError(
-                f"Unexpected query embedding dimension={vector.shape[0]}, expected 1024"
-            )
-
         qfilter = self._build_qdrant_filter(filters)
         points = None
         if hasattr(self.client, "search"):

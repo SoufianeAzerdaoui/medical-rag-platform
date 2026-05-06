@@ -97,6 +97,12 @@ class QueryIntent:
             x in qn for x in ["positif", "presence", "resultat", "pathogene"]
         )
 
+        # Détection d'un identifiant de rapport spécifique (ex: report 30, report_30)
+        self.specific_doc_id = None
+        doc_match = re.search(r"report[\s_]?(\d+)", qn)
+        if doc_match:
+            self.specific_doc_id = f"report_{doc_match.group(1)}"
+
         analyte = None
         for a in sorted(_ANALYTE_LEXICON, key=len, reverse=True):
             if a in qn:
@@ -104,7 +110,7 @@ class QueryIntent:
                 break
         tokens = [t for t in qn.split(" ") if t]
         self.exact_analyte = analyte
-        self.is_exact_analyte = analyte is not None or (len(tokens) <= 2 and qn in _ANALYTE_LEXICON)
+        self.is_exact_analyte = analyte is not None or (len(tokens) <= 2 and qn in _ANALYTE_LEXICON) or self.specific_doc_id is not None
         self.is_broad_semantic = not self.is_exact_analyte
 
     def expanded_query(self) -> str:
@@ -131,6 +137,8 @@ class QueryIntent:
 
     def strict_filters(self, base: RetrievalFilters) -> RetrievalFilters:
         f = replace(base)
+        if self.specific_doc_id:
+            f.doc_id = self.specific_doc_id
         if self.is_above_reference and not f.interpretation_status:
             f.interpretation_status = "above_reference"
         if self.is_without_unit and not f.result_quality_status:
@@ -146,6 +154,10 @@ class HybridSearcher:
     def __init__(self, keyword_searcher: KeywordSearcher, vector_searcher: VectorSearcher) -> None:
         self.keyword_searcher = keyword_searcher
         self.vector_searcher = vector_searcher
+
+    def close(self) -> None:
+        self.keyword_searcher.close()
+        self.vector_searcher.close()
 
     @staticmethod
     def _has_value(value: Any) -> bool:

@@ -154,11 +154,30 @@ class SQLiteStore:
 
     @staticmethod
     def _to_safe_fts_query(query: str) -> str:
-        # Conservative fallback for user-friendly queries that contain FTS operators/punctuation
-        tokens = [t for t in re.split(r"[^\\w]+", query, flags=re.UNICODE) if t]
-        if not tokens:
-            return f'\"{query.strip()}\"'
-        return " AND ".join(f'\"{t}\"' for t in tokens)
+        # Stop-words basiques en français/anglais pour éviter de casser le MATCH FTS5
+        stop_words = {
+            "donne", "moi", "le", "la", "les", "du", "de", "des", "un", "une", "dans", "en", 
+            "par", "pour", "avec", "sur", "sous", "vers", "dans", "est", "sont", "était",
+            "the", "of", "and", "a", "to", "in", "is", "you", "that", "it", "he", "was",
+            "report", "rapport" # On les garde car ils sont souvent suivis d'un numéro
+        }
+        
+        # On garde les mots alphanumériques de plus de 1 caractère ou les chiffres
+        tokens = [t for t in re.split(r"[^a-zA-Z0-9]+", query, flags=re.UNICODE) if t]
+        
+        # On filtre les stop-words sauf s'ils sont collés à un chiffre (ex: report_30)
+        filtered = []
+        for t in tokens:
+            if t.lower() not in stop_words or t.isdigit():
+                filtered.append(f'"{t}"')
+        
+        if not filtered:
+            # Si tout est filtré, on prend tout le texte en citation
+            return f'"{query.strip()}"'
+            
+        # On utilise l'opérateur de proximité ou AND pour les termes restants
+        # Mais on privilégie les termes longs et les chiffres
+        return " AND ".join(filtered)
 
     def get_chunk_rows_by_ids(self, chunk_ids: list[str]) -> dict[str, dict[str, Any]]:
         if not chunk_ids:

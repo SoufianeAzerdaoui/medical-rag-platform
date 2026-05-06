@@ -70,6 +70,8 @@ class SearchEngine:
 
     def close(self) -> None:
         self.sqlite_store.close()
+        self.hybrid_searcher.close()
+        self.vector_searcher.close()
 
     def search(
         self,

@@ -92,6 +92,9 @@ class KeywordSearcher:
         self.sqlite_store = sqlite_store
         self.mapping_resolver = mapping_resolver or MappingResolver()
 
+    def close(self) -> None:
+        self.sqlite_store.close()
+
     def search(self, query: str, *, top_k: int, filters: RetrievalFilters) -> list[RetrievalResult]:
         q = (query or "").strip()
         if not q:
