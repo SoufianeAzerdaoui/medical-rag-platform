@@ -13,6 +13,14 @@ except ImportError:
     from pipeline import MedicalRagPipeline
     from config import DEFAULT_TOP_K, DEFAULT_LLM_MODEL
 
+# Couleurs ANSI pour le terminal
+BLUE = "\033[94m"
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+RED = "\033[91m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
 def main():
     parser = argparse.ArgumentParser(description="Medical RAG - Pipeline Strict")
     parser.add_argument("query", nargs="?", help="Votre question médicale (laisser vide pour le mode interactif)")
@@ -24,21 +32,19 @@ def main():
     try:
         pipeline = MedicalRagPipeline()
     except Exception as e:
-        print(f"Erreur d'initialisation : {e}")
+        print(f"{RED}Erreur d'initialisation : {e}{RESET}")
         return 1
 
-    print("\n🚀 Pipeline RAG Médical prêt.")
+    print(f"\n{BOLD}{GREEN}🚀 Pipeline RAG Médical (Strict Provenance) prêt.{RESET}")
     
     try:
         if args.query:
-            # Mode commande unique
             run_pipeline_once(pipeline, args.query, args.json)
         else:
-            # Mode interactif
-            print("Entrez votre question (ou 'exit' pour quitter) :")
+            print(f"{BLUE}Entrez votre question (ou 'exit' pour quitter) :{RESET}")
             while True:
                 try:
-                    query = input("\nQuestion 🩺 > ").strip()
+                    query = input(f"\n{BOLD}Question 🩺 > {RESET}").strip()
                     if query.lower() in ("exit", "quit", "q"):
                         break
                     if not query:
@@ -57,24 +63,32 @@ def run_pipeline_once(pipeline, query, is_json):
         if is_json:
             print(json.dumps(result, ensure_ascii=False, indent=2))
         else:
-            print("\n" + "="*60)
-            print(f"QUESTION : {result['query']}")
+            print("\n" + "─"*60)
+            print(f"{BOLD}{BLUE}🔍 ANALYSE DE LA QUESTION{RESET}")
+            print(f"Brute      : {result['query']}")
             if result['normalized_query'] != result['query']:
-                print(f"NORMALISÉ : {result['normalized_query']}")
-            print("="*60)
-            print(f"\nRÉPONSE (Evidence Pack Size: {result['evidence_count']}) :\n")
-            print(result['answer'])
-            print("\n" + "="*60)
-            print("SOURCES (Citations provenance) :")
+                print(f"Normalisée : {result['normalized_query']}")
+            print("─"*60)
+            
+            print(f"\n{BOLD}{GREEN}⚕️ RÉPONSE (Évidences : {result['evidence_count']}){RESET}")
+            # Coloration des alertes dans la réponse
+            answer = result['answer']
+            answer = answer.replace("🚨 ALERTE HALLUCINATION", f"{RED}{BOLD}🚨 ALERTE HALLUCINATION{RESET}{RED}")
+            answer = answer.replace("⚠️ ATTENTION", f"{YELLOW}{BOLD}⚠️ ATTENTION{RESET}{YELLOW}")
+            print(f"{answer}{RESET}")
+            
+            print("\n" + "─"*60)
+            print(f"{BOLD}{YELLOW}📚 SOURCES ET PROVENANCE{RESET}")
             seen_docs = set()
             for s in result['sources']:
                 doc_key = (s['doc_id'], s['page_number'])
                 if doc_key not in seen_docs:
-                    print(f"- {s['doc_id']} (Page {s['page_number'] or '?'})")
+                    conf_str = f" [Conf: {s['confidence']:.2f}]" if s['confidence'] > 0 else ""
+                    print(f"  • {BOLD}{s['doc_id']}{RESET} (Page {s['page_number'] or '?'}){conf_str}")
                     seen_docs.add(doc_key)
-            print("="*60 + "\n")
+            print("─"*60 + "\n")
     except Exception as e:
-        print(f"Erreur lors de l'exécution : {e}")
+        print(f"{RED}Erreur lors de l'exécution : {e}{RESET}")
 
 if __name__ == "__main__":
     sys.exit(main())

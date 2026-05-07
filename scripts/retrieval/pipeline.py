@@ -48,27 +48,42 @@ class AnswerValidator:
             return answer
 
         # 1. Vérification des citations
-        if "[" not in answer and "]" not in answer:
+        if "[" not in answer and "]" not in answer and "Source:" not in answer:
             answer += "\n\n⚠️ ATTENTION : Cette réponse manque de citations explicites."
 
-        # 2. Vérification des hallucinations numériques simples
-        # On extrait tous les nombres de la réponse (ex: 24,00)
+        # 2. Vérification des hallucinations numériques
+        # On extrait tous les nombres de la réponse (ex: 24,00 ou 10)
         numbers_in_answer = re.findall(r"\d+[\.,]\d+", answer)
         numbers_in_answer += re.findall(r"\b\d+\b", answer)
         
+        # On extrait les IDs de documents pour les exclure de la détection d'hallucination
+        doc_ids_in_pack = {ev.doc_id for ev in pack.evidences}
+        # On extrait aussi les nombres contenus dans les doc_ids (ex: 'report_31' -> '31')
+        numbers_in_doc_ids = set()
+        for doc_id in doc_ids_in_pack:
+            numbers_in_doc_ids.update(re.findall(r"\d+", doc_id))
+
         # On extrait tous les nombres du pack de preuves
         all_evidence_text = pack.to_text()
         numbers_in_evidence = set(re.findall(r"\d+[\.,]\d+", all_evidence_text))
         numbers_in_evidence.update(re.findall(r"\b\d+\b", all_evidence_text))
+        
+        # Liste blanche additionnelle (ex: années courantes, numéros de page cités légitimement)
+        whitelist = {"2024", "2025", "1", "2", "3", "4", "5"} 
+        whitelist.update(numbers_in_doc_ids)
 
         hallucinations = []
         for n in numbers_in_answer:
-            if n not in numbers_in_evidence and len(n) > 1: # On ignore les chiffres isolés < 10 si besoin
-                hallucinations.append(n)
+            # On considère une hallucination si le nombre n'est ni dans les preuves, 
+            # ni dans les noms de docs, ni dans la whitelist
+            if n not in numbers_in_evidence and n not in whitelist:
+                # On ignore les nombres très simples comme 0 ou les petits entiers s'ils sont dans le pack
+                if len(n) > 1 or n not in numbers_in_evidence:
+                     hallucinations.append(n)
 
         if hallucinations:
-            unique_h = set(hallucinations)
-            answer += f"\n\n🚨 ALERTE HALLUCINATION : Les valeurs suivantes ne sont pas dans les sources : {', '.join(unique_h)}"
+            unique_h = sorted(list(set(hallucinations)))
+            answer += f"\n\n🚨 ALERTE HALLUCINATION : Les valeurs suivantes ne semblent pas provenir des sources : {', '.join(unique_h)}"
 
         return answer
 
