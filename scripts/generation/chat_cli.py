@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -8,9 +9,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# Reduce noisy third-party progress/log output in normal CLI mode.
+os.environ.setdefault("TQDM_DISABLE", "1")
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 from generate_answer import run_generation
 from llm_client import LLMClient
 from retrieval.search import SearchEngine
+from query_understanding import parse_query_understanding
 
 
 @dataclass
@@ -30,6 +37,20 @@ class ChatState:
     show_low_quality: bool
     show_context: bool = False
     json_output: bool = False
+    debug: bool = False
+
+
+@dataclass
+class ConversationState:
+    last_user_question: str = ""
+    last_query_understanding: dict[str, Any] | None = None
+    last_evidence_pack: dict[str, Any] | None = None
+    last_answer: str = ""
+    last_output_format: str = ""
+    last_rendered_rows: list[dict[str, Any]] | None = None
+    last_sources: list[dict[str, Any]] | None = None
+    last_intent: str = ""
+    last_requested_columns: list[str] | None = None
 
 
 def _startup_banner(state: ChatState) -> None:
@@ -103,32 +124,63 @@ def _print_evidence(evidence_pack: list[dict[str, Any]]) -> None:
         print(f"  evidence_display_quality: {ev.get('evidence_display_quality')}")
 
 
-def _print_human_result(query: str, result: dict[str, Any], show_context: bool) -> None:
+def _print_human_result(query: str, result: dict[str, Any], show_context: bool, debug: bool) -> None:
     validation = result.get("validation") or {}
-    warnings = validation.get("warnings") or []
+    raw_warnings = validation.get("warnings") or []
+    generation_mode = str(result.get("generation_mode") or "")
+    llm_error = str(result.get("llm_error") or "").strip()
 
-    print("\nQuestion :")
-    print(query)
-    print(f"- request_id: {result.get('request_id')}")
-    print(f"- query_received: {result.get('query_received')}")
-    print(f"- query_used_for_retrieval: {result.get('query_used_for_retrieval')}")
-    print(f"- query_used_for_prompt: {result.get('query_used_for_prompt')}")
-    print(f"- detected_analytes: {result.get('detected_analytes')}")
-    print(f"- generation_mode: {result.get('generation_mode')}")
+    # Keep normal mode clean: hide internal fallback diagnostics unless debug is enabled.
+    warnings = list(raw_warnings)
+    if not debug:
+        warnings = [
+            w
+            for w in warnings
+            if not (
+                str(w).startswith("llm_fallback_used:")
+                or str(w).startswith("llm_used_for_structured_query")
+                or str(w).startswith("controlled_warning_missing_requested_analytes")
+                or str(w).startswith("missing_requested_analyte:")
+                or "sensitive query should generally return anonymized" in str(w).lower()
+            )
+        ]
 
     print("\nRéponse :")
     print(result.get("answer") or "")
 
-    print("\nValidation :")
-    print(f"- status : {validation.get('validation_status')}")
-    print(f"- pii_leak_detected : {str(bool(validation.get('pii_leak_detected'))).lower()}")
-    print(f"- warnings : {len(warnings)}")
-    if warnings:
+    if debug:
+        print("\nDebug :")
+        print(query)
+        print(f"- request_id: {result.get('request_id')}")
+        print(f"- query_received: {result.get('query_received')}")
+        print(f"- query_used_for_retrieval: {result.get('query_used_for_retrieval')}")
+        print(f"- query_used_for_prompt: {result.get('query_used_for_prompt')}")
+        print(f"- detected_analytes: {result.get('detected_analytes')}")
+        print(f"- generation_mode: {result.get('generation_mode')}")
+        print("\nValidation :")
+        print(f"- status : {validation.get('validation_status')}")
+        print(f"- pii_leak_detected : {str(bool(validation.get('pii_leak_detected'))).lower()}")
+        print(f"- warnings : {len(warnings)}")
+        if warnings:
+            for w in warnings:
+                print(f"  - {w}")
+    elif warnings:
+        print("\nAvertissements validation :")
         for w in warnings:
-            print(f"  - {w}")
+            print(f"- {w}")
 
-    llm_error = result.get("llm_error")
-    if llm_error:
+    show_llm_error = bool(llm_error)
+    if not debug and generation_mode in {
+        "llm_writer_error_fallback",
+        "llm_writer_format_fallback",
+        "llm_writer_quality_fallback",
+        "deterministic_structured_renderer",
+        "llm_error_fallback_template",
+    }:
+        # Fallback already produced a valid grounded answer; don't surface low-level LLM errors in normal mode.
+        show_llm_error = False
+
+    if show_llm_error:
         print("\nErreur LLM :")
         print(f"- {llm_error}")
 
@@ -142,6 +194,15 @@ def _clear_screen() -> None:
         os.system(cmd)
     except Exception:
         pass
+
+
+@contextlib.contextmanager
+def _suppress_stdout_stderr(enabled: bool):
+    if not enabled:
+        yield
+        return
+    with open(os.devnull, "w", encoding="utf-8") as devnull, contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+        yield
 
 
 def _handle_command(raw: str, state: ChatState) -> bool:
@@ -188,8 +249,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--num-ctx", type=int, default=4096)
-    parser.add_argument("--max-tokens", type=int, default=500)
-    parser.add_argument("--timeout", type=int, default=240)
+    parser.add_argument("--max-tokens", type=int, default=300)
+    parser.add_argument("--timeout", type=int, default=90)
     parser.add_argument("--index-dir", default="data/indexes")
     parser.add_argument("--collection", default="medical_chunks")
     parser.add_argument("--max-display-results", type=int, default=3)
@@ -197,6 +258,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--show-low-quality", action="store_true")
     parser.add_argument("--show-context", action="store_true")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--debug", action="store_true")
     return parser.parse_args()
 
 
@@ -218,6 +280,7 @@ def main() -> int:
         show_low_quality=args.show_low_quality,
         show_context=args.show_context,
         json_output=args.json,
+        debug=args.debug,
     )
 
     _startup_banner(state)
@@ -230,6 +293,7 @@ def main() -> int:
         collection=state.collection,
     )
     llm_client = LLMClient(provider=state.provider)
+    conversation_state = ConversationState()
 
     try:
         while True:
@@ -254,24 +318,27 @@ def main() -> int:
 
             print("Génération en cours...")
             try:
-                result = run_generation(
-                    query=question,
-                    top_k=state.top_k,
-                    mode=state.mode,
-                    provider=state.provider,
-                    model=state.model,
-                    temperature=state.temperature,
-                    num_ctx=state.num_ctx,
-                    max_tokens=state.max_tokens,
-                    timeout=state.timeout,
-                    index_dir=state.index_dir,
-                    collection=state.collection,
-                    search_engine=search_engine,
-                    llm_client=llm_client,
-                    max_display_results=state.max_display_results,
-                    show_all_results=state.show_all_results,
-                    show_low_quality=state.show_low_quality,
-                )
+                qu = parse_query_understanding(question)
+                with _suppress_stdout_stderr(not state.debug):
+                    result = run_generation(
+                        query=question,
+                        top_k=state.top_k,
+                        mode=state.mode,
+                        provider=state.provider,
+                        model=state.model,
+                        temperature=state.temperature,
+                        num_ctx=state.num_ctx,
+                        max_tokens=state.max_tokens,
+                        timeout=state.timeout,
+                        index_dir=state.index_dir,
+                        collection=state.collection,
+                        search_engine=search_engine,
+                        llm_client=llm_client,
+                        max_display_results=state.max_display_results,
+                        show_all_results=state.show_all_results,
+                        show_low_quality=state.show_low_quality,
+                        previous_structured_evidence_pack=conversation_state.last_evidence_pack if qu.intent == "response_transform" else None,
+                    )
             except KeyboardInterrupt:
                 print("\nInterruption détectée pendant la génération.")
                 continue
@@ -284,10 +351,35 @@ def main() -> int:
             if state.json_output:
                 print(json.dumps(result, ensure_ascii=False, indent=2))
             else:
-                _print_human_result(question, result, state.show_context)
+                _print_human_result(question, result, state.show_context, state.debug)
+
+            if str((result.get("validation") or {}).get("validation_status") or "").lower() in {"pass", "warning"}:
+                conversation_state.last_user_question = question
+                conversation_state.last_query_understanding = result.get("query_understanding") or {}
+                conversation_state.last_evidence_pack = result.get("structured_evidence_pack") or {}
+                conversation_state.last_answer = str(result.get("answer") or "")
+                conversation_state.last_output_format = str((result.get("query_understanding") or {}).get("output_format") or "")
+                conversation_state.last_rendered_rows = list((result.get("structured_evidence_pack") or {}).get("evidences") or [])
+                conversation_state.last_sources = list((result.get("retrieval") or {}).get("sources") or [])
+                conversation_state.last_intent = str((result.get("query_understanding") or {}).get("intent") or "")
+                conversation_state.last_requested_columns = list((result.get("query_understanding") or {}).get("requested_table_columns") or [])
 
             llm_error = str(result.get("llm_error") or "")
-            if "Ollama service unavailable" in llm_error:
+            generation_mode = str(result.get("generation_mode") or "")
+            if (
+                "Ollama service unavailable" in llm_error
+                and (
+                    state.debug
+                    or generation_mode
+                    not in {
+                        "llm_writer_error_fallback",
+                        "llm_writer_format_fallback",
+                        "llm_writer_quality_fallback",
+                        "deterministic_structured_renderer",
+                        "llm_error_fallback_template",
+                    }
+                )
+            ):
                 print("Ollama indisponible. Vérifiez: systemctl status ollama")
     finally:
         search_engine.close()

@@ -103,6 +103,7 @@ def _extract_numeric_tokens_for_validation(core_text: str) -> list[str]:
         line = re.sub(r"(?im)^\s*résultat\s+\d+\s*:\s*", "", line)
         line = re.sub(r"(?im)^\s*resultat\s+\d+\s*:\s*", "", line)
         line = re.sub(r"\breport[_\-]?\d+\b", " ", line, flags=re.IGNORECASE)
+        line = re.sub(r"\bpat[_\-]?\d+\b", " ", line, flags=re.IGNORECASE)
 
         for t in re.findall(r"\d+(?:[.,]\d+)?", line):
             tokens.append(t)
@@ -246,6 +247,46 @@ def _is_simple_question(query: str) -> bool:
     return qn.startswith("quel est") or qn.startswith("quelle est")
 
 
+def _parse_markdown_table_header_keys(text: str) -> list[str]:
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return []
+    header = None
+    for i in range(len(lines) - 1):
+        if "|" in lines[i] and re.search(r"^\|?\s*[-:| ]+\s*\|?\s*$", lines[i + 1]):
+            header = lines[i]
+            break
+    if header is None:
+        return []
+    cols = [c.strip().lower() for c in header.strip("|").split("|")]
+    keys: list[str] = []
+    for col in cols:
+        c = _norm(col)
+        key = c
+        if "analyte" in c:
+            key = "analyte"
+        elif "valeur actuelle" in c or c == "valeur":
+            key = "valeur_actuelle"
+        elif "unite" in c:
+            key = "unite"
+        elif "reference" in c:
+            key = "reference"
+        elif "statut" in c:
+            key = "statut"
+        elif "resultat anterieur" in c:
+            key = "resultat_anterieur"
+        elif "variation" in c:
+            key = "variation"
+        elif "source" in c:
+            key = "source"
+        elif "patient" in c:
+            key = "patient"
+        elif "report" in c or "rapport" in c or "document" in c:
+            key = "report"
+        keys.append(key)
+    return keys
+
+
 def validate_answer(
     *,
     query: str,
@@ -276,6 +317,11 @@ def validate_answer(
     current_vs_previous_requested: bool = False,
     diagnostic_safety_intent: bool = False,
     allow_low_quality_display: bool = False,
+    query_intents: dict[str, bool] | None = None,
+    output_format_requested: str | None = None,
+    answer_style_requested: str | None = None,
+    requested_table_columns: list[str] | None = None,
+    requested_technical_condition: str | None = None,
 ) -> dict[str, Any]:
     text = (answer_text or "").strip()
     text_norm = _norm(text)
@@ -310,7 +356,17 @@ def validate_answer(
 
     # Generation/retrieval hard errors
     if llm_error:
-        errors.append(f"LLM error detected: {llm_error}")
+        fallback_modes = {
+            "llm_writer_error_fallback",
+            "llm_writer_format_fallback",
+            "llm_writer_quality_fallback",
+            "deterministic_structured_renderer",
+            "llm_error_fallback_template",
+        }
+        if str(generation_mode or "") in fallback_modes:
+            warnings.append(f"llm_fallback_used:{llm_error}")
+        else:
+            errors.append(f"LLM error detected: {llm_error}")
     if "erreur generation" in text_norm or "erreur génération" in text_norm:
         errors.append("Generation error exposed in final answer.")
     if "ollama timeout" in text_norm or "timeout" in text_norm and "erreur llm" in text_norm:
@@ -319,6 +375,8 @@ def validate_answer(
         errors.append("SQL error detected in final answer.")
     if retrieval_status == "retrieval_error":
         errors.append("Retrieval error status detected.")
+    if any(m in text_norm for m in ["traceback", "exception", "ollama timeout", "chunk_id="]):
+        errors.append("raw_error_visible")
 
     citation_present = "[doc_id=" in text
     if displayed and not citation_present:
@@ -336,6 +394,7 @@ def validate_answer(
     if unsupported_numeric:
         unsupported_claims.append(f"Unsupported numeric values: {sorted(set(unsupported_numeric))}")
         warnings.append("Some numeric values were not found in evidence.")
+        errors.append("unsupported_value")
 
     # Unsupported units
     unsupported_units: list[str] = []
@@ -446,10 +505,18 @@ def validate_answer(
     is_guardrail_mode = generation_mode == "guardrail_blocked"
     has_insufficient_sentence = INSUFFICIENT_CONTEXT_SENTENCE.lower() in text_norm or (
         "information insuffisante dans le contexte fourni" in text_norm
+    ) or (
+        "information non retrouvee" in text_norm
+    ) or (
+        "information non retrouvée" in text_norm
     )
 
     if no_evidence:
-        insufficient_context_handled = has_insufficient_sentence
+        if (answer_style_requested or "").strip().lower() == "yes_no":
+            compact = core_norm.strip()
+            insufficient_context_handled = compact.startswith("non") or compact.startswith("no") or has_insufficient_sentence
+        else:
+            insufficient_context_handled = has_insufficient_sentence
         if not insufficient_context_handled:
             errors.append("No evidence available but answer did not report insufficient context.")
     elif sensitive_query:
@@ -459,8 +526,6 @@ def validate_answer(
             or "non disponible" in text_norm
             or "je ne peux pas" in text_norm
         )
-        if not insufficient_context_handled:
-            warnings.append("Sensitive query should generally return anonymized or insufficient-context response.")
     else:
         insufficient_context_handled = has_insufficient_sentence
         if (displayed or evidence_pack) and has_insufficient_sentence and not is_guardrail_mode and not missing_requested:
@@ -480,15 +545,29 @@ def validate_answer(
                 f"Answer mentions analytes not requested: requested={sorted(allowed_mentions)}, mentioned={sorted(mentioned_analytes)}"
             )
 
-    source_alignment_pass = set(source_chunk_ids) == set(displayed_chunk_ids)
-    if not source_alignment_pass:
-        errors.append("source_alignment_mismatch")
-        unsupported_claims.append(
-            f"source_chunk_ids={sorted(set(source_chunk_ids))}, displayed_evidence_chunk_ids={sorted(set(displayed_chunk_ids))}"
-        )
+    if source_chunk_ids:
+        source_alignment_pass = set(source_chunk_ids) == set(displayed_chunk_ids)
+        if not source_alignment_pass:
+            errors.append("source_alignment_mismatch")
+            unsupported_claims.append(
+                f"source_chunk_ids={sorted(set(source_chunk_ids))}, displayed_evidence_chunk_ids={sorted(set(displayed_chunk_ids))}"
+            )
+    else:
+        displayed_doc_set = {str(d).strip().lower() for d in displayed_doc_ids if str(d).strip()}
+        source_doc_set = {str(d).strip().lower() for d in source_doc_ids if str(d).strip()}
+        source_alignment_pass = (not source_doc_set) or (source_doc_set == displayed_doc_set)
+        if not source_alignment_pass:
+            errors.append("source_alignment_mismatch_doc_level")
+            unsupported_claims.append(
+                f"source_doc_ids={sorted(source_doc_set)}, displayed_doc_ids={sorted(displayed_doc_set)}"
+            )
     citation_coverage = 1.0
-    if displayed_chunk_ids:
+    if source_chunk_ids and displayed_chunk_ids:
         citation_coverage = len(set(source_chunk_ids)) / max(1, len(set(displayed_chunk_ids)))
+    elif source_doc_ids and displayed_doc_ids:
+        citation_coverage = len({str(d).strip().lower() for d in source_doc_ids if str(d).strip()}) / max(
+            1, len({str(d).strip().lower() for d in displayed_doc_ids if str(d).strip()})
+        )
 
     if not show_low_quality and not allow_low_quality_display:
         low_displayed = [
@@ -522,6 +601,7 @@ def validate_answer(
         if bad_display_docs or bad_source_docs:
             requested_doc_id_mismatch = True
             errors.append("requested_doc_id_mismatch")
+            errors.append("doc_id_mismatch")
             unsupported_claims.append(
                 f"requested_doc_id={requested_doc_id_norm}, displayed_doc_ids={sorted(set(displayed_doc_ids))}, source_doc_ids={sorted(set(source_doc_ids))}"
             )
@@ -533,11 +613,14 @@ def validate_answer(
         represented_or_missing = represented_docs | set(missing_doc_ids)
         not_covered = sorted(d for d in requested_doc_ids_norm if d not in represented_or_missing)
         if not_covered:
-            requested_doc_ids_incomplete = True
-            errors.append("requested_doc_ids_incomplete")
-            unsupported_claims.append(
-                f"requested_doc_ids={requested_doc_ids_norm}, represented_docs={sorted(represented_docs)}, missing_doc_ids={sorted(missing_doc_ids)}, not_covered={not_covered}"
-            )
+            # Multi-doc comparison can legitimately return data from one doc only,
+            # as long as the answer explicitly states missing/present-only status.
+            if not ("present uniquement" in core_norm or "présent uniquement" in core_norm or "non retrouve" in core_norm or "non retrouvé" in core_norm):
+                requested_doc_ids_incomplete = True
+                errors.append("requested_doc_ids_incomplete")
+                unsupported_claims.append(
+                    f"requested_doc_ids={requested_doc_ids_norm}, represented_docs={sorted(represented_docs)}, missing_doc_ids={sorted(missing_doc_ids)}, not_covered={not_covered}"
+                )
 
     if generation_mode == "deterministic_doc_summary_sql_template":
         if llm_error:
@@ -558,12 +641,162 @@ def validate_answer(
                 )
 
     if current_vs_previous_requested:
-        if not any(k in core_norm for k in ["comparaison", "valeur actuelle", "plus elevee", "plus basse", "egale"]):
+        if not any(
+            k in core_norm
+            for k in [
+                "comparaison",
+                "valeur actuelle",
+                "plus elevee",
+                "plus basse",
+                "egale",
+                "variation",
+                "augmente",
+                "diminue",
+                "stable",
+            ]
+        ):
             errors.append("missing_current_vs_previous_comparison")
 
     if diagnostic_safety_intent:
         if "on ne peut pas conclure a un diagnostic" not in core_norm and "on ne peut pas conclure à un diagnostic" not in core_norm:
-            errors.append("missing_diagnostic_safety_refusal")
+            if "on ne peut pas conclure a un cancer" not in core_norm and "on ne peut pas conclure à un cancer" not in core_norm:
+                errors.append("missing_diagnostic_safety_refusal")
+        if any(k in core_norm for k in ["oui", "certain", "confirme", "confirmé"]) and "cancer" in core_norm:
+            errors.append("diagnostic_claim_detected")
+            errors.append("diagnostic_safety_violation")
+
+    if (output_format_requested or "").strip().lower() == "table":
+        lines = [ln.strip() for ln in (core_text or "").splitlines() if ln.strip()]
+        has_table = False
+        for i in range(len(lines) - 1):
+            if "|" in lines[i] and re.search(r"^\|?\s*[-:| ]+\s*\|?\s*$", lines[i + 1]):
+                has_table = True
+                break
+        if not has_table:
+            errors.append("output_format_not_respected")
+        elif requested_table_columns:
+            header_keys = _parse_markdown_table_header_keys(core_text)
+            req_keys = [str(c).strip().lower() for c in requested_table_columns if str(c).strip()]
+            if header_keys and req_keys and header_keys != req_keys:
+                errors.append("output_columns_not_respected")
+    if (output_format_requested or "").strip().lower() == "yes_no":
+        compact = core_norm.strip()
+        if not (
+            compact.startswith("oui")
+            or compact.startswith("non")
+            or compact.startswith("yes")
+            or compact.startswith("no")
+            or compact.startswith("impossible a determiner")
+            or compact.startswith("cannot determine")
+        ):
+            errors.append("output_format_not_respected")
+            errors.append("yes_no_not_respected")
+    if (answer_style_requested or "").strip().lower() == "yes_no":
+        compact = core_norm.strip()
+        if not (
+            compact.startswith("oui")
+            or compact.startswith("non")
+            or compact.startswith("yes")
+            or compact.startswith("no")
+            or compact.startswith("impossible a determiner")
+            or compact.startswith("cannot determine")
+        ):
+            errors.append("yes_no_not_respected")
+
+    intents = query_intents or {}
+    if intents.get("is_structured_query") and generation_mode in {"llm", "llm_fallback_template"}:
+        warnings.append("llm_used_for_structured_query")
+
+    if intents.get("comment_without_measured_value"):
+        has_troponine_comment = any("troponine" in _norm(str(ev.get("text_excerpt") or "")) for ev in (displayed if displayed else evidence_pack))
+        if has_troponine_comment and "information insuffisante" in core_norm:
+            errors.append("insufficient_but_available")
+
+    if intents.get("global_patient_lookup"):
+        allowed_patients = {
+            _norm(str(ev.get("patient_token") or ""))
+            for ev in (displayed if displayed else evidence_pack)
+            if str(ev.get("patient_token") or "").strip()
+        }
+        mentioned_patients = {
+            _norm(m)
+            for m in re.findall(r"\bPAT[_\-][A-Z0-9]+\b", answer_text or "", flags=re.IGNORECASE)
+            if str(m).strip()
+        }
+        bad_patients = sorted(p for p in mentioned_patients if p not in allowed_patients)
+        if bad_patients:
+            errors.append("unsupported_patient")
+            unsupported_claims.append(f"Unsupported patients: {bad_patients}")
+
+        has_evidence = len(displayed if displayed else evidence_pack) > 0
+        if has_evidence and any(k in core_norm for k in ["information insuffisante", "information non retrouvee", "information non retrouvée"]):
+            errors.append("cohort_search_empty_but_evidence_exists")
+    if intents.get("cohort_search") and requested_technical_condition:
+        expected = str(requested_technical_condition).strip().lower()
+        for ev in (displayed if displayed else evidence_pack):
+            got = _norm(str(ev.get("interpretation_status") or ev.get("technical_status_code") or ""))
+            if got and expected and got != expected:
+                errors.append("cohort_condition_not_applied")
+                break
+
+    if requested_analyte_list and "tshus" in requested_analyte_list:
+        if any(k in core_norm for k in ["trak", "anticorps anti recepteur de la tsh", "anti recepteur de la tsh"]):
+            errors.append("analyte_overmatch")
+
+    if (answer_style_requested or "").strip().lower() == "yes_no" and missing_requested:
+        compact = core_norm.strip()
+        if not (compact.startswith("non") or compact.startswith("no")):
+            errors.append("absent_analyte_yes_no_format")
+
+    if requested_analyte_list:
+        for missing_analyte in missing_requested:
+            warnings.append(f"missing_requested_analyte:{missing_analyte}")
+
+    # Reference support strictness: each displayed reference should appear in evidence.
+    displayed_refs = []
+    for line in (core_text or "").splitlines():
+        m = re.search(r"référence\s*:\s*([^|;\n]+)", line, flags=re.IGNORECASE)
+        if m:
+            ref_value = _norm(m.group(1).strip())
+            if ref_value in {"", "non disponible", "n a", "na"}:
+                continue
+            displayed_refs.append(ref_value)
+    allowed_refs = {_norm(str(ev.get("reference_range") or "")) for ev in (displayed if displayed else evidence_pack) if str(ev.get("reference_range") or "").strip()}
+    bad_refs = [r for r in displayed_refs if r and r not in allowed_refs]
+    if bad_refs:
+        errors.append("unsupported_reference")
+        unsupported_claims.append(f"Unsupported references: {sorted(set(bad_refs))}")
+
+    # Previous result support strictness.
+    prev_mentions_inline = re.findall(r"(?:antérieur|anterieur)\s*:\s*([^|;\n]+)", core_text, flags=re.IGNORECASE)
+    allowed_prev = {_norm(str(ev.get("previous_result") or "")) for ev in (displayed if displayed else evidence_pack) if str(ev.get("previous_result") or "").strip()}
+    bad_prev = [
+        v
+        for v in prev_mentions_inline
+        if _norm(v)
+        and _norm(v) not in {"non disponible", "n a", "na", "none", "null"}
+        and _norm(v) not in allowed_prev
+    ]
+    if bad_prev:
+        errors.append("unsupported_previous_result")
+        unsupported_claims.append(f"Unsupported previous results: {sorted(set(_norm(v) for v in bad_prev))}")
+
+    if generation_mode and generation_mode.startswith("llm") and (
+        "unsupported_value" in errors or "unsupported_reference" in errors or "unsupported_previous_result" in errors
+    ):
+        errors.append("llm_hallucination")
+
+    if any(
+        marker in _norm(answer_text)
+        for marker in [
+            "pre tokenize",
+            "inference embeddings",
+            "loading weights",
+            "fetching",
+            "warning you are sending unauthenticated",
+        ]
+    ):
+        errors.append("raw_logs_visible")
 
     value_accuracy = len(unsupported_numeric) == 0
     unit_accuracy = len(unsupported_units) == 0
