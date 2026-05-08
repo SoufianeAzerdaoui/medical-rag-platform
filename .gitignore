@@ -26,3 +26,6 @@ data/chunks/anonymization_mapping.xlsx
 data/chunks/anonymization_mapping.csv
 .codex
 
+node_modules
+.env.local
+.env*.local
