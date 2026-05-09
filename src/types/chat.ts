@@ -2,9 +2,19 @@ export type MessageRole = "user" | "assistant" | "system";
 export type MessageStatus = "idle" | "loading" | "error" | "done";
 export type ChatMode = "general" | "document_analysis" | "comparison" | "summary";
 
-export interface SourceItem {
-  id: string;
-  documentName: string;
+export type SourceCitation = {
+  doc_id: string;
+  filename?: string | null;
+  page?: number | null;
+  row?: number | null;
+  label: string;
+  url?: string | null;
+  viewer_url?: string | null;
+};
+
+export type LegacySourceItem = {
+  id?: string;
+  documentName?: string;
   documentId?: string;
   page?: number;
   section?: string;
@@ -13,7 +23,11 @@ export interface SourceItem {
   type?: string;
   date?: string;
   warning?: string;
-}
+  url?: string;
+  viewer_url?: string;
+};
+
+export type ChatSource = SourceCitation | LegacySourceItem | string;
 
 export interface MessageItem {
   id: string;
@@ -22,7 +36,7 @@ export interface MessageItem {
   content: string;
   createdAt: string;
   status: MessageStatus;
-  sources?: SourceItem[];
+  sources?: ChatSource[];
   attachments?: string[];
   audio?: { mimeType: string; blobUrl: string };
 }
@@ -42,7 +56,7 @@ export interface ChatItem {
 
 export interface RagResponse {
   answer: string;
-  sources?: SourceItem[];
+  sources?: ChatSource[];
   confidence?: number;
   document_ids?: string[];
   response_time?: number;

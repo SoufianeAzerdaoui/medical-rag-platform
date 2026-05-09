@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { clearChats, deleteChat, getChats, putChat } from "@/lib/indexeddb";
 import { uid } from "@/lib/utils";
-import type { ChatItem, ChatMode, MessageItem, SourceItem } from "@/types/chat";
+import type { ChatItem, ChatMode, ChatSource, MessageItem } from "@/types/chat";
 
 type Theme = "light" | "dark" | "system";
 
@@ -16,7 +16,10 @@ interface ChatState {
   setActiveChat: (id: string) => void;
   setSearch: (value: string) => void;
   addUserMessage: (content: string, mode: ChatMode) => MessageItem | null;
-  addAssistantMessage: (chatId: string, content: string, sources?: SourceItem[]) => void;
+  addAssistantLoadingMessage: (chatId: string) => MessageItem | null;
+  resolveAssistantMessage: (chatId: string, messageId: string, content: string, sources?: ChatSource[]) => void;
+  failAssistantMessage: (chatId: string, messageId: string, content: string) => void;
+  addAssistantMessage: (chatId: string, content: string, sources?: ChatSource[]) => void;
   toggleFavorite: (chatId: string) => void;
   renameChat: (chatId: string, title: string) => void;
   removeChat: (chatId: string) => void;
@@ -111,6 +114,65 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const updated = chats.map((chat) =>
       chat.id === chatId ? { ...chat, messages: [...chat.messages, msg], updatedAt: now() } : chat,
     );
+    const target = updated.find((c) => c.id === chatId);
+    if (target) void putChat(target);
+    set({ chats: updated });
+  },
+  addAssistantLoadingMessage: (chatId) => {
+    const { chats } = get();
+    const msg: MessageItem = {
+      id: uid("msg"),
+      chatId,
+      role: "assistant",
+      content: "L’assistant prépare une réponse.",
+      createdAt: now(),
+      status: "loading",
+      sources: [],
+    };
+    const updated = chats.map((chat) =>
+      chat.id === chatId ? { ...chat, messages: [...chat.messages, msg], updatedAt: now() } : chat,
+    );
+    const target = updated.find((c) => c.id === chatId);
+    if (target) void putChat(target);
+    set({ chats: updated });
+    return msg;
+  },
+  resolveAssistantMessage: (chatId, messageId, content, sources) => {
+    const { chats } = get();
+    const updated = chats.map((chat) => {
+      if (chat.id !== chatId) return chat;
+      const messages: MessageItem[] = chat.messages.map((m): MessageItem =>
+        m.id === messageId
+          ? {
+              ...m,
+              content,
+              status: "done",
+              sources: sources ?? [],
+            }
+          : m,
+      );
+      return { ...chat, messages, updatedAt: now() };
+    });
+    const target = updated.find((c) => c.id === chatId);
+    if (target) void putChat(target);
+    set({ chats: updated });
+  },
+  failAssistantMessage: (chatId, messageId, content) => {
+    const { chats } = get();
+    const updated = chats.map((chat) => {
+      if (chat.id !== chatId) return chat;
+      const messages: MessageItem[] = chat.messages.map((m): MessageItem =>
+        m.id === messageId
+          ? {
+              ...m,
+              content,
+              status: "error",
+              sources: [],
+            }
+          : m,
+      );
+      return { ...chat, messages, updatedAt: now() };
+    });
     const target = updated.find((c) => c.id === chatId);
     if (target) void putChat(target);
     set({ chats: updated });

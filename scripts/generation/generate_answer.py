@@ -28,6 +28,7 @@ except Exception:
     from scripts.generation.source_resolver import DocPdfResolver
 from evidence_builder import build_evidence_pack as build_retrieval_evidence_pack
 from llm_client import LLMClient, LLMClientError
+from professional_answer_composer import compose_professional_answer, render_professional_fallback
 from prompt_builder import INSUFFICIENT_CONTEXT_SENTENCE, build_prompt
 from query_understanding import (
     QueryUnderstanding,
@@ -93,97 +94,59 @@ def _build_structured_fallback_answer(query: str, evidence_pack: list[dict[str, 
     if not evidence_pack:
         return INSUFFICIENT_CONTEXT_SENTENCE
 
-    qn = normalize_query(query).lower()
-    candidates = evidence_pack
-
+    qu = parse_query_understanding(query)
+    candidates = list(evidence_pack)
     if exact_analyte:
         exact_candidates = [
             e
-            for e in evidence_pack
+            for e in candidates
             if contains_exact_term(str(e.get("analyte_norm") or ""), exact_analyte)
             or contains_exact_term(str(e.get("analyte") or ""), exact_analyte)
         ]
         if exact_candidates:
             candidates = exact_candidates
 
-    if any(k in qn for k in ["supérieur", "superieur", "above_reference"]):
-        filtered = [e for e in evidence_pack if str(e.get("interpretation_status") or "").lower() == "above_reference"]
-        if filtered:
-            candidates = filtered
-    elif any(k in qn for k in ["résultat antérieur", "resultat anterieur", "previous result", "ancien résultat", "ancien resultat"]):
-        filtered = [
-            e
-            for e in evidence_pack
-            if int(e.get("previous_result_present") or 0) == 1 and str(e.get("previous_result") or "").strip() != ""
-        ]
-        if filtered:
-            candidates = filtered
-    elif any(k in qn for k in ["parasite", "parasitologie", "trichuris", "ankylostoma"]):
-        filtered = [
-            e
-            for e in evidence_pack
-            if any(
-                x in str(
-                    (e.get("analyte") or "")
-                    + " "
-                    + (e.get("parameter") or "")
-                    + " "
-                    + (e.get("text_excerpt") or "")
-                ).lower()
-                for x in ["trichuris", "parasite", "ankylostoma"]
-            )
-        ]
-        if filtered:
-            candidates = filtered
-
-    lines: list[str] = []
-    if len(candidates) > 1 and exact_analyte:
-        lines.append(f"Plusieurs résultats de {exact_analyte.upper()} ont été retrouvés :")
-
-    max_items = min(len(candidates), 10 if exact_analyte else 3)
-    for idx, ev in enumerate(candidates[:max_items], start=1):
-        analyte = ev.get("analyte_display") or ev.get("analyte") or ev.get("parameter") or "non précisé"
-        value = ev.get("value_raw")
-        unit = ev.get("unit")
-        ref = ev.get("reference_range")
-        interp = ev.get("interpretation_status")
-        prev = ev.get("previous_result")
-
-        prefix = f"{idx}. " if len(candidates) > 1 else "- "
-        part = f"{prefix}{analyte}"
-        if value not in (None, ""):
-            part += f" = {value}"
-        if unit not in (None, ""):
-            part += f" {unit}"
-        details = []
-        if ref not in (None, ""):
-            details.append(f"référence: {ref}")
-        if interp not in (None, ""):
-            details.append(f"interprétation technique: {interp}")
-        if prev not in (None, ""):
-            details.append(f"résultat antérieur: {prev}")
-        if details:
-            part += " (" + " ; ".join(details) + ")"
-        lines.append(part)
-
-    lines.extend(["", "Données utilisées :"])
-    for idx, ev in enumerate(candidates[:max_items], start=1):
-        lines.extend(
-            [
-                f"Résultat {idx} :",
-                f"- Analyte : {ev.get('analyte_display') or ev.get('analyte') or ev.get('parameter') or 'non précisé'}",
-                f"- Valeur : {ev.get('value_raw') or 'non disponible'}",
-                f"- Unité : {ev.get('unit') or 'non disponible'}",
-                f"- Référence : {ev.get('reference_range') or 'non disponible'}",
-                f"- Interprétation technique : {ev.get('interpretation_status') or 'non disponible'}",
-                f"- Résultat antérieur : {ev.get('previous_result') or 'non disponible'}",
-                (
-                    f"- Source : [doc_id={ev.get('doc_id')}, page={ev.get('page_number')}, "
-                    f"row={ev.get('row_index')}, chunk_id={ev.get('chunk_id')}]"
-                ),
-            ]
+    structured_evidences: list[dict[str, Any]] = []
+    for ev in candidates:
+        status_code = str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+        status_label = _interpretation_fr(status_code)
+        structured_evidences.append(
+            {
+                "doc_id": ev.get("doc_id"),
+                "patient_token": ev.get("patient_token"),
+                "page": ev.get("page_number"),
+                "row": ev.get("row_index"),
+                "analyte": ev.get("analyte_display") or ev.get("analyte") or ev.get("parameter") or "non précisé",
+                "analyte_norm": ev.get("analyte_norm"),
+                "current_value": ev.get("value_raw"),
+                "unit": ev.get("unit"),
+                "reference": ev.get("reference_range"),
+                "previous_result": ev.get("previous_result"),
+                "technical_status_code": status_code or "not_interpretable",
+                "technical_status": status_label,
+                "variation": _variation_label(ev.get("value_raw"), ev.get("previous_result")),
+            }
         )
-    return "\n".join(lines).strip()
+
+    fallback_pack = {
+        "question": query,
+        "intent": qu.intent,
+        "requested_doc_ids": list(qu.requested_doc_ids or []),
+        "requested_analytes": list(qu.requested_analytes or []),
+        "requested_table_columns": list(qu.requested_table_columns or []),
+        "output_format": qu.output_format,
+        "answer_style": qu.answer_style,
+        "technical_condition": qu.technical_condition,
+        "evidences": structured_evidences,
+        "missing_items": [],
+    }
+    composed = render_professional_fallback(
+        evidence_pack=fallback_pack,
+        query_understanding=qu,
+        user_question=query,
+        source_citations=[],
+    )
+    return str(composed.get("answer") or INSUFFICIENT_CONTEXT_SENTENCE).strip()
 
 
 def _answer_needs_fallback(text: str) -> bool:
@@ -502,7 +465,7 @@ def _build_deterministic_evidence_answer(
 
     lines: list[str] = []
     if _is_compare_query(qn):
-        lines.append("Comparaison technique des résultats actuels et antérieurs :")
+        lines.append("J’ai comparé techniquement les résultats actuels et antérieurs retrouvés.")
         for idx, ev in enumerate(candidates, start=1):
             analyte = ev.get("analyte") or ev.get("parameter") or "analyte non précisé"
             cur = ev.get("value_raw") or "non disponible"
@@ -514,8 +477,13 @@ def _build_deterministic_evidence_answer(
                 f"résultat antérieur = {prev}. La valeur actuelle est {relation} que l'antérieure."
             )
     else:
+        lines.append("Voici les résultats techniques retrouvés dans les données indexées.")
         if len(candidates) > 1:
-            title = f"Plusieurs résultats de {exact_analyte.upper()} ont été retrouvés :" if exact_analyte else "Plusieurs résultats ont été retrouvés :"
+            title = (
+                f"{len(candidates)} résultats de {exact_analyte.upper()} ont été retrouvés :"
+                if exact_analyte
+                else f"{len(candidates)} résultats ont été retrouvés :"
+            )
             lines.append(title)
         for idx, ev in enumerate(candidates, start=1):
             analyte = ev.get("analyte_display") or ev.get("analyte") or ev.get("parameter") or "analyte non précisé"
@@ -536,25 +504,8 @@ def _build_deterministic_evidence_answer(
 
     for note in (display_notes or []):
         lines.append(note)
-
     lines.append("")
-    lines.append("Données utilisées :")
-    for idx, ev in enumerate(candidates, start=1):
-        lines.extend(
-            [
-                f"Résultat {idx} :",
-                f"- Analyte : {ev.get('analyte_display') or ev.get('analyte') or ev.get('parameter') or 'non précisé'}",
-                f"- Valeur : {ev.get('value_raw') or 'non disponible'}",
-                f"- Unité : {ev.get('unit') or 'non disponible'}",
-                f"- Référence : {ev.get('reference_range') or 'non disponible'}",
-                f"- Interprétation technique : {ev.get('interpretation_status') or 'non disponible'}",
-                f"- Résultat antérieur : {ev.get('previous_result') or 'non disponible'}",
-                (
-                    f"- Source : [doc_id={ev.get('doc_id')}, page={ev.get('page_number')}, "
-                    f"row={ev.get('row_index')}, chunk_id={ev.get('chunk_id')}]"
-                ),
-            ]
-        )
+    lines.append("La synthèse ci-dessus reste strictement limitée aux évidences retrouvées.")
     return "\n".join(lines).strip()
 
 
@@ -1303,6 +1254,66 @@ def _resolve_table_columns(evidence_pack: dict[str, Any], *, for_cohort: bool = 
     return ["analyte", "valeur_actuelle", "unite", "reference", "statut", "resultat_anterieur", "variation", "source"]
 
 
+def _finalize_structured_pack(pack: dict[str, Any], query_understanding: QueryUnderstanding) -> dict[str, Any]:
+    requested_analytes = list(pack.get("requested_analytes") or [])
+    requested_doc_ids = list(pack.get("requested_doc_ids") or [])
+    requested_columns = list(pack.get("requested_table_columns") or [])
+    constraints = {
+        "requested_doc_ids": requested_doc_ids,
+        "requested_analytes": requested_analytes,
+        "excluded_analytes": [],
+        "technical_condition": pack.get("technical_condition"),
+        "requested_columns": requested_columns,
+        "safety_intent": query_understanding.safety_intent,
+    }
+    pack["user_question"] = pack.get("question") or ""
+    pack["answer_style"] = pack.get("answer_style") or query_understanding.answer_style
+    pack["constraints"] = constraints
+    pack["results"] = list(pack.get("evidences") or [])
+    pack["warnings"] = list(pack.get("warnings") or [])
+    return pack
+
+
+def _attach_source_fields_to_structured_pack(structured_pack: dict[str, Any], source_citations: list[dict[str, Any]]) -> dict[str, Any]:
+    out = dict(structured_pack or {})
+    evidences = [dict(ev) for ev in (out.get("evidences") or [])]
+    by_key: dict[tuple[str, int | None, int | None], dict[str, Any]] = {}
+    for src in source_citations or []:
+        doc_id = str(src.get("doc_id") or "").strip().lower()
+        if not doc_id:
+            continue
+        page = src.get("page")
+        row = src.get("row")
+        key = (doc_id, int(page) if isinstance(page, int) else None, int(row) if isinstance(row, int) else None)
+        by_key[key] = src
+
+    for ev in evidences:
+        doc_id = str(ev.get("doc_id") or "").strip().lower()
+        page = ev.get("page")
+        row = ev.get("row")
+        key = (
+            doc_id,
+            int(page) if isinstance(page, int) else None,
+            int(row) if isinstance(row, int) else None,
+        )
+        src = by_key.get(key)
+        if not src and doc_id:
+            # fallback doc-level match
+            for candidate_key, candidate_src in by_key.items():
+                if candidate_key[0] == doc_id:
+                    src = candidate_src
+                    break
+        if src:
+            ev["source_label"] = src.get("label")
+            ev["source_url"] = src.get("url")
+            ev["viewer_url"] = src.get("viewer_url")
+            ev["filename"] = src.get("filename")
+
+    out["evidences"] = evidences
+    out["results"] = list(evidences)
+    return out
+
+
 def _table_header_label(col_key: str) -> str:
     mapping = {
         "analyte": "Analyte",
@@ -1563,83 +1574,31 @@ def generate_grounded_response_with_llm(
     max_tokens: int,
     timeout: int,
 ) -> tuple[str, str, str | None]:
-    fallback = render_evidence_pack_deterministic(evidence_pack, query_understanding.output_format)
-    evidences = list(evidence_pack.get("evidences") or [])
-    if not evidences and evidence_pack.get("intent") != "comment_without_measured_value":
-        return fallback, "deterministic_structured_renderer", None
-
-    compact_pack = {
-        "requested_doc_ids": query_understanding.requested_doc_ids,
-        "intent": evidence_pack.get("intent"),
-        "output_format": query_understanding.output_format,
-        "requested_table_columns": query_understanding.requested_table_columns,
-        "answer_style": query_understanding.answer_style,
-        "missing_items": evidence_pack.get("missing_items") or [],
-        "evidences": [
-            {
-                "doc_id": ev.get("doc_id"),
-                "analyte": ev.get("analyte"),
-                "current_value": ev.get("current_value"),
-                "unit": ev.get("unit"),
-                "reference": ev.get("reference"),
-                "technical_status": ev.get("technical_status"),
-                "previous_result": ev.get("previous_result"),
-                "variation": ev.get("variation"),
-            }
-            for ev in evidences
-        ],
-        "comment_text": evidence_pack.get("comment_text"),
-    }
-
-    prompt = (
-        "Tu es un assistant médical technique pour un système RAG.\n"
-        "Tu dois répondre uniquement avec les données JSON fournies ci-dessous.\n"
-        "Interdictions strictes: ne pas inventer/analyser médicalement/diagnostiquer, ne pas modifier les valeurs, "
-        "ne pas changer de document, ne pas ajouter d'analyte absent.\n"
-        "Si output_format=table, réponds uniquement en tableau Markdown.\n"
-        "Les sources doivent toujours être visibles: soit en colonne Source, soit en section Sources.\n"
-        "Si requested_table_columns est fourni, respecte strictement ces colonnes et leur ordre.\n"
-        "Si answer_style=yes_no, commence strictement par Oui, Non ou Impossible à déterminer.\n"
-        "Si output_format=json, réponds uniquement en JSON valide sans texte additionnel.\n"
-        "Si une donnée manque, indique exactement: non retrouvé dans le document demandé.\n"
-        "Question utilisateur:\n"
-        f"{user_question.strip()}\n\n"
-        "Evidence pack JSON:\n"
-        f"{json.dumps(compact_pack, ensure_ascii=False)}\n"
+    composed = compose_professional_answer(
+        user_question=user_question,
+        query_understanding=query_understanding,
+        evidence_pack=evidence_pack,
+        mode="auto",
+        llm_client=llm_client,
+        provider=provider,
+        model=model,
+        temperature=temperature,
+        num_ctx=num_ctx,
+        max_tokens=max_tokens,
+        timeout=timeout,
     )
-
-    client = llm_client or LLMClient(provider=provider)
-    try:
-        llm_answer = client.generate(
-            prompt=prompt,
-            model=model,
-            temperature=0.0 if temperature is None else min(float(temperature), 0.2),
-            num_ctx=num_ctx,
-            max_tokens=max(160, min(int(max_tokens), 420)),
-            timeout=max(4, min(int(timeout), 18)),
-            keep_alive="5m",
+    answer = str(composed.get("answer") or "").strip()
+    mode_out = str(composed.get("mode") or "deterministic_professional_fallback")
+    llm_error = composed.get("llm_error")
+    if not answer:
+        fallback = render_professional_fallback(
+            evidence_pack=evidence_pack,
+            query_understanding=query_understanding,
+            user_question=user_question,
         )
-        llm_answer = sanitize_model_answer(llm_answer)
-        if not llm_answer.strip():
-            return fallback, "deterministic_structured_renderer", "empty_llm_answer"
-        if query_understanding.output_format == "table" and not _is_table_markdown(llm_answer):
-            return fallback, "llm_writer_format_fallback", "output_format_not_respected"
-        if query_understanding.answer_style == "yes_no":
-            prefix = norm_text(llm_answer).strip()
-            if not (
-                prefix.startswith("oui")
-                or prefix.startswith("non")
-                or prefix.startswith("yes")
-                or prefix.startswith("no")
-                or prefix.startswith("impossible a determiner")
-                or prefix.startswith("cannot determine")
-            ):
-                return fallback, "llm_writer_format_fallback", "output_format_not_respected"
-        if _answer_needs_fallback(llm_answer):
-            return fallback, "llm_writer_quality_fallback", "llm_quality_fallback"
-        return llm_answer, "llm_grounded_writer", None
-    except LLMClientError as exc:
-        return fallback, "llm_writer_error_fallback", str(exc)
+        answer = str(fallback.get("answer") or "").strip()
+        mode_out = "deterministic_professional_fallback"
+    return answer, mode_out, str(llm_error) if llm_error else None
 
 
 def build_structured_evidence_pack(
@@ -1688,10 +1647,10 @@ def build_structured_evidence_pack(
         evidences = [_structured_record_from_row(r) for r in rows]
         pack["rows"] = rows
         pack["evidences"] = evidences
-        return pack
+        return _finalize_structured_pack(pack, query_understanding)
 
     if not requested_doc_ids:
-        return pack
+        return _finalize_structured_pack(pack, query_understanding)
 
     rows: list[dict[str, Any]] = []
 
@@ -1745,7 +1704,7 @@ def build_structured_evidence_pack(
         pack["evidences"] = evidences
         pack["missing_items"] = missing
         pack["rows"] = rows
-        return pack
+        return _finalize_structured_pack(pack, query_understanding)
 
     if intent == "multi_doc_presence_diff" and len(requested_doc_ids) >= 2:
         left, right = requested_doc_ids[0], requested_doc_ids[1]
@@ -1797,7 +1756,7 @@ def build_structured_evidence_pack(
             )
         pack["rows"] = rows
         pack["evidences"] = evidences
-        return pack
+        return _finalize_structured_pack(pack, query_understanding)
 
     if intent == "comment_without_measured_value":
         rows = _fetch_doc_lab_rows(
@@ -1821,7 +1780,7 @@ def build_structured_evidence_pack(
             if comment_rows:
                 pack["comment_text"] = str(comment_rows[0].get("value_raw") or "").strip()
         pack["rows"] = rows
-        return pack
+        return _finalize_structured_pack(pack, query_understanding)
 
     if intent == "diagnostic_safety_question":
         safety_analytes = requested_analytes or ["ace", "psa_totale", "ca_15_3"]
@@ -1843,7 +1802,7 @@ def build_structured_evidence_pack(
         pack["missing_items"] = missing
         pack["safety_constraints"] = ["no_diagnosis_conclusion"]
         pack["rows"] = rows
-        return pack
+        return _finalize_structured_pack(pack, query_understanding)
 
     if intent in {"toxicology_summary", "doc_scoped_summary", "immunoanalysis_summary", "doc_scoped_results", "previous_result_comparison"}:
         analytes = requested_analytes if requested_analytes else None
@@ -1915,9 +1874,9 @@ def build_structured_evidence_pack(
         pack["evidences"] = evidences
         pack["missing_items"] = missing
         pack["rows"] = rows
-        return pack
+        return _finalize_structured_pack(pack, query_understanding)
 
-    return pack
+    return _finalize_structured_pack(pack, query_understanding)
 
 
 def _filter_rows_for_analyte(rows: list[dict[str, Any]], analyte_norm: str) -> list[dict[str, Any]]:
@@ -2208,6 +2167,7 @@ def _build_response_transform_pack(
         "requested_table_columns": requested_columns,
         "answer_style": query_understanding.answer_style or src.get("answer_style") or "standard",
         "evidences": evidences,
+        "results": list(evidences),
     }
 
 
@@ -2367,23 +2327,14 @@ def run_generation(
             query_understanding=query_understanding,
             previous_pack=previous_structured_evidence_pack,
         )
-        output_format = str(transformed_pack.get("output_format") or query_understanding.output_format or "list").lower()
-        if output_format == "json":
-            answer = json.dumps(
-                {
-                    "intent": transformed_pack.get("intent"),
-                    "requested_doc_ids": transformed_pack.get("requested_doc_ids") or [],
-                    "requested_analytes": transformed_pack.get("requested_analytes") or [],
-                    "evidences": transformed_pack.get("evidences") or [],
-                    "missing_items": transformed_pack.get("missing_items") or [],
-                },
-                ensure_ascii=False,
-            )
-            generation_mode = "deterministic_response_transform_json"
-        else:
-            answer = render_evidence_pack_deterministic(transformed_pack, output_format)
-            generation_mode = "deterministic_response_transform"
-
+        transformed_qu = replace(
+            query_understanding,
+            intent="response_transform",
+            output_format=str(transformed_pack.get("output_format") or query_understanding.output_format),
+            requested_table_columns=list(
+                transformed_pack.get("requested_table_columns") or query_understanding.requested_table_columns or []
+            ),
+        )
         displayed_evidences = [
             {
                 "doc_id": ev.get("doc_id"),
@@ -2406,6 +2357,21 @@ def run_generation(
             for ev in (transformed_pack.get("evidences") or [])
         ]
         source_citations = build_source_citations(displayed_evidences, resolver=source_resolver)
+        transformed_pack = _attach_source_fields_to_structured_pack(transformed_pack, source_citations)
+        output_format = str(transformed_pack.get("output_format") or query_understanding.output_format or "list").lower()
+        composed = compose_professional_answer(
+            user_question=q,
+            query_understanding=transformed_qu,
+            evidence_pack=transformed_pack,
+            mode="fallback",
+            source_citations=source_citations,
+        )
+        answer = str(composed.get("answer") or "")
+        generation_mode = (
+            "deterministic_response_transform_json"
+            if output_format == "json"
+            else "deterministic_response_transform_professional"
+        )
         validation = validate_answer(
             query=q,
             answer_text=answer,
@@ -2421,9 +2387,10 @@ def run_generation(
             detected_analytes=exact_analytes,
             query_intents=intents,
             output_format_requested=output_format,
-            answer_style_requested=query_understanding.answer_style,
-            requested_table_columns=transformed_pack.get("requested_table_columns") or query_understanding.requested_table_columns,
-            requested_technical_condition=query_understanding.technical_condition,
+            answer_style_requested=transformed_qu.answer_style,
+            requested_table_columns=transformed_pack.get("requested_table_columns")
+            or transformed_qu.requested_table_columns,
+            requested_technical_condition=transformed_qu.technical_condition,
         )
         elapsed = time.perf_counter() - started
         return {
@@ -2518,11 +2485,15 @@ def run_generation(
             allowed_docs = {d.lower() for d in requested_doc_ids}
             evidence_pack = [ev for ev in evidence_pack if str(ev.get("doc_id") or "").strip().lower() in allowed_docs]
         displayed_evidences = list(evidence_pack)
-
-        generated_text, generation_mode, writer_error = generate_grounded_response_with_llm(
+        citations = build_citations(displayed_evidences)
+        source_citations = build_source_citations(displayed_evidences, resolver=source_resolver)
+        structured_pack = _attach_source_fields_to_structured_pack(structured_pack, source_citations)
+        composed = compose_professional_answer(
             user_question=q,
             query_understanding=query_understanding,
             evidence_pack=structured_pack,
+            mode="auto",
+            source_citations=source_citations,
             llm_client=llm_client,
             provider=provider,
             model=model,
@@ -2531,17 +2502,9 @@ def run_generation(
             max_tokens=max_tokens,
             timeout=timeout,
         )
-        if not generated_text.strip():
-            generated_text = _missing_doc_answer()
-
-        citations = build_citations(displayed_evidences)
-        source_citations = build_source_citations(displayed_evidences, resolver=source_resolver)
-        if query_understanding.output_format == "table" and _table_has_source_column(generated_text):
-            final_answer = generated_text.strip()
-        elif query_understanding.output_format == "yes_no":
-            final_answer = generated_text.strip()
-        else:
-            final_answer = append_source_citations(generated_text, source_citations, fallback_citations=citations)
+        final_answer = str(composed.get("answer") or "").strip() or _missing_doc_answer()
+        generation_mode = str(composed.get("mode") or "deterministic_professional_fallback")
+        writer_error = str(composed.get("llm_error") or "") or None
 
         missing_requested_doc_ids = _resolve_missing_requested_doc_ids(sqlite_path, requested_doc_ids)
         found_requested_analytes = []

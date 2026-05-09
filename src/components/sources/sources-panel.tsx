@@ -3,6 +3,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { X } from "lucide-react";
 import { useMemo } from "react";
+import { SourceLinks } from "@/components/sources/source-links";
 import { useChatStore } from "@/store/chat-store";
 
 export function SourcesPanel({ mobileOpen, onClose }: { mobileOpen: boolean; onClose: () => void }) {
@@ -21,16 +22,7 @@ export function SourcesPanel({ mobileOpen, onClose }: { mobileOpen: boolean; onC
         <h3 className="mb-3 text-sm font-semibold">Sources</h3>
         <p className="mb-3 text-xs text-fg/70">Cette réponse ne remplace pas l'avis médical.</p>
         <div className="space-y-2 overflow-auto">
-          {sources.length === 0 && <p className="text-xs text-fg/70">Aucune source pour le moment.</p>}
-          {sources.map((source) => (
-            <article key={source.id} className="rounded-xl border border-border p-3 text-xs">
-              <p className="font-medium">{source.documentName}</p>
-              <p className="text-fg/70">Page {source.page || "-"} · Section {source.section || "-"}</p>
-              <p className="mt-1 line-clamp-4">{source.excerpt}</p>
-              <p className="mt-1">Score: {source.score?.toFixed(2) || "-"}</p>
-              {source.warning && <p className="mt-1 text-amber-300">{source.warning}</p>}
-            </article>
-          ))}
+          {sources.length === 0 ? <p className="text-xs text-fg/70">Aucune source pour le moment.</p> : <SourceLinks sources={sources} showTitle={false} compact />}
         </div>
       </aside>
       <AnimatePresence>
@@ -57,15 +49,7 @@ export function SourcesPanel({ mobileOpen, onClose }: { mobileOpen: boolean; onC
                 </button>
               </div>
               <div className="space-y-2 overflow-auto">
-                {sources.length === 0 && <p className="text-xs text-fg/70">Aucune source pour le moment.</p>}
-                {sources.map((source) => (
-                  <article key={source.id} className="rounded-xl border border-border p-3 text-xs">
-                    <p className="font-medium">{source.documentName}</p>
-                    <p className="text-fg/70">Page {source.page || "-"} · Section {source.section || "-"}</p>
-                    <p className="mt-1 line-clamp-4">{source.excerpt}</p>
-                    <p className="mt-1">Score: {source.score?.toFixed(2) || "-"}</p>
-                  </article>
-                ))}
+                {sources.length === 0 ? <p className="text-xs text-fg/70">Aucune source pour le moment.</p> : <SourceLinks sources={sources} showTitle={false} compact />}
               </div>
             </motion.aside>
           </motion.div>

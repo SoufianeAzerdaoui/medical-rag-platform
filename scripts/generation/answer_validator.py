@@ -26,6 +26,22 @@ _FORBIDDEN_LEAK_MARKERS = [
     "chunks.raw.jsonl",
 ]
 
+_FORBIDDEN_INTERNAL_MARKERS = [
+    "chunk_id=",
+    "request_id",
+    "query_used_for_retrieval",
+    "traceback",
+    "exception",
+    "loading weights",
+    "inference embeddings",
+    "pre tokenize",
+]
+
+_GENERIC_COLD_SENTENCES = [
+    "les resultats ci dessus sont strictement extraits des donnees indexees",
+    "les résultats ci-dessus sont strictement extraits des données indexées",
+]
+
 _TREATMENT_PATTERNS = [
     r"\btraitement\s+recommande\b",
     r"\bprescrire\b",
@@ -96,6 +112,8 @@ def _extract_numeric_tokens_for_validation(core_text: str) -> list[str]:
         if "seuls les" in low and "premiers" in low:
             continue
         if "utilisez --show-all-results" in low:
+            continue
+        if re.search(r"\b\d+\s+r[ée]sultat(?:s)?\b", low):
             continue
 
         # Remove list ordinals and result section ordinals (non-medical numbering).
@@ -237,7 +255,7 @@ def _extract_source_chunk_ids(answer_text: str) -> list[str]:
 
 
 def _extract_source_doc_ids(answer_text: str) -> list[str]:
-    return re.findall(r"doc_id=([^\],\s]+)", answer_text or "", flags=re.IGNORECASE)
+    return re.findall(r"doc_id=([^\],\s&#?]+)", answer_text or "", flags=re.IGNORECASE)
 
 
 def _is_simple_question(query: str) -> bool:
@@ -285,6 +303,14 @@ def _parse_markdown_table_header_keys(text: str) -> list[str]:
             key = "report"
         keys.append(key)
     return keys
+
+
+def _canonical_analyte_key(value: str) -> str:
+    key = _norm(value).replace("_", " ")
+    key = key.replace("valporoique", "valproique")
+    key = re.sub(r"\bdepakine\b", "", key)
+    key = re.sub(r"\s+", " ", key).strip()
+    return key
 
 
 def validate_answer(
@@ -361,6 +387,16 @@ def validate_answer(
     if "<think>" in text_norm or "thinking:" in text_norm:
         errors.append("Model thinking content exposed in final answer.")
 
+    forbidden_internal_hits = [m for m in _FORBIDDEN_INTERNAL_MARKERS if m in text_norm]
+    if forbidden_internal_hits or "/home/" in text or "\\home\\" in text or re.search(r"[A-Za-z]:\\", text):
+        errors.append("forbidden_internal_field")
+    if re.search(r"résultat\(s\)|correspondant\(s\)", text, flags=re.IGNORECASE):
+        warnings.append("ugly_pluralization")
+    if re.search(r"page\s*\d+\s*row\s*\d+", text_norm, flags=re.IGNORECASE):
+        errors.append("source_format_bad")
+    if any(sentence in text_norm for sentence in _GENERIC_COLD_SENTENCES):
+        warnings.append("repeated_generic_sentence")
+
     # Generation/retrieval hard errors
     if llm_error:
         fallback_modes = {
@@ -428,6 +464,24 @@ def validate_answer(
                 errors.append("viewer_url_local_path_leak")
 
     allowed = _extract_allowed_sets(displayed if displayed else evidence_pack)
+
+    allowed_analytes_from_evidence = {
+        _norm(str(ev.get("analyte_norm") or ev.get("analyte") or ev.get("parameter") or ""))
+        for ev in (displayed if displayed else evidence_pack)
+        if str(ev.get("analyte_norm") or ev.get("analyte") or ev.get("parameter") or "").strip()
+    }
+    mentioned_analytes_global = find_analyte_mentions(core_text)
+    is_presence_diff = bool((query_intents or {}).get("multi_doc_presence_diff") or (query_intents or {}).get("multi_doc_comparison"))
+    if mentioned_analytes_global and allowed_analytes_from_evidence and not is_presence_diff:
+        allowed_canonical = {_canonical_analyte_key(a) for a in allowed_analytes_from_evidence}
+        bad_analytes = sorted(
+            a
+            for a in mentioned_analytes_global
+            if _canonical_analyte_key(a) not in allowed_canonical and a not in {"tsh", "tshus"}
+        )
+        if bad_analytes:
+            errors.append("unsupported_analyte")
+            unsupported_claims.append(f"Unsupported analytes: {bad_analytes}")
 
     # Unsupported numerics
     unsupported_numeric: list[str] = []
@@ -598,6 +652,7 @@ def validate_answer(
         source_alignment_pass = set(source_chunk_ids) == set(displayed_chunk_ids)
         if not source_alignment_pass:
             errors.append("source_alignment_mismatch")
+            errors.append("unsupported_source")
             unsupported_claims.append(
                 f"source_chunk_ids={sorted(set(source_chunk_ids))}, displayed_evidence_chunk_ids={sorted(set(displayed_chunk_ids))}"
             )
@@ -607,6 +662,7 @@ def validate_answer(
         source_alignment_pass = (not source_doc_set) or (source_doc_set == displayed_doc_set)
         if not source_alignment_pass:
             errors.append("source_alignment_mismatch_doc_level")
+            errors.append("unsupported_source")
             unsupported_claims.append(
                 f"source_doc_ids={sorted(source_doc_set)}, displayed_doc_ids={sorted(displayed_doc_set)}"
             )
@@ -758,6 +814,45 @@ def validate_answer(
             errors.append("yes_no_not_respected")
 
     intents = query_intents or {}
+    if intents.get("is_structured_query") and (answer_style_requested or "").strip().lower() != "yes_no" and (
+        output_format_requested or ""
+    ).strip().lower() != "json":
+        core_lines = [ln for ln in (core_text or "").splitlines()]
+        non_empty = [ln for ln in core_lines if ln.strip()]
+        has_table = False
+        table_idx = -1
+        for i in range(max(0, len(non_empty) - 1)):
+            if "|" in non_empty[i] and re.search(r"^\|?\s*[-:| ]+\s*\|?\s*$", non_empty[i + 1].strip()):
+                has_table = True
+                table_idx = i
+                break
+        if has_table and table_idx == 0:
+            errors.append("missing_professional_intro")
+        elif non_empty and re.match(r"^\s*[-*]\s+", non_empty[0]) and len(non_empty) > 2:
+            # Structured list answer should start with a short context sentence.
+            errors.append("missing_professional_intro")
+
+    intro_block = (core_text or "").split("\n\n")[0].strip() if (core_text or "").strip() else ""
+    intro_sentences = [s for s in re.split(r"[.!?]+", intro_block) if s.strip()]
+    if (answer_style_requested or "").strip().lower() != "yes_no" and (output_format_requested or "").strip().lower() != "json":
+        if len(intro_sentences) > 2:
+            warnings.append("over_verbose_intro")
+    if re.search(r"\btshus\s*,\s*tsh\b|\btsh\s*,\s*tshus\b", intro_block, flags=re.IGNORECASE):
+        errors.append("internal_alias_leak")
+
+    if str(output_format_requested or "").strip().lower() == "json":
+        stripped = (answer_text or "").strip()
+        if not (stripped.startswith("{") or stripped.startswith("[")):
+            errors.append("format_not_respected")
+    if "output_format_not_respected" in errors:
+        errors.append("format_not_respected")
+
+    result_count_match = re.search(r"\b(\d+)\s+r[ée]sultat(?:s)?\b", core_text or "", flags=re.IGNORECASE)
+    if result_count_match:
+        declared = int(result_count_match.group(1))
+        actual = len(displayed if displayed else evidence_pack)
+        if declared != actual:
+            errors.append("wrong_result_count")
     if intents.get("is_structured_query") and generation_mode in {"llm", "llm_fallback_template"}:
         warnings.append("llm_used_for_structured_query")
 
@@ -839,6 +934,22 @@ def validate_answer(
         "unsupported_value" in errors or "unsupported_reference" in errors or "unsupported_previous_result" in errors
     ):
         errors.append("llm_hallucination")
+
+    if not (displayed if displayed else evidence_pack):
+        if re.search(r"\|\s*[^|\n]+\s*\|", core_text or "") or re.search(r"\bPAT[_\-]\w+\b", answer_text or "", flags=re.IGNORECASE):
+            errors.append("no_evidence_hallucination")
+
+    if structured_sources:
+        source_keys = [
+            (
+                str(s.get("doc_id") or "").strip().lower(),
+                s.get("page"),
+                s.get("row"),
+            )
+            for s in structured_sources
+        ]
+        if len(source_keys) != len(set(source_keys)):
+            warnings.append("source_duplication")
 
     if any(
         marker in _norm(answer_text)

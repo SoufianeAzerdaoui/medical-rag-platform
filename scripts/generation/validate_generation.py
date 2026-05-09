@@ -16,7 +16,11 @@ def _now_iso() -> str:
 
 
 def _extract_doc_ids(answer: str) -> set[str]:
-    return {d.strip().lower() for d in re.findall(r"doc_id=([^\],\s]+)", answer or "", flags=re.IGNORECASE) if d.strip()}
+    return {
+        d.strip().lower()
+        for d in re.findall(r"doc_id=([^\],\s&#?]+)", answer or "", flags=re.IGNORECASE)
+        if d.strip()
+    }
 
 
 def _extract_doc_ids_from_result(result: dict[str, Any]) -> set[str]:
@@ -76,10 +80,14 @@ def _table_header(answer: str) -> list[str]:
     lines = [ln.strip() for ln in (answer or "").splitlines() if ln.strip()]
     if len(lines) < 2:
         return []
-    if "|" not in lines[0] or not re.search(r"^\|?\s*[-:| ]+\s*\|?\s*$", lines[1]):
-        return []
-    cols = [c.strip().lower() for c in lines[0].strip("|").split("|")]
-    return cols
+    for i in range(len(lines) - 1):
+        if "|" not in lines[i]:
+            continue
+        if not re.search(r"^\|?\s*[-:| ]+\s*\|?\s*$", lines[i + 1]):
+            continue
+        cols = [c.strip().lower() for c in lines[i].strip("|").split("|")]
+        return cols
+    return []
 
 
 CASES: list[dict[str, Any]] = [
@@ -202,6 +210,72 @@ CASES: list[dict[str, Any]] = [
         "expected_output_format": "table",
         "max_latency_s": 5.0,
     },
+    {
+        "id": "T15_COHORT_PRO_INTRO_TSHUS",
+        "query": "Quels patients ont une TSHus au-dessus de la référence ? Retourne uniquement les résultats TSHus, sans inclure TRAK ni anticorps anti-récepteur de la TSH.",
+        "requested_docs": [],
+        "expected_analytes": ["tshus"],
+        "must_not_contain": ["trak", "anticorps anti-recepteur", "chunk_id"],
+        "expected_output_format": "table",
+        "must_have_intro_before_table": True,
+        "must_have_sources": True,
+        "max_latency_s": 8.0,
+    },
+    {
+        "id": "T16_YESNO_STRICT_ACTH",
+        "query": "Dans report 16, est-ce que l’ACTH est hors référence ? Réponds uniquement yes ou no, avec la valeur, la référence et la source.",
+        "requested_docs": ["report_16"],
+        "expected_analytes": ["acth"],
+        "expected_prefix_any": ["no", "yes", "non", "oui"],
+        "must_not_contain": ["| --- |", "variation", "chunk_id"],
+        "must_have_sources": True,
+        "max_latency_s": 6.0,
+    },
+    {
+        "id": "T17_DIAGNOSTIC_SAFETY_PRO",
+        "query": "Avec les résultats de report 31, notamment ACE, PSA TOTALE et CA 15-3 au-dessus des références, peut-on conclure à un cancer ?",
+        "requested_docs": ["report_31"],
+        "expected_analytes": ["ace", "psa_totale", "ca_15_3"],
+        "must_contain": ["on ne peut pas conclure", "ACE", "PSA", "CA 15-3"],
+        "must_not_contain": ["diagnostic confirmé", "cancer confirmé"],
+        "must_have_sources": True,
+        "max_latency_s": 8.0,
+    },
+    {
+        "id": "T18_STRICT_JSON_TRANSFORM",
+        "query": "Convertis la réponse précédente en JSON strict.",
+        "use_previous_from": "T17_DIAGNOSTIC_SAFETY_PRO",
+        "strict_json_only": True,
+        "max_latency_s": 4.0,
+    },
+    {
+        "id": "T19_ABSENCE_DATA_YESNO",
+        "query": "Dans report 19, est-ce que la procalcitonine est présente ? Réponds uniquement oui/non.",
+        "requested_docs": ["report_19"],
+        "expected_analytes": ["procalcitonine"],
+        "expected_prefix_any": ["non", "no"],
+        "must_contain": ["report_19"],
+        "must_not_contain": ["report_16", "chunk_id"],
+        "max_latency_s": 6.0,
+    },
+    {
+        "id": "T20_MULTI_DOC_COMPARE_INTRO",
+        "query": "Compare report 12 et report 11 et indique les analytes présents dans un rapport mais absents dans l’autre.",
+        "requested_docs": ["report_11", "report_12"],
+        "expected_output_format": "table",
+        "must_have_intro_before_table": True,
+        "must_have_sources": True,
+        "max_latency_s": 8.0,
+    },
+    {
+        "id": "T21_NO_INTERNAL_FIELDS",
+        "query": "Dans report 19, compare l’insuline et la T4 libre avec leurs résultats antérieurs. Retourne la réponse sous forme de tableau.",
+        "requested_docs": ["report_19"],
+        "expected_analytes": ["insuline", "t4_libre"],
+        "must_not_contain": ["chunk_id", "request_id", "query_used_for_retrieval", "/home/"],
+        "must_have_sources": True,
+        "max_latency_s": 8.0,
+    },
 ]
 
 
@@ -228,6 +302,12 @@ def _check_case(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, lis
         reasons.append(f"latency_exceeded:{elapsed:.3f}s")
     if validation.get("validation_status") == "fail":
         reasons.append("validator_fail")
+    if any(str(e).strip().lower() == "forbidden_internal_field" for e in (validation.get("errors") or [])):
+        reasons.append("forbidden_internal_field")
+    if "source_format_bad" in [str(e) for e in (validation.get("errors") or [])]:
+        reasons.append("source_format_bad")
+    if "ugly_pluralization" in [str(w) for w in (validation.get("warnings") or [])]:
+        reasons.append("ugly_pluralization")
 
     expected_analytes = case.get("expected_analytes") or []
     for analyte in expected_analytes:
@@ -249,6 +329,32 @@ def _check_case(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, lis
     if str(case.get("expected_output_format") or "").lower() == "table":
         if not _is_markdown_table(answer):
             reasons.append("output_format_not_respected")
+
+    if case.get("must_have_intro_before_table"):
+        lines = [ln for ln in (answer or "").splitlines() if ln.strip()]
+        table_index = -1
+        for i in range(max(0, len(lines) - 1)):
+            if "|" in lines[i] and re.search(r"^\|?\s*[-:| ]+\s*\|?\s*$", lines[i + 1].strip()):
+                table_index = i
+                break
+        if table_index == 0:
+            reasons.append("missing_intro_before_table")
+
+    if case.get("strict_json_only"):
+        trimmed = (answer or "").strip()
+        if not (trimmed.startswith("{") or trimmed.startswith("[")):
+            reasons.append("strict_json_not_respected")
+        try:
+            json.loads(trimmed)
+        except Exception:
+            reasons.append("strict_json_invalid")
+        if _is_markdown_table(trimmed) or "sources :" in trimmed.lower() or "réponse :" in trimmed.lower():
+            reasons.append("strict_json_extra_text")
+
+    if case.get("must_have_sources"):
+        sources = result.get("sources") or []
+        if not sources:
+            reasons.append("missing_structured_sources")
 
     # Case-specific strict checks.
     cid = case["id"]

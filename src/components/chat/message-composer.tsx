@@ -1,6 +1,6 @@
 "use client";
 
-import { Send, Upload } from "lucide-react";
+import { Loader2, Send, Upload } from "lucide-react";
 import { useState } from "react";
 import { useChatActions } from "@/hooks/use-chat-actions";
 import { VoiceRecorder } from "@/components/audio/voice-recorder";
@@ -20,9 +20,13 @@ export function MessageComposer() {
 
   async function onSend() {
     const trimmed = value.trim();
-    if (!trimmed) return;
+    if (!trimmed || sending) return;
     setValue("");
-    await sendMessage({ content: trimmed, mode });
+    try {
+      await sendMessage({ content: trimmed, mode });
+    } catch {
+      // Error state is rendered in chat messages.
+    }
   }
 
   return (
@@ -32,6 +36,7 @@ export function MessageComposer() {
           aria-label="Mode"
           value={mode}
           onChange={(e) => setMode(e.target.value as ChatMode)}
+          disabled={sending}
           className="rounded-lg border border-border bg-transparent px-2 py-1 text-xs"
         >
           {modes.map((m) => (
@@ -42,6 +47,7 @@ export function MessageComposer() {
         </select>
         <textarea
           aria-label="Message"
+          disabled={sending}
           className="max-h-40 min-h-10 flex-1 resize-y bg-transparent p-2 text-sm outline-none"
           placeholder="Écrire une question clinique..."
           value={value}
@@ -53,17 +59,19 @@ export function MessageComposer() {
             }
           }}
         />
-        <button aria-label="Upload document" className="rounded-lg border border-border p-2">
+        <button aria-label="Upload document" disabled={sending} className="rounded-lg border border-border p-2 disabled:opacity-50">
           <Upload size={16} />
         </button>
-        <VoiceRecorder onTranscript={(t) => setValue((prev) => `${prev} ${t}`.trim())} />
+        <div className={sending ? "pointer-events-none opacity-50" : ""}>
+          <VoiceRecorder onTranscript={(t) => setValue((prev) => `${prev} ${t}`.trim())} />
+        </div>
         <button
           aria-label="Envoyer"
-          disabled={sending}
+          disabled={sending || value.trim().length === 0}
           onClick={() => void onSend()}
-          className="rounded-lg bg-accent/30 p-2 disabled:opacity-50"
+          className="inline-flex items-center justify-center rounded-lg bg-accent/30 p-2 disabled:opacity-50"
         >
-          <Send size={16} />
+          {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
         </button>
       </div>
     </div>
