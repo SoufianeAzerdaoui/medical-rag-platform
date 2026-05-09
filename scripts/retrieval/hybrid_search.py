@@ -24,6 +24,14 @@ def _norm(value: str) -> str:
     return s
 
 
+def _contains_exact_term(haystack: str, needle: str) -> bool:
+    hay = _norm(haystack)
+    ned = _norm(needle)
+    if not hay or not ned:
+        return False
+    return f" {ned} " in f" {hay} "
+
+
 _ANALYTE_LEXICON = {
     "calcitonine",
     "ferritine",
@@ -99,7 +107,7 @@ class QueryIntent:
 
         analyte = None
         for a in sorted(_ANALYTE_LEXICON, key=len, reverse=True):
-            if a in qn:
+            if _contains_exact_term(qn, a):
                 analyte = a
                 break
         tokens = [t for t in qn.split(" ") if t]
@@ -131,6 +139,8 @@ class QueryIntent:
 
     def strict_filters(self, base: RetrievalFilters) -> RetrievalFilters:
         f = replace(base)
+        if self.is_exact_analyte and self.exact_analyte and not f.analyte_norm:
+            f.analyte_norm = self.exact_analyte
         if self.is_above_reference and not f.interpretation_status:
             f.interpretation_status = "above_reference"
         if self.is_without_unit and not f.result_quality_status:
@@ -150,6 +160,13 @@ class HybridSearcher:
     @staticmethod
     def _has_value(value: Any) -> bool:
         return value is not None and str(value).strip() != ""
+
+    @staticmethod
+    def _is_exact_analyte_metadata_match(item: RetrievalResult, analyte: str) -> bool:
+        md = item.metadata or {}
+        analyte_norm = str(md.get("analyte_norm") or "")
+        analyte_text = str(md.get("analyte") or "")
+        return _contains_exact_term(analyte_norm, analyte) or _contains_exact_term(analyte_text, analyte)
 
     def _clinical_rerank_score(
         self,
@@ -176,13 +193,28 @@ class HybridSearcher:
         analyte_norm = str(md.get("analyte_norm") or "").strip().lower()
         analyte_text = str(md.get("analyte") or "").strip().lower()
         if intent.is_exact_analyte and intent.exact_analyte:
-            exact_blob = f"{analyte_norm} {analyte_text} {text_blob}"
-            if intent.exact_analyte in exact_blob:
-                score += 0.35
-                reasons.append("exact_analyte_match")
+            exact_match = _contains_exact_term(analyte_norm, intent.exact_analyte) or _contains_exact_term(
+                analyte_text, intent.exact_analyte
+            )
+            near_match = (
+                (intent.exact_analyte in _norm(analyte_norm)) or (intent.exact_analyte in _norm(analyte_text))
+            ) and not exact_match
+            text_only_exact = _contains_exact_term(text_blob, intent.exact_analyte)
+            if exact_match:
+                score += 0.40
+                reasons.append("exact_analyte_match:metadata")
+            elif near_match:
+                score -= 0.90
+                reasons.append("penalty:near_analyte_mismatch")
+            elif text_only_exact:
+                score += 0.08
+                reasons.append("exact_analyte_match:text_only")
             else:
-                score -= 0.40
+                score -= 0.45
                 reasons.append("penalty:exact_analyte_mismatch")
+            if has_strong_exact_lab and not exact_match:
+                score -= 0.20
+                reasons.append("penalty:exact_analyte_guard")
 
         if self._has_value(md.get("value_raw")):
             score += 0.05
@@ -461,9 +493,7 @@ class HybridSearcher:
         has_strong_exact_lab = False
         if intent.is_exact_analyte and intent.exact_analyte:
             for item in merged:
-                md = item.metadata or {}
-                analyte_blob = f"{md.get('analyte_norm') or ''} {md.get('analyte') or ''}".lower()
-                if item.chunk_type == "lab_result" and intent.exact_analyte in analyte_blob:
+                if item.chunk_type == "lab_result" and self._is_exact_analyte_metadata_match(item, intent.exact_analyte):
                     has_strong_exact_lab = True
                     break
 
@@ -490,7 +520,23 @@ class HybridSearcher:
             if reasons:
                 item.metadata["rerank_reasons"] = reasons
 
-        merged.sort(key=lambda x: x.final_score or 0.0, reverse=True)
+        if intent.is_exact_analyte and intent.exact_analyte:
+            has_exact_metadata = any(self._is_exact_analyte_metadata_match(item, intent.exact_analyte) for item in merged)
+            if has_exact_metadata:
+                for item in merged:
+                    if self._is_exact_analyte_metadata_match(item, intent.exact_analyte):
+                        if "exact_analyte_guard" not in item.match_reason:
+                            item.match_reason.append("exact_analyte_guard")
+                merged.sort(
+                    key=lambda x: (
+                        0 if self._is_exact_analyte_metadata_match(x, intent.exact_analyte) else 1,
+                        -(x.final_score or 0.0),
+                    )
+                )
+            else:
+                merged.sort(key=lambda x: x.final_score or 0.0, reverse=True)
+        else:
+            merged.sort(key=lambda x: x.final_score or 0.0, reverse=True)
         top = merged[:top_k]
         if intent.is_previous_result:
             top = self._enforce_previous_result_presence(
