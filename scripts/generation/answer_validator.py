@@ -293,6 +293,7 @@ def validate_answer(
     answer_text: str,
     evidence_pack: list[dict[str, Any]],
     displayed_evidences: list[dict[str, Any]] | None = None,
+    source_citations: list[dict[str, Any]] | None = None,
     exact_analyte: str | None = None,
     llm_error: str | None = None,
     generation_mode: str | None = None,
@@ -328,8 +329,14 @@ def validate_answer(
     core_text = _split_answer_core(text)
     core_norm = _norm(core_text)
     displayed = displayed_evidences or []
+    structured_sources = source_citations or []
     source_chunk_ids = _extract_source_chunk_ids(text)
     source_doc_ids = _extract_source_doc_ids(text)
+    structured_source_doc_ids = [
+        str(s.get("doc_id") or "").strip()
+        for s in structured_sources
+        if str(s.get("doc_id") or "").strip()
+    ]
     displayed_chunk_ids = [str(ev.get("chunk_id") or "") for ev in displayed if ev.get("chunk_id")]
     displayed_doc_ids = [str(ev.get("doc_id") or "") for ev in displayed if ev.get("doc_id")]
 
@@ -378,9 +385,47 @@ def validate_answer(
     if any(m in text_norm for m in ["traceback", "exception", "ollama timeout", "chunk_id="]):
         errors.append("raw_error_visible")
 
-    citation_present = "[doc_id=" in text
+    citation_present = ("[doc_id=" in text) or ("doc_id=" in text) or bool(structured_sources)
     if displayed and not citation_present:
         errors.append("Missing citations while evidence exists.")
+
+    evidence_doc_set = {
+        str(ev.get("doc_id") or "").strip().lower()
+        for ev in (displayed if displayed else evidence_pack)
+        if str(ev.get("doc_id") or "").strip()
+    }
+    for src in structured_sources:
+        src_doc = str(src.get("doc_id") or "").strip().lower()
+        src_url = src.get("url")
+        src_viewer = src.get("viewer_url")
+        src_label = str(src.get("label") or "")
+        if src_doc and evidence_doc_set and src_doc not in evidence_doc_set:
+            errors.append("source_evidence_doc_mismatch")
+        if "chunk_id=" in _norm(src_label):
+            warnings.append("source_label_contains_chunk_id")
+        if src_url:
+            u = str(src_url).strip()
+            if not u.startswith("/api/documents/"):
+                errors.append("source_url_invalid_prefix")
+            if "../" in u or "..\\" in u:
+                errors.append("source_url_path_traversal")
+            if "/home/" in u or "\\home\\" in u or re.search(r"^[a-zA-Z]:[\\/]", u):
+                errors.append("source_url_local_path_leak")
+            m = re.match(r"^/api/documents/([^/?#]+)/pdf(?:[?#].*)?$", u)
+            if m:
+                url_doc = str(m.group(1) or "").strip().lower()
+                if src_doc and url_doc != src_doc:
+                    errors.append("source_url_docid_mismatch")
+            else:
+                errors.append("source_url_pattern_invalid")
+        if src_viewer:
+            v = str(src_viewer).strip()
+            if not v.startswith("/viewer/"):
+                errors.append("viewer_url_invalid_prefix")
+            if "../" in v or "..\\" in v:
+                errors.append("viewer_url_path_traversal")
+            if "/home/" in v or "\\home\\" in v or re.search(r"^[a-zA-Z]:[\\/]", v):
+                errors.append("viewer_url_local_path_leak")
 
     allowed = _extract_allowed_sets(displayed if displayed else evidence_pack)
 
@@ -465,7 +510,11 @@ def validate_answer(
             if re.match(r"^\s*(?:[-*]|\d+\.)\s+", ln)
         ]
     )
-    source_count = len(re.findall(r"\[doc_id=", answer_text or "", flags=re.IGNORECASE))
+    source_count = max(
+        len(re.findall(r"\[doc_id=", answer_text or "", flags=re.IGNORECASE)),
+        len(re.findall(r"\bdoc_id=", answer_text or "", flags=re.IGNORECASE)),
+        len(structured_sources),
+    )
     relaxed_line_source_modes = {
         "deterministic_doc_summary_sql_template",
         "deterministic_section_grouped_summary_sql_template",
@@ -554,7 +603,7 @@ def validate_answer(
             )
     else:
         displayed_doc_set = {str(d).strip().lower() for d in displayed_doc_ids if str(d).strip()}
-        source_doc_set = {str(d).strip().lower() for d in source_doc_ids if str(d).strip()}
+        source_doc_set = {str(d).strip().lower() for d in (source_doc_ids + structured_source_doc_ids) if str(d).strip()}
         source_alignment_pass = (not source_doc_set) or (source_doc_set == displayed_doc_set)
         if not source_alignment_pass:
             errors.append("source_alignment_mismatch_doc_level")
@@ -564,8 +613,8 @@ def validate_answer(
     citation_coverage = 1.0
     if source_chunk_ids and displayed_chunk_ids:
         citation_coverage = len(set(source_chunk_ids)) / max(1, len(set(displayed_chunk_ids)))
-    elif source_doc_ids and displayed_doc_ids:
-        citation_coverage = len({str(d).strip().lower() for d in source_doc_ids if str(d).strip()}) / max(
+    elif (source_doc_ids or structured_source_doc_ids) and displayed_doc_ids:
+        citation_coverage = len({str(d).strip().lower() for d in (source_doc_ids + structured_source_doc_ids) if str(d).strip()}) / max(
             1, len({str(d).strip().lower() for d in displayed_doc_ids if str(d).strip()})
         )
 
@@ -597,19 +646,24 @@ def validate_answer(
     requested_doc_id_mismatch = False
     if requested_doc_id_norm:
         bad_display_docs = sorted({d for d in displayed_doc_ids if str(d).strip().lower() != requested_doc_id_norm})
-        bad_source_docs = sorted({d for d in source_doc_ids if str(d).strip().lower() != requested_doc_id_norm})
+        all_source_docs = list(source_doc_ids) + list(structured_source_doc_ids)
+        bad_source_docs = sorted({d for d in all_source_docs if str(d).strip().lower() != requested_doc_id_norm})
         if bad_display_docs or bad_source_docs:
             requested_doc_id_mismatch = True
             errors.append("requested_doc_id_mismatch")
             errors.append("doc_id_mismatch")
             unsupported_claims.append(
-                f"requested_doc_id={requested_doc_id_norm}, displayed_doc_ids={sorted(set(displayed_doc_ids))}, source_doc_ids={sorted(set(source_doc_ids))}"
+                f"requested_doc_id={requested_doc_id_norm}, displayed_doc_ids={sorted(set(displayed_doc_ids))}, source_doc_ids={sorted(set(all_source_docs))}"
             )
 
     missing_doc_ids = [str(d).strip().lower() for d in (missing_requested_doc_ids or []) if str(d).strip()]
     requested_doc_ids_incomplete = False
     if len(requested_doc_ids_norm) >= 2:
-        represented_docs = {str(d).strip().lower() for d in displayed_doc_ids + source_doc_ids if str(d).strip()}
+        represented_docs = {
+            str(d).strip().lower()
+            for d in displayed_doc_ids + source_doc_ids + structured_source_doc_ids
+            if str(d).strip()
+        }
         represented_or_missing = represented_docs | set(missing_doc_ids)
         not_covered = sorted(d for d in requested_doc_ids_norm if d not in represented_or_missing)
         if not_covered:
@@ -823,8 +877,15 @@ def validate_answer(
         "displayed_evidence_count": len(displayed),
         "source_chunk_ids": source_chunk_ids,
         "displayed_evidence_chunk_ids": displayed_chunk_ids,
-        "source_doc_ids": source_doc_ids,
+        "source_doc_ids": sorted(
+            {
+                str(d).strip()
+                for d in (source_doc_ids + structured_source_doc_ids)
+                if str(d).strip()
+            }
+        ),
         "displayed_evidence_doc_ids": displayed_doc_ids,
+        "source_citation_count": len(structured_sources),
         "source_alignment_pass": source_alignment_pass,
         "citation_coverage": round(float(citation_coverage), 3),
         "query_answer_alignment_pass": "query_answer_alignment_mismatch" not in errors,

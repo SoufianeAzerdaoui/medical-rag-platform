@@ -26,3 +26,7 @@ data/chunks/anonymization_mapping.xlsx
 data/chunks/anonymization_mapping.csv
 .codex
 
+node_modulesnode_modules/
+.next/
+dist/
+build/

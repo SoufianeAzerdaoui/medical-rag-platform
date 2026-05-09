@@ -21,7 +21,11 @@ from retrieval.models import RetrievalFilters
 from retrieval.search import SearchEngine
 
 from answer_validator import validate_answer
-from citation_builder import append_citations, build_citations
+from citation_builder import append_source_citations, build_citations, build_source_citations
+try:
+    from source_resolver import DocPdfResolver
+except Exception:
+    from scripts.generation.source_resolver import DocPdfResolver
 from evidence_builder import build_evidence_pack as build_retrieval_evidence_pack
 from llm_client import LLMClient, LLMClientError
 from prompt_builder import INSUFFICIENT_CONTEXT_SENTENCE, build_prompt
@@ -1156,6 +1160,7 @@ def _rows_to_evidence(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "section": row.get("section"),
                 "source_kind": row.get("source_kind"),
                 "source_table_id": row.get("source_table_id"),
+                "source_pdf": row.get("source_pdf"),
                 "page_number": row.get("page_number"),
                 "row_index": row.get("row_index"),
                 "source": "sqlite_deterministic",
@@ -2241,6 +2246,7 @@ def run_generation(
     idx = Path(index_dir)
     sqlite_path = idx / "medical_rag.sqlite"
     qdrant_dir = idx / "qdrant"
+    source_resolver = DocPdfResolver(index_dir=idx)
 
     retrieval_filters = RetrievalFilters()
     exact_analytes = list(query_understanding.requested_analytes)
@@ -2264,6 +2270,7 @@ def run_generation(
                 answer_text=answer,
                 evidence_pack=[],
                 displayed_evidences=[],
+                source_citations=[],
                 generation_mode="deterministic_response_transform",
                 retrieval_status="insufficient_context",
                 query_received=query_received,
@@ -2296,6 +2303,7 @@ def run_generation(
                 "generation_time_seconds": round(elapsed, 3),
                 "answer": answer,
                 "citations": [],
+                "sources": [],
                 "validation": validation,
                 "llm_error": None,
                 "error_type": None,
@@ -2382,6 +2390,7 @@ def run_generation(
                 "chunk_id": ev.get("chunk_id"),
                 "page_number": ev.get("page"),
                 "row_index": ev.get("row"),
+                "source_pdf": ev.get("source_pdf"),
                 "analyte_norm": ev.get("analyte_norm"),
                 "analyte": ev.get("analyte"),
                 "value_raw": ev.get("current_value"),
@@ -2396,11 +2405,13 @@ def run_generation(
             }
             for ev in (transformed_pack.get("evidences") or [])
         ]
+        source_citations = build_source_citations(displayed_evidences, resolver=source_resolver)
         validation = validate_answer(
             query=q,
             answer_text=answer,
             evidence_pack=displayed_evidences,
             displayed_evidences=displayed_evidences,
+            source_citations=source_citations,
             generation_mode=generation_mode,
             retrieval_status="answerable" if displayed_evidences else "insufficient_context",
             query_received=query_received,
@@ -2434,6 +2445,7 @@ def run_generation(
             "generation_time_seconds": round(elapsed, 3),
             "answer": answer,
             "citations": [],
+            "sources": source_citations,
             "validation": validation,
             "llm_error": None,
             "error_type": None,
@@ -2523,12 +2535,13 @@ def run_generation(
             generated_text = _missing_doc_answer()
 
         citations = build_citations(displayed_evidences)
+        source_citations = build_source_citations(displayed_evidences, resolver=source_resolver)
         if query_understanding.output_format == "table" and _table_has_source_column(generated_text):
             final_answer = generated_text.strip()
         elif query_understanding.output_format == "yes_no":
             final_answer = generated_text.strip()
         else:
-            final_answer = append_citations(generated_text, citations)
+            final_answer = append_source_citations(generated_text, source_citations, fallback_citations=citations)
 
         missing_requested_doc_ids = _resolve_missing_requested_doc_ids(sqlite_path, requested_doc_ids)
         found_requested_analytes = []
@@ -2560,6 +2573,7 @@ def run_generation(
             answer_text=final_answer,
             evidence_pack=evidence_pack,
             displayed_evidences=displayed_evidences,
+            source_citations=source_citations,
             exact_analyte=exact_analyte,
             llm_error=writer_error,
             generation_mode=generation_mode,
@@ -2617,6 +2631,7 @@ def run_generation(
             "generation_time_seconds": round(elapsed, 3),
             "answer": final_answer,
             "citations": citations,
+            "sources": source_citations,
             "validation": validation,
             "llm_error": writer_error,
             "error_type": "llm_writer_error" if writer_error else None,
@@ -2867,11 +2882,16 @@ def run_generation(
                 generation_mode = "error"
 
     citations = build_citations(displayed_evidences)
+    source_citations = build_source_citations(displayed_evidences, resolver=source_resolver)
 
     if llm_error and not llm_answer:
-        final_answer = append_citations(f"Erreur LLM: {llm_error}", citations)
+        final_answer = append_source_citations(
+            f"Erreur LLM: {llm_error}",
+            source_citations,
+            fallback_citations=citations,
+        )
     else:
-        final_answer = append_citations(llm_answer, citations)
+        final_answer = append_source_citations(llm_answer, source_citations, fallback_citations=citations)
 
     missing_requested_doc_ids = _resolve_missing_requested_doc_ids(sqlite_path, requested_doc_ids)
     found_requested_analyte_norms = sorted(
@@ -2889,6 +2909,7 @@ def run_generation(
         answer_text=final_answer,
         evidence_pack=evidence_pack,
         displayed_evidences=displayed_evidences,
+        source_citations=source_citations,
         exact_analyte=exact_analyte,
         llm_error=llm_error,
         generation_mode=generation_mode,
@@ -2938,6 +2959,7 @@ def run_generation(
         "generation_time_seconds": round(elapsed, 3),
         "answer": final_answer,
         "citations": citations,
+        "sources": source_citations,
         "validation": validation,
         "llm_error": llm_error,
         "error_type": error_type,

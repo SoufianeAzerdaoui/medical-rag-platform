@@ -19,6 +19,15 @@ def _extract_doc_ids(answer: str) -> set[str]:
     return {d.strip().lower() for d in re.findall(r"doc_id=([^\],\s]+)", answer or "", flags=re.IGNORECASE) if d.strip()}
 
 
+def _extract_doc_ids_from_result(result: dict[str, Any]) -> set[str]:
+    docs = set(_extract_doc_ids(str(result.get("answer") or "")))
+    for src in (result.get("sources") or []):
+        doc = str((src or {}).get("doc_id") or "").strip().lower()
+        if doc:
+            docs.add(doc)
+    return docs
+
+
 def _contains(text: str, needles: list[str]) -> bool:
     body = (text or "").lower()
     return all(n.lower() in body for n in needles)
@@ -205,7 +214,7 @@ def _check_case(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, lis
     elapsed = float(result.get("generation_time_seconds") or 0.0)
 
     requested_docs = {d.lower() for d in case.get("requested_docs") or []}
-    cited_docs = _extract_doc_ids(answer)
+    cited_docs = _extract_doc_ids_from_result(result)
     allows_missing_response = "non retrouvé" in lower or "information non retrouvée" in lower
     if requested_docs:
         if not cited_docs and not allows_missing_response:

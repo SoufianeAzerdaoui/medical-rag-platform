@@ -338,6 +338,7 @@ def build_evidence_pack(
                 "section": md.get("section"),
                 "source_kind": md.get("source_kind"),
                 "source_table_id": md.get("source_table_id"),
+                "source_pdf": r.source_pdf or md.get("source_pdf"),
                 "page_number": r.page_number if r.page_number is not None else md.get("page_number"),
                 "row_index": md.get("row_index"),
                 "final_score": r.final_score if r.final_score is not None else r.score_hybrid,
