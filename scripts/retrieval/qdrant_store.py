@@ -208,3 +208,10 @@ class QdrantStore:
                 }
             )
         return out
+
+    def close(self) -> None:
+        try:
+            self.client.close()
+        except Exception:
+            # Best effort only: shutdown path should not fail retrieval caller.
+            pass

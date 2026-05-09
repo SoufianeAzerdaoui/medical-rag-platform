@@ -1081,6 +1081,43 @@ CHU_SKIP_LABELS = {
     "parametres",
 }
 
+CHU_SECTION_TITLE_MARKERS = {
+    "immunoanalyse": "IMMUNOANALYSE",
+    "immunologie": "IMMUNOLOGIE",
+    "biochimie": "BIOCHIMIE",
+    "hematologie": "HÉMATOLOGIE",
+    "hemostase": "HÉMOSTASE",
+    "serologie": "SÉROLOGIE",
+    "hormonologie": "HORMONOLOGIE",
+    "endocrinologie": "ENDOCRINOLOGIE",
+    "toxicologie": "TOXICOLOGIE",
+    "marqueurs_tumoraux": "MARQUEURS TUMORAUX",
+}
+
+CHU_RESULT_ZONE_MARKERS = {
+    "resultats",
+    "valeurs_physiologiques",
+    "resultats_ant",
+}
+
+
+def _extract_chu_section_title(line: str) -> str | None:
+    raw = normalize_inline_text(line)
+    label = normalize_label(raw)
+    if not raw or not label:
+        return None
+    if label in CHU_SKIP_LABELS or label in CHU_RESULT_ZONE_MARKERS:
+        return None
+    if _looks_like_chu_admin_line(raw):
+        return None
+    if _looks_like_chu_result_value(raw) or _looks_like_chu_reference(raw):
+        return None
+
+    for marker, canonical in CHU_SECTION_TITLE_MARKERS.items():
+        if marker in label:
+            return canonical
+    return None
+
 
 def _looks_like_chu_result_value(line: str) -> re.Match[str] | None:
     return RESULT_VALUE_PATTERN.match(normalize_inline_text(line))
@@ -1282,6 +1319,7 @@ def _build_chu_result(
     observation_date: str | None,
     previous_result: dict | None = None,
     qualitative: bool = False,
+    section_title: str | None = None,
 ) -> dict:
     reference = {"text": "Qualitatif", "low": None, "high": None} if qualitative else _simple_reference_range(reference_text)
     normalized_unit = normalize_result_unit_text(unit or _infer_unit_from_reference(reference_text) or ("qualitative" if qualitative else "unknown"))
@@ -1314,6 +1352,8 @@ def _build_chu_result(
         "source_kind": "chu_text_fallback",
         "row_index": row_index,
         "analyte": normalize_inline_text(analyte),
+        "section": section_title,
+        "section_name": section_title,
         "value_raw": normalize_inline_text(value_raw),
         "value_numeric": value_numeric,
         "unit_raw": unit,
@@ -1354,8 +1394,16 @@ def _extract_chu_qualitative_results(page_text_data: list[dict], observation_dat
     row_index = start_index
     for page in page_text_data:
         lines = _page_lines(page)
+        in_results_zone = False
+        current_section_title: str | None = None
         for index, line in enumerate(lines[:-1]):
             label = normalize_label(line)
+            if label in CHU_RESULT_ZONE_MARKERS:
+                in_results_zone = True
+            if in_results_zone:
+                section_title = _extract_chu_section_title(line)
+                if section_title:
+                    current_section_title = section_title
             next_line = normalize_inline_text(lines[index + 1])
             if not next_line.startswith(":"):
                 continue
@@ -1374,6 +1422,7 @@ def _extract_chu_qualitative_results(page_text_data: list[dict], observation_dat
                     row_index=row_index,
                     observation_date=observation_date,
                     qualitative=True,
+                    section_title=current_section_title,
                 )
             )
             row_index += 1
@@ -1382,6 +1431,12 @@ def _extract_chu_qualitative_results(page_text_data: list[dict], observation_dat
         pending_analyte = None
         for index, line in enumerate(lines):
             label = normalize_label(line)
+            if label in CHU_RESULT_ZONE_MARKERS:
+                in_results_zone = True
+            if in_results_zone:
+                section_title = _extract_chu_section_title(line)
+                if section_title:
+                    current_section_title = section_title
             if label == "parametres" or label.startswith("examen_"):
                 active = True
                 continue
@@ -1414,6 +1469,7 @@ def _extract_chu_qualitative_results(page_text_data: list[dict], observation_dat
                             row_index=row_index,
                             observation_date=observation_date,
                             qualitative=True,
+                            section_title=current_section_title,
                         )
                     )
                     row_index += 1
@@ -1429,6 +1485,7 @@ def _extract_chu_qualitative_results(page_text_data: list[dict], observation_dat
                         row_index=row_index,
                         observation_date=observation_date,
                         qualitative=True,
+                        section_title=current_section_title,
                     )
                 )
                 row_index += 1
@@ -1459,6 +1516,7 @@ def _extract_chu_qualitative_results(page_text_data: list[dict], observation_dat
                         row_index=row_index,
                         observation_date=observation_date,
                         qualitative=True,
+                        section_title=current_section_title,
                     )
                 )
                 row_index += 1
@@ -1473,6 +1531,9 @@ def extract_chu_lab_results(page_text_data: list[dict]) -> tuple[list[dict], lis
     reference_parts: list[str] = []
     pending_tokens: list[dict] = []
     row_index = 1
+    current_section_title: str | None = None
+    pending_section_title: str | None = None
+    in_results_zone = False
 
     def flush(page_number: int) -> None:
         nonlocal current_name_parts, reference_parts, pending_tokens, row_index
@@ -1499,6 +1560,7 @@ def extract_chu_lab_results(page_text_data: list[dict]) -> tuple[list[dict], lis
                 row_index=row_index,
                 observation_date=observation_date,
                 previous_result=previous_result,
+                section_title=current_section_title,
             )
         )
         row_index += 1
@@ -1512,8 +1574,22 @@ def extract_chu_lab_results(page_text_data: list[dict]) -> tuple[list[dict], lis
         active = False
         for line in lines:
             label = normalize_label(line)
+            if label in CHU_RESULT_ZONE_MARKERS:
+                in_results_zone = True
+                continue
+            if in_results_zone:
+                detected_section = _extract_chu_section_title(line)
+                if detected_section:
+                    pending_section_title = detected_section
+                    if active and current_name_parts and (reference_parts or pending_tokens):
+                        flush(page_number)
+                    active = False
+                    continue
             if label == "parametres" or label.startswith("examen_"):
                 active = True
+                if pending_section_title:
+                    current_section_title = pending_section_title
+                    pending_section_title = None
                 continue
             if not active and page_number == 1:
                 continue

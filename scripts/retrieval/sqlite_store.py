@@ -145,17 +145,22 @@ class SQLiteStore:
         try:
             cur.execute(sql, [query, *params, int(top_k)])
         except sqlite3.OperationalError as exc:
-            if "fts5" not in str(exc).lower():
-                raise
+            # FTS parser can interpret punctuation (e.g. "est-il") as operators/column refs and throw
+            # errors like "no such column: il". Fallback to conservative quoted tokens.
             safe_query = self._to_safe_fts_query(query)
-            cur.execute(sql, [safe_query, *params, int(top_k)])
+            if safe_query == query:
+                raise
+            try:
+                cur.execute(sql, [safe_query, *params, int(top_k)])
+            except sqlite3.OperationalError:
+                raise exc
         rows = [dict(r) for r in cur.fetchall()]
         return rows
 
     @staticmethod
     def _to_safe_fts_query(query: str) -> str:
         # Conservative fallback for user-friendly queries that contain FTS operators/punctuation
-        tokens = [t for t in re.split(r"[^\\w]+", query, flags=re.UNICODE) if t]
+        tokens = [t for t in re.split(r"[^\w]+", query, flags=re.UNICODE) if t]
         if not tokens:
             return f'\"{query.strip()}\"'
         return " AND ".join(f'\"{t}\"' for t in tokens)
