@@ -64,7 +64,11 @@ ANALYTE_EXCLUSIONS: dict[str, set[str]] = {
 class QueryUnderstanding:
     requested_doc_ids: list[str]
     requested_analytes: list[str]
+    excluded_analytes: list[str]
     requested_value: str | None
+    requested_unit: str | None
+    comparison_operator: str | None
+    source_clickable_requested: bool
     patient_query: bool
     intent: str
     output_format: str
@@ -76,6 +80,8 @@ class QueryUnderstanding:
     requires_previous_results: bool
     requires_comparison: bool
     requires_section_summary: bool
+    is_small_talk: bool
+    is_response_transform: bool
     language: str
     intents: dict[str, bool]
 
@@ -213,6 +219,61 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
     qn = norm_text(query or "")
     doc_ids = requested_doc_ids if requested_doc_ids is not None else detect_requested_doc_ids(query or "")
     analyte_list = analytes if analytes is not None else detect_exact_analytes(query or "")
+    small_talk_markers = {
+        "bonjour",
+        "bonsoir",
+        "salut",
+        "hello",
+        "hi",
+        "hey",
+        "ca va",
+        "ça va",
+        "cava",
+        "cv",
+        "merci",
+        "thank you",
+        "thanks",
+        "au revoir",
+        "bye",
+        "bonne journee",
+        "bonne journée",
+    }
+    identity_markers = {
+        "t es qui",
+        "t'es qui",
+        "tu es qui",
+        "qui es tu",
+        "qui es-tu",
+        "vous etes qui",
+        "vous êtes qui",
+        "c est qui toi",
+        "c'est qui toi",
+        "who are you",
+        "what are you",
+    }
+    capability_markers = {
+        "tu peux faire quoi",
+        "que peux tu faire",
+        "que peux-tu faire",
+        "c est quoi ton role",
+        "c'est quoi ton rôle",
+        "c est quoi ton rôle",
+        "ton role",
+        "ton rôle",
+        "tu sers a quoi",
+        "tu sers à quoi",
+        "comment tu peux m aider",
+        "comment tu peux m'aider",
+        "what can you do",
+    }
+    help_markers = {
+        "aide moi",
+        "aide",
+        "help",
+        "comment utiliser",
+        "how to use",
+        "guide moi",
+    }
 
     has_compare = any(k in qn for k in ["compare", "comparaison", "versus", "vs"])
     has_summary = any(k in qn for k in ["resume", "synthese", "resume les", "fais une synthese", "liste", "anomalies"])
@@ -290,6 +351,28 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         or "respond only yes" in qn
         or "strictly yes/no" in qn
     )
+    is_small_talk = (
+        len(doc_ids) == 0
+        and len(analyte_list) == 0
+        and not any(ch.isdigit() for ch in qn)
+        and any(m in qn for m in small_talk_markers)
+    )
+    is_identity_question = (
+        len(doc_ids) == 0
+        and len(analyte_list) == 0
+        and any(m in qn for m in identity_markers)
+    )
+    is_capability_question = (
+        len(doc_ids) == 0
+        and len(analyte_list) == 0
+        and any(m in qn for m in capability_markers)
+    )
+    is_help_question = (
+        len(doc_ids) == 0
+        and len(analyte_list) == 0
+        and any(m in qn for m in help_markers)
+    )
+    is_general_conversation = is_small_talk or is_identity_question or is_capability_question or is_help_question
     has_global_patient_lookup = (
         len(doc_ids) == 0
         and len(analyte_list) >= 1
@@ -312,6 +395,11 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
     )
 
     intents = {
+        "general_conversation": is_general_conversation,
+        "small_talk": is_small_talk,
+        "identity_question": is_identity_question,
+        "capability_question": is_capability_question,
+        "help_question": is_help_question,
         "response_transform": has_response_transform,
         "doc_scoped_results": has_doc_scope and (len(analyte_list) >= 1 or not has_summary),
         "doc_scoped_analyte_query": has_doc_scope and len(analyte_list) >= 1,
@@ -461,7 +549,7 @@ def extract_requested_value(query: str) -> str | None:
     text = str(query or "")
     patterns = [
         r"(?:=|est|a|à)\s*([<>]?\s*\d+(?:[.,]\d+)?)\b",
-        r"\b(?:valeur|value)\s*[:=]?\s*([<>]?\s*\d+(?:[.,]\d+)?)\b",
+        r"\b(?:valeur|value)(?:\s+de)?\s*[:=]?\s*([<>]?\s*\d+(?:[.,]\d+)?)\b",
     ]
     for patt in patterns:
         m = re.search(patt, text, flags=re.IGNORECASE)
@@ -472,7 +560,120 @@ def extract_requested_value(query: str) -> str | None:
     return None
 
 
+def detect_comparison_operator(query: str) -> str | None:
+    qn = norm_text(query or "")
+    if any(
+        k in qn
+        for k in [
+            "strictement superieure a",
+            "strictement superieur a",
+            "strictement supérieure à",
+            "strictement supérieur à",
+            "strictement superieur",
+            "strictement superieure",
+            "plus de",
+            "superieure a",
+            "superieur a",
+            "supérieure à",
+            "supérieur à",
+        ]
+    ):
+        return ">"
+    if any(k in qn for k in ["ou plus", "superieure ou egale", "superieur ou egal", "at least", ">="]):
+        return ">="
+    if any(
+        k in qn
+        for k in [
+            "strictement inferieure a",
+            "strictement inferieur a",
+            "strictement inférieure à",
+            "strictement inférieur à",
+            "inferieure a",
+            "inferieur a",
+            "inférieure à",
+            "inférieur à",
+            "moins de",
+        ]
+    ):
+        return "<"
+    if any(k in qn for k in ["ou moins", "inferieure ou egale", "inferieur ou egal", "at most", "<="]):
+        return "<="
+    if any(k in qn for k in [">", "plus que"]):
+        return ">"
+    if any(k in qn for k in ["<", "moins que"]):
+        return "<"
+    if any(k in qn for k in ["egal a", "égal à", "equal to", "="]):
+        return "="
+    return None
+
+
+def detect_excluded_analytes(query: str) -> list[str]:
+    qn = norm_text(query or "")
+    exclusion_markers = [
+        "sans inclure",
+        "n inclus pas",
+        "n'inclus pas",
+        "ne pas inclure",
+        "sans",
+        "exclude",
+        "excluding",
+    ]
+    if not any(m in qn for m in exclusion_markers):
+        return []
+    excluded: list[str] = []
+    for analyte in detect_exact_analytes(query or ""):
+        # Keep only analytes appearing in common exclusion clauses.
+        token = analyte.replace("_", " ")
+        if any(f"{marker} {token}" in qn for marker in exclusion_markers) or any(
+            f"{marker} {alias}" in qn for marker in exclusion_markers for alias in get_analyte_aliases(analyte)
+        ):
+            excluded.append(analyte)
+    # Also handle explicit non-aliased exclusions (TRAK, anti-TG...) for TSHus requests.
+    if "trak" in qn and "trak" not in excluded:
+        excluded.append("trak")
+    if "anti tg" in qn and "anti_tg" not in excluded:
+        excluded.append("anti_tg")
+    if "anticorps anti recepteur de la tsh" in qn and "anti_recepteur_tsh" not in excluded:
+        excluded.append("anti_recepteur_tsh")
+    return sorted(set(excluded))
+
+
+def extract_requested_unit(query: str) -> str | None:
+    text = str(query or "")
+    m = re.search(
+        r"\b\d+(?:[.,]\d+)?\s*(pg/ml|ng/ml|mg/l|ug/ml|µg/ml|uiu?/ml|uu/ml|mui/l|mui/ml|pmol/l|mmol/l|ui/l)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not m:
+        return None
+    return str(m.group(1) or "").strip()
+
+
+def detect_source_clickable_requested(query: str) -> bool:
+    qn = norm_text(query or "")
+    markers = [
+        "source cliquable",
+        "sources cliquables",
+        "lien source",
+        "liens source",
+        "avec source",
+        "cite les sources",
+        "citer les sources",
+        "source pdf",
+    ]
+    return any(m in qn for m in markers)
+
+
 def _resolve_primary_intent(intents: dict[str, bool], *, requested_doc_ids: list[str], requested_analytes: list[str]) -> str:
+    if intents.get("identity_question"):
+        return "identity_question"
+    if intents.get("capability_question"):
+        return "capability_question"
+    if intents.get("help_question"):
+        return "help_question"
+    if intents.get("small_talk") or intents.get("general_conversation"):
+        return "small_talk"
     if intents.get("response_transform"):
         return "response_transform"
     if intents.get("global_patient_lookup"):
@@ -505,6 +706,7 @@ def _resolve_primary_intent(intents: dict[str, bool], *, requested_doc_ids: list
 def parse_query_understanding(query: str) -> QueryUnderstanding:
     requested_doc_ids = detect_requested_doc_ids(query or "")
     requested_analytes = detect_exact_analytes(query or "")
+    excluded_analytes = detect_excluded_analytes(query or "")
     intents = detect_query_intents(query or "", requested_doc_ids=requested_doc_ids, analytes=requested_analytes)
 
     qn = norm_text(query or "")
@@ -515,6 +717,9 @@ def parse_query_understanding(query: str) -> QueryUnderstanding:
     requires_section_summary = intents.get("doc_scoped_summary", False) or intents.get("immunoanalysis_summary", False)
     answer_style = detect_answer_style(query or "")
     requested_value = extract_requested_value(query or "")
+    requested_unit = extract_requested_unit(query or "")
+    comparison_operator = detect_comparison_operator(query or "")
+    source_clickable_requested = detect_source_clickable_requested(query or "")
     language = detect_language(query or "")
     safety_intent = "diagnostic_safety_question" if intents.get("diagnostic_safety_question") else None
     requested_table_columns = extract_requested_table_columns(query or "")
@@ -523,7 +728,11 @@ def parse_query_understanding(query: str) -> QueryUnderstanding:
     return QueryUnderstanding(
         requested_doc_ids=requested_doc_ids,
         requested_analytes=requested_analytes,
+        excluded_analytes=excluded_analytes,
         requested_value=requested_value,
+        requested_unit=requested_unit,
+        comparison_operator=comparison_operator,
+        source_clickable_requested=source_clickable_requested,
         patient_query=bool("patient" in qn or "patients" in qn),
         intent=_resolve_primary_intent(intents, requested_doc_ids=requested_doc_ids, requested_analytes=requested_analytes),
         output_format=detect_output_format(query or ""),
@@ -535,6 +744,8 @@ def parse_query_understanding(query: str) -> QueryUnderstanding:
         requires_previous_results=requires_previous_results,
         requires_comparison=requires_comparison,
         requires_section_summary=requires_section_summary,
+        is_small_talk=bool(intents.get("small_talk")),
+        is_response_transform=bool(intents.get("response_transform")),
         language=language,
         intents=intents,
     )

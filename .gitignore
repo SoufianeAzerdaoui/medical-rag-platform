@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 venv/
+scripts/generation/.env
 
 # ---- Python ----
 __pycache__/

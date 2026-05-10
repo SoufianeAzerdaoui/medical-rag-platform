@@ -4,6 +4,8 @@ import { motion } from "framer-motion";
 import { AlertTriangle, Copy, RotateCcw } from "lucide-react";
 import { AssistantMarkdown } from "@/components/chat/assistant-markdown";
 import { AssistantLoadingMessage } from "@/components/chat/assistant-loading-message";
+import { ConversationQualityPanel } from "@/components/chat/conversation-quality-panel";
+import { QualityReportCard } from "@/components/chat/quality-report-card";
 import { SourceLinks, stripSourcesSection } from "@/components/sources/source-links";
 import { useChatStore } from "@/store/chat-store";
 import { useEffect, useRef } from "react";
@@ -11,6 +13,7 @@ import { useEffect, useRef } from "react";
 export function ChatMessages() {
   const chats = useChatStore((s) => s.chats);
   const activeChatId = useChatStore((s) => s.activeChatId);
+  const qualityDebugEnabled = useChatStore((s) => s.qualityDebugEnabled);
   const chat = chats.find((c) => c.id === activeChatId);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
@@ -42,6 +45,7 @@ export function ChatMessages() {
 
   return (
     <div className="space-y-4 p-6">
+      {qualityDebugEnabled ? <ConversationQualityPanel messages={chat.messages} /> : null}
       {chat.messages.map((message) => {
         const status = message.status || "done";
         const isAssistant = message.role === "assistant";
@@ -78,6 +82,7 @@ export function ChatMessages() {
                   <p className="whitespace-pre-wrap text-sm leading-6">{contentToRender}</p>
                 )}
                 {isDone ? <SourceLinks sources={message.sources} /> : null}
+                {isDone && isAssistant && qualityDebugEnabled ? <QualityReportCard diagnostics={message.diagnostics} /> : null}
                 {isDone && (
                   <div className="mt-3 flex gap-2">
                     <button aria-label="Copier" className="rounded-lg border border-border p-2">

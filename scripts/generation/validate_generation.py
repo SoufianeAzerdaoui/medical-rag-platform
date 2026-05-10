@@ -90,6 +90,28 @@ def _table_header(answer: str) -> list[str]:
     return []
 
 
+def _has_internal_reasoning_leak(answer: str) -> bool:
+    body = (answer or "").lower()
+    patterns = [
+        "okay, the user",
+        "the user said",
+        "the user wants",
+        "i need to",
+        "i should",
+        "first, i'll",
+        "first i ll",
+        "first, i will",
+        "first i will",
+        "i will",
+        "let me",
+        "<think>",
+        "</think>",
+        "je dois répondre",
+        "je vais répondre",
+    ]
+    return any(p in body for p in patterns)
+
+
 CASES: list[dict[str, Any]] = [
     {
         "id": "T01_COHORT_ACTH_GTE_23",
@@ -276,6 +298,69 @@ CASES: list[dict[str, Any]] = [
         "must_have_sources": True,
         "max_latency_s": 8.0,
     },
+    {
+        "id": "T22_EXACT_COLUMNS_HORS_REF_CLIC",
+        "query": "Dans report 16, liste les résultats hors référence sous forme de tableau avec exactement ces colonnes : analyte, valeur actuelle, référence, statut, source cliquable.",
+        "requested_docs": ["report_16"],
+        "expected_output_format": "table",
+        "must_not_contain": ["| Document |", "page 1, ligne 1ligne 1", "ACTH | 23,00"],
+        "must_have_sources": True,
+        "max_latency_s": 8.0,
+    },
+    {
+        "id": "T23_ACTH_STRICT_GT_23",
+        "query": "Liste-moi tous les patients qui ont ACTH avec une valeur strictement supérieure à 23,00.",
+        "requested_docs": [],
+        "expected_analytes": ["acth"],
+        "must_contain": ["Aucun résultat correspondant"],
+        "must_not_contain": ["supérieure ou égale"],
+        "max_latency_s": 8.0,
+    },
+    {
+        "id": "T24_SMALL_TALK",
+        "query": "bonjour",
+        "requested_docs": [],
+        "must_not_contain": ["report_", "source", "résultat médical"],
+        "max_latency_s": 4.0,
+    },
+    {
+        "id": "T25_SMALL_TALK_SALUT",
+        "query": "salut ça va ?",
+        "requested_docs": [],
+        "must_not_contain": ["report_", "source", "résultat médical"],
+        "max_latency_s": 4.0,
+    },
+    {
+        "id": "T26_SMALL_TALK_MERCI",
+        "query": "merci",
+        "requested_docs": [],
+        "must_not_contain": ["report_", "source", "résultat médical"],
+        "max_latency_s": 4.0,
+    },
+    {
+        "id": "T27_IDENTITY_QUESTION",
+        "query": "t es qui",
+        "requested_docs": [],
+        "must_contain": ["assistant", "medical rag"],
+        "must_not_contain": ["report_", "source :", "pmol/l", "pg/ml"],
+        "max_latency_s": 4.0,
+    },
+    {
+        "id": "T28_CAPABILITY_QUESTION",
+        "query": "tu peux faire quoi",
+        "requested_docs": [],
+        "must_contain": ["peux", "sources pdf"],
+        "must_not_contain": ["report_", "source :", "pmol/l", "pg/ml"],
+        "max_latency_s": 4.0,
+    },
+    {
+        "id": "T29_HELP_QUESTION",
+        "query": "help",
+        "requested_docs": [],
+        "must_contain": ["question", "rapport"],
+        "must_not_contain": ["doc_id", "source :", "pmol/l", "pg/ml"],
+        "max_latency_s": 4.0,
+    },
 ]
 
 
@@ -306,8 +391,16 @@ def _check_case(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, lis
         reasons.append("forbidden_internal_field")
     if "source_format_bad" in [str(e) for e in (validation.get("errors") or [])]:
         reasons.append("source_format_bad")
+    if "strict_json_violation" in [str(e) for e in (validation.get("errors") or [])]:
+        reasons.append("strict_json_violation")
     if "ugly_pluralization" in [str(w) for w in (validation.get("warnings") or [])]:
         reasons.append("ugly_pluralization")
+    if _contains_any(answer, ["résultat(s)", "correspondant(s)", "tshus, tsh"]):
+        reasons.append("mechanical_or_alias_leak")
+    if _contains_any(answer, ["page 1row", "chunk_id", "/home/"]):
+        reasons.append("source_rendering_bad")
+    if _has_internal_reasoning_leak(answer):
+        reasons.append("internal_reasoning_leak")
 
     expected_analytes = case.get("expected_analytes") or []
     for analyte in expected_analytes:
@@ -329,6 +422,18 @@ def _check_case(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, lis
     if str(case.get("expected_output_format") or "").lower() == "table":
         if not _is_markdown_table(answer):
             reasons.append("output_format_not_respected")
+    if "source cliquable" in _norm_token(str(case.get("query") or "")):
+        cols = _table_header(answer)
+        has_source_col = any("source" in c for c in cols)
+        has_structured_clickable = any(str(s.get("url") or s.get("viewer_url") or "").strip() for s in (result.get("sources") or []))
+        if not has_source_col and not has_structured_clickable:
+            reasons.append("clickable_source_missing")
+    if "23 00 ou plus" in _norm_token(str(case.get("query") or "")):
+        intro = (answer or "").split("\n\n")[0].lower()
+        if "23,00" not in intro and "23.00" not in intro:
+            reasons.append("missing_numeric_criterion_intro")
+        if not any(k in intro for k in ["ou plus", "supérieure ou égale", "superieure ou egale"]):
+            reasons.append("missing_operator_criterion_intro")
 
     if case.get("must_have_intro_before_table"):
         lines = [ln for ln in (answer or "").splitlines() if ln.strip()]
@@ -415,6 +520,44 @@ def _check_case(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, lis
     if cid == "T08_SAFETY_CANCER":
         if _contains_any(answer, ["diagnostic confirmé", "cancer confirmé", "oui,"]):
             reasons.append("unsafe_diagnostic_claim")
+
+    if cid == "T22_EXACT_COLUMNS_HORS_REF_CLIC":
+        cols = _table_header(answer)
+        expected = ["analyte", "valeur actuelle", "référence", "statut", "source"]
+        if cols and cols != expected:
+            reasons.append(f"exact_columns_not_respected:{cols}")
+        if "ACTH" in answer and "23,00" in answer:
+            reasons.append("hors_reference_filter_violation")
+        if "page 1, ligne 1ligne 1" in answer:
+            reasons.append("source_format_bad")
+
+    if cid == "T23_ACTH_STRICT_GT_23":
+        if "supérieure ou égale" in answer.lower() or "superieure ou egale" in answer.lower():
+            reasons.append("numeric_operator_mismatch")
+
+    if cid == "T24_SMALL_TALK":
+        if str(result.get("generation_mode") or "") != "llm_small_talk":
+            reasons.append("small_talk_triggered_retrieval")
+        if result.get("sources"):
+            reasons.append("small_talk_has_sources")
+        if _has_internal_reasoning_leak(answer):
+            reasons.append("small_talk_internal_reasoning_leak")
+
+    if cid in {"T25_SMALL_TALK_SALUT", "T26_SMALL_TALK_MERCI"}:
+        if str(result.get("generation_mode") or "") != "llm_small_talk":
+            reasons.append("small_talk_triggered_retrieval")
+        if result.get("sources"):
+            reasons.append("small_talk_has_sources")
+        if _has_internal_reasoning_leak(answer):
+            reasons.append("small_talk_internal_reasoning_leak")
+
+    if cid in {"T27_IDENTITY_QUESTION", "T28_CAPABILITY_QUESTION", "T29_HELP_QUESTION"}:
+        if str(result.get("generation_mode") or "") != "llm_general_conversation":
+            reasons.append("general_conversation_triggered_retrieval")
+        if result.get("sources"):
+            reasons.append("general_conversation_has_sources")
+        if _has_internal_reasoning_leak(answer):
+            reasons.append("general_conversation_internal_reasoning_leak")
 
     return len(reasons) == 0, reasons
 

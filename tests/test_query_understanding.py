@@ -110,10 +110,45 @@ class TestQueryUnderstanding(unittest.TestCase):
         qu = parse_query_understanding("Convertis la réponse précédente en JSON strict.")
         self.assertEqual(qu.intent, "response_transform")
         self.assertEqual(qu.output_format, "json")
+        self.assertTrue(qu.is_response_transform)
 
     def test_tshus_does_not_match_trak(self) -> None:
         self.assertFalse(match_analyte("ANTICORPS ANTI RECEPTEUR DE LA TSH (TRAK)", "tshus"))
         self.assertTrue(match_analyte("TSHus", "tshus"))
+
+    def test_strict_operator_detection(self) -> None:
+        qu = parse_query_understanding("Liste les patients avec ACTH strictement supérieure à 23,00.")
+        self.assertEqual(qu.comparison_operator, ">")
+        self.assertEqual(qu.requested_value, "23,00")
+
+    def test_small_talk_intent(self) -> None:
+        qu = parse_query_understanding("bonjour")
+        self.assertEqual(qu.intent, "small_talk")
+        self.assertTrue(qu.is_small_talk)
+
+    def test_identity_intent(self) -> None:
+        qu = parse_query_understanding("t es qui")
+        self.assertEqual(qu.intent, "identity_question")
+        self.assertTrue(qu.intents.get("general_conversation"))
+        self.assertFalse(qu.is_small_talk)
+
+    def test_capability_intent(self) -> None:
+        qu = parse_query_understanding("tu peux faire quoi")
+        self.assertEqual(qu.intent, "capability_question")
+        self.assertTrue(qu.intents.get("general_conversation"))
+        self.assertFalse(qu.is_small_talk)
+
+    def test_help_intent(self) -> None:
+        qu = parse_query_understanding("help")
+        self.assertEqual(qu.intent, "help_question")
+        self.assertTrue(qu.intents.get("general_conversation"))
+        self.assertFalse(qu.is_small_talk)
+
+    def test_excluded_analytes_detection(self) -> None:
+        qu = parse_query_understanding(
+            "Quels patients ont une TSHus au-dessus de la référence ? N’inclus pas TRAK, Anti-TG, ni anticorps anti-récepteur de la TSH."
+        )
+        self.assertIn("trak", qu.excluded_analytes)
 
 
 if __name__ == "__main__":

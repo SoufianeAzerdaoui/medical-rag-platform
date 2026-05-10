@@ -8,6 +8,8 @@ export default function SettingsPage() {
   const clearAllData = useChatStore((s) => s.clearAllData);
   const privacyMode = useChatStore((s) => s.privacyMode);
   const togglePrivacyMode = useChatStore((s) => s.togglePrivacyMode);
+  const qualityDebugEnabled = useChatStore((s) => s.qualityDebugEnabled);
+  const toggleQualityDebug = useChatStore((s) => s.toggleQualityDebug);
   const language = useChatStore((s) => s.language);
   const setLanguage = useChatStore((s) => s.setLanguage);
   const exportAllChats = useChatStore((s) => s.exportAllChats);
@@ -68,6 +70,12 @@ export default function SettingsPage() {
         <p className="mb-2 text-sm">Microphone permissions are required for voice input.</p>
         <button onClick={togglePrivacyMode} className="rounded-lg border border-border px-3 py-2 text-sm">
           Privacy mode: {privacyMode ? "ON" : "OFF"}
+        </button>
+      </section>
+      <section className="rounded-xl border border-border p-4">
+        <p className="mb-2 text-sm">Generation quality debug dashboard</p>
+        <button onClick={toggleQualityDebug} className="rounded-lg border border-border px-3 py-2 text-sm">
+          Quality debug: {qualityDebugEnabled ? "ON" : "OFF"}
         </button>
       </section>
       <section className="rounded-xl border border-border p-4">

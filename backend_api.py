@@ -5,6 +5,7 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
+from collections import defaultdict
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -61,6 +62,10 @@ class ChatResponse(BaseModel):
     confidence: float | None = None
     document_ids: list[str] = Field(default_factory=list)
     response_time: float | None = None
+    quality_report: dict[str, Any] | None = None
+    validation_status: Literal["pass", "warning", "fail"] | None = None
+    generation_mode: str | None = None
+    generation_writer: Literal["llm_writer", "professional_fallback"] | None = None
 
 
 class DocumentItem(BaseModel):
@@ -69,6 +74,9 @@ class DocumentItem(BaseModel):
 
 
 app = FastAPI(title="Medical RAG Backend API", version="1.1.0")
+
+
+_CONVERSATION_STATE: dict[str, dict[str, Any]] = defaultdict(dict)
 
 app.add_middleware(
     CORSMiddleware,
@@ -172,6 +180,7 @@ def health() -> dict[str, Any]:
 def chat(payload: ChatRequest) -> ChatResponse:
     try:
         query = f"{payload.message} doc_id {payload.document_id}" if payload.document_id else payload.message
+        state = _CONVERSATION_STATE.get(payload.chat_id) or {}
         generation = run_generation(
             query=query,
             top_k=5,
@@ -184,7 +193,21 @@ def chat(payload: ChatRequest) -> ChatResponse:
             timeout=120,
             index_dir="data/indexes",
             collection="medical_chunks",
+            previous_structured_evidence_pack=state.get("last_evidence_pack"),
+            recent_style_history=state.get("recent_style_history") or [],
         )
+        _CONVERSATION_STATE[payload.chat_id]["last_evidence_pack"] = generation.get("structured_evidence_pack") or state.get(
+            "last_evidence_pack"
+        )
+        _CONVERSATION_STATE[payload.chat_id]["last_answer"] = generation.get("answer")
+        _CONVERSATION_STATE[payload.chat_id]["last_query_understanding"] = generation.get("query_understanding")
+        _CONVERSATION_STATE[payload.chat_id]["last_rendered_rows"] = generation.get("displayed_evidences")
+        _CONVERSATION_STATE[payload.chat_id]["last_sources"] = generation.get("sources")
+        style_hist = list(state.get("recent_style_history") or [])
+        style_entry = generation.get("style_memory_entry")
+        if isinstance(style_entry, dict):
+            style_hist.append(style_entry)
+        _CONVERSATION_STATE[payload.chat_id]["recent_style_history"] = style_hist[-20:]
         answer = str(generation.get("answer") or "").strip()
         if not answer:
             answer = "Aucune réponse générée. Cette réponse ne remplace pas l'avis médical."
@@ -198,6 +221,10 @@ def chat(payload: ChatRequest) -> ChatResponse:
             confidence=_confidence_from_result(generation),
             document_ids=document_ids,
             response_time=float(generation.get("generation_time_seconds") or 0.0),
+            quality_report=(generation.get("quality_report") if isinstance(generation.get("quality_report"), dict) else None),
+            validation_status=str((generation.get("validation") or {}).get("validation_status") or "") or None,
+            generation_mode=str(generation.get("generation_mode") or "") or None,
+            generation_writer=str(((generation.get("debug") or {}).get("generation_writer") or "")) or None,
         )
     except Exception as exc:  # pragma: no cover - defensive API guard
         raise HTTPException(status_code=500, detail=f"Generation error: {exc}") from exc

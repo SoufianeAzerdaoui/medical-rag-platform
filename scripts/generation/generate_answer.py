@@ -49,22 +49,131 @@ def normalize_query(query: str) -> str:
     return q
 
 
-def sanitize_model_answer(text: str) -> str:
-    raw = (text or "").strip()
+_INTERNAL_REASONING_PATTERNS = [
+    "okay, the user",
+    "the user said",
+    "the user wants",
+    "i need to",
+    "i should",
+    "first, i'll",
+    "first i ll",
+    "first, i will",
+    "first i will",
+    "i will",
+    "let me",
+    "je dois",
+    "je vais",
+    "raisonnement",
+    "stratégie",
+    "strategie",
+    "plan interne",
+    "<think>",
+    "</think>",
+    "je dois répondre",
+    "je vais répondre",
+]
+
+SMALL_TALK_FALLBACK_ANSWER = "Bonjour ! Je suis prêt à vous aider à analyser vos rapports médicaux."
+GENERAL_CONVERSATION_INTENTS = {"small_talk", "identity_question", "capability_question", "help_question"}
+GENERAL_CONVERSATION_FALLBACKS = {
+    "small_talk": "Bonjour ! Je suis prêt à vous aider à analyser vos rapports médicaux.",
+    "identity_question": (
+        "Je suis l’assistant Medical RAG de cette application. Je peux vous aider à interroger vos rapports médicaux, "
+        "retrouver des résultats biologiques, comparer des valeurs et citer les sources PDF utilisées."
+    ),
+    "capability_question": (
+        "Je peux rechercher des résultats dans les rapports, comparer des valeurs entre documents, identifier les résultats "
+        "hors référence et fournir les sources PDF correspondantes."
+    ),
+    "help_question": (
+        "Je peux vous guider pas à pas. Posez une question ciblée sur un rapport médical et je vous aiderai à formuler la requête."
+    ),
+}
+
+
+def _contains_internal_reasoning_leak(answer: str) -> bool:
+    body = norm_text(answer or "")
+    if not body:
+        return False
+    if "<think>" in (answer or "").lower() or "</think>" in (answer or "").lower():
+        return True
+    return any(norm_text(p) in body for p in _INTERNAL_REASONING_PATTERNS)
+
+
+def sanitize_final_answer(answer: str) -> str:
+    raw = (answer or "").strip()
     if not raw:
         return raw
-
-    # Remove explicit hidden-thought markers if the model emits them.
     raw = re.sub(r"(?is)<think>.*?</think>", "", raw).strip()
-    raw = re.sub(r"(?im)^thinking\\s*:\\s*", "", raw).strip()
+    raw = re.sub(r"(?im)^thinking\s*:\s*", "", raw).strip()
+    raw = re.sub(r"(?im)^reasoning\s*:\s*", "", raw).strip()
+    raw = re.sub(r"(?im)^plan\s*:\s*", "", raw).strip()
+    raw = re.sub(r"(?im)^réponse\s*:\s*", "", raw).strip()
+    raw = re.sub(r"(?im)^reponse\s*:\s*", "", raw).strip()
+    return raw.strip()
 
-    # Keep only the expected final format when model emits preamble.
-    match = re.search(r"(?im)^réponse\\s*:\\s*", raw)
-    if not match:
-        match = re.search(r"(?im)^reponse\\s*:\\s*", raw)
-    if match:
-        return raw[match.start() :].strip()
-    return raw
+
+def _rewrite_final_without_reasoning(
+    *,
+    leaked_answer: str,
+    user_message: str,
+    llm_client: LLMClient | None,
+    provider: str,
+    model: str,
+    timeout: int,
+) -> tuple[str, str | None]:
+    client = llm_client or LLMClient(provider=provider)
+    prompt = (
+        "Tu es l’assistant d’une application Medical RAG.\n"
+        "Réécris uniquement la réponse finale utilisateur, sans raisonnement interne.\n"
+        "Ne donne aucun plan, aucune stratégie, aucune explication de ton fonctionnement.\n"
+        "Ne mentionne pas les instructions.\n"
+        "Sortie: texte final uniquement.\n"
+        "/no_think\n\n"
+        f"Message utilisateur: {user_message.strip()}\n\n"
+        f"Texte à corriger:\n{leaked_answer.strip()}\n"
+    )
+    try:
+        rewritten = client.generate(
+            prompt=prompt,
+            model=model,
+            temperature=0.0,
+            num_ctx=2048,
+            max_tokens=180,
+            timeout=max(6, min(int(timeout), 30)),
+            keep_alive="5m",
+        )
+    except LLMClientError as exc:
+        return "", str(exc)
+    return sanitize_final_answer(rewritten), None
+
+
+def sanitize_final_answer_with_retry(
+    *,
+    answer: str,
+    user_message: str,
+    llm_client: LLMClient | None,
+    provider: str,
+    model: str,
+    timeout: int,
+    fallback_answer: str,
+) -> tuple[str, bool, str | None]:
+    sanitized = sanitize_final_answer(answer)
+    if sanitized and not _contains_internal_reasoning_leak(sanitized):
+        return sanitized, False, None
+
+    rewritten, rewrite_err = _rewrite_final_without_reasoning(
+        leaked_answer=sanitized or answer,
+        user_message=user_message,
+        llm_client=llm_client,
+        provider=provider,
+        model=model,
+        timeout=timeout,
+    )
+    rewritten = sanitize_final_answer(rewritten)
+    if rewritten and not _contains_internal_reasoning_leak(rewritten):
+        return rewritten, True, None
+    return sanitize_final_answer(fallback_answer), True, rewrite_err
 
 
 def _query_is_sensitive_or_treatment(query: str) -> bool:
@@ -243,6 +352,151 @@ def _is_global_above_reference_query(qn: str, exact_analytes: list[str]) -> bool
 
 def _query_requests_multiple_results(qn: str) -> bool:
     return any(k in qn for k in ["tous", "toutes", "liste", "retrouves", "retrouvés", "documents"])
+
+
+def _query_requests_out_of_reference_only(qn: str) -> bool:
+    return any(
+        k in qn
+        for k in [
+            "hors reference",
+            "hors de la reference",
+            "outside reference",
+            "out of reference",
+            "en dehors de la reference",
+        ]
+    ) or (_is_above_reference_query(qn) and "reference" in qn) or (_is_below_reference_query(qn) and "reference" in qn)
+
+
+def is_valid_analyte_name(analyte: str) -> bool:
+    text = str(analyte or "").strip()
+    if not text:
+        return False
+    norm = norm_text(text)
+    if len(norm) > 42:
+        return False
+    if ":" in text and len(text) > 25:
+        return False
+    if any(
+        marker in norm
+        for marker in [
+            "augmentation de",
+            "associes",
+            "apres un infarctus",
+            "acromegalie",
+            "commentaire",
+            "interpretation",
+            "valeurs de reference",
+            "technique",
+            "dosage",
+            "agenda biochimie",
+            "resultats biologiques",
+            "test de reference",
+            "absence de freination",
+            "reponse paradoxale",
+        ]
+    ):
+        return False
+    if any(ch in text for ch in [";", "?", "!"]):
+        return False
+    if re.search(r"\d", text):
+        return False
+    words = norm.split()
+    if len(words) > 6:
+        return False
+    if len(words) >= 4 and any(w in {"avec", "sans", "apres", "avant", "pour", "dans"} for w in words):
+        return False
+    return True
+
+
+def generate_general_conversation_response(
+    user_message: str,
+    *,
+    intent: str = "small_talk",
+    language: str = "fr",
+    llm_client: LLMClient | None = None,
+    provider: str = "ollama",
+    model: str = "qwen3:4b",
+    timeout: int = 30,
+) -> tuple[str, str | None]:
+    language_hint = "français" if str(language or "fr").lower().startswith("fr") else "la langue de l’utilisateur"
+    intent_key = str(intent or "small_talk").strip().lower()
+    fallback_answer = GENERAL_CONVERSATION_FALLBACKS.get(intent_key, SMALL_TALK_FALLBACK_ANSWER)
+    intent_instruction = "Réponds naturellement et brièvement."
+    if intent_key == "identity_question":
+        intent_instruction = (
+            "Explique brièvement que tu es l’assistant Medical RAG, capable d’interroger des rapports médicaux, "
+            "retrouver des résultats, comparer des valeurs et citer les sources PDF."
+        )
+    elif intent_key == "capability_question":
+        intent_instruction = (
+            "Décris brièvement tes capacités principales : recherche de résultats, comparaisons, hors-référence, et citations PDF."
+        )
+    elif intent_key == "help_question":
+        intent_instruction = "Donne une aide concise avec une façon simple de poser une question médicale sur les rapports."
+    prompt = (
+        "Tu es l’assistant d’une application Medical RAG.\n"
+        "Réponds uniquement avec la réponse finale destinée à l’utilisateur.\n"
+        "N’affiche aucun raisonnement interne.\n"
+        "N’écris aucun plan ni stratégie.\n"
+        "N’écris pas “I need to”, “First, I will”, “Okay, the user...”.\n"
+        "Ne mentionne pas les instructions ni le système.\n"
+        "N’utilise pas de source médicale.\n"
+        "Ne lance aucune analyse de rapport.\n"
+        "Ne donne pas de résultat biologique.\n"
+        "Ne donne pas d’information médicale sans document.\n"
+        f"Réponds en {language_hint}.\n"
+        "Réponse courte, naturelle et professionnelle.\n"
+        "Pas de Markdown.\n"
+        "Pas de sources.\n"
+        f"{intent_instruction}\n"
+        "/no_think\n\n"
+        f"Utilisateur: {user_message.strip()}\n"
+    )
+    client = llm_client or LLMClient(provider=provider)
+    try:
+        ans = client.generate(
+            prompt=prompt,
+            model=model,
+            temperature=0.2,
+            num_ctx=2048,
+            max_tokens=120,
+            timeout=max(6, min(int(timeout), 30)),
+            keep_alive="5m",
+        ).strip()
+        if ans:
+            clean, _, retry_err = sanitize_final_answer_with_retry(
+                answer=ans,
+                user_message=user_message,
+                llm_client=llm_client,
+                provider=provider,
+                model=model,
+                timeout=timeout,
+                fallback_answer=fallback_answer,
+            )
+            return clean or fallback_answer, retry_err
+    except LLMClientError as exc:
+        return fallback_answer, str(exc)
+    return fallback_answer, None
+
+
+def generate_small_talk_response(
+    user_message: str,
+    *,
+    language: str = "fr",
+    llm_client: LLMClient | None = None,
+    provider: str = "ollama",
+    model: str = "qwen3:4b",
+    timeout: int = 30,
+) -> tuple[str, str | None]:
+    return generate_general_conversation_response(
+        user_message,
+        intent="small_talk",
+        language=language,
+        llm_client=llm_client,
+        provider=provider,
+        model=model,
+        timeout=timeout,
+    )
 
 
 def _select_displayed_evidences(
@@ -996,10 +1250,8 @@ def _fetch_global_lab_rows(
             )
             params.extend([term, term])
         where = "(" + " OR ".join(clauses) + ")"
-        if requested_value and str(requested_value).strip():
-            where += " AND (instr(lower(coalesce(m.value_raw,'')), ?) > 0 OR instr(lower(coalesce(c.text_for_keyword,'')), ?) > 0)"
-            value_norm = str(requested_value).strip().lower().replace(",", ".")
-            params.extend([value_norm, value_norm])
+        # Value-level filtering is applied in Python (supports =, >=, <=, <, >)
+        # to avoid locale format mismatches (comma vs dot) at SQL LIKE time.
         params.append(int(limit))
         cur = conn.cursor()
         cur.execute(
@@ -1074,6 +1326,31 @@ def _row_matches_any_target_value(row: dict[str, Any], targets: list[str]) -> bo
     return False
 
 
+def _row_matches_value_criterion(row: dict[str, Any], targets: list[str], operator: str | None) -> bool:
+    if not targets:
+        return True
+    op = str(operator or "").strip()
+    if op not in {">", ">=", "<", "<=", "="}:
+        return _row_matches_any_target_value(row, targets)
+
+    vf = _to_float(row.get("value_numeric"))
+    if vf is None:
+        vf = _to_float(row.get("value_raw"))
+    tf = _to_float(targets[0])
+    if vf is None or tf is None:
+        return _row_matches_any_target_value(row, targets)
+
+    if op == ">":
+        return vf > tf
+    if op == ">=":
+        return vf >= tf
+    if op == "<":
+        return vf < tf
+    if op == "<=":
+        return vf <= tf
+    return abs(vf - tf) <= 1e-9
+
+
 def _rows_to_evidence(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     evidences: list[dict[str, Any]] = []
     for idx, row in enumerate(rows, start=1):
@@ -1130,6 +1407,27 @@ def _row_matches_analyte(row: dict[str, Any], analyte_norm: str) -> bool:
     return match_analyte(analyte_field, analyte_norm)
 
 
+def _row_matches_excluded(row: dict[str, Any], excluded_analytes: list[str]) -> bool:
+    if not excluded_analytes:
+        return False
+    analyte_field = norm_text(f"{row.get('analyte_norm') or ''} {row.get('analyte') or ''}")
+    for excluded in excluded_analytes:
+        ex = norm_text(str(excluded or ""))
+        if not ex:
+            continue
+        if ex in {"trak", "anti_tg", "anti_recepteur_tsh"}:
+            if ex == "trak" and "trak" in analyte_field:
+                return True
+            if ex == "anti_tg" and ("anti tg" in analyte_field or "anti-tg" in analyte_field):
+                return True
+            if ex == "anti_recepteur_tsh" and "recepteur" in analyte_field and "tsh" in analyte_field:
+                return True
+            continue
+        if ex in analyte_field:
+            return True
+    return False
+
+
 def _safe_float_pair(current: Any, previous: Any) -> tuple[float | None, float | None]:
     return _to_float(current), _to_float(previous)
 
@@ -1150,7 +1448,18 @@ def _missing_doc_answer() -> str:
 
 
 def _source_label(row: dict[str, Any]) -> str:
-    return f"[doc_id={row.get('doc_id')}, page={row.get('page_number')}, row={row.get('row_index')}]"
+    doc_id = str(row.get("doc_id") or "source").strip()
+    source_pdf = str(row.get("source_pdf") or "").strip()
+    filename = source_pdf.split("/")[-1] if source_pdf else ""
+    base = filename or doc_id
+    page = row.get("page_number")
+    row_index = row.get("row_index")
+    label = base
+    if isinstance(page, int):
+        label += f" — page {page}"
+    if isinstance(row_index, int):
+        label += f", ligne {row_index}"
+    return " ".join(label.split())
 
 
 def _status_code(row: dict[str, Any]) -> str:
@@ -1263,7 +1572,11 @@ def _finalize_structured_pack(pack: dict[str, Any], query_understanding: QueryUn
         "requested_analytes": requested_analytes,
         "excluded_analytes": [],
         "technical_condition": pack.get("technical_condition"),
+        "comparison_operator": query_understanding.comparison_operator,
+        "requested_value": query_understanding.requested_value,
+        "requested_unit": query_understanding.requested_unit,
         "requested_columns": requested_columns,
+        "source_clickable_requested": bool(query_understanding.source_clickable_requested),
         "safety_intent": query_understanding.safety_intent,
     }
     pack["user_question"] = pack.get("question") or ""
@@ -1601,6 +1914,143 @@ def generate_grounded_response_with_llm(
     return answer, mode_out, str(llm_error) if llm_error else None
 
 
+_HALLUCINATION_ERROR_KEYS = {
+    "unsupported_value",
+    "unsupported_analyte",
+    "unsupported_source",
+    "unsupported_reference",
+    "unsupported_previous_result",
+    "unsupported_patient",
+    "forbidden_internal_field",
+    "diagnostic_safety_violation",
+    "hallucinated_diagnosis",
+    "llm_hallucination",
+}
+
+_STYLE_RETRY_KEYS = {
+    "missing_professional_intro",
+    "output_format_not_respected",
+    "output_columns_not_respected",
+    "format_not_respected",
+    "source_format_bad",
+    "internal_alias_leak",
+    "missing_query_criterion_in_intro",
+    "clickable_source_missing",
+    "missing_conclusion",
+    "ugly_pluralization",
+}
+
+
+def _should_retry_with_validator(validation: dict[str, Any], generation_mode: str) -> bool:
+    if generation_mode != "llm_professional_writer":
+        return False
+    errors = {str(e) for e in (validation.get("errors") or [])}
+    warnings = {str(w) for w in (validation.get("warnings") or [])}
+    if errors & _HALLUCINATION_ERROR_KEYS:
+        return False
+    return bool((errors | warnings) & _STYLE_RETRY_KEYS)
+
+
+def _build_validator_retry_feedback(validation: dict[str, Any]) -> str:
+    errors = [str(e) for e in (validation.get("errors") or [])]
+    warnings = [str(w) for w in (validation.get("warnings") or [])]
+    items = errors + warnings
+    if not items:
+        return ""
+    bullets = "\n".join(f"- {i}" for i in items[:12])
+    return (
+        "Corrige ces points de style/format sans modifier aucune donnée (valeurs, analytes, sources, patients):\n"
+        f"{bullets}\n"
+        "Conserve strictement les faits et les sources de l'evidence_pack."
+    )
+
+
+def _extract_intro_conclusion(answer: str) -> tuple[str, str]:
+    blocks = [b.strip() for b in str(answer or "").split("\n\n") if b.strip()]
+    if not blocks:
+        return "", ""
+    intro = blocks[0]
+    conclusion = ""
+    for block in reversed(blocks):
+        if norm_text(block).startswith("conclusion technique"):
+            conclusion = block
+            break
+    return intro, conclusion
+
+
+def compute_repetition_score(new_answer: str, recent_answers: list[dict[str, Any]]) -> float:
+    if not recent_answers:
+        return 0.0
+    intro, conclusion = _extract_intro_conclusion(new_answer)
+    intro_n = norm_text(intro)
+    concl_n = norm_text(conclusion)
+    generic_hits = 0
+    total = min(20, len(recent_answers))
+    same_intro = 0
+    same_conclusion = 0
+    for item in recent_answers[-20:]:
+        prev_intro = norm_text(str(item.get("intro_text") or ""))
+        prev_conc = norm_text(str(item.get("conclusion_text") or ""))
+        if intro_n and prev_intro and (intro_n == prev_intro or intro_n in prev_intro or prev_intro in intro_n):
+            same_intro += 1
+        if concl_n and prev_conc and (concl_n == prev_conc or concl_n in prev_conc or prev_conc in concl_n):
+            same_conclusion += 1
+        for phrase in [
+            "j ai recherche les patients",
+            "les anomalies techniques ci dessous",
+            "aucun resultat exploitable",
+            "les resultats ci dessus sont strictement extraits",
+        ]:
+            if phrase in norm_text(str(item.get("answer_text") or "")):
+                generic_hits += 1
+    score = (same_intro / max(1, total)) * 0.5 + (same_conclusion / max(1, total)) * 0.3 + min(1.0, generic_hits / max(1, total)) * 0.2
+    return round(min(1.0, score), 3)
+
+
+def _quality_report(
+    *,
+    answer: str,
+    validation: dict[str, Any],
+    source_clickable_requested: bool,
+    recent_style_history: list[dict[str, Any]],
+) -> dict[str, Any]:
+    errors = {str(e) for e in (validation.get("errors") or [])}
+    warnings = {str(w) for w in (validation.get("warnings") or [])}
+    faithfulness = 1.0 if not (errors & {"unsupported_value", "unsupported_analyte", "unsupported_source", "unsupported_reference", "unsupported_previous_result"}) else 0.0
+    format_score = 1.0 if not (errors & {"format_not_respected", "output_format_not_respected", "yes_no_not_respected", "strict_json_violation"}) else 0.0
+    source_score = 1.0
+    if "source_format_bad" in errors or "unsupported_source" in errors:
+        source_score = 0.0
+    elif source_clickable_requested and "clickable_source_missing" in errors:
+        source_score = 0.3
+    safety_score = 1.0 if not (errors & {"diagnostic_safety_violation", "hallucinated_diagnosis"}) else 0.0
+    readability = 1.0
+    if "repeated_generic_style" in warnings or "repeated_generic_sentence" in warnings:
+        readability -= 0.3
+    if "missing_conclusion" in warnings:
+        readability -= 0.2
+    if "missing_query_criterion_in_intro" in warnings:
+        readability -= 0.2
+    if "ugly_pluralization" in warnings:
+        readability -= 0.2
+    readability = round(max(0.0, readability), 3)
+    style_rep = compute_repetition_score(answer, recent_style_history)
+    final_status = "pass"
+    if faithfulness < 1.0 or safety_score < 1.0 or format_score < 0.95:
+        final_status = "fail"
+    elif warnings:
+        final_status = "warning"
+    return {
+        "faithfulness_score": faithfulness,
+        "format_compliance_score": format_score,
+        "readability_score": readability,
+        "source_ux_score": source_score,
+        "style_repetition_score": style_rep,
+        "safety_score": safety_score,
+        "final_status": final_status,
+    }
+
+
 def build_structured_evidence_pack(
     *,
     query: str,
@@ -1609,6 +2059,7 @@ def build_structured_evidence_pack(
 ) -> dict[str, Any]:
     requested_doc_ids = list(query_understanding.requested_doc_ids or [])
     requested_analytes = list(query_understanding.requested_analytes or [])
+    excluded_analytes = list(getattr(query_understanding, "excluded_analytes", []) or [])
     qn = norm_text(query)
     compare_previous = query_understanding.requires_previous_results
     intent = query_understanding.intent
@@ -1617,6 +2068,7 @@ def build_structured_evidence_pack(
         "question": query,
         "requested_doc_ids": requested_doc_ids,
         "requested_analytes": requested_analytes,
+        "excluded_analytes": excluded_analytes,
         "requested_value": query_understanding.requested_value,
         "technical_condition": query_understanding.technical_condition,
         "intent": intent,
@@ -1640,10 +2092,16 @@ def build_structured_evidence_pack(
             requested_value=query_understanding.requested_value,
             limit=2000,
         )
-        rows = [r for r in rows if _row_matches_any_target_value(r, target_values)]
+        rows = [
+            r
+            for r in rows
+            if _row_matches_value_criterion(r, target_values, query_understanding.comparison_operator)
+        ]
         technical_condition = str(query_understanding.technical_condition or "").strip().lower()
         if technical_condition in {"above_reference", "below_reference", "within_reference", "not_interpretable"}:
             rows = [r for r in rows if _status_code(r) == technical_condition]
+        if excluded_analytes:
+            rows = [r for r in rows if not _row_matches_excluded(r, excluded_analytes)]
         evidences = [_structured_record_from_row(r) for r in rows]
         pack["rows"] = rows
         pack["evidences"] = evidences
@@ -1664,43 +2122,57 @@ def build_structured_evidence_pack(
         left, right = requested_doc_ids[0], requested_doc_ids[1]
         left_rows = [r for r in rows if str(r.get("doc_id") or "").strip().lower() == left.lower()]
         right_rows = [r for r in rows if str(r.get("doc_id") or "").strip().lower() == right.lower()]
+        if excluded_analytes:
+            left_rows = [r for r in left_rows if not _row_matches_excluded(r, excluded_analytes)]
+            right_rows = [r for r in right_rows if not _row_matches_excluded(r, excluded_analytes)]
         evidences: list[dict[str, Any]] = []
         missing: list[str] = []
         for analyte in requested_analytes:
             a = _best_row_for_analyte(left_rows, analyte)
             b = _best_row_for_analyte(right_rows, analyte)
+            label = _canonical_display_name(analyte)
             if not a and not b:
                 missing.append(analyte)
-                continue
-            if a:
-                rec = _structured_record_from_row(a)
-                rec["comparison_side"] = left
-                evidences.append(rec)
-            if b:
-                rec = _structured_record_from_row(b)
-                rec["comparison_side"] = right
-                evidences.append(rec)
-            if a and b:
-                av = str(a.get("value_raw") or "")
-                bv = str(b.get("value_raw") or "")
                 evidences.append(
                     {
                         "doc_id": f"{left} vs {right}",
                         "page": None,
                         "row": None,
                         "chunk_id": None,
-                        "analyte": _canonical_display_name(analyte),
+                        "analyte": label,
                         "analyte_norm": analyte,
-                        "current_value": f"{left}={av} | {right}={bv}",
-                        "unit": str(a.get("unit") or b.get("unit") or "").strip(),
-                        "reference": str(a.get("reference_range") or b.get("reference_range") or "").strip(),
+                        "current_value": f"{left}=non retrouvé | {right}=non retrouvé",
+                        "unit": "",
+                        "reference": "non disponible",
                         "previous_result": "",
                         "technical_status_code": "not_interpretable",
                         "technical_status": "différence technique",
-                        "variation": _variation_label(bv, av),
+                        "variation": "non comparable",
                         "source": "",
                     }
                 )
+                continue
+            av = str((a or {}).get("value_raw") or "non retrouvé")
+            bv = str((b or {}).get("value_raw") or "non retrouvé")
+            unit = str((a or {}).get("unit") or (b or {}).get("unit") or "").strip()
+            evidences.append(
+                {
+                    "doc_id": f"{left} vs {right}",
+                    "page": None,
+                    "row": None,
+                    "chunk_id": None,
+                    "analyte": label,
+                    "analyte_norm": analyte,
+                    "current_value": f"{left}={av} | {right}={bv}",
+                    "unit": unit,
+                    "reference": str((a or {}).get("reference_range") or (b or {}).get("reference_range") or "non disponible").strip(),
+                    "previous_result": "",
+                    "technical_status_code": "not_interpretable",
+                    "technical_status": "différence technique",
+                    "variation": _variation_label(bv, av) if a and b else "non comparable",
+                    "source": "",
+                }
+            )
         pack["evidences"] = evidences
         pack["missing_items"] = missing
         pack["rows"] = rows
@@ -1720,16 +2192,25 @@ def build_structured_evidence_pack(
         right_keys: dict[str, dict[str, Any]] = {}
         for row in left_rows:
             key = str(row.get("analyte_norm") or "").strip().lower() or norm_text(str(row.get("analyte") or ""))
+            if excluded_analytes and _row_matches_excluded(row, excluded_analytes):
+                continue
+            if not is_valid_analyte_name(str(row.get("analyte") or row.get("parameter") or key)):
+                continue
             if key and key not in left_keys:
                 left_keys[key] = row
         for row in right_rows:
             key = str(row.get("analyte_norm") or "").strip().lower() or norm_text(str(row.get("analyte") or ""))
+            if excluded_analytes and _row_matches_excluded(row, excluded_analytes):
+                continue
+            if not is_valid_analyte_name(str(row.get("analyte") or row.get("parameter") or key)):
+                continue
             if key and key not in right_keys:
                 right_keys[key] = row
 
         only_left = sorted(set(left_keys.keys()) - set(right_keys.keys()))
         only_right = sorted(set(right_keys.keys()) - set(left_keys.keys()))
         evidences: list[dict[str, Any]] = []
+        rows_for_pack: list[dict[str, Any]] = []
         for key in only_left:
             row = left_keys[key]
             evidences.append(
@@ -1742,6 +2223,7 @@ def build_structured_evidence_pack(
                     "source": _source_label(row),
                 }
             )
+            rows_for_pack.append(row)
         for key in only_right:
             row = right_keys[key]
             evidences.append(
@@ -1754,7 +2236,8 @@ def build_structured_evidence_pack(
                     "source": _source_label(row),
                 }
             )
-        pack["rows"] = rows
+            rows_for_pack.append(row)
+        pack["rows"] = rows_for_pack
         pack["evidences"] = evidences
         return _finalize_structured_pack(pack, query_understanding)
 
@@ -1838,6 +2321,9 @@ def build_structured_evidence_pack(
                 rows = [r for r in rows if str(r.get("previous_result_value_raw") or "").strip()]
             requested_analytes = target_analytes
 
+        if excluded_analytes:
+            rows = [r for r in rows if not _row_matches_excluded(r, excluded_analytes)]
+
         if intent != "toxicology_summary" and query_understanding.requires_section_summary and ("urinaire" in qn or "urinaires" in qn or "urine" in qn):
             rows = [r for r in rows if "urina" in norm_text(str(r.get("analyte_norm") or "") + " " + str(r.get("analyte") or ""))]
 
@@ -1851,29 +2337,42 @@ def build_structured_evidence_pack(
                 rows = summary_rows
 
         evidences: list[dict[str, Any]] = []
+        rows_for_pack: list[dict[str, Any]] = []
         missing: list[str] = []
+        out_of_reference_only = _query_requests_out_of_reference_only(qn)
+        yes_no_mode = str(query_understanding.answer_style or "").strip().lower() == "yes_no" or str(query_understanding.output_format or "").strip().lower() == "yes_no"
         if requested_analytes:
+            full_rows = list(rows)
+            filtered_rows = list(rows)
+            if out_of_reference_only:
+                filtered_rows = [r for r in rows if _status_code(r) in {"above_reference", "below_reference"}]
             for analyte in requested_analytes:
-                row = _best_row_for_analyte(rows, analyte)
+                row = _best_row_for_analyte(filtered_rows, analyte)
+                if row is None and yes_no_mode and out_of_reference_only:
+                    row = _best_row_for_analyte(full_rows, analyte)
                 if row is None:
-                    missing.append(analyte)
+                    # Do not mark as missing when analyte exists but is excluded by a user filter.
+                    if not _best_row_for_analyte(full_rows, analyte):
+                        missing.append(analyte)
                     continue
                 record = _structured_record_from_row(row)
                 if compare_previous and not record.get("previous_result"):
                     record["variation"] = "non comparable"
                 evidences.append(record)
+                rows_for_pack.append(row)
         else:
             for row in rows:
                 status = _status_code(row)
-                if any(k in qn for k in ["hors reference", "anomal", "attention technique"]) and status not in {
+                if out_of_reference_only and status not in {
                     "above_reference",
                     "below_reference",
                 }:
                     continue
                 evidences.append(_structured_record_from_row(row))
+                rows_for_pack.append(row)
         pack["evidences"] = evidences
         pack["missing_items"] = missing
-        pack["rows"] = rows
+        pack["rows"] = rows_for_pack
         return _finalize_structured_pack(pack, query_understanding)
 
     return _finalize_structured_pack(pack, query_understanding)
@@ -2190,6 +2689,7 @@ def run_generation(
     show_all_results: bool = False,
     show_low_quality: bool = False,
     previous_structured_evidence_pack: dict[str, Any] | None = None,
+    recent_style_history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     request_id = str(uuid4())
@@ -2199,6 +2699,7 @@ def run_generation(
     query_used_for_retrieval = q
     query_used_for_prompt = q
     qn = norm_text(q)
+    style_history = list(recent_style_history or [])
     query_understanding = parse_query_understanding(q)
     requested_doc_ids = list(query_understanding.requested_doc_ids)
     requested_doc_id = requested_doc_ids[0] if len(requested_doc_ids) == 1 else None
@@ -2220,6 +2721,138 @@ def run_generation(
     intents = dict(query_understanding.intents or detect_query_intents(q, requested_doc_ids=requested_doc_ids, analytes=exact_analytes))
     compare_query = bool(query_understanding.requires_comparison or _is_compare_query(qn))
     compare_previous = bool(query_understanding.requires_previous_results or _is_previous_result_query(qn) or compare_query)
+
+    if str(query_understanding.intent or "").strip().lower() in GENERAL_CONVERSATION_INTENTS:
+        general_intent = str(query_understanding.intent or "small_talk").strip().lower()
+        general_answer, general_err = generate_general_conversation_response(
+            q,
+            intent=general_intent,
+            language=query_understanding.language,
+            llm_client=llm_client,
+            provider=provider,
+            model=model,
+            timeout=timeout,
+        )
+        if not general_answer:
+            general_answer = GENERAL_CONVERSATION_FALLBACKS.get(general_intent, SMALL_TALK_FALLBACK_ANSWER)
+        general_mode = "llm_small_talk" if general_intent == "small_talk" else "llm_general_conversation"
+        validation = validate_answer(
+            query=q,
+            answer_text=general_answer,
+            evidence_pack=[],
+            displayed_evidences=[],
+            source_citations=[],
+            generation_mode=general_mode,
+            retrieval_status="not_required",
+            query_received=query_received,
+            query_used_for_retrieval="",
+            query_used_for_prompt=q,
+            query_stored=q,
+            detected_analytes=[],
+            query_intents={
+                **intents,
+                "general_conversation": True,
+                "small_talk": general_intent == "small_talk",
+                "identity_question": general_intent == "identity_question",
+                "capability_question": general_intent == "capability_question",
+                "help_question": general_intent == "help_question",
+            },
+            output_format_requested="paragraph",
+            answer_style_requested="standard",
+            requested_table_columns=[],
+            requested_technical_condition=None,
+            source_clickable_requested=False,
+            requested_value=None,
+            comparison_operator=None,
+        )
+        intro, conclusion = _extract_intro_conclusion(general_answer)
+        quality = _quality_report(
+            answer=general_answer,
+            validation=validation,
+            source_clickable_requested=False,
+            recent_style_history=style_history,
+        )
+        elapsed = time.perf_counter() - started
+        return {
+            "request_id": request_id,
+            "query": q,
+            "query_received": query_received,
+            "query_used_for_retrieval": "",
+            "query_used_for_prompt": q,
+            "query_stored": q,
+            "normalized_query": q,
+            "mode": "general_conversation",
+            "provider": provider,
+            "model": model,
+            "top_k": top_k,
+            "max_display_results": int(max_display_results),
+            "show_all_results": bool(show_all_results),
+            "show_low_quality": bool(show_low_quality),
+            "timeout": timeout,
+            "generation_time_seconds": round(elapsed, 3),
+            "answer": general_answer,
+            "citations": [],
+            "sources": [],
+            "validation": validation,
+            "quality_report": quality,
+            "llm_error": general_err,
+            "error_type": "llm_general_conversation_error" if general_err else None,
+            "generation_mode": general_mode,
+            "detected_analytes": [],
+            "query_understanding": {
+                "requested_doc_ids": [],
+                "requested_analytes": [],
+                "requested_value": None,
+                "requested_unit": None,
+                "comparison_operator": None,
+                "source_clickable_requested": False,
+                "patient_query": False,
+                "intent": general_intent,
+                "output_format": "paragraph",
+                "requested_table_columns": [],
+                "answer_style": "standard",
+                "requires_global_search": False,
+                "technical_condition": None,
+                "safety_intent": None,
+                "requires_previous_results": False,
+                "requires_comparison": False,
+                "requires_section_summary": False,
+                "is_small_talk": general_intent == "small_talk",
+                "is_response_transform": False,
+                "language": query_understanding.language,
+            },
+            "structured_evidence_pack": {},
+            "evidence_pack": [],
+            "displayed_evidences": [],
+            "display": {
+                "selected_candidates_count": 0,
+                "low_quality_evidence_filtered_count": 0,
+                "hidden_result_count": 0,
+                "requested_multi_result_query": False,
+                "display_notes": [],
+            },
+            "retrieval": {
+                "answerability": {"status": "not_required", "reason": f"{general_intent}_no_retrieval"},
+                "filters": {"doc_ids": [], "analytes": []},
+                "top_results": [],
+                "context_chunks": [],
+                "sources": [],
+            },
+            "prompt": "",
+            "style_memory_entry": {
+                "intro_text": intro,
+                "conclusion_text": conclusion,
+                "intent": general_intent,
+                "output_format": "paragraph",
+                "answer_text": general_answer,
+            },
+            "debug": {
+                "request_id": request_id,
+                "generation_mode": general_mode,
+                "generation_writer": "llm_writer" if not general_err else "professional_fallback",
+                "intents": intents,
+            },
+        }
 
     if query_understanding.intent == "response_transform":
         if not previous_structured_evidence_pack:
@@ -2243,7 +2876,17 @@ def run_generation(
                 answer_style_requested=query_understanding.answer_style,
                 requested_table_columns=query_understanding.requested_table_columns,
                 requested_technical_condition=query_understanding.technical_condition,
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                requested_value=query_understanding.requested_value,
+                comparison_operator=query_understanding.comparison_operator,
             )
+            quality = _quality_report(
+                answer=answer,
+                validation=validation,
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                recent_style_history=style_history,
+            )
+            intro_text, conclusion_text = _extract_intro_conclusion(answer)
             return {
                 "request_id": request_id,
                 "query": q,
@@ -2265,6 +2908,7 @@ def run_generation(
                 "citations": [],
                 "sources": [],
                 "validation": validation,
+                "quality_report": quality,
                 "llm_error": None,
                 "error_type": None,
                 "generation_mode": "deterministic_response_transform",
@@ -2273,6 +2917,9 @@ def run_generation(
                     "requested_doc_ids": query_understanding.requested_doc_ids,
                     "requested_analytes": query_understanding.requested_analytes,
                     "requested_value": query_understanding.requested_value,
+                    "requested_unit": query_understanding.requested_unit,
+                    "comparison_operator": query_understanding.comparison_operator,
+                    "source_clickable_requested": query_understanding.source_clickable_requested,
                     "patient_query": query_understanding.patient_query,
                     "intent": query_understanding.intent,
                     "output_format": query_understanding.output_format,
@@ -2304,16 +2951,24 @@ def run_generation(
                     "sources": [],
                 },
                 "prompt": "",
-                "debug": {
-                    "request_id": request_id,
-                    "query_received": query_received,
-                    "query_used_for_retrieval": query_used_for_retrieval,
-                    "query_used_for_prompt": query_used_for_prompt,
-                    "detected_analytes": exact_analytes,
-                    "requested_doc_ids": requested_doc_ids,
-                    "generation_mode": "deterministic_response_transform",
-                    "intents": intents,
+                "style_memory_entry": {
+                    "intro_text": intro_text,
+                    "conclusion_text": conclusion_text,
+                    "intent": "response_transform",
+                    "output_format": query_understanding.output_format,
+                    "answer_text": answer,
                 },
+            "debug": {
+                "request_id": request_id,
+                "query_received": query_received,
+                "query_used_for_retrieval": query_used_for_retrieval,
+                "query_used_for_prompt": query_used_for_prompt,
+                "detected_analytes": exact_analytes,
+                "requested_doc_ids": requested_doc_ids,
+                "generation_mode": "deterministic_response_transform",
+                "generation_writer": "professional_fallback",
+                "intents": intents,
+            },
                 "exact_analyte_coverage": {
                     "detected_exact_analyte": exact_analyte,
                     "expected_exact_analyte_count": len(exact_analytes),
@@ -2358,13 +3013,21 @@ def run_generation(
         ]
         source_citations = build_source_citations(displayed_evidences, resolver=source_resolver)
         transformed_pack = _attach_source_fields_to_structured_pack(transformed_pack, source_citations)
+        transformed_pack["recent_style_history"] = style_history[-20:]
         output_format = str(transformed_pack.get("output_format") or query_understanding.output_format or "list").lower()
         composed = compose_professional_answer(
             user_question=q,
             query_understanding=transformed_qu,
             evidence_pack=transformed_pack,
-            mode="fallback",
+            mode="auto",
             source_citations=source_citations,
+            llm_client=llm_client,
+            provider=provider,
+            model=model,
+            temperature=temperature,
+            num_ctx=num_ctx,
+            max_tokens=max_tokens,
+            timeout=timeout,
         )
         answer = str(composed.get("answer") or "")
         generation_mode = (
@@ -2391,7 +3054,17 @@ def run_generation(
             requested_table_columns=transformed_pack.get("requested_table_columns")
             or transformed_qu.requested_table_columns,
             requested_technical_condition=transformed_qu.technical_condition,
+            source_clickable_requested=bool(transformed_qu.source_clickable_requested),
+            requested_value=transformed_qu.requested_value,
+            comparison_operator=transformed_qu.comparison_operator,
         )
+        quality = _quality_report(
+            answer=answer,
+            validation=validation,
+            source_clickable_requested=bool(transformed_qu.source_clickable_requested),
+            recent_style_history=style_history,
+        )
+        intro_text, conclusion_text = _extract_intro_conclusion(answer)
         elapsed = time.perf_counter() - started
         return {
             "request_id": request_id,
@@ -2414,6 +3087,7 @@ def run_generation(
             "citations": [],
             "sources": source_citations,
             "validation": validation,
+            "quality_report": quality,
             "llm_error": None,
             "error_type": None,
             "generation_mode": generation_mode,
@@ -2422,6 +3096,9 @@ def run_generation(
                 "requested_doc_ids": query_understanding.requested_doc_ids,
                 "requested_analytes": query_understanding.requested_analytes,
                 "requested_value": query_understanding.requested_value,
+                "requested_unit": query_understanding.requested_unit,
+                "comparison_operator": query_understanding.comparison_operator,
+                "source_clickable_requested": query_understanding.source_clickable_requested,
                 "patient_query": query_understanding.patient_query,
                 "intent": query_understanding.intent,
                 "output_format": query_understanding.output_format,
@@ -2436,6 +3113,13 @@ def run_generation(
                 "language": query_understanding.language,
             },
             "structured_evidence_pack": transformed_pack,
+            "style_memory_entry": {
+                "intro_text": intro_text,
+                "conclusion_text": conclusion_text,
+                "intent": transformed_qu.intent,
+                "output_format": transformed_qu.output_format,
+                "answer_text": answer,
+            },
             "evidence_pack": displayed_evidences,
             "displayed_evidences": displayed_evidences,
             "display": {
@@ -2461,6 +3145,7 @@ def run_generation(
                 "detected_analytes": exact_analytes,
                 "requested_doc_ids": requested_doc_ids,
                 "generation_mode": generation_mode,
+                "generation_writer": "llm_writer" if generation_mode == "llm_professional_writer" else "professional_fallback",
                 "intents": intents,
             },
             "exact_analyte_coverage": {
@@ -2488,6 +3173,7 @@ def run_generation(
         citations = build_citations(displayed_evidences)
         source_citations = build_source_citations(displayed_evidences, resolver=source_resolver)
         structured_pack = _attach_source_fields_to_structured_pack(structured_pack, source_citations)
+        structured_pack["recent_style_history"] = style_history[-20:]
         composed = compose_professional_answer(
             user_question=q,
             query_understanding=query_understanding,
@@ -2505,6 +3191,30 @@ def run_generation(
         final_answer = str(composed.get("answer") or "").strip() or _missing_doc_answer()
         generation_mode = str(composed.get("mode") or "deterministic_professional_fallback")
         writer_error = str(composed.get("llm_error") or "") or None
+        if _contains_internal_reasoning_leak(final_answer):
+            fallback_answer = str(
+                (
+                    render_professional_fallback(
+                        evidence_pack=structured_pack,
+                        query_understanding=query_understanding,
+                        user_question=q,
+                        source_citations=source_citations,
+                    )
+                    or {}
+                ).get("answer")
+                or _missing_doc_answer()
+            ).strip()
+            final_answer, _, sanitize_err = sanitize_final_answer_with_retry(
+                answer=final_answer,
+                user_message=q,
+                llm_client=llm_client,
+                provider=provider,
+                model=model,
+                timeout=timeout,
+                fallback_answer=fallback_answer,
+            )
+            if sanitize_err:
+                writer_error = f"{writer_error} | sanitize_retry:{sanitize_err}" if writer_error else f"sanitize_retry:{sanitize_err}"
 
         missing_requested_doc_ids = _resolve_missing_requested_doc_ids(sqlite_path, requested_doc_ids)
         found_requested_analytes = []
@@ -2563,9 +3273,135 @@ def run_generation(
             answer_style_requested=query_understanding.answer_style,
             requested_table_columns=query_understanding.requested_table_columns,
             requested_technical_condition=query_understanding.technical_condition,
+            source_clickable_requested=bool(query_understanding.source_clickable_requested),
+            requested_value=query_understanding.requested_value,
+            comparison_operator=query_understanding.comparison_operator,
+        )
+        quality = _quality_report(
+            answer=final_answer,
+            validation=validation,
+            source_clickable_requested=bool(query_understanding.source_clickable_requested),
+            recent_style_history=style_history,
         )
 
+        if _should_retry_with_validator(validation, generation_mode):
+            retry_feedback = _build_validator_retry_feedback(validation)
+            retry_composed = compose_professional_answer(
+                user_question=q,
+                query_understanding=query_understanding,
+                evidence_pack=structured_pack,
+                mode="auto",
+                source_citations=source_citations,
+                llm_client=llm_client,
+                provider=provider,
+                model=model,
+                temperature=temperature,
+                num_ctx=num_ctx,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                retry_feedback=retry_feedback,
+            )
+            retry_answer = str(retry_composed.get("answer") or "").strip()
+            retry_mode = str(retry_composed.get("mode") or generation_mode)
+            retry_writer_error = str(retry_composed.get("llm_error") or "") or None
+            if retry_answer:
+                retry_validation = validate_answer(
+                    query=q,
+                    answer_text=retry_answer,
+                    evidence_pack=evidence_pack,
+                    displayed_evidences=displayed_evidences,
+                    source_citations=source_citations,
+                    exact_analyte=exact_analyte,
+                    llm_error=retry_writer_error,
+                    generation_mode=retry_mode,
+                    retrieval_status="answerable" if displayed_evidences else "insufficient_context",
+                    show_low_quality=show_low_quality,
+                    max_display_results=max_display_results,
+                    show_all_results=show_all_results,
+                    query_received=query_received,
+                    query_used_for_retrieval=query_used_for_retrieval,
+                    query_used_for_prompt=query_used_for_prompt,
+                    query_stored=q,
+                    detected_analytes=exact_analytes,
+                    requested_doc_id=requested_doc_ids[0] if len(requested_doc_ids) == 1 else None,
+                    requested_doc_ids=requested_doc_ids,
+                    missing_requested_doc_ids=missing_requested_doc_ids,
+                    requested_analytes=exact_analytes,
+                    found_requested_analytes=found_requested_analytes,
+                    found_requested_analyte_norms=found_requested_analyte_norms,
+                    missing_requested_analytes=missing_requested_analytes,
+                    current_vs_previous_requested=query_understanding.requires_previous_results,
+                    diagnostic_safety_intent=bool(intents.get("diagnostic_safety_question")),
+                    query_intents=intents,
+                    output_format_requested=query_understanding.output_format,
+                    answer_style_requested=query_understanding.answer_style,
+                    requested_table_columns=query_understanding.requested_table_columns,
+                    requested_technical_condition=query_understanding.technical_condition,
+                    source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                    requested_value=query_understanding.requested_value,
+                    comparison_operator=query_understanding.comparison_operator,
+                )
+                if str(retry_validation.get("validation_status") or "fail") != "fail":
+                    final_answer = retry_answer
+                    generation_mode = retry_mode
+                    writer_error = retry_writer_error
+                    validation = retry_validation
+                else:
+                    fallback_composed = compose_professional_answer(
+                        user_question=q,
+                        query_understanding=query_understanding,
+                        evidence_pack=structured_pack,
+                        mode="fallback",
+                        source_citations=source_citations,
+                    )
+                    final_answer = str(fallback_composed.get("answer") or final_answer).strip()
+                    generation_mode = str(fallback_composed.get("mode") or "deterministic_professional_fallback")
+                    writer_error = retry_writer_error or writer_error
+                    validation = validate_answer(
+                        query=q,
+                        answer_text=final_answer,
+                        evidence_pack=evidence_pack,
+                        displayed_evidences=displayed_evidences,
+                        source_citations=source_citations,
+                        exact_analyte=exact_analyte,
+                        llm_error=writer_error,
+                        generation_mode=generation_mode,
+                        retrieval_status="answerable" if displayed_evidences else "insufficient_context",
+                        show_low_quality=show_low_quality,
+                        max_display_results=max_display_results,
+                        show_all_results=show_all_results,
+                        query_received=query_received,
+                        query_used_for_retrieval=query_used_for_retrieval,
+                        query_used_for_prompt=query_used_for_prompt,
+                        query_stored=q,
+                        detected_analytes=exact_analytes,
+                        requested_doc_id=requested_doc_ids[0] if len(requested_doc_ids) == 1 else None,
+                        requested_doc_ids=requested_doc_ids,
+                        missing_requested_doc_ids=missing_requested_doc_ids,
+                        requested_analytes=exact_analytes,
+                        found_requested_analytes=found_requested_analytes,
+                        found_requested_analyte_norms=found_requested_analyte_norms,
+                        missing_requested_analytes=missing_requested_analytes,
+                        current_vs_previous_requested=query_understanding.requires_previous_results,
+                        diagnostic_safety_intent=bool(intents.get("diagnostic_safety_question")),
+                        query_intents=intents,
+                        output_format_requested=query_understanding.output_format,
+                        answer_style_requested=query_understanding.answer_style,
+                        requested_table_columns=query_understanding.requested_table_columns,
+                        requested_technical_condition=query_understanding.technical_condition,
+                        source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                        requested_value=query_understanding.requested_value,
+                        comparison_operator=query_understanding.comparison_operator,
+                    )
+                    quality = _quality_report(
+                        answer=final_answer,
+                        validation=validation,
+                        source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                        recent_style_history=style_history,
+                    )
+
         elapsed = time.perf_counter() - started
+        intro_text, conclusion_text = _extract_intro_conclusion(final_answer)
         retrieval_sources = [
             {
                 "doc_id": ev.get("doc_id"),
@@ -2596,6 +3432,7 @@ def run_generation(
             "citations": citations,
             "sources": source_citations,
             "validation": validation,
+            "quality_report": quality,
             "llm_error": writer_error,
             "error_type": "llm_writer_error" if writer_error else None,
             "generation_mode": generation_mode,
@@ -2604,6 +3441,9 @@ def run_generation(
                 "requested_doc_ids": query_understanding.requested_doc_ids,
                 "requested_analytes": query_understanding.requested_analytes,
                 "requested_value": query_understanding.requested_value,
+                "requested_unit": query_understanding.requested_unit,
+                "comparison_operator": query_understanding.comparison_operator,
+                "source_clickable_requested": query_understanding.source_clickable_requested,
                 "patient_query": query_understanding.patient_query,
                 "intent": query_understanding.intent,
                 "output_format": query_understanding.output_format,
@@ -2618,6 +3458,13 @@ def run_generation(
                 "language": query_understanding.language,
             },
             "structured_evidence_pack": structured_pack,
+            "style_memory_entry": {
+                "intro_text": intro_text,
+                "conclusion_text": conclusion_text,
+                "intent": query_understanding.intent,
+                "output_format": query_understanding.output_format,
+                "answer_text": final_answer,
+            },
             "evidence_pack": evidence_pack,
             "displayed_evidences": displayed_evidences,
             "display": {
@@ -2643,6 +3490,7 @@ def run_generation(
                 "detected_analytes": exact_analytes,
                 "requested_doc_ids": requested_doc_ids,
                 "generation_mode": generation_mode,
+                "generation_writer": "llm_writer" if generation_mode == "llm_professional_writer" else "professional_fallback",
                 "intents": intents,
             },
             "exact_analyte_coverage": {
@@ -2772,6 +3620,15 @@ def run_generation(
     if requested_doc_ids:
         allowed_docs = {d.lower() for d in requested_doc_ids}
         evidence_pack = [ev for ev in evidence_pack if str(ev.get("doc_id") or "").strip().lower() in allowed_docs]
+    excluded_analytes = list(getattr(query_understanding, "excluded_analytes", []) or [])
+    if excluded_analytes:
+        evidence_pack = [ev for ev in evidence_pack if not _row_matches_excluded(ev, excluded_analytes)]
+    if _query_requests_out_of_reference_only(qn):
+        evidence_pack = [
+            ev
+            for ev in evidence_pack
+            if str(ev.get("interpretation_status") or ev.get("technical_status_code") or "").strip().lower() in {"above_reference", "below_reference"}
+        ]
 
     displayed_evidences, display_meta = _select_displayed_evidences(
         query_norm=qn,
@@ -2828,7 +3685,19 @@ def run_generation(
                 timeout=timeout,
                 keep_alive="10m",
             )
-            llm_answer = sanitize_model_answer(llm_answer)
+            llm_answer = sanitize_final_answer(llm_answer)
+            if _contains_internal_reasoning_leak(llm_answer):
+                llm_answer, _, sanitize_err = sanitize_final_answer_with_retry(
+                    answer=llm_answer,
+                    user_message=q,
+                    llm_client=llm_client,
+                    provider=provider,
+                    model=model,
+                    timeout=timeout,
+                    fallback_answer=_build_structured_fallback_answer(q, displayed_evidences, exact_analyte=exact_analyte),
+                )
+                if sanitize_err:
+                    llm_error = f"{llm_error} | sanitize_retry:{sanitize_err}" if llm_error else f"sanitize_retry:{sanitize_err}"
             if _answer_needs_fallback(llm_answer):
                 llm_answer = _build_structured_fallback_answer(q, displayed_evidences, exact_analyte=exact_analyte)
                 generation_mode = "llm_fallback_template"
@@ -2855,6 +3724,24 @@ def run_generation(
         )
     else:
         final_answer = append_source_citations(llm_answer, source_citations, fallback_citations=citations)
+    final_answer = sanitize_final_answer(final_answer)
+    if _contains_internal_reasoning_leak(final_answer):
+        cleaned_answer, _, sanitize_err = sanitize_final_answer_with_retry(
+            answer=final_answer,
+            user_message=q,
+            llm_client=llm_client,
+            provider=provider,
+            model=model,
+            timeout=timeout,
+            fallback_answer=append_source_citations(
+                _build_structured_fallback_answer(q, displayed_evidences, exact_analyte=exact_analyte),
+                source_citations,
+                fallback_citations=citations,
+            ),
+        )
+        final_answer = cleaned_answer
+        if sanitize_err:
+            llm_error = f"{llm_error} | sanitize_retry:{sanitize_err}" if llm_error else f"sanitize_retry:{sanitize_err}"
 
     missing_requested_doc_ids = _resolve_missing_requested_doc_ids(sqlite_path, requested_doc_ids)
     found_requested_analyte_norms = sorted(
@@ -2899,7 +3786,17 @@ def run_generation(
         answer_style_requested=query_understanding.answer_style,
         requested_table_columns=query_understanding.requested_table_columns,
         requested_technical_condition=query_understanding.technical_condition,
+        source_clickable_requested=bool(query_understanding.source_clickable_requested),
+        requested_value=query_understanding.requested_value,
+        comparison_operator=query_understanding.comparison_operator,
     )
+    quality = _quality_report(
+        answer=final_answer,
+        validation=validation,
+        source_clickable_requested=bool(query_understanding.source_clickable_requested),
+        recent_style_history=style_history,
+    )
+    intro_text, conclusion_text = _extract_intro_conclusion(final_answer)
 
     elapsed = time.perf_counter() - started
 
@@ -2924,6 +3821,7 @@ def run_generation(
         "citations": citations,
         "sources": source_citations,
         "validation": validation,
+        "quality_report": quality,
         "llm_error": llm_error,
         "error_type": error_type,
         "generation_mode": generation_mode,
@@ -2937,6 +3835,13 @@ def run_generation(
             "top_results": [r.to_dict() for r in retrieval_response.top_results],
             "context_chunks": [r.to_dict() for r in retrieval_response.context_chunks],
             "sources": retrieval_response.sources,
+        },
+        "style_memory_entry": {
+            "intro_text": intro_text,
+            "conclusion_text": conclusion_text,
+            "intent": query_understanding.intent,
+            "output_format": query_understanding.output_format,
+            "answer_text": final_answer,
         },
         "prompt": prompt,
         "debug": {

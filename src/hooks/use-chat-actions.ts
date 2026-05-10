@@ -35,7 +35,13 @@ export function useChatActions() {
           history: toHistory(chat?.messages || []),
           mode,
         });
-        resolveAssistantMessage(chatId, loading.id, response.answer, response.sources);
+        resolveAssistantMessage(chatId, loading.id, response.answer, response.sources, {
+          quality_report: response.quality_report,
+          validation_status: response.validation_status,
+          generation_mode: response.generation_mode,
+          generation_writer: response.generation_writer,
+          response_time: response.response_time,
+        });
         return response;
       } catch (error) {
         failAssistantMessage(

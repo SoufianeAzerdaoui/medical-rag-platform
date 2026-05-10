@@ -42,6 +42,24 @@ _GENERIC_COLD_SENTENCES = [
     "les résultats ci-dessus sont strictement extraits des données indexées",
 ]
 
+_INTERNAL_REASONING_LEAK_PATTERNS = [
+    "okay, the user",
+    "the user said",
+    "the user wants",
+    "i need to",
+    "i should",
+    "first, i'll",
+    "first i ll",
+    "first, i will",
+    "first i will",
+    "i will",
+    "let me",
+    "je dois répondre",
+    "je vais répondre",
+    "<think>",
+    "</think>",
+]
+
 _TREATMENT_PATTERNS = [
     r"\btraitement\s+recommande\b",
     r"\bprescrire\b",
@@ -164,7 +182,7 @@ def _extract_allowed_sets(evidence_pack: list[dict[str, Any]]) -> dict[str, set[
             if v:
                 analytes.add(_norm(v))
 
-        for key in ("value_raw", "previous_result"):
+        for key in ("value_raw", "current_value", "value", "previous_result"):
             v = str(ev.get(key) or "").strip()
             if v:
                 values.add(_norm(v))
@@ -258,6 +276,198 @@ def _extract_source_doc_ids(answer_text: str) -> list[str]:
     return re.findall(r"doc_id=([^\],\s&#?]+)", answer_text or "", flags=re.IGNORECASE)
 
 
+def _extract_link_labels(answer_text: str) -> list[str]:
+    labels: list[str] = []
+    for m in re.finditer(r"\[([^\]]+)\]\((/api/documents/[^)]+|/viewer/[^)]+)\)", answer_text or "", flags=re.IGNORECASE):
+        labels.append((m.group(1) or "").strip())
+    return labels
+
+
+def _extract_sources_block_labels(answer_text: str) -> list[str]:
+    text = answer_text or ""
+    low = text.lower()
+    start = low.find("sources")
+    if start == -1:
+        return []
+    block = text[start:]
+    labels: list[str] = []
+    for line in block.splitlines():
+        ln = line.strip()
+        if not ln.startswith("- "):
+            continue
+        content = ln[2:].strip()
+        if not content:
+            continue
+        md = re.match(r"\[([^\]]+)\]\(([^)]+)\)", content)
+        if md:
+            labels.append((md.group(1) or "").strip())
+        else:
+            labels.append(content.split(" : ")[0].strip())
+    return labels
+
+
+def _parse_source_label(label: str) -> tuple[str, int | None, tuple[int, ...] | None]:
+    text = str(label or "").strip()
+    if not text:
+        return ("", None, None)
+    normalized = _norm(text)
+    filename = normalized.split("—")[0].strip() if "—" in normalized else normalized.split("- page")[0].strip()
+    page_match = re.search(r"\bpage\s*(\d+)\b", normalized)
+    page = int(page_match.group(1)) if page_match else None
+    line_match = re.search(r"\blignes?\s*(\d+)(?:\s*[–-]\s*(\d+))?\b", normalized)
+    if not line_match:
+        return (filename, page, None)
+    start = int(line_match.group(1))
+    end = int(line_match.group(2) or start)
+    if end < start:
+        start, end = end, start
+    return (filename, page, tuple(range(start, end + 1)))
+
+
+def _source_label_supported(mentioned_label: str, allowed_labels: set[str]) -> bool:
+    mn = _norm(mentioned_label)
+    if mn in allowed_labels:
+        return True
+    m_file, m_page, m_rows = _parse_source_label(mentioned_label)
+    if not m_file:
+        return False
+    candidates: list[tuple[str, int | None, tuple[int, ...] | None]] = []
+    for allowed in allowed_labels:
+        candidates.append(_parse_source_label(allowed))
+    same_file_page = [c for c in candidates if c[0] == m_file and (m_page is None or c[1] == m_page)]
+    if not same_file_page:
+        return False
+    if m_rows is None:
+        return True
+    allowed_rows = {
+        row
+        for _, _, rows in same_file_page
+        if rows is not None
+        for row in rows
+    }
+    if not allowed_rows:
+        return False
+    return bool(set(m_rows) & allowed_rows)
+
+
+def _table_has_source_column(answer_text: str) -> bool:
+    lines = [ln.strip() for ln in (answer_text or "").splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return False
+    for i in range(len(lines) - 1):
+        if "|" in lines[i] and re.search(r"^\|?\s*[-:| ]+\s*\|?\s*$", lines[i + 1]):
+            return "source" in _norm(lines[i])
+    return False
+
+
+def _is_small_talk_query(query: str) -> bool:
+    qn = _norm(query)
+    markers = [
+        "bonjour",
+        "bonsoir",
+        "salut",
+        "hello",
+        "hi",
+        "hey",
+        "ca va",
+        "ça va",
+        "cava",
+        "cv",
+        "merci",
+        "au revoir",
+        "bonne journee",
+        "bonne journée",
+    ]
+    if any(ch.isdigit() for ch in qn):
+        return False
+    if any(m in qn for m in markers):
+        if any(k in qn for k in ["report", "rapport", "resultat", "valeur", "analyte", "patient"]):
+            return False
+        return True
+    return False
+
+
+def _detect_general_conversation_intent(query: str, query_intents: dict[str, Any] | None) -> str | None:
+    intents = query_intents or {}
+    if intents.get("identity_question"):
+        return "identity_question"
+    if intents.get("capability_question"):
+        return "capability_question"
+    if intents.get("help_question"):
+        return "help_question"
+    if intents.get("small_talk") or intents.get("general_conversation"):
+        return "small_talk"
+
+    qn = _norm(query)
+    if any(m in qn for m in ["t es qui", "tu es qui", "qui es tu", "who are you", "what are you", "vous etes qui", "c est qui toi"]):
+        return "identity_question"
+    if any(
+        m in qn
+        for m in [
+            "tu peux faire quoi",
+            "que peux tu faire",
+            "c est quoi ton role",
+            "ton role",
+            "tu sers a quoi",
+            "comment tu peux m aider",
+            "what can you do",
+        ]
+    ):
+        return "capability_question"
+    if any(m in qn for m in ["aide moi", "help", "comment utiliser", "how to use", "guide moi"]):
+        return "help_question"
+    if _is_small_talk_query(query):
+        return "small_talk"
+    return None
+
+
+def check_internal_reasoning_leak(answer: str) -> bool:
+    low = _norm(answer or "")
+    if not low:
+        return False
+    return any(_norm(p) in low for p in _INTERNAL_REASONING_LEAK_PATTERNS)
+
+
+def _is_valid_presence_analyte_label(label: str) -> bool:
+    text = str(label or "").strip()
+    n = _norm(text)
+    if not text:
+        return False
+    if len(n) > 42 or len(n.split()) > 6:
+        return False
+    if ":" in text and len(text) > 25:
+        return False
+    if any(
+        m in n
+        for m in [
+            "augmentation de",
+            "associes",
+            "acromegalie",
+            "commentaire",
+            "interpretation",
+            "apres un infarctus",
+            "valeurs de reference",
+        ]
+    ):
+        return False
+    return True
+
+
+def _contains_medical_like(text_norm: str) -> bool:
+    return any(
+        k in text_norm
+        for k in [
+            "analyte",
+            "statut technique",
+            "report_",
+            "doc_id",
+            "pg/ml",
+            "m ui",
+            "mmol/l",
+        ]
+    )
+
+
 def _is_simple_question(query: str) -> bool:
     qn = _norm(query)
     if any(k in qn for k in ["tous", "toutes", "liste", "retrouves", "retrouvés", "documents"]):
@@ -349,6 +559,9 @@ def validate_answer(
     answer_style_requested: str | None = None,
     requested_table_columns: list[str] | None = None,
     requested_technical_condition: str | None = None,
+    source_clickable_requested: bool = False,
+    requested_value: str | None = None,
+    comparison_operator: str | None = None,
 ) -> dict[str, Any]:
     text = (answer_text or "").strip()
     text_norm = _norm(text)
@@ -369,6 +582,10 @@ def validate_answer(
     errors: list[str] = []
     warnings: list[str] = []
     unsupported_claims: list[str] = []
+    intents = query_intents or {}
+    general_conversation_intent = _detect_general_conversation_intent(query, intents)
+    small_talk_query = general_conversation_intent == "small_talk"
+    is_general_conversation_query = general_conversation_intent in {"small_talk", "identity_question", "capability_question", "help_question"}
 
     # Security / PII leaks
     pii_hits: list[str] = []
@@ -386,13 +603,23 @@ def validate_answer(
     # Thinking exposure
     if "<think>" in text_norm or "thinking:" in text_norm:
         errors.append("Model thinking content exposed in final answer.")
+    if check_internal_reasoning_leak(text):
+        errors.append("internal_reasoning_leak")
 
     forbidden_internal_hits = [m for m in _FORBIDDEN_INTERNAL_MARKERS if m in text_norm]
     if forbidden_internal_hits or "/home/" in text or "\\home\\" in text or re.search(r"[A-Za-z]:\\", text):
         errors.append("forbidden_internal_field")
     if re.search(r"résultat\(s\)|correspondant\(s\)", text, flags=re.IGNORECASE):
         warnings.append("ugly_pluralization")
-    if re.search(r"page\s*\d+\s*row\s*\d+", text_norm, flags=re.IGNORECASE):
+    if (
+        re.search(r"page\s*\d+\s*row\s*\d+", text_norm, flags=re.IGNORECASE)
+        or "chunk_id" in text_norm
+        or "/home/" in text
+        or "\\home\\" in text
+        or re.search(r"[A-Za-z]:\\", text)
+    ):
+        errors.append("source_format_bad")
+    if re.search(r"(?:^|[^a-z])page\s*\d+row\s*\d+", text_norm, flags=re.IGNORECASE):
         errors.append("source_format_bad")
     if any(sentence in text_norm for sentence in _GENERIC_COLD_SENTENCES):
         warnings.append("repeated_generic_sentence")
@@ -463,6 +690,28 @@ def validate_answer(
             if "/home/" in v or "\\home\\" in v or re.search(r"^[a-zA-Z]:[\\/]", v):
                 errors.append("viewer_url_local_path_leak")
 
+    allowed_source_labels = {
+        _norm(str(s.get("label") or ""))
+        for s in structured_sources
+        if str(s.get("label") or "").strip()
+    }
+    for ev in (displayed if displayed else evidence_pack):
+        src_label = str(ev.get("source_label") or ev.get("source") or "").strip()
+        if src_label and "doc_id=" not in _norm(src_label):
+            allowed_source_labels.add(_norm(src_label))
+    mentioned_source_labels = _extract_link_labels(text) + _extract_sources_block_labels(text)
+    unsupported_source_labels = []
+    for lbl in mentioned_source_labels:
+        if not lbl.strip():
+            continue
+        if "page " not in _norm(lbl) and ".pdf" not in _norm(lbl):
+            continue
+        if allowed_source_labels and not _source_label_supported(lbl, allowed_source_labels):
+            unsupported_source_labels.append(lbl)
+    if unsupported_source_labels:
+        errors.append("unsupported_source")
+        unsupported_claims.append(f"Unsupported source labels: {sorted(set(unsupported_source_labels))}")
+
     allowed = _extract_allowed_sets(displayed if displayed else evidence_pack)
 
     allowed_analytes_from_evidence = {
@@ -485,24 +734,30 @@ def validate_answer(
 
     # Unsupported numerics
     unsupported_numeric: list[str] = []
-    for token in _extract_numeric_tokens_for_validation(core_text):
-        if _norm(token) in {"0", "1"}:
-            continue
-        if not _value_supported_by_evidence(token, allowed, displayed if displayed else evidence_pack):
-            unsupported_numeric.append(token)
-    if unsupported_numeric:
-        unsupported_claims.append(f"Unsupported numeric values: {sorted(set(unsupported_numeric))}")
-        warnings.append("Some numeric values were not found in evidence.")
-        errors.append("unsupported_value")
-
-    # Unsupported units
     unsupported_units: list[str] = []
-    for unit in _UNIT_REGEX.findall(core_text):
-        if _norm(unit) not in allowed["units"]:
-            unsupported_units.append(unit)
-    if unsupported_units:
-        unsupported_claims.append(f"Unsupported units: {sorted(set(unsupported_units))}")
-        warnings.append("Some units were not found in evidence.")
+    if not is_general_conversation_query:
+        requested_value_norm = _norm(str(requested_value or "")).replace(".", ",")
+        requested_value_alt = _norm(str(requested_value or "")).replace(",", ".")
+        for token in _extract_numeric_tokens_for_validation(core_text):
+            if _norm(token) in {"0", "1"}:
+                continue
+            token_norm = _norm(token)
+            if requested_value and token_norm in {requested_value_norm, requested_value_alt}:
+                continue
+            if not _value_supported_by_evidence(token, allowed, displayed if displayed else evidence_pack):
+                unsupported_numeric.append(token)
+        if unsupported_numeric:
+            unsupported_claims.append(f"Unsupported numeric values: {sorted(set(unsupported_numeric))}")
+            warnings.append("Some numeric values were not found in evidence.")
+            errors.append("unsupported_value")
+
+        # Unsupported units
+        for unit in _UNIT_REGEX.findall(core_text):
+            if _norm(unit) not in allowed["units"]:
+                unsupported_units.append(unit)
+        if unsupported_units:
+            unsupported_claims.append(f"Unsupported units: {sorted(set(unsupported_units))}")
+            warnings.append("Some units were not found in evidence.")
 
     # Previous result claim validation
     qn = _norm(query)
@@ -598,6 +853,7 @@ def validate_answer(
             errors.append("Treatment recommendation detected.")
     if any(re.search(p, lower_core) for p in _DIAGNOSIS_PATTERNS):
         errors.append("Definitive diagnosis detected.")
+        errors.append("hallucinated_diagnosis")
 
     # Insufficient context handling
     insufficient_context_handled = False
@@ -612,12 +868,24 @@ def validate_answer(
         "information non retrouvee" in text_norm
     ) or (
         "information non retrouvée" in text_norm
+    ) or (
+        "aucun resultat correspondant n a ete retrouve" in text_norm
+    ) or (
+        "aucun resultat correspondant n'a ete retrouve" in text_norm
+    ) or (
+        "aucun resultat correspondant n a été retrouve" in text_norm
+    ) or (
+        "aucun résultat correspondant n’a été retrouvé" in text_norm
+    ) or (
+        "aucun resultat correspondant" in text_norm and "retrouve" in text_norm
     )
 
     if no_evidence:
         if (answer_style_requested or "").strip().lower() == "yes_no":
             compact = core_norm.strip()
             insufficient_context_handled = compact.startswith("non") or compact.startswith("no") or has_insufficient_sentence
+        elif is_general_conversation_query:
+            insufficient_context_handled = True
         else:
             insufficient_context_handled = has_insufficient_sentence
         if not insufficient_context_handled:
@@ -695,7 +963,7 @@ def validate_answer(
         if _norm(candidate) != q_ref:
             stale_query = True
             break
-    if stale_query:
+    if stale_query and not is_general_conversation_query:
         errors.append("stale_response_detection")
 
     requested_doc_id_norm = str(requested_doc_id or "").strip().lower()
@@ -789,6 +1057,12 @@ def validate_answer(
             req_keys = [str(c).strip().lower() for c in requested_table_columns if str(c).strip()]
             if header_keys and req_keys and header_keys != req_keys:
                 errors.append("output_columns_not_respected")
+                errors.append("exact_columns_not_respected")
+        if source_clickable_requested:
+            has_source_col = _table_has_source_column(core_text)
+            has_clickable_structured = any(str(s.get("url") or s.get("viewer_url") or "").strip() for s in structured_sources)
+            if not has_source_col and not has_clickable_structured:
+                errors.append("clickable_source_missing")
     if (output_format_requested or "").strip().lower() == "yes_no":
         compact = core_norm.strip()
         if not (
@@ -813,7 +1087,6 @@ def validate_answer(
         ):
             errors.append("yes_no_not_respected")
 
-    intents = query_intents or {}
     if intents.get("is_structured_query") and (answer_style_requested or "").strip().lower() != "yes_no" and (
         output_format_requested or ""
     ).strip().lower() != "json":
@@ -831,12 +1104,41 @@ def validate_answer(
         elif non_empty and re.match(r"^\s*[-*]\s+", non_empty[0]) and len(non_empty) > 2:
             # Structured list answer should start with a short context sentence.
             errors.append("missing_professional_intro")
+        if has_table and "conclusion technique" not in core_norm:
+            warnings.append("missing_conclusion")
+
+    if source_clickable_requested:
+        has_source_col_any = _table_has_source_column(text)
+        has_clickable_structured = any(str(s.get("url") or s.get("viewer_url") or "").strip() for s in structured_sources)
+        has_clickable_markdown = bool(re.search(r"\[[^\]]+\]\((/api/documents/|/viewer/)[^)]+\)", text, flags=re.IGNORECASE))
+        if not has_source_col_any and not has_clickable_structured and not has_clickable_markdown:
+            errors.append("clickable_source_missing")
 
     intro_block = (core_text or "").split("\n\n")[0].strip() if (core_text or "").strip() else ""
     intro_sentences = [s for s in re.split(r"[.!?]+", intro_block) if s.strip()]
-    if (answer_style_requested or "").strip().lower() != "yes_no" and (output_format_requested or "").strip().lower() != "json":
+    if (
+        (answer_style_requested or "").strip().lower() != "yes_no"
+        and (output_format_requested or "").strip().lower() != "json"
+        and not is_general_conversation_query
+    ):
         if len(intro_sentences) > 2:
             warnings.append("over_verbose_intro")
+        if requested_value:
+            intro_norm = _norm(intro_block)
+            rv = _norm(str(requested_value))
+            op = _norm(str(comparison_operator or ""))
+            has_value = bool(rv and rv in intro_norm)
+            has_operator_hint = any(
+                k in intro_norm for k in ["ou plus", "ou moins", "superieur", "supérieur", "inferieur", "inférieur", "egal", "égal"]
+            )
+            if not has_value or (op and not has_operator_hint):
+                warnings.append("missing_query_criterion_in_intro")
+            if op == ">" and ("superieure ou egale" in intro_norm or "supérieure ou égale" in intro_norm or "ou plus" in intro_norm):
+                errors.append("numeric_operator_mismatch")
+            if op == "<" and ("inferieure ou egale" in intro_norm or "inférieure ou égale" in intro_norm or "ou moins" in intro_norm):
+                errors.append("numeric_operator_mismatch")
+        if "conclusion technique" not in core_norm:
+            warnings.append("missing_conclusion")
     if re.search(r"\btshus\s*,\s*tsh\b|\btsh\s*,\s*tshus\b", intro_block, flags=re.IGNORECASE):
         errors.append("internal_alias_leak")
 
@@ -844,6 +1146,15 @@ def validate_answer(
         stripped = (answer_text or "").strip()
         if not (stripped.startswith("{") or stripped.startswith("[")):
             errors.append("format_not_respected")
+            errors.append("strict_json_violation")
+        try:
+            import json
+
+            json.loads(stripped)
+        except Exception:
+            errors.append("strict_json_violation")
+        if "sources :" in _norm(stripped) or "réponse :" in _norm(stripped) or "reponse :" in _norm(stripped):
+            errors.append("strict_json_violation")
     if "output_format_not_respected" in errors:
         errors.append("format_not_respected")
 
@@ -892,6 +1203,79 @@ def validate_answer(
         if any(k in core_norm for k in ["trak", "anticorps anti recepteur de la tsh", "anti recepteur de la tsh"]):
             errors.append("analyte_overmatch")
 
+    if any(k in qn for k in ["hors reference", "hors de la reference", "outside reference", "out of reference"]):
+        if "dans la reference" in core_norm or "within_reference" in core_norm:
+            errors.append("filter_violation_hors_reference")
+
+    if "non retrouve" in core_norm or "non retrouvé" in core_norm:
+        for analyte in requested_analyte_list:
+            if analyte in found_requested_norms:
+                errors.append("false_missing_item")
+                break
+
+    if (query_intents or {}).get("comment_without_measured_value"):
+        if any(k in core_norm for k in ["aucun resultat exploitable", "information non retrouvee", "information non retrouvée"]):
+            errors.append("comment_only_misclassified_as_no_result")
+
+    if is_general_conversation_query:
+        if (displayed if displayed else evidence_pack) or structured_sources or _contains_medical_like(core_norm):
+            errors.append("general_conversation_no_retrieval_violation")
+            if small_talk_query:
+                errors.append("small_talk_triggered_retrieval")
+        if any(k in core_norm for k in ["doc_id", "report_", "sources :", "/api/documents/", "/viewer/", "| --- |"]):
+            errors.append("general_conversation_no_retrieval_violation")
+            if small_talk_query:
+                errors.append("small_talk_content_violation")
+        if find_analyte_mentions(core_text):
+            errors.append("general_conversation_no_retrieval_violation")
+            if small_talk_query:
+                errors.append("small_talk_content_violation")
+        if re.search(
+            r"\b\d+(?:[.,]\d+)?\s*(pg/ml|ng/ml|mg/l|ug/ml|uui?/ml|uu/ml|mui/l|mui/ml|pmol/l|mmol/l|ui/l)\b",
+            core_text or "",
+            flags=re.IGNORECASE,
+        ):
+            errors.append("general_conversation_no_retrieval_violation")
+            if small_talk_query:
+                errors.append("small_talk_content_violation")
+        if check_internal_reasoning_leak(answer_text or ""):
+            errors.append("internal_reasoning_leak")
+        if general_conversation_intent == "identity_question":
+            if not any(
+                k in core_norm
+                for k in [
+                    "assistant medical rag",
+                    "assistant medical",
+                    "medical rag",
+                    "rapports medicaux",
+                    "rapports biologiques",
+                    "sources pdf",
+                ]
+            ):
+                errors.append("identity_answer_required")
+
+    if (query_intents or {}).get("response_transform"):
+        if "pas de réponse précédente" in (answer_text or "").lower() or "pas de reponse precedente" in (answer_text or "").lower():
+            errors.append("response_transform_missing_context")
+
+    if (query_intents or {}).get("multi_doc_comparison"):
+        if len(requested_doc_ids_norm) >= 2:
+            if not all(d in core_norm for d in requested_doc_ids_norm[:2]):
+                errors.append("multi_doc_comparison_not_performed")
+
+    if (query_intents or {}).get("multi_doc_presence_diff"):
+        for line in (core_text or "").splitlines():
+            if "|" in line and "analyte" in _norm(line):
+                continue
+            if line.strip().startswith("- "):
+                label = line.strip()[2:].split("|")[0].strip()
+                if label and not _is_valid_presence_analyte_label(label):
+                    warnings.append("presence_diff_noise_analyte")
+                    break
+
+    if any(sentence in text_norm for sentence in _GENERIC_COLD_SENTENCES):
+        warnings.append("repeated_generic_style")
+
     if (answer_style_requested or "").strip().lower() == "yes_no" and missing_requested:
         compact = core_norm.strip()
         if not (compact.startswith("non") or compact.startswith("no")):
@@ -906,11 +1290,16 @@ def validate_answer(
     for line in (core_text or "").splitlines():
         m = re.search(r"référence\s*:\s*([^|;\n]+)", line, flags=re.IGNORECASE)
         if m:
-            ref_value = _norm(m.group(1).strip())
+            raw_ref = re.sub(r"[)\].,;:]+$", "", m.group(1).strip())
+            ref_value = _norm(raw_ref)
             if ref_value in {"", "non disponible", "n a", "na"}:
                 continue
             displayed_refs.append(ref_value)
-    allowed_refs = {_norm(str(ev.get("reference_range") or "")) for ev in (displayed if displayed else evidence_pack) if str(ev.get("reference_range") or "").strip()}
+    allowed_refs = {
+        _norm(str(ev.get("reference_range") or ev.get("reference") or ""))
+        for ev in (displayed if displayed else evidence_pack)
+        if str(ev.get("reference_range") or ev.get("reference") or "").strip()
+    }
     bad_refs = [r for r in displayed_refs if r and r not in allowed_refs]
     if bad_refs:
         errors.append("unsupported_reference")

@@ -8,34 +8,47 @@ from llm_client import LLMClient, LLMClientError
 from query_understanding import QueryUnderstanding, norm_text
 
 
-PROFESSIONAL_WRITER_SYSTEM_PROMPT = """Tu es un assistant médical technique intégré dans un système RAG.
-Tu dois répondre uniquement à partir de l’evidence_pack fourni.
-Tu n’as pas le droit d’inventer, modifier ou compléter une valeur, une unité, une référence, un patient, un document, un analyte ou une source.
-Tu ne dois jamais utiliser ta connaissance générale pour compléter les données médicales.
-Tu dois produire une réponse professionnelle, claire, naturelle et concise.
-Tu dois respecter l’intention utilisateur et le format demandé.
-Tu dois toujours garder la réponse strictement grounded sur les sources fournies.
-Si la réponse n’est pas un JSON strict ni un yes/no strict, commence par une courte phrase de contexte.
-Si plusieurs résultats structurés sont fournis, utilise un tableau Markdown sauf si l’utilisateur demande autre chose.
-Si l’utilisateur demande un format précis, respecte-le.
-Si answer_style = yes_no, réponds d’abord par Oui/Non ou Yes/No, puis ajoute uniquement les informations demandées.
-Si output_format = json, retourne uniquement du JSON valide, sans texte autour.
-Si la question est diagnostique ou thérapeutique, ne pose jamais de diagnostic et ne propose pas de traitement ; fournis seulement une synthèse technique sourcée.
-Si aucune donnée n’est trouvée, dis-le clairement sans inventer.
-Ne montre jamais chunk_id, request_id, query_used_for_retrieval, chemins locaux ou logs techniques.
-Ne supprime aucun résultat fourni dans evidence_pack.
-Ne rajoute aucun résultat absent de evidence_pack.
-Tu dois produire une réponse naturelle et professionnelle sans répéter mécaniquement les mêmes formulations.
-Tu peux varier les phrases d’introduction et de conclusion.
-Tu ne dois jamais exposer les aliases internes, les champs techniques ou les noms de variables.
-Tu dois utiliser les noms humains des analytes depuis evidence_pack.results[].analyte.
-Tu dois gérer correctement le singulier/pluriel.
-Tu dois éviter les formulations comme “1 résultat(s)”.
-Tu dois éviter les phrases génériques répétées si elles n’ajoutent pas d’information.
-Tu ne dois jamais modifier les faits fournis.
-Tu dois préférer des formulations naturelles et précises, plutôt que des templates vagues.
-Tu dois éviter l’expression “critère demandé” si une formulation clinique plus claire est possible.
-La réponse doit être utile et présentable dans une interface professionnelle."""
+PROFESSIONAL_WRITER_SYSTEM_PROMPT = """Tu es un rédacteur médical technique dans un système RAG.
+Tu dois produire une réponse professionnelle, naturelle et concise à partir de l’evidence_pack fourni.
+L’evidence_pack est la seule source de vérité.
+Tu n’as pas le droit d’inventer, modifier ou compléter une valeur, une unité, une référence, un patient, un document, un résultat antérieur, une source ou un diagnostic.
+Tu ne dois jamais utiliser ta connaissance générale pour ajouter des faits médicaux.
+Tu dois respecter strictement l’intention et le format demandé par l’utilisateur.
+
+Règles de style :
+- Avant de répondre, organise la réponse en interne, mais ne produis jamais cette organisation. La sortie doit contenir uniquement la réponse finale.
+- Si la question est un small talk, réponds naturellement sans source et sans donnée médicale.
+- Ne commence pas directement par un tableau, sauf si l’utilisateur demande uniquement un tableau.
+- Ajoute une courte introduction utile, adaptée à la question.
+- L’introduction doit mentionner le vrai critère recherché, pas une phrase générique.
+- Ne répète pas toujours la même phrase d’introduction.
+- N’affiche jamais les aliases internes comme “tshus, tsh”.
+- Utilise les noms humains des analytes depuis results[].analyte.
+- Gère correctement le singulier/pluriel.
+- N’écris jamais “résultat(s)” ou “correspondant(s)”.
+- Si un seul résultat est trouvé, écris “Un seul résultat correspondant a été retrouvé.”
+- Si plusieurs résultats sont trouvés, écris “X résultats correspondants ont été retrouvés.”
+- Si aucun résultat est trouvé, écris “Aucun résultat correspondant n’a été retrouvé.”
+- Si la question contient un critère de valeur, mentionne ce critère dans l’introduction.
+- Si la question demande des sources cliquables, inclure une colonne Source ou afficher des sources cliquables sous la réponse.
+- Ajoute une conclusion technique courte quand elle apporte de la valeur.
+- Ne sois pas verbeux.
+- Ne donne jamais de diagnostic si la question est médicale/diagnostique.
+
+Règles de format :
+- Si output_format = table, produis un tableau Markdown propre.
+- Si source_clickable_requested = true, le tableau doit inclure une colonne Source avec le label source.
+- Si output_format = json ou answer_style = strict_json, retourne uniquement JSON valide, sans texte autour.
+- Si answer_style = yes_no, commence par Oui/Non ou Yes/No puis donne valeur, référence et source.
+- Pour les sources, utilise source_label.
+- N’affiche jamais chunk_id, path local, request_id ou logs techniques.
+
+Règles de grounding :
+- Tous les analytes affichés doivent exister dans results.
+- Toutes les valeurs affichées doivent exister dans results.
+- Toutes les sources affichées doivent exister dans results.
+- Ne rajoute aucune ligne au tableau.
+- Ne supprime aucune ligne importante fournie dans results, sauf si l’utilisateur demande un filtre."""
 
 
 _COLD_CONCLUSIONS = {
@@ -46,6 +59,15 @@ _COLD_CONCLUSIONS = {
 def _safe_str(value: Any, default: str = "") -> str:
     text = str(value or "").strip()
     return text if text else default
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except Exception:
+        return None
 
 
 def _pick_variant(seed: str, options: list[str]) -> str:
@@ -140,18 +162,38 @@ def humanize_analyte_list(analytes: list[str] | None, evidence_pack: dict[str, A
     return ", ".join(labels[:-1]) + f" et {labels[-1]}"
 
 
-def humanize_condition(query_understanding: QueryUnderstanding) -> str:
+def _infer_requested_unit(query_understanding: QueryUnderstanding, evidence_pack: dict[str, Any]) -> str:
+    explicit = _safe_str(getattr(query_understanding, "requested_unit", ""))
+    if explicit:
+        return explicit
+    evidences = list(evidence_pack.get("evidences") or evidence_pack.get("results") or [])
+    for ev in evidences:
+        unit = _safe_str(ev.get("unit"))
+        if unit:
+            return unit
+    return ""
+
+
+def humanize_condition(query_understanding: QueryUnderstanding, evidence_pack: dict[str, Any]) -> str:
     qn = norm_text(query_understanding.requested_value or "")
     value = _safe_str(query_understanding.requested_value)
+    operator = _safe_str(getattr(query_understanding, "comparison_operator", ""))
+    requested_unit = _infer_requested_unit(query_understanding, evidence_pack)
+    unit_suffix = f" {requested_unit}" if requested_unit else ""
     technical = _safe_str(query_understanding.technical_condition).lower()
 
     if value:
-        if any(k in norm_text(query_understanding.intent) for k in ["cohort", "global"]):
-            if any(k in qn for k in [">", "sup", "plus"]):
-                return f"avec une valeur de {value} ou plus"
-            if any(k in qn for k in ["<", "inf", "moins"]):
-                return f"avec une valeur de {value} ou moins"
-            return f"avec une valeur égale à {value}"
+        if operator == ">":
+            return f"strictement supérieure à {value}{unit_suffix}"
+        if operator == ">=" or any(k in qn for k in [">=", "ou plus"]):
+            return f"supérieure ou égale à {value}{unit_suffix}"
+        if operator == "<":
+            return f"strictement inférieure à {value}{unit_suffix}"
+        if operator == "<=" or any(k in qn for k in ["<=", "ou moins"]):
+            return f"inférieure ou égale à {value}{unit_suffix}"
+        if operator == "=":
+            return f"égale à {value}{unit_suffix}"
+        return f"égale à {value}{unit_suffix}"
 
     if technical == "above_reference":
         return "au-dessus de la référence"
@@ -177,13 +219,19 @@ def select_intro_template(intent: str, query_understanding: QueryUnderstanding, 
     doc_ids = list(query_understanding.requested_doc_ids or [])
     doc_scope = ", ".join(doc_ids) if doc_ids else "les rapports indexés"
     analyte_text = humanize_analyte_list(query_understanding.requested_analytes, evidence_pack)
-    condition = humanize_condition(query_understanding)
+    condition = humanize_condition(query_understanding, evidence_pack)
     condition_phrase = f" {condition}" if condition else ""
     seed = f"{intent}|{query_understanding.output_format}|{query_understanding.answer_style}|{doc_scope}|{analyte_text}|{condition}"
 
     if intent in {"cohort_search", "global_patient_lookup"}:
+        if condition and query_understanding.requested_value:
+            precise = f"J’ai recherché les patients ayant une {analyte_text} {condition}."
+        elif condition:
+            precise = f"J’ai recherché les patients ayant {analyte_text} {condition}."
+        else:
+            precise = f"J’ai recherché les patients ayant {analyte_text}."
         opts = [
-            f"J’ai recherché les patients ayant {analyte_text}{condition_phrase}.",
+            precise,
             f"La recherche a été effectuée sur l’ensemble des rapports indexés pour {analyte_text}{condition_phrase}.",
             f"J’ai filtré les rapports indexés pour identifier les patients avec {analyte_text}{condition_phrase}.",
             f"La base a été interrogée pour retrouver les patients répondant au critère : {analyte_text}{condition_phrase}.",
@@ -288,31 +336,34 @@ def choose_presentation_format(query_understanding: QueryUnderstanding, evidence
 def format_source_label(source: dict[str, Any]) -> str:
     filename = _safe_str(source.get("filename"))
     doc_id = _safe_str(source.get("doc_id"), "source")
-    page = source.get("page")
-    rows = [int(r) for r in (source.get("rows") or []) if isinstance(r, int)]
+    page = _safe_int(source.get("page"))
+    row = _safe_int(source.get("row"))
+    rows = [_safe_int(r) for r in (source.get("rows") or [])]
+    rows = [r for r in rows if isinstance(r, int)]
 
     base = filename or _safe_str(source.get("label")) or doc_id
-    # Normalize legacy malformed labels like "page 1row 1".
+    base = re.sub(r"\[doc_id=.*?\]", "", base, flags=re.IGNORECASE).strip()
+    base = re.sub(r"chunk_id\s*=\s*[^\],\s]+", "", base, flags=re.IGNORECASE).strip()
+    base = re.sub(r"/home/[^\s\])]+", "", base).strip()
+    base = re.sub(r"[A-Za-z]:\\[^\s\])]+", "", base).strip()
     base = re.sub(r"\bpage\s*(\d+)\s*row\s*(\d+)\b", r"page \1, ligne \2", base, flags=re.IGNORECASE)
+    base = re.sub(r"\bpage\s*(\d+)\s*ligne\s*(\d+)\b", r"page \1, ligne \2", base, flags=re.IGNORECASE)
+    base = re.sub(r"(ligne\s*\d+)\s*\1\b", r"\1", base, flags=re.IGNORECASE)
     base = re.sub(r"\s{2,}", " ", base).strip()
     has_page = re.search(r"\bpage\s*\d+\b", base, flags=re.IGNORECASE) is not None
     has_line = re.search(r"\bligne(?:s)?\s*\d+", base, flags=re.IGNORECASE) is not None
 
     if page is not None and not has_page:
-        base = f"{base} — page {int(page)}"
+        base = f"{base} — page {page}" if base else f"page {page}"
 
-    if rows:
-        rows = sorted(set(rows))
-        if has_line:
-            return base
-        if len(rows) == 1:
-            return f"{base}, ligne {rows[0]}"
-        return f"{base}, lignes {rows[0]}–{rows[-1]}"
+    row_values = sorted(set(rows + ([row] if isinstance(row, int) else [])))
+    if row_values and not has_line:
+        if len(row_values) == 1:
+            base = f"{base}, ligne {row_values[0]}"
+        else:
+            base = f"{base}, lignes {row_values[0]}–{row_values[-1]}"
 
-    row = source.get("row")
-    if isinstance(row, int) and not has_line:
-        return f"{base}, ligne {row}"
-    return base
+    return re.sub(r"\s{2,}", " ", base).strip(" -,")
 
 
 def deduplicate_sources(sources: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -362,7 +413,7 @@ def deduplicate_sources(sources: list[dict[str, Any]] | None) -> list[dict[str, 
 def _source_lines(source_citations: list[dict[str, Any]]) -> list[str]:
     lines: list[str] = []
     for src in deduplicate_sources(source_citations):
-        href = src.get("viewer_url") or src.get("url")
+        href = src.get("url") or src.get("viewer_url")
         if href:
             lines.append(f"- [{src.get('label')}]({href})")
         else:
@@ -372,29 +423,39 @@ def _source_lines(source_citations: list[dict[str, Any]]) -> list[str]:
 
 def build_short_conclusion(intent: str, evidence_pack: dict[str, Any], safety_intent: str | None) -> str | None:
     if safety_intent or intent == "diagnostic_safety_question":
-        return "Aucune interprétation diagnostique n’est ajoutée ; une évaluation clinique reste nécessaire."
+        return "Conclusion technique : aucune conclusion diagnostique ne peut être tirée uniquement de ces résultats."
 
     evidences = list(evidence_pack.get("evidences") or evidence_pack.get("results") or [])
     if not evidences:
         return None
-    if len(evidences) <= 1:
-        return None
+
+    first = evidences[0]
+    status = _safe_str(first.get("technical_status_code")).lower()
+    analyte = _safe_str(first.get("analyte"), "l’analyte")
+    if len(evidences) == 1:
+        if status == "above_reference":
+            return f"Conclusion technique : {analyte} est au-dessus de l’intervalle de référence indiqué."
+        if status == "below_reference":
+            return f"Conclusion technique : {analyte} est en dessous de l’intervalle de référence indiqué."
+        if status == "within_reference":
+            return "Conclusion technique : le résultat retrouvé respecte le critère demandé."
+        return "Conclusion technique : le résultat affiché correspond strictement aux données extraites."
 
     options_by_intent: dict[str, list[str]] = {
         "cohort_search": [
-            "La réponse reste limitée aux résultats retrouvés dans les rapports indexés.",
-            "Ces résultats sont basés uniquement sur les données extraites et les sources citées.",
+            "Conclusion technique : la réponse reste limitée aux résultats retrouvés dans les rapports indexés.",
+            "Conclusion technique : ces résultats sont basés uniquement sur les données extraites et les sources citées.",
         ],
         "multi_doc_comparison": [
-            "La comparaison repose uniquement sur les valeurs retrouvées dans les documents demandés.",
-            "Les écarts indiqués reflètent uniquement les mesures disponibles dans les rapports comparés.",
+            "Conclusion technique : la comparaison repose uniquement sur les valeurs retrouvées dans les documents demandés.",
+            "Conclusion technique : les écarts indiqués reflètent uniquement les mesures disponibles dans les rapports comparés.",
         ],
         "multi_doc_presence_diff": [
-            "La présence/absence ci-dessus correspond strictement aux données extraites de chaque rapport.",
+            "Conclusion technique : la présence/absence ci-dessus correspond strictement aux données extraites de chaque rapport.",
         ],
         "doc_scoped_results": [
-            "Ces résultats proviennent uniquement du document demandé.",
-            "La synthèse est strictement fondée sur les données extraites et les sources associées.",
+            "Conclusion technique : ces résultats proviennent uniquement du document demandé.",
+            "Conclusion technique : la synthèse est strictement fondée sur les données extraites et les sources associées.",
         ],
     }
     options = options_by_intent.get(intent) or []
@@ -415,12 +476,194 @@ def _table(columns: list[str], rows: list[dict[str, Any]]) -> str:
     return "\n".join(body)
 
 
+def _source_cell(ev: dict[str, Any]) -> str:
+    label = _safe_str(ev.get("source_label"))
+    if not label:
+        filename = _safe_str(ev.get("filename")) or _safe_str(ev.get("doc_id"), "source")
+        page = ev.get("page")
+        row = ev.get("row")
+        label = filename
+        if isinstance(page, int):
+            label += f" — page {page}"
+        if isinstance(row, int):
+            label += f", ligne {row}"
+    href = _safe_str(ev.get("source_url") or ev.get("viewer_url"))
+    if href:
+        return f"[{label}]({href})"
+    return label
+
+
+def _writer_intent(intent: str) -> str:
+    mapping = {
+        "cohort_search": "cohort_search",
+        "global_patient_lookup": "cohort_search",
+        "doc_scoped_results": "doc_scoped_query",
+        "previous_result_comparison": "comparison",
+        "multi_doc_comparison": "comparison",
+        "multi_doc_presence_diff": "comparison",
+        "doc_scoped_summary": "section_summary",
+        "immunoanalysis_summary": "section_summary",
+        "toxicology_summary": "section_summary",
+        "diagnostic_safety_question": "safety",
+        "response_transform": "response_transform",
+        "absence_or_missing_data": "missing_data",
+    }
+    return mapping.get(_safe_str(intent), "doc_scoped_query")
+
+
+def _writer_output_format(query_understanding: QueryUnderstanding, evidence_pack: dict[str, Any]) -> str:
+    chosen = choose_presentation_format(query_understanding, evidence_pack)
+    if chosen in {"table", "list", "paragraph", "json"}:
+        return chosen
+    return "auto"
+
+
+def _normalized_writer_result(ev: dict[str, Any]) -> dict[str, Any]:
+    status = _safe_str(ev.get("technical_status") or ev.get("status"))
+    status_code = _safe_str(ev.get("technical_status_code") or ev.get("interpretation_status")).lower()
+    if not status and status_code == "above_reference":
+        status = "au-dessus de la référence"
+    elif not status and status_code == "below_reference":
+        status = "en dessous de la référence"
+    elif not status and status_code == "within_reference":
+        status = "dans la référence"
+    elif not status:
+        status = "non interprétable"
+
+    source_label = _safe_str(ev.get("source_label"))
+    if not source_label:
+        source_label = format_source_label(
+            {
+                "filename": ev.get("filename"),
+                "doc_id": ev.get("doc_id"),
+                "page": ev.get("page"),
+                "row": ev.get("row"),
+            }
+        )
+    return {
+        "patient": _safe_str(ev.get("patient_token") or ev.get("patient")),
+        "doc_id": _safe_str(ev.get("doc_id")),
+        "filename": _safe_str(ev.get("filename")),
+        "page": _safe_int(ev.get("page")),
+        "row": _safe_int(ev.get("row")),
+        "analyte": _safe_str(ev.get("analyte")),
+        "value": _safe_str(ev.get("current_value") or ev.get("value_raw")),
+        "unit": _safe_str(ev.get("unit")),
+        "reference": _safe_str(ev.get("reference") or ev.get("reference_range")),
+        "status": status,
+        "previous_result": ev.get("previous_result"),
+        "variation": ev.get("variation"),
+        "source_label": source_label,
+        "source_url": _safe_str(ev.get("source_url")),
+        "viewer_url": _safe_str(ev.get("viewer_url")),
+    }
+
+
+def build_writer_evidence_pack(
+    *,
+    user_question: str,
+    query_understanding: QueryUnderstanding,
+    evidence_pack: dict[str, Any],
+    source_citations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    results = [_normalized_writer_result(ev) for ev in (evidence_pack.get("evidences") or evidence_pack.get("results") or [])]
+    recent_style_history = list(evidence_pack.get("recent_style_history") or [])
+    constraints = {
+        "requested_doc_ids": list(query_understanding.requested_doc_ids or []),
+        "requested_analytes": list(query_understanding.requested_analytes or []),
+        "excluded_analytes": list(getattr(query_understanding, "excluded_analytes", []) or []),
+        "technical_condition": query_understanding.technical_condition,
+        "comparison_operator": getattr(query_understanding, "comparison_operator", None),
+        "requested_value": query_understanding.requested_value,
+        "requested_unit": getattr(query_understanding, "requested_unit", None),
+        "requested_columns": list(query_understanding.requested_table_columns or []),
+        "source_clickable_requested": bool(getattr(query_understanding, "source_clickable_requested", False)),
+        "diagnostic_safety": bool(query_understanding.safety_intent),
+    }
+    return {
+        "user_question": user_question,
+        "intent": _writer_intent(query_understanding.intent),
+        "output_format": _writer_output_format(query_understanding, evidence_pack),
+        "answer_style": "yes_no" if query_understanding.answer_style == "yes_no" else "professional",
+        "language": _safe_str(query_understanding.language, "fr"),
+        "constraints": constraints,
+        "results": results,
+        "missing_items": list(evidence_pack.get("missing_items") or []),
+        "sources": deduplicate_sources(source_citations or []),
+        "response_brief": {
+            "task_goal": "Répondre à la question utilisateur de manière claire et sourcée.",
+            "audience": "Utilisateur non technique consultant des résultats biologiques.",
+            "tone": "professionnel, humain, clair, prudent",
+            "verbosity": "concise",
+            "format": _writer_output_format(query_understanding, evidence_pack),
+            "must_include": ["critère utilisateur réel", "résultats extraits", "sources lisibles"],
+            "must_not_include": ["chunk_id", "chemin local", "logs techniques", "diagnostic non autorisé", "aliases internes"],
+            "grounding_policy": "Toutes les valeurs doivent venir de l’evidence_pack.",
+            "style_policy": {
+                "avoid_repetitive_intros": True,
+                "avoid_generic_sentences": True,
+                "vary_intro_and_conclusion": True,
+                "no_template_phrasing": True,
+            },
+        },
+        "recent_style_history": recent_style_history[-20:],
+        "source_policy": {
+            "show_sources": True,
+            "clickable_sources": True,
+            "group_duplicate_sources": True,
+        },
+    }
+
+
 def _build_content_table(
     intent: str,
     evidences: list[dict[str, Any]],
     include_previous: bool,
     requested_columns: list[str] | None = None,
+    source_clickable_requested: bool = False,
 ) -> str:
+    requested_cols = [str(c).strip().lower() for c in (requested_columns or []) if str(c).strip()]
+    include_source_col = (not requested_cols and source_clickable_requested) or ("source" in set(requested_cols))
+
+    if requested_cols:
+        column_map = {
+            "patient": "Patient",
+            "report": "Report",
+            "document": "Document",
+            "analyte": "Analyte",
+            "valeur_actuelle": "Valeur actuelle",
+            "valeur": "Valeur actuelle",
+            "unite": "Unité",
+            "reference": "Référence",
+            "statut": "Statut",
+            "resultat_anterieur": "Résultat antérieur",
+            "variation": "Variation",
+            "source": "Source",
+        }
+        columns = [column_map[c] for c in requested_cols if c in column_map]
+        if columns:
+            normalized_rows: list[dict[str, Any]] = []
+            for ev in evidences:
+                normalized_rows.append(
+                    {
+                        "Patient": _safe_str(ev.get("patient_token"), "non disponible"),
+                        "Report": _safe_str(ev.get("doc_id")),
+                        "Document": _safe_str(ev.get("comparison_side") or ev.get("doc_id")),
+                        "Analyte": _safe_str(ev.get("analyte"), "non précisé"),
+                        "Valeur actuelle": (
+                            _safe_str(ev.get("current_value"), "non disponible")
+                            + (f" {_safe_str(ev.get('unit'))}" if _safe_str(ev.get("unit")) else "")
+                        ).strip(),
+                        "Unité": _safe_str(ev.get("unit"), "non disponible"),
+                        "Référence": _safe_str(ev.get("reference"), "non disponible"),
+                        "Statut": _safe_str(ev.get("technical_status"), "non interprétable"),
+                        "Source": _source_cell(ev),
+                        "Résultat antérieur": _safe_str(ev.get("previous_result"), "non disponible"),
+                        "Variation": _safe_str(ev.get("variation"), "non comparable"),
+                    }
+                )
+            return _table(columns, normalized_rows)
+
     if intent in {"cohort_search", "global_patient_lookup"}:
         rows = [
             {
@@ -433,10 +676,14 @@ def _build_content_table(
                 ).strip(),
                 "Référence": _safe_str(ev.get("reference"), "non disponible"),
                 "Statut": _safe_str(ev.get("technical_status"), "non interprétable"),
+                **({"Source": _source_cell(ev)} if include_source_col else {}),
             }
             for ev in evidences
         ]
-        return _table(["Patient", "Report", "Analyte", "Valeur actuelle", "Référence", "Statut"], rows)
+        cols = ["Patient", "Report", "Analyte", "Valeur actuelle", "Référence", "Statut"]
+        if include_source_col:
+            cols.append("Source")
+        return _table(cols, rows)
 
     if intent == "multi_doc_presence_diff":
         rows = [
@@ -459,6 +706,7 @@ def _build_content_table(
             ).strip(),
             "Référence": _safe_str(ev.get("reference"), "non disponible"),
             "Statut": _safe_str(ev.get("technical_status"), "non interprétable"),
+            **({"Source": _source_cell(ev)} if include_source_col else {}),
         }
         if _safe_str(ev.get("doc_id")):
             row["Document"] = _safe_str(ev.get("comparison_side") or ev.get("doc_id"))
@@ -467,7 +715,6 @@ def _build_content_table(
             row["Variation"] = _safe_str(ev.get("variation"), "non comparable")
         rows.append(row)
 
-    requested_cols = [str(c).strip().lower() for c in (requested_columns or []) if str(c).strip()]
     if intent == "response_transform" and requested_cols and rows:
         column_map = {
             "patient": "Patient",
@@ -481,6 +728,7 @@ def _build_content_table(
             "statut": "Statut",
             "resultat_anterieur": "Résultat antérieur",
             "variation": "Variation",
+            "source": "Source",
         }
         normalized_rows: list[dict[str, Any]] = []
         for ev in evidences:
@@ -497,6 +745,7 @@ def _build_content_table(
                     "Unité": _safe_str(ev.get("unit"), "non disponible"),
                     "Référence": _safe_str(ev.get("reference"), "non disponible"),
                     "Statut": _safe_str(ev.get("technical_status"), "non interprétable"),
+                    "Source": _source_cell(ev),
                     "Résultat antérieur": _safe_str(ev.get("previous_result"), "non disponible"),
                     "Variation": _safe_str(ev.get("variation"), "non comparable"),
                 }
@@ -550,6 +799,26 @@ def _build_json_answer(
     evidence_pack: dict[str, Any],
     source_citations: list[dict[str, Any]],
 ) -> str:
+    def _sanitize_result_record(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "doc_id": item.get("doc_id"),
+            "patient": item.get("patient_token") or item.get("patient"),
+            "page": item.get("page"),
+            "row": item.get("row"),
+            "analyte": item.get("analyte"),
+            "analyte_norm": item.get("analyte_norm"),
+            "value": item.get("current_value") or item.get("value_raw") or item.get("value"),
+            "unit": item.get("unit"),
+            "reference": item.get("reference") or item.get("reference_range"),
+            "status": item.get("technical_status") or item.get("interpretation_status") or item.get("status"),
+            "status_code": item.get("technical_status_code"),
+            "previous_result": item.get("previous_result"),
+            "variation": item.get("variation"),
+            "source_label": item.get("source_label") or item.get("source"),
+            "source_url": item.get("source_url"),
+            "viewer_url": item.get("viewer_url"),
+        }
+
     payload = {
         "question": user_question,
         "intent": query_understanding.intent,
@@ -561,10 +830,20 @@ def _build_json_answer(
             "technical_condition": query_understanding.technical_condition,
             "safety_intent": query_understanding.safety_intent,
         },
-        "results": list(evidence_pack.get("evidences") or evidence_pack.get("results") or []),
-        "evidences": list(evidence_pack.get("evidences") or evidence_pack.get("results") or []),
+        "results": [_sanitize_result_record(r) for r in list(evidence_pack.get("evidences") or evidence_pack.get("results") or [])],
+        "evidences": [_sanitize_result_record(r) for r in list(evidence_pack.get("evidences") or evidence_pack.get("results") or [])],
         "missing_items": list(evidence_pack.get("missing_items") or []),
-        "sources": deduplicate_sources(source_citations),
+        "sources": [
+            {
+                "label": s.get("label"),
+                "doc_id": s.get("doc_id"),
+                "page": s.get("page"),
+                "row": s.get("row"),
+                "url": s.get("url"),
+                "viewer_url": s.get("viewer_url"),
+            }
+            for s in deduplicate_sources(source_citations)
+        ],
     }
     return json.dumps(payload, ensure_ascii=False)
 
@@ -619,7 +898,15 @@ def render_professional_fallback(
             analyte_text = humanize_analyte_list(query_understanding.requested_analytes, evidence_pack)
             answer = f"Non — {analyte_text} non retrouvé dans {doc_scope}."
         else:
-            answer = _build_paragraph(evidences[:1], user_question)
+            first = dict(evidences[0] or {})
+            analyte = _safe_str(first.get("analyte"), "Analyte")
+            value = _safe_str(first.get("current_value"), _safe_str(first.get("value_raw"), "non disponible"))
+            unit = _safe_str(first.get("unit"), "")
+            reference = _safe_str(first.get("reference"), _safe_str(first.get("reference_range"), "non disponible"))
+            status_code = _safe_str(first.get("technical_status_code"), "")
+            prefix = _yn_prefix(user_question, status_code, reference)
+            value_text = value if not unit else f"{value} {unit}"
+            answer = f"{prefix} — {analyte}: {value_text} (référence: {reference})."
         src_lines = _source_lines(source_citations or [])
         if src_lines:
             answer = answer.rstrip() + "\n\nSources :\n" + "\n".join(src_lines)
@@ -641,7 +928,13 @@ def render_professional_fallback(
     include_previous = bool(query_understanding.requires_previous_results)
     if presentation == "table":
         content = (
-            _build_content_table(intent, evidences, include_previous, query_understanding.requested_table_columns)
+            _build_content_table(
+                intent,
+                evidences,
+                include_previous,
+                query_understanding.requested_table_columns,
+                bool(getattr(query_understanding, "source_clickable_requested", False)),
+            )
             if evidences
             else "Aucun résultat exploitable."
         )
@@ -660,7 +953,8 @@ def render_professional_fallback(
     answer = "\n\n".join(parts)
 
     src_lines = _source_lines(source_citations or [])
-    if src_lines:
+    has_source_column_in_table = presentation == "table" and bool(re.search(r"(?im)^\|\s*.*\bsource\b.*\|$", content or ""))
+    if src_lines and not has_source_column_in_table:
         answer = answer.rstrip() + "\n\nSources :\n" + "\n".join(src_lines)
 
     return {
@@ -694,6 +988,7 @@ def compose_professional_answer(
     num_ctx: int = 4096,
     max_tokens: int = 420,
     timeout: int = 18,
+    retry_feedback: str | None = None,
 ) -> dict[str, Any]:
     fallback = render_professional_fallback(
         evidence_pack=evidence_pack,
@@ -713,49 +1008,28 @@ def compose_professional_answer(
     if not evidences:
         return fallback
 
-    compact_pack = {
-        "user_question": user_question,
-        "intent": query_understanding.intent,
-        "answer_style": query_understanding.answer_style,
-        "output_format": query_understanding.output_format,
-        "constraints": {
-            "requested_doc_ids": list(query_understanding.requested_doc_ids or []),
-            "requested_analytes": list(query_understanding.requested_analytes or []),
-            "excluded_analytes": [],
-            "technical_condition": query_understanding.technical_condition,
-            "requested_columns": list(query_understanding.requested_table_columns or []),
-            "safety_intent": query_understanding.safety_intent,
-        },
-        "results": evidences,
-        "missing_items": list(evidence_pack.get("missing_items") or []),
-        "warnings": list(evidence_pack.get("warnings") or []),
-        "sources": deduplicate_sources(source_citations or []),
-        "style_guidelines": {
-            "intro_max_sentences": 2,
-            "conclusion_max_sentences": 1,
-            "avoid_ugly_pluralization": True,
-            "avoid_internal_aliases": True,
-            "no_internal_fields": True,
-        },
-        "forbidden_phrases": [
-            "résultat(s)",
-            "correspondant(s)",
-            "chunk_id",
-            "query_used_for_retrieval",
-        ],
-        "allowed_facts": {
-            "results_count": len(evidences),
-            "sources_count": len(deduplicate_sources(source_citations or [])),
-        },
-    }
+    compact_pack = build_writer_evidence_pack(
+        user_question=user_question,
+        query_understanding=query_understanding,
+        evidence_pack=evidence_pack,
+        source_citations=source_citations or [],
+    )
 
     prompt = (
         f"{PROFESSIONAL_WRITER_SYSTEM_PROMPT}\n\n"
+        "Sortie attendue: réponse finale uniquement.\n"
+        "/no_think\n\n"
         "Question utilisateur:\n"
         f"{user_question.strip()}\n\n"
         "evidence_pack JSON:\n"
         f"{json.dumps(compact_pack, ensure_ascii=False)}\n"
     )
+    if retry_feedback:
+        prompt += (
+            "\nCorrections obligatoires:\n"
+            "Corrige uniquement le style/format ci-dessous sans modifier aucune donnée factuelle.\n"
+            f"{retry_feedback.strip()}\n"
+        )
 
     client = llm_client or LLMClient(provider=provider)
     try:
@@ -779,7 +1053,8 @@ def compose_professional_answer(
             out["llm_error"] = "ugly_pluralization"
             return out
 
-        if "sources" not in llm_answer.lower():
+        has_source_col = bool(re.search(r"(?im)^\|\s*.*\bsource\b.*\|$", llm_answer or ""))
+        if "sources" not in llm_answer.lower() and not has_source_col:
             src_lines = _source_lines(source_citations or [])
             if src_lines:
                 llm_answer = llm_answer.rstrip() + "\n\nSources :\n" + "\n".join(src_lines)
