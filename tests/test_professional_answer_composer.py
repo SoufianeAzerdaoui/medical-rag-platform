@@ -521,6 +521,129 @@ class TestProfessionalAnswerComposer(unittest.TestCase):
         )
         self.assertIn("strict_json_violation", validation.get("errors") or [])
 
+    def test_18_chart_request_not_silent_table(self) -> None:
+        qu = parse_query_understanding("Dans report 16, liste les résultats hors référence sous forme Arithmetic Line-Graph.")
+        pack = {
+            "question": "Q",
+            "intent": "doc_scoped_results",
+            "requested_doc_ids": ["report_16"],
+            "requested_analytes": ["tshus", "insuline"],
+            "output_format": "chart",
+            "answer_style": "standard",
+            "evidences": [
+                {
+                    "doc_id": "report_16",
+                    "patient_token": "PAT_000002",
+                    "page": 1,
+                    "row": 4,
+                    "analyte": "TSHus",
+                    "analyte_norm": "tshus",
+                    "current_value": "55,00",
+                    "unit": "mUI/L",
+                    "reference": "0,35 à 4,94 mUI/l",
+                    "technical_status_code": "above_reference",
+                    "technical_status": "au-dessus de la référence",
+                },
+                {
+                    "doc_id": "report_16",
+                    "patient_token": "PAT_000002",
+                    "page": 1,
+                    "row": 2,
+                    "analyte": "INSULINE",
+                    "analyte_norm": "insuline",
+                    "current_value": "2,00",
+                    "unit": "uU/mL",
+                    "reference": "4 à 20 µIU/mL",
+                    "technical_status_code": "below_reference",
+                    "technical_status": "en dessous de la référence",
+                },
+            ],
+            "missing_items": [],
+        }
+        composed = render_professional_fallback(
+            evidence_pack=pack,
+            query_understanding=qu,
+            user_question=pack["question"],
+            source_citations=self._sources([2, 4]),
+        )
+        answer = str(composed.get("answer") or "")
+        self.assertIn("rendu graphique n’est pas encore disponible dans l’interface", answer)
+        self.assertIn("données structurées", answer)
+        self.assertIn("barres", answer.lower())
+        self.assertIn("| Analyte |", answer)
+
+    def test_19_unknown_format_no_silent_fallback(self) -> None:
+        qu = parse_query_understanding(
+            "Dans report 16, affiche les résultats hors référence sous forme bio-clinical matrix radar comparative."
+        )
+        pack = {
+            "question": "Q",
+            "intent": "doc_scoped_results",
+            "requested_doc_ids": ["report_16"],
+            "requested_analytes": ["tshus"],
+            "output_format": "unknown",
+            "answer_style": "standard",
+            "evidences": [
+                {
+                    "doc_id": "report_16",
+                    "patient_token": "PAT_000002",
+                    "page": 1,
+                    "row": 4,
+                    "analyte": "TSHus",
+                    "analyte_norm": "tshus",
+                    "current_value": "55,00",
+                    "unit": "mUI/L",
+                    "reference": "0,35 à 4,94 mUI/l",
+                    "technical_status_code": "above_reference",
+                    "technical_status": "au-dessus de la référence",
+                }
+            ],
+            "missing_items": [],
+        }
+        composed = render_professional_fallback(
+            evidence_pack=pack,
+            query_understanding=qu,
+            user_question=pack["question"],
+            source_citations=self._sources([4]),
+        )
+        answer = str(composed.get("answer") or "").lower()
+        self.assertIn("bio-clinical matrix radar comparative", answer)
+        self.assertTrue(
+            ("non support" in answer)
+            or ("format alternatif" in answer)
+            or ("composant graphique" in answer)
+            or ("rendu graphique n’est pas encore disponible dans l’interface" in answer)
+        )
+
+    def test_20_source_grouping_lines_range(self) -> None:
+        qu = parse_query_understanding("Dans report 16, liste les résultats hors référence sous forme de tableau avec source cliquable.")
+        pack = {
+            "question": "Q",
+            "intent": "doc_scoped_results",
+            "requested_doc_ids": ["report_16"],
+            "requested_analytes": ["insuline", "t4_libre", "tshus", "t3_libre", "anti_tg"],
+            "output_format": "table",
+            "answer_style": "standard",
+            "evidences": [],
+            "missing_items": [],
+        }
+        sources = [
+            {"doc_id": "report_16", "filename": "report (16).pdf", "page": 1, "row": 2, "url": "/api/documents/report_16/pdf?page=1"},
+            {"doc_id": "report_16", "filename": "report (16).pdf", "page": 1, "row": 3, "url": "/api/documents/report_16/pdf?page=1"},
+            {"doc_id": "report_16", "filename": "report (16).pdf", "page": 1, "row": 4, "url": "/api/documents/report_16/pdf?page=1"},
+            {"doc_id": "report_16", "filename": "report (16).pdf", "page": 1, "row": 5, "url": "/api/documents/report_16/pdf?page=1"},
+            {"doc_id": "report_16", "filename": "report (16).pdf", "page": 1, "row": 6, "url": "/api/documents/report_16/pdf?page=1"},
+        ]
+        composed = render_professional_fallback(
+            evidence_pack=pack,
+            query_understanding=qu,
+            user_question=pack["question"],
+            source_citations=sources,
+        )
+        answer = str(composed.get("answer") or "")
+        self.assertIn("report (16).pdf — page 1, lignes 2–6", answer)
+        self.assertNotIn("ligne 2ligne 2", answer)
+
 
 if __name__ == "__main__":
     unittest.main()

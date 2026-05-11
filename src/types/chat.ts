@@ -29,6 +29,30 @@ export type LegacySourceItem = {
 
 export type ChatSource = SourceCitation | LegacySourceItem | string;
 
+export interface VisualizationDatum {
+  analyte?: string;
+  value?: number | string | null;
+  value_numeric?: number | null;
+  reference_ratio?: number | null;
+  unit?: string;
+  reference?: string;
+  status?: string;
+  source_label?: string;
+}
+
+export interface VisualizationPayload {
+  requested?: boolean;
+  type?: string;
+  title?: string;
+  source?: string;
+  supported?: boolean;
+  recommended_type?: string;
+  reason?: string;
+  x_field?: string;
+  y_field?: string;
+  data?: VisualizationDatum[];
+}
+
 export interface QualityReport {
   faithfulness_score: number;
   format_compliance_score: number;
@@ -55,6 +79,8 @@ export interface MessageItem {
   createdAt: string;
   status: MessageStatus;
   sources?: ChatSource[];
+  visualization?: VisualizationPayload;
+  chart_data?: VisualizationPayload;
   diagnostics?: AssistantDiagnostics;
   attachments?: string[];
   audio?: { mimeType: string; blobUrl: string };
@@ -83,4 +109,6 @@ export interface RagResponse {
   validation_status?: "pass" | "warning" | "fail";
   generation_mode?: string;
   generation_writer?: "llm_writer" | "professional_fallback";
+  visualization?: VisualizationPayload;
+  chart_data?: VisualizationPayload;
 }

@@ -49,6 +49,7 @@ class ConversationState:
     last_output_format: str = ""
     last_rendered_rows: list[dict[str, Any]] | None = None
     last_sources: list[dict[str, Any]] | None = None
+    last_visualization: dict[str, Any] | None = None
     last_intent: str = ""
     last_requested_columns: list[str] | None = None
 
@@ -360,7 +361,10 @@ def main() -> int:
                 conversation_state.last_answer = str(result.get("answer") or "")
                 conversation_state.last_output_format = str((result.get("query_understanding") or {}).get("output_format") or "")
                 conversation_state.last_rendered_rows = list((result.get("structured_evidence_pack") or {}).get("evidences") or [])
-                conversation_state.last_sources = list((result.get("retrieval") or {}).get("sources") or [])
+                conversation_state.last_sources = list(result.get("sources") or [])
+                conversation_state.last_visualization = dict(result.get("visualization") or {}) if isinstance(
+                    result.get("visualization"), dict
+                ) else None
                 conversation_state.last_intent = str((result.get("query_understanding") or {}).get("intent") or "")
                 conversation_state.last_requested_columns = list((result.get("query_understanding") or {}).get("requested_table_columns") or [])
 

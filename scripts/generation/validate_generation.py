@@ -361,6 +361,58 @@ CASES: list[dict[str, Any]] = [
         "must_not_contain": ["doc_id", "source :", "pmol/l", "pg/ml"],
         "max_latency_s": 4.0,
     },
+    {
+        "id": "T30_CHART_LINE_UNSUPPORTED_EXPLAINED",
+        "query": "Dans report 16, liste les résultats hors référence sous forme Arithmetic Line-Graph.",
+        "requested_docs": ["report_16"],
+        "must_contain": ["graphique", "données structurées"],
+        "must_not_contain": ["chunk_id", "/home/"],
+        "max_latency_s": 8.0,
+    },
+    {
+        "id": "T31_CHART_BAR_DATA_PRESENT",
+        "query": "Dans report 16, affiche les résultats hors référence sous forme de graphique en barres.",
+        "requested_docs": ["report_16"],
+        "must_contain": ["graphique", "données structurées"],
+        "must_not_contain": ["chunk_id", "/home/"],
+        "max_latency_s": 8.0,
+    },
+    {
+        "id": "T32_UNKNOWN_PRESENTATION_FORMAT",
+        "query": "Dans report 16, affiche les résultats hors référence sous forme bio-clinical matrix radar comparative.",
+        "requested_docs": ["report_16"],
+        "must_contain": ["bio-clinical matrix radar comparative"],
+        "must_not_contain": ["chunk_id", "/home/"],
+        "max_latency_s": 8.0,
+    },
+    {
+        "id": "T33_FOLLOWUP_BAR_CHART",
+        "query": "ok donne moi le résultat sous forme graphique en barres",
+        "use_previous_from": "T30_CHART_LINE_UNSUPPORTED_EXPLAINED",
+        "requested_docs": ["report_16"],
+        "must_contain": ["graphique en barres", "données structurées"],
+        "must_not_contain": ["bonjour", "none", "chunk_id", "/home/"],
+        "max_latency_s": 8.0,
+    },
+    {
+        "id": "T34_OK_ALONE",
+        "query": "ok",
+        "must_not_contain": ["report_", "source", "chunk_id"],
+        "max_latency_s": 5.0,
+    },
+    {
+        "id": "T35_FOLLOWUP_JSON_STRICT",
+        "query": "ok donne moi le résultat en JSON strict",
+        "use_previous_from": "T30_CHART_LINE_UNSUPPORTED_EXPLAINED",
+        "strict_json_only": True,
+        "max_latency_s": 6.0,
+    },
+    {
+        "id": "T36_FOLLOWUP_NO_PREVIOUS_CONTEXT",
+        "query": "donne moi le résultat sous forme graphique en barres",
+        "must_contain": ["résultat précédent exploitable", "reformater"],
+        "max_latency_s": 6.0,
+    },
 ]
 
 
@@ -558,6 +610,87 @@ def _check_case(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, lis
             reasons.append("general_conversation_has_sources")
         if _has_internal_reasoning_leak(answer):
             reasons.append("general_conversation_internal_reasoning_leak")
+
+    if cid == "T30_CHART_LINE_UNSUPPORTED_EXPLAINED":
+        qu = result.get("query_understanding") or {}
+        presentation = qu.get("presentation_intent") or {}
+        visualization = result.get("visualization") or {}
+        if str(qu.get("output_format") or "").lower() != "chart":
+            reasons.append("output_format_not_chart")
+        if str(presentation.get("chart_type") or "").lower() != "line":
+            reasons.append("chart_type_not_line")
+        if not bool(presentation.get("user_requested_visualization")):
+            reasons.append("visualization_not_detected")
+        if not visualization:
+            reasons.append("visualization_missing")
+        if _is_markdown_table(answer) and not _contains_any(answer, ["graphique", "visualisation", "visualization", "interface"]):
+            reasons.append("unsupported_format_silently_ignored")
+        if not _contains_any(answer, ["unites", "unités", "barres", "ratio"]):
+            reasons.append("chart_units_warning_missing")
+
+    if cid == "T31_CHART_BAR_DATA_PRESENT":
+        qu = result.get("query_understanding") or {}
+        presentation = qu.get("presentation_intent") or {}
+        visualization = result.get("visualization") or {}
+        chart_data = result.get("chart_data") or {}
+        if str(qu.get("output_format") or "").lower() != "chart":
+            reasons.append("output_format_not_chart")
+        if str(presentation.get("chart_type") or "").lower() != "bar":
+            reasons.append("chart_type_not_bar")
+        if not visualization:
+            reasons.append("visualization_missing")
+        if not chart_data or not list(chart_data.get("data") or []):
+            reasons.append("chart_data_missing")
+
+    if cid == "T32_UNKNOWN_PRESENTATION_FORMAT":
+        qu = result.get("query_understanding") or {}
+        presentation = qu.get("presentation_intent") or {}
+        if not str(qu.get("raw_format_phrase") or ""):
+            reasons.append("raw_format_phrase_missing")
+        if not list(qu.get("unhandled_instructions") or []):
+            reasons.append("unhandled_instructions_missing")
+        if not _contains_any(answer, ["non support", "format alternatif", "composant graphique", "recommandation"]):
+            reasons.append("unknown_format_not_explained")
+        if str(qu.get("response_strategy") or "") not in {"explain_limit_and_provide_data", "render_chart_data"}:
+            reasons.append("response_strategy_mismatch")
+        if str(presentation.get("requested_output") or "").lower() not in {"unknown", "chart"}:
+            reasons.append("presentation_output_unexpected")
+
+    if cid == "T33_FOLLOWUP_BAR_CHART":
+        qu = result.get("query_understanding") or {}
+        presentation = qu.get("presentation_intent") or {}
+        mode = str(result.get("generation_mode") or "")
+        if str(qu.get("intent") or "") != "response_transform":
+            reasons.append("followup_not_response_transform")
+        if str(qu.get("response_strategy") or "") != "transform_previous_response":
+            reasons.append("followup_strategy_mismatch")
+        if not mode.startswith("deterministic_response_transform"):
+            reasons.append("followup_triggered_retrieval")
+        if str(qu.get("output_format") or "").lower() != "chart":
+            reasons.append("followup_output_not_chart")
+        if str(presentation.get("chart_type") or "").lower() != "bar":
+            reasons.append("followup_chart_type_not_bar")
+        if _contains_any(answer, ["bonjour", "none", "rendu chart"]):
+            reasons.append("followup_noise_text")
+        if "graphique en barres" not in answer.lower():
+            reasons.append("followup_bar_phrase_missing")
+        if "ligne 2ligne" in answer.lower():
+            reasons.append("source_label_duplication")
+
+    if cid == "T34_OK_ALONE":
+        if str(result.get("generation_mode") or "") != "llm_small_talk":
+            reasons.append("ok_not_small_talk")
+        if result.get("sources"):
+            reasons.append("ok_has_sources")
+
+    if cid == "T35_FOLLOWUP_JSON_STRICT":
+        qu = result.get("query_understanding") or {}
+        if str(qu.get("intent") or "") != "response_transform":
+            reasons.append("json_followup_not_transform")
+
+    if cid == "T36_FOLLOWUP_NO_PREVIOUS_CONTEXT":
+        if "Je n’ai pas de résultat précédent exploitable à reformater." not in answer:
+            reasons.append("missing_no_previous_context_message")
 
     return len(reasons) == 0, reasons
 

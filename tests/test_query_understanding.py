@@ -144,6 +144,39 @@ class TestQueryUnderstanding(unittest.TestCase):
         self.assertTrue(qu.intents.get("general_conversation"))
         self.assertFalse(qu.is_small_talk)
 
+    def test_chart_presentation_intent_line(self) -> None:
+        qu = parse_query_understanding("Dans report 16, liste les résultats hors référence sous forme Arithmetic Line-Graph.")
+        self.assertEqual(qu.output_format, "chart")
+        self.assertEqual(qu.presentation_intent.requested_output, "chart")
+        self.assertEqual(qu.presentation_intent.chart_type, "line")
+        self.assertTrue(qu.presentation_intent.user_requested_visualization)
+        self.assertTrue(qu.presentation_intent.unsupported_format)
+        self.assertIn("Arithmetic", str(qu.raw_format_phrase or ""))
+
+    def test_chart_presentation_intent_bar(self) -> None:
+        qu = parse_query_understanding("Dans report 16, affiche les résultats hors référence sous forme de graphique en barres.")
+        self.assertEqual(qu.output_format, "chart")
+        self.assertEqual(qu.presentation_intent.chart_type, "bar")
+        self.assertTrue(qu.presentation_intent.user_requested_visualization)
+
+    def test_unknown_or_complex_format_is_preserved(self) -> None:
+        qu = parse_query_understanding(
+            "Dans report 16, affiche les résultats hors référence sous forme bio-clinical matrix radar comparative."
+        )
+        self.assertIn(qu.output_format, {"chart", "unknown"})
+        self.assertTrue(bool(qu.raw_format_phrase))
+        self.assertTrue(bool(qu.unhandled_instructions))
+        self.assertEqual(qu.response_strategy, "explain_limit_and_provide_data")
+
+    def test_ok_alone_is_small_talk(self) -> None:
+        qu = parse_query_understanding("ok")
+        self.assertEqual(qu.intent, "small_talk")
+
+    def test_ok_transform_followup_is_response_transform(self) -> None:
+        qu = parse_query_understanding("ok donne moi le résultat en JSON strict")
+        self.assertEqual(qu.intent, "response_transform")
+        self.assertEqual(qu.response_strategy, "transform_previous_response")
+
     def test_excluded_analytes_detection(self) -> None:
         qu = parse_query_understanding(
             "Quels patients ont une TSHus au-dessus de la référence ? N’inclus pas TRAK, Anti-TG, ni anticorps anti-récepteur de la TSH."

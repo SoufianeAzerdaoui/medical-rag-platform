@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 from llm_client import LLMClient, LLMClientError
-from query_understanding import QueryUnderstanding, norm_text
+from query_understanding import QueryUnderstanding, analyte_display_name, norm_text
 
 
 PROFESSIONAL_WRITER_SYSTEM_PROMPT = """Tu es un rédacteur médical technique dans un système RAG.
@@ -37,6 +37,7 @@ Règles de style :
 
 Règles de format :
 - Si output_format = table, produis un tableau Markdown propre.
+- Si output_format = chart, respecte la demande graphique. Si le rendu graphique n’est pas supporté par le système, explique brièvement la limite et fournis un format alternatif fiable + données structurées prêtes à visualiser.
 - Si source_clickable_requested = true, le tableau doit inclure une colonne Source avec le label source.
 - Si output_format = json ou answer_style = strict_json, retourne uniquement JSON valide, sans texte autour.
 - Si answer_style = yes_no, commence par Oui/Non ou Yes/No puis donne valeur, référence et source.
@@ -78,20 +79,8 @@ def _pick_variant(seed: str, options: list[str]) -> str:
 
 
 def _canonical_analyte_display(alias: str) -> str:
-    mapping = {
-        "tshus": "TSHus",
-        "tsh": "TSH",
-        "acth": "ACTH",
-        "psa_totale": "PSA totale",
-        "ca_15_3": "CA 15-3",
-        "t4_libre": "T4 libre",
-        "ckmb": "CKMB",
-        "crp": "CRP",
-        "ace": "ACE",
-        "acide_valproique": "Acide valproïque",
-    }
     key = norm_text(alias).replace(" ", "_")
-    return mapping.get(key, alias.replace("_", " "))
+    return analyte_display_name(alias.replace("_", " "), key)
 
 
 def _analyte_norm_key(value: str) -> str:
@@ -291,9 +280,42 @@ def build_professional_intro(query_understanding: QueryUnderstanding, evidence_p
     intent = _safe_str(query_understanding.intent, "unstructured")
     output_format = _safe_str(query_understanding.output_format, "list").lower()
     answer_style = _safe_str(query_understanding.answer_style, "standard").lower()
+    presentation = getattr(query_understanding, "presentation_intent", None)
 
     if output_format == "json" or answer_style == "yes_no" or output_format == "yes_no":
         return ""
+    if bool(getattr(presentation, "unsupported_format", False)):
+        raw_phrase = _safe_str(getattr(presentation, "raw_format_phrase", "")) or "format demandé"
+        recommended = (
+            _safe_str(getattr(presentation, "recommended_output", ""))
+            or _safe_str(getattr(presentation, "recommended_alternative_format", ""))
+            or "tableau structuré"
+        )
+        return (
+            f"Vous avez demandé un rendu {raw_phrase}. "
+            "Ce format n’est pas supporté directement par le système ; "
+            f"je fournis ci-dessous le format alternatif le plus fiable ({recommended}) avec les données structurées."
+        )
+    if output_format == "chart":
+        raw_phrase = humanize_requested_output(query_understanding)
+        from_previous = str(intent) == "response_transform"
+        doc_scope = ", ".join(query_understanding.requested_doc_ids or [])
+        context_phrase = (
+            (f" à partir des résultats de {doc_scope}" if doc_scope else " à partir des résultats précédents")
+            if from_previous
+            else ""
+        )
+        recommended = _safe_str(getattr(presentation, "recommended_alternative_format", ""))
+        if recommended:
+            return (
+                f"Vous avez demandé un {raw_phrase}{context_phrase}. "
+                "Le rendu graphique n’est pas encore disponible dans l’interface ; "
+                f"je fournis ci-dessous les données structurées avec une recommandation {recommended}."
+            )
+        return (
+            f"Vous avez demandé un {raw_phrase}{context_phrase}. "
+            "Le rendu graphique n’est pas encore disponible dans l’interface ; je fournis ci-dessous les données structurées prêtes à être visualisées."
+        )
 
     evidences = list(evidence_pack.get("evidences") or evidence_pack.get("results") or [])
     if not evidences and intent in {"unstructured", "response_transform"}:
@@ -307,7 +329,7 @@ def build_professional_intro(query_understanding: QueryUnderstanding, evidence_p
 
 
 def choose_presentation_format(query_understanding: QueryUnderstanding, evidence_pack: dict[str, Any]) -> str:
-    output_format = _safe_str(query_understanding.output_format, "list").lower()
+    output_format = _safe_str(query_understanding.output_format, "auto").lower()
     answer_style = _safe_str(query_understanding.answer_style, "standard").lower()
     requested_cols = list(query_understanding.requested_table_columns or [])
     evidences = list(evidence_pack.get("evidences") or evidence_pack.get("results") or [])
@@ -316,6 +338,10 @@ def choose_presentation_format(query_understanding: QueryUnderstanding, evidence
         return "json"
     if answer_style == "yes_no" or output_format == "yes_no":
         return "yes_no"
+    if output_format == "unknown":
+        return "table"
+    if output_format == "chart":
+        return "chart"
     if query_understanding.intent in {"cohort_search", "global_patient_lookup"}:
         return "table"
     if output_format == "table" or requested_cols:
@@ -333,6 +359,31 @@ def choose_presentation_format(query_understanding: QueryUnderstanding, evidence
     return "list"
 
 
+def humanize_requested_output(query_understanding: QueryUnderstanding) -> str:
+    presentation = getattr(query_understanding, "presentation_intent", None)
+    requested_output = _safe_str(getattr(presentation, "requested_output", query_understanding.output_format), "auto").lower()
+    chart_type = _safe_str(getattr(presentation, "chart_type", ""), "").lower()
+    raw_phrase = _safe_str(getattr(presentation, "raw_format_phrase", ""), "")
+    raw_norm = norm_text(raw_phrase)
+    if raw_phrase and any(k in raw_norm for k in ["bio clinical", "matrix", "comparative", "arithmetic"]):
+        return raw_phrase
+    if requested_output == "chart":
+        if chart_type == "bar":
+            return "graphique en barres"
+        if chart_type == "line":
+            return "graphique linéaire"
+        if chart_type == "radar":
+            return "graphique radar"
+        if chart_type == "scatter":
+            return "nuage de points"
+        if raw_phrase and raw_phrase.lower() != "chart":
+            return raw_phrase
+        return "graphique"
+    if raw_phrase and raw_phrase.lower() != "chart":
+        return raw_phrase
+    return requested_output or "format demandé"
+
+
 def format_source_label(source: dict[str, Any]) -> str:
     filename = _safe_str(source.get("filename"))
     doc_id = _safe_str(source.get("doc_id"), "source")
@@ -348,6 +399,8 @@ def format_source_label(source: dict[str, Any]) -> str:
     base = re.sub(r"[A-Za-z]:\\[^\s\])]+", "", base).strip()
     base = re.sub(r"\bpage\s*(\d+)\s*row\s*(\d+)\b", r"page \1, ligne \2", base, flags=re.IGNORECASE)
     base = re.sub(r"\bpage\s*(\d+)\s*ligne\s*(\d+)\b", r"page \1, ligne \2", base, flags=re.IGNORECASE)
+    base = re.sub(r"\bligne\s*(\d+)\s*ligne\s*\1\b", r"ligne \1", base, flags=re.IGNORECASE)
+    base = re.sub(r"(,\s*ligne\s*\d+)\s*ligne\s*\d+\b", r"\1", base, flags=re.IGNORECASE)
     base = re.sub(r"(ligne\s*\d+)\s*\1\b", r"\1", base, flags=re.IGNORECASE)
     base = re.sub(r"\s{2,}", " ", base).strip()
     has_page = re.search(r"\bpage\s*\d+\b", base, flags=re.IGNORECASE) is not None
@@ -367,14 +420,13 @@ def format_source_label(source: dict[str, Any]) -> str:
 
 
 def deduplicate_sources(sources: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str, int | None, str], dict[str, Any]] = {}
+    grouped: dict[tuple[str, int | None], dict[str, Any]] = {}
     for src in sources or []:
         doc_id = _safe_str(src.get("doc_id")).lower()
         if not doc_id:
             continue
         page = int(src.get("page")) if isinstance(src.get("page"), int) else None
-        url = _safe_str(src.get("viewer_url") or src.get("url"))
-        key = (doc_id, page, url)
+        key = (doc_id, page)
         entry = grouped.get(
             key,
             {
@@ -431,7 +483,7 @@ def build_short_conclusion(intent: str, evidence_pack: dict[str, Any], safety_in
 
     first = evidences[0]
     status = _safe_str(first.get("technical_status_code")).lower()
-    analyte = _safe_str(first.get("analyte"), "l’analyte")
+    analyte = _display_analyte(first) or "l’analyte"
     if len(evidences) == 1:
         if status == "above_reference":
             return f"Conclusion technique : {analyte} est au-dessus de l’intervalle de référence indiqué."
@@ -493,6 +545,12 @@ def _source_cell(ev: dict[str, Any]) -> str:
     return label
 
 
+def _display_analyte(ev: dict[str, Any]) -> str:
+    raw = _safe_str(ev.get("analyte"))
+    norm = _safe_str(ev.get("analyte_norm"))
+    return analyte_display_name(raw or norm, norm or None) or raw or "non précisé"
+
+
 def _writer_intent(intent: str) -> str:
     mapping = {
         "cohort_search": "cohort_search",
@@ -513,7 +571,7 @@ def _writer_intent(intent: str) -> str:
 
 def _writer_output_format(query_understanding: QueryUnderstanding, evidence_pack: dict[str, Any]) -> str:
     chosen = choose_presentation_format(query_understanding, evidence_pack)
-    if chosen in {"table", "list", "paragraph", "json"}:
+    if chosen in {"table", "list", "paragraph", "json", "chart"}:
         return chosen
     return "auto"
 
@@ -529,6 +587,10 @@ def _normalized_writer_result(ev: dict[str, Any]) -> dict[str, Any]:
         status = "dans la référence"
     elif not status:
         status = "non interprétable"
+
+    analyte_norm = _safe_str(ev.get("analyte_norm"))
+    analyte_raw = _safe_str(ev.get("analyte"))
+    analyte_human = analyte_display_name(analyte_raw or analyte_norm, analyte_norm or None) or analyte_raw
 
     source_label = _safe_str(ev.get("source_label"))
     if not source_label:
@@ -546,7 +608,8 @@ def _normalized_writer_result(ev: dict[str, Any]) -> dict[str, Any]:
         "filename": _safe_str(ev.get("filename")),
         "page": _safe_int(ev.get("page")),
         "row": _safe_int(ev.get("row")),
-        "analyte": _safe_str(ev.get("analyte")),
+        "analyte": analyte_human,
+        "analyte_norm": analyte_norm,
         "value": _safe_str(ev.get("current_value") or ev.get("value_raw")),
         "unit": _safe_str(ev.get("unit")),
         "reference": _safe_str(ev.get("reference") or ev.get("reference_range")),
@@ -566,6 +629,7 @@ def build_writer_evidence_pack(
     evidence_pack: dict[str, Any],
     source_citations: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    presentation = getattr(query_understanding, "presentation_intent", None)
     results = [_normalized_writer_result(ev) for ev in (evidence_pack.get("evidences") or evidence_pack.get("results") or [])]
     recent_style_history = list(evidence_pack.get("recent_style_history") or [])
     constraints = {
@@ -581,11 +645,31 @@ def build_writer_evidence_pack(
         "diagnostic_safety": bool(query_understanding.safety_intent),
     }
     return {
+        "original_user_question": _safe_str(getattr(query_understanding, "original_user_question", "") or user_question),
         "user_question": user_question,
         "intent": _writer_intent(query_understanding.intent),
+        "response_strategy": _safe_str(getattr(query_understanding, "response_strategy", "render_table"), "render_table"),
+        "response_strategy_reason": getattr(query_understanding, "response_strategy_reason", None),
         "output_format": _writer_output_format(query_understanding, evidence_pack),
         "answer_style": "yes_no" if query_understanding.answer_style == "yes_no" else "professional",
         "language": _safe_str(query_understanding.language, "fr"),
+        "presentation_intent": {
+            "requested_output": _safe_str(getattr(presentation, "requested_output", query_understanding.output_format), "auto"),
+            "chart_type": getattr(presentation, "chart_type", None),
+            "raw_format_phrase": getattr(presentation, "raw_format_phrase", None),
+            "wants_clickable_sources": bool(getattr(presentation, "wants_clickable_sources", False)),
+            "wants_intro": bool(getattr(presentation, "wants_intro", True)),
+            "wants_conclusion": bool(getattr(presentation, "wants_conclusion", True)),
+            "strict_columns": list(getattr(presentation, "strict_columns", []) or []),
+            "unsupported_format": bool(getattr(presentation, "unsupported_format", False)),
+            "user_requested_visualization": bool(getattr(presentation, "user_requested_visualization", False)),
+            "presentation_confidence": float(getattr(presentation, "presentation_confidence", 0.5)),
+            "unsupported_reason": getattr(presentation, "unsupported_reason", None),
+            "recommended_output": getattr(presentation, "recommended_output", None),
+            "unsupported_presentation_reason": getattr(presentation, "unsupported_presentation_reason", None),
+            "recommended_alternative_format": getattr(presentation, "recommended_alternative_format", None),
+            "unhandled_instructions": list(getattr(presentation, "unhandled_instructions", []) or []),
+        },
         "constraints": constraints,
         "results": results,
         "missing_items": list(evidence_pack.get("missing_items") or []),
@@ -649,7 +733,7 @@ def _build_content_table(
                         "Patient": _safe_str(ev.get("patient_token"), "non disponible"),
                         "Report": _safe_str(ev.get("doc_id")),
                         "Document": _safe_str(ev.get("comparison_side") or ev.get("doc_id")),
-                        "Analyte": _safe_str(ev.get("analyte"), "non précisé"),
+                        "Analyte": _display_analyte(ev),
                         "Valeur actuelle": (
                             _safe_str(ev.get("current_value"), "non disponible")
                             + (f" {_safe_str(ev.get('unit'))}" if _safe_str(ev.get("unit")) else "")
@@ -669,7 +753,7 @@ def _build_content_table(
             {
                 "Patient": _safe_str(ev.get("patient_token"), "non disponible"),
                 "Report": _safe_str(ev.get("doc_id")),
-                "Analyte": _safe_str(ev.get("analyte"), "non précisé"),
+                "Analyte": _display_analyte(ev),
                 "Valeur actuelle": (
                     _safe_str(ev.get("current_value"), "non disponible")
                     + (f" {_safe_str(ev.get('unit'))}" if _safe_str(ev.get("unit")) else "")
@@ -688,7 +772,7 @@ def _build_content_table(
     if intent == "multi_doc_presence_diff":
         rows = [
             {
-                "Analyte": _safe_str(ev.get("analyte"), "non précisé"),
+                "Analyte": _display_analyte(ev),
                 "Présent dans": _safe_str(ev.get("present_in")),
                 "Absent dans": _safe_str(ev.get("absent_in")),
             }
@@ -699,7 +783,7 @@ def _build_content_table(
     rows = []
     for ev in evidences:
         row = {
-            "Analyte": _safe_str(ev.get("analyte"), "non précisé"),
+            "Analyte": _display_analyte(ev),
             "Valeur actuelle": (
                 _safe_str(ev.get("current_value"), "non disponible")
                 + (f" {_safe_str(ev.get('unit'))}" if _safe_str(ev.get("unit")) else "")
@@ -737,7 +821,7 @@ def _build_content_table(
                     "Patient": _safe_str(ev.get("patient_token"), "non disponible"),
                     "Report": _safe_str(ev.get("doc_id")),
                     "Document": _safe_str(ev.get("comparison_side") or ev.get("doc_id")),
-                    "Analyte": _safe_str(ev.get("analyte"), "non précisé"),
+                    "Analyte": _display_analyte(ev),
                     "Valeur actuelle": (
                         _safe_str(ev.get("current_value"), "non disponible")
                         + (f" {_safe_str(ev.get('unit'))}" if _safe_str(ev.get("unit")) else "")
@@ -762,7 +846,7 @@ def _build_content_list(evidences: list[dict[str, Any]], include_previous: bool)
     lines: list[str] = []
     for ev in evidences:
         line = (
-            f"- {ev.get('analyte')}: {ev.get('current_value') or 'non disponible'}"
+            f"- {_display_analyte(ev)}: {ev.get('current_value') or 'non disponible'}"
             f"{(' ' + _safe_str(ev.get('unit'))) if _safe_str(ev.get('unit')) else ''}"
             f" | référence: {_safe_str(ev.get('reference'), 'non disponible')}"
             f" | statut: {_safe_str(ev.get('technical_status'), 'non interprétable')}"
@@ -785,10 +869,33 @@ def _build_paragraph(evidences: list[dict[str, Any]], query: str) -> str:
         _safe_str(primary.get("reference")),
     )
     return (
-        f"{yn} — {_safe_str(primary.get('analyte'), 'analyte')} = {_safe_str(primary.get('current_value'), 'non disponible')}"
+        f"{yn} — {_display_analyte(primary)} = {_safe_str(primary.get('current_value'), 'non disponible')}"
         f"{(' ' + _safe_str(primary.get('unit'))) if _safe_str(primary.get('unit')) else ''} ; "
         f"référence : {_safe_str(primary.get('reference'), 'non disponible')} ; "
         f"statut technique : {_safe_str(primary.get('technical_status'), 'non interprétable')}."
+    )
+
+
+def _build_chart_explanation(query_understanding: QueryUnderstanding, evidences: list[dict[str, Any]]) -> str:
+    presentation = getattr(query_understanding, "presentation_intent", None)
+    raw_phrase = humanize_requested_output(query_understanding)
+    from_previous = str(getattr(query_understanding, "intent", "")).strip().lower() == "response_transform"
+    doc_scope = ", ".join(query_understanding.requested_doc_ids or [])
+    context_phrase = (f" à partir des résultats de {doc_scope}" if doc_scope else " à partir des résultats précédents") if from_previous else ""
+    units = sorted({_safe_str(ev.get("unit")).lower() for ev in evidences if _safe_str(ev.get("unit"))})
+    mixed_units = len(set(units)) > 1
+    recommended = _safe_str(getattr(presentation, "recommended_alternative_format", ""))
+    if not recommended:
+        recommended = "bar" if mixed_units else _safe_str(getattr(presentation, "chart_type", ""), "line")
+    if mixed_units:
+        return (
+            f"Vous avez demandé un {raw_phrase}{context_phrase}. Le rendu graphique n’est pas encore disponible dans l’interface ; "
+            "je fournis les données nécessaires pour générer le graphique en barres. "
+            "Recommandation : graphique en barres ou ratio à la référence, car les unités biologiques diffèrent."
+        )
+    return (
+        f"Vous avez demandé un {raw_phrase}{context_phrase}. Le rendu graphique n’est pas encore disponible dans l’interface ; "
+        f"je fournis les données nécessaires pour générer le {recommended if recommended.startswith('graphique') else 'graphique en barres'}."
     )
 
 
@@ -899,7 +1006,7 @@ def render_professional_fallback(
             answer = f"Non — {analyte_text} non retrouvé dans {doc_scope}."
         else:
             first = dict(evidences[0] or {})
-            analyte = _safe_str(first.get("analyte"), "Analyte")
+            analyte = _display_analyte(first)
             value = _safe_str(first.get("current_value"), _safe_str(first.get("value_raw"), "non disponible"))
             unit = _safe_str(first.get("unit"), "")
             reference = _safe_str(first.get("reference"), _safe_str(first.get("reference_range"), "non disponible"))
@@ -922,11 +1029,51 @@ def render_professional_fallback(
             "llm_error": None,
         }
 
+    if presentation == "chart":
+        chart_intro = _build_chart_explanation(query_understanding, evidences)
+        content = (
+            _build_content_table(
+                intent,
+                evidences,
+                include_previous=bool(query_understanding.requires_previous_results),
+                requested_columns=query_understanding.requested_table_columns,
+                source_clickable_requested=bool(getattr(query_understanding, "source_clickable_requested", False)),
+            )
+            if evidences
+            else "Aucune donnée structurée exploitable pour visualisation."
+        )
+        conclusion = "Conclusion technique : données structurées fournies pour visualisation côté interface."
+        answer = "\n\n".join([p for p in [chart_intro, format_result_count(len(evidences)), content, conclusion] if p.strip()])
+        src_lines = _source_lines(source_citations or [])
+        if src_lines:
+            answer = answer.rstrip() + "\n\nSources :\n" + "\n".join(src_lines)
+        return {
+            "intro": chart_intro,
+            "content_type": "chart",
+            "content": content.strip(),
+            "conclusion": conclusion,
+            "sources": sources,
+            "rendering_hints": {"preferred_format": "chart", "show_sources": True, "strict_json": False},
+            "answer": answer.strip(),
+            "mode": "deterministic_professional_fallback",
+            "llm_error": None,
+        }
+
     intro = build_professional_intro(query_understanding, evidence_pack)
     count_line = format_result_count(len(evidences))
 
     include_previous = bool(query_understanding.requires_previous_results)
-    if presentation == "table":
+    requested_docs = [d for d in (query_understanding.requested_doc_ids or []) if str(d).strip()]
+    if intent == "multi_doc_presence_diff" and not evidences:
+        doc_a = requested_docs[0] if len(requested_docs) >= 1 else "report_A"
+        doc_b = requested_docs[1] if len(requested_docs) >= 2 else "report_B"
+        content = (
+            f"Présents uniquement dans {doc_a} :\n"
+            "- Aucun analyte distinct retrouvé.\n\n"
+            f"Présents uniquement dans {doc_b} :\n"
+            "- Aucun analyte distinct retrouvé."
+        )
+    elif presentation == "table":
         content = (
             _build_content_table(
                 intent,
@@ -949,6 +1096,8 @@ def render_professional_fallback(
         content = content.rstrip() + "\n\nÉléments non retrouvés :\n" + miss
 
     conclusion = build_short_conclusion(intent, evidence_pack, query_understanding.safety_intent)
+    if intent == "multi_doc_presence_diff" and not (conclusion or "").strip():
+        conclusion = "Conclusion technique : aucun analyte distinct n’a été retrouvé entre les deux documents demandés."
     parts = [p for p in [intro.strip(), count_line.strip(), content.strip(), (conclusion or "").strip()] if p]
     answer = "\n\n".join(parts)
 

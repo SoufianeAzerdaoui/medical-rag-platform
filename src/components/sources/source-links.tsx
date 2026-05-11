@@ -19,9 +19,12 @@ function sanitizeLabel(raw: string): string {
     .replace(/[A-Za-z]:\\[^\s]+/g, "")
     .replace(/\bpage\s*(\d+)\s*row\s*(\d+)\b/gi, "page $1, ligne $2")
     .replace(/\brow\s*=?\s*(\d+)\b/gi, "ligne $1")
+    .replace(/\b(ligne\s*\d+)\s*\1\b/gi, "$1")
+    .replace(/\b(ligne\s*\d+)\s*,?\s*ligne\s*\d+\b/gi, "$1")
     .replace(/\s{2,}/g, " ")
     .replace(/\s+,/g, ",")
     .replace(/\s*:\s*$/g, "")
+    .replace(/,\s*ligne\s*(\d+)\s*ligne\s*\1/gi, ", ligne $1")
     .trim();
   return cleaned || "Source";
 }
@@ -44,6 +47,10 @@ function normalizeSource(source: ChatSource, index: number) {
       label,
       href,
       row: source.row ?? null,
+      page: source.page ?? null,
+      docId: source.doc_id,
+      filename: source.filename || null,
+      groupable: Boolean(source.doc_id && source.page),
       clickable: Boolean(href),
     };
   }
@@ -61,6 +68,10 @@ function normalizeSource(source: ChatSource, index: number) {
         label,
         href: url,
         row: rowMatch ? Number(rowMatch[1]) : null,
+        page: null,
+        docId: "",
+        filename: null,
+        groupable: false,
         clickable: true,
       };
     }
@@ -71,6 +82,10 @@ function normalizeSource(source: ChatSource, index: number) {
         label: text,
         href: null,
         row: null,
+        page: null,
+        docId: "",
+        filename: null,
+        groupable: false,
         clickable: false,
       };
     }
@@ -82,6 +97,10 @@ function normalizeSource(source: ChatSource, index: number) {
       label: `${docId}${page ? ` — page ${page}` : ""}`,
       href: buildViewerUrl(docId, page),
       row,
+      page,
+      docId,
+      filename: null,
+      groupable: Boolean(docId && page),
       clickable: true,
     };
   }
@@ -102,8 +121,79 @@ function normalizeSource(source: ChatSource, index: number) {
     label,
     href: href || null,
     row: null,
+    page,
+    docId,
+    filename: null,
+    groupable: Boolean(docId && page),
     clickable: Boolean(href),
   };
+}
+
+function labelAlreadyHasLine(label: string): boolean {
+  return /\bligne[s]?\s+\d+/i.test(label);
+}
+
+function buildGroupedLabel(filename: string, page: number, rows: number[], fallbackLabel: string): string {
+  if (rows.length === 0) {
+    return sanitizeLabel(fallbackLabel || `${filename} — page ${page}`);
+  }
+  const sorted = [...new Set(rows)].sort((a, b) => a - b);
+  if (sorted.length === 1) {
+    return `${filename} — page ${page}, ligne ${sorted[0]}`;
+  }
+  const min = sorted[0];
+  const max = sorted[sorted.length - 1];
+  return `${filename} — page ${page}, lignes ${min}–${max}`;
+}
+
+function groupSources(
+  items: Array<{
+    key: string;
+    label: string;
+    href: string | null;
+    row: number | null;
+    page: number | null;
+    docId: string;
+    filename: string | null;
+    groupable: boolean;
+    clickable: boolean;
+  }>,
+) {
+  const grouped = new Map<string, (typeof items)[number] & { _rows: number[] }>();
+  for (const item of items) {
+    if (!item.groupable || !item.page || !item.docId) {
+      grouped.set(item.key, { ...item, _rows: typeof item.row === "number" ? [item.row] : [] });
+      continue;
+    }
+    const key = `${item.docId}::${item.page}`;
+    const current = grouped.get(key);
+    const rows = typeof item.row === "number" ? [item.row] : [];
+    if (!current) {
+      grouped.set(key, { ...item, key, _rows: rows });
+      continue;
+    }
+    current._rows = [...current._rows, ...rows];
+    if (!current.href && item.href) current.href = item.href;
+    if (!current.filename && item.filename) current.filename = item.filename;
+  }
+
+  return Array.from(grouped.values()).map((entry) => {
+    if (!entry.groupable || !entry.page || !entry.docId) {
+      const safeLabel = sanitizeLabel(entry.label);
+      return {
+        ...entry,
+        label: safeLabel,
+        row: labelAlreadyHasLine(safeLabel) ? null : entry.row,
+      };
+    }
+    const filename = entry.filename || entry.docId;
+    const label = buildGroupedLabel(filename, entry.page, entry._rows, entry.label);
+    return {
+      ...entry,
+      label,
+      row: null,
+    };
+  });
 }
 
 export function stripSourcesBlock(answer: string): string {
@@ -129,7 +219,8 @@ export function SourceLinks({
   showTitle?: boolean;
   compact?: boolean;
 }) {
-  const list = (sources || []).map(normalizeSource).filter((item) => item.label);
+  const normalized = (sources || []).map(normalizeSource).filter((item) => item.label);
+  const list = groupSources(normalized);
   if (list.length === 0) return null;
 
   return (
@@ -153,7 +244,7 @@ export function SourceLinks({
               ) : (
                 <span className="break-words text-fg">{source.label}</span>
               )}
-              {typeof source.row === "number" ? (
+              {typeof source.row === "number" && !labelAlreadyHasLine(source.label) ? (
                 <span className="ml-2 text-xs text-fg/60" title={`ligne ${source.row}`}>
                   ligne {source.row}
                 </span>

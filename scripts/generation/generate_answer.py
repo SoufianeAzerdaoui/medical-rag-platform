@@ -32,7 +32,9 @@ from professional_answer_composer import compose_professional_answer, render_pro
 from prompt_builder import INSUFFICIENT_CONTEXT_SENTENCE, build_prompt
 from query_understanding import (
     QueryUnderstanding,
+    analyte_display_name,
     contains_exact_term,
+    decide_response_strategy,
     detect_exact_analyte,
     detect_exact_analytes,
     detect_query_intents,
@@ -74,6 +76,7 @@ _INTERNAL_REASONING_PATTERNS = [
 ]
 
 SMALL_TALK_FALLBACK_ANSWER = "Bonjour ! Je suis prêt à vous aider à analyser vos rapports médicaux."
+CHART_RENDERING_SUPPORTED = False
 GENERAL_CONVERSATION_INTENTS = {"small_talk", "identity_question", "capability_question", "help_question"}
 GENERAL_CONVERSATION_FALLBACKS = {
     "small_talk": "Bonjour ! Je suis prêt à vous aider à analyser vos rapports médicaux.",
@@ -275,6 +278,272 @@ def _answer_needs_fallback(text: str) -> bool:
     if len(text) > 2200:
         return True
     return False
+
+
+def _value_to_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    s = str(value).strip().replace(",", ".")
+    if not s:
+        return None
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def _has_mixed_units(evidences: list[dict[str, Any]]) -> bool:
+    units = {str(ev.get("unit") or "").strip().lower() for ev in evidences if str(ev.get("unit") or "").strip()}
+    return len(units) > 1
+
+
+def _build_chart_data(
+    *,
+    evidences: list[dict[str, Any]],
+    chart_type: str | None,
+) -> dict[str, Any] | None:
+    if not evidences:
+        return None
+    data: list[dict[str, Any]] = []
+    mixed_units = _has_mixed_units(evidences)
+    for ev in evidences:
+        analyte_norm = str(ev.get("analyte_norm") or "").strip().lower()
+        analyte = analyte_display_name(str(ev.get("analyte") or analyte_norm or "analyte"), analyte_norm or None)
+        ref = str(ev.get("reference") or ev.get("reference_range") or "").strip()
+        val = str(ev.get("current_value") or ev.get("value_raw") or "").strip()
+        numeric = _value_to_float(val)
+        ratio = None
+        if numeric is not None:
+            nums = re.findall(r"\d+(?:[.,]\d+)?", ref)
+            if len(nums) >= 2:
+                lo = _value_to_float(nums[0])
+                hi = _value_to_float(nums[1])
+                if lo is not None and hi is not None and hi > lo:
+                    ratio = (numeric - lo) / (hi - lo)
+        item = {
+            "analyte": analyte,
+            "value": numeric if numeric is not None else val,
+            "value_numeric": numeric,
+            "unit": str(ev.get("unit") or "").strip(),
+            "reference": ref,
+            "status": str(ev.get("technical_status") or ev.get("status") or "").strip(),
+            "source_label": str(ev.get("source_label") or ev.get("source") or "").strip(),
+        }
+        if ratio is not None:
+            item["reference_ratio"] = round(float(ratio), 6)
+        data.append(item)
+
+    y_field = "reference_ratio" if mixed_units else "value_numeric"
+    return {
+        "type": "bar" if mixed_units else (chart_type or "line"),
+        "title": "Données structurées pour visualisation",
+        "x_field": "analyte",
+        "y_field": y_field,
+        "data": data,
+    }
+
+
+def _build_visualization_request(
+    *,
+    query_understanding: QueryUnderstanding,
+    evidences: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    presentation = getattr(query_understanding, "presentation_intent", None)
+    if not presentation or not bool(getattr(presentation, "user_requested_visualization", False)):
+        return None
+    mixed_units = _has_mixed_units(evidences)
+    requested_type = str(getattr(presentation, "chart_type", "") or "unknown")
+    recommended = "bar" if mixed_units else (requested_type if requested_type in {"line", "bar", "scatter", "radar"} else "bar")
+    unsupported_reason = getattr(presentation, "unsupported_reason", None)
+    unsupported_reason = str(unsupported_reason).strip() if unsupported_reason not in (None, "") else ""
+    legacy_reason = getattr(presentation, "unsupported_presentation_reason", None)
+    legacy_reason = str(legacy_reason).strip() if legacy_reason not in (None, "") else ""
+    reason = (
+        "Les résultats ont des unités différentes, une courbe unique peut être trompeuse."
+        if mixed_units
+        else (
+            unsupported_reason
+            or legacy_reason
+            or "Le rendu graphique demandé nécessite un composant côté interface."
+        )
+    )
+    return {
+        "requested": True,
+        "type": requested_type,
+        "source": "previous_evidence_pack" if str(getattr(query_understanding, "intent", "")).strip().lower() == "response_transform" else "current_retrieval",
+        "supported": bool(CHART_RENDERING_SUPPORTED),
+        "recommended_type": recommended,
+        "reason": reason,
+    }
+
+
+def _humanize_requested_output(query_understanding: QueryUnderstanding) -> str:
+    presentation = getattr(query_understanding, "presentation_intent", None)
+    requested = str(getattr(presentation, "requested_output", query_understanding.output_format) or "").strip().lower()
+    chart_type = str(getattr(presentation, "chart_type", "") or "").strip().lower()
+    raw_phrase = str(getattr(presentation, "raw_format_phrase", "") or "").strip()
+    raw_norm = norm_text(raw_phrase)
+    if raw_phrase and any(k in raw_norm for k in ["bio clinical", "matrix", "comparative", "arithmetic"]):
+        return raw_phrase
+    if requested == "chart":
+        if chart_type == "bar":
+            return "graphique en barres"
+        if chart_type == "line":
+            return "graphique linéaire"
+        if chart_type == "radar":
+            return "graphique radar"
+        if chart_type == "scatter":
+            return "nuage de points"
+        if raw_phrase and raw_phrase.lower() != "chart":
+            return raw_phrase
+        return "graphique"
+    if raw_phrase and raw_phrase.lower() != "chart":
+        return raw_phrase
+    return requested or "format demandé"
+
+
+def _ensure_chart_explanation(answer: str, query_understanding: QueryUnderstanding, visualization: dict[str, Any] | None) -> str:
+    if str(query_understanding.output_format or "").strip().lower() != "chart":
+        return answer
+    text = str(answer or "").strip()
+    norm = norm_text(text)
+    if any(k in norm for k in ["graphique", "visualisation", "visualization", "line-graph", "line graph"]):
+        return text
+    requested_output = _humanize_requested_output(query_understanding)
+    from_previous = str(getattr(query_understanding, "intent", "")).strip().lower() == "response_transform"
+    doc_scope = ", ".join(query_understanding.requested_doc_ids or [])
+    context_phrase = (
+        (f" à partir des résultats de {doc_scope}" if doc_scope else " à partir des résultats précédents")
+        if from_previous
+        else ""
+    )
+    reason = str((visualization or {}).get("reason") or "Ce rendu nécessite un composant côté interface.").strip()
+    prefix = (
+        f"Vous avez demandé un {requested_output}{context_phrase}. "
+        "Le rendu graphique n’est pas encore disponible dans l’interface ; "
+        "je fournis les données nécessaires pour générer le graphique en barres. "
+        f"{reason}"
+    ).strip()
+    if not text:
+        return prefix
+    return f"{prefix}\n\n{text}"
+
+
+def _inject_visualization_payload(
+    result: dict[str, Any],
+    *,
+    query_understanding: QueryUnderstanding,
+    displayed_evidences: list[dict[str, Any]],
+) -> dict[str, Any]:
+    out = dict(result)
+    visualization = _build_visualization_request(query_understanding=query_understanding, evidences=displayed_evidences)
+    out["visualization"] = visualization
+    if visualization:
+        out["chart_data"] = _build_chart_data(
+            evidences=displayed_evidences,
+            chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+        )
+        out["answer"] = _ensure_chart_explanation(str(out.get("answer") or ""), query_understanding, visualization)
+    else:
+        out["chart_data"] = None
+    return out
+
+
+def _query_understanding_payload(qu: QueryUnderstanding) -> dict[str, Any]:
+    presentation = getattr(qu, "presentation_intent", None)
+    return {
+        "requested_doc_ids": list(qu.requested_doc_ids or []),
+        "requested_analytes": list(qu.requested_analytes or []),
+        "requested_value": qu.requested_value,
+        "requested_unit": qu.requested_unit,
+        "comparison_operator": qu.comparison_operator,
+        "source_clickable_requested": qu.source_clickable_requested,
+        "patient_query": qu.patient_query,
+        "intent": qu.intent,
+        "output_format": qu.output_format,
+        "requested_table_columns": list(qu.requested_table_columns or []),
+        "answer_style": qu.answer_style,
+        "requires_global_search": qu.requires_global_search,
+        "technical_condition": qu.technical_condition,
+        "safety_intent": qu.safety_intent,
+        "requires_previous_results": qu.requires_previous_results,
+        "requires_comparison": qu.requires_comparison,
+        "requires_section_summary": qu.requires_section_summary,
+        "is_small_talk": qu.is_small_talk,
+        "is_response_transform": qu.is_response_transform,
+        "language": qu.language,
+        "response_strategy": getattr(qu, "response_strategy", "render_table"),
+        "response_strategy_reason": getattr(qu, "response_strategy_reason", None),
+        "original_user_question": getattr(qu, "original_user_question", ""),
+        "raw_user_request": getattr(qu, "raw_user_request", ""),
+        "raw_format_phrase": getattr(qu, "raw_format_phrase", None),
+        "unhandled_instructions": list(getattr(qu, "unhandled_instructions", []) or []),
+        "presentation_confidence": float(getattr(qu, "presentation_confidence", 0.5)),
+        "unsupported_presentation_reason": getattr(qu, "unsupported_presentation_reason", None),
+        "recommended_alternative_format": getattr(qu, "recommended_alternative_format", None),
+        "presentation_intent": {
+            "requested_output": getattr(presentation, "requested_output", qu.output_format),
+            "chart_type": getattr(presentation, "chart_type", None),
+            "raw_format_phrase": getattr(presentation, "raw_format_phrase", None),
+            "wants_clickable_sources": bool(getattr(presentation, "wants_clickable_sources", qu.source_clickable_requested)),
+            "wants_intro": bool(getattr(presentation, "wants_intro", True)),
+            "wants_conclusion": bool(getattr(presentation, "wants_conclusion", True)),
+            "strict_columns": list(getattr(presentation, "strict_columns", qu.requested_table_columns) or []),
+            "unsupported_format": bool(getattr(presentation, "unsupported_format", False)),
+            "user_requested_visualization": bool(getattr(presentation, "user_requested_visualization", False)),
+            "presentation_confidence": float(getattr(presentation, "presentation_confidence", 0.5)),
+            "unsupported_reason": getattr(presentation, "unsupported_reason", None),
+            "recommended_output": getattr(presentation, "recommended_output", None),
+            "unsupported_presentation_reason": getattr(presentation, "unsupported_presentation_reason", None),
+            "recommended_alternative_format": getattr(presentation, "recommended_alternative_format", None),
+            "unhandled_instructions": list(getattr(presentation, "unhandled_instructions", []) or []),
+        },
+    }
+
+
+def _with_resolved_strategy(query_understanding: QueryUnderstanding, evidence_pack: dict[str, Any] | None) -> QueryUnderstanding:
+    try:
+        strategy = decide_response_strategy(query_understanding, evidence_pack or {})
+        return replace(
+            query_understanding,
+            response_strategy=str(strategy.name or "render_table"),
+            response_strategy_reason=str(strategy.reason or "") or None,
+        )
+    except Exception:
+        return query_understanding
+
+
+def _looks_like_transform_followup(query: str, query_understanding: QueryUnderstanding) -> bool:
+    qn = norm_text(query or "")
+    if not qn:
+        return False
+    has_doc_or_analyte = bool(query_understanding.requested_doc_ids or query_understanding.requested_analytes)
+    if has_doc_or_analyte:
+        return False
+    markers = [
+        "ok donne moi",
+        "ok donne-moi",
+        "maintenant donne moi",
+        "maintenant donne-moi",
+        "donne moi le resultat",
+        "donne-moi le resultat",
+        "affiche le resultat",
+        "mets le resultat",
+        "meme resultat",
+        "resultat precedent",
+        "reponse precedente",
+        "meme reponse",
+        "sous forme",
+        "en graphique",
+        "graphique en barres",
+        "courbe",
+        "line graph",
+        "bar chart",
+        "json strict",
+        "json",
+        "tableau",
+    ]
+    return any(m in qn for m in markers)
 
 
 def _is_above_reference_query(qn: str) -> bool:
@@ -1517,14 +1786,17 @@ def _structured_record_from_row(row: dict[str, Any], *, requested_doc_id: str | 
     variation = "non comparable"
     if previous:
         variation = _variation_label(value_raw, previous)
+    analyte_norm = str(row.get("analyte_norm") or "").strip().lower()
+    analyte_raw = _clean_analyte_label(str(row.get("analyte") or row.get("parameter") or "non précisé"))
+    analyte_human = analyte_display_name(analyte_raw, analyte_norm or None) or analyte_raw
     return {
         "doc_id": str(row.get("doc_id") or requested_doc_id or ""),
         "patient_token": str(row.get("patient_token") or "").strip(),
         "page": row.get("page_number"),
         "row": row.get("row_index"),
         "chunk_id": row.get("chunk_id"),
-        "analyte": _clean_analyte_label(str(row.get("analyte") or row.get("parameter") or "non précisé")),
-        "analyte_norm": str(row.get("analyte_norm") or "").strip().lower(),
+        "analyte": analyte_human,
+        "analyte_norm": analyte_norm,
         "current_value": value_raw,
         "unit": unit,
         "reference": str(row.get("reference_range") or "").strip(),
@@ -1580,6 +1852,27 @@ def _finalize_structured_pack(pack: dict[str, Any], query_understanding: QueryUn
         "safety_intent": query_understanding.safety_intent,
     }
     pack["user_question"] = pack.get("question") or ""
+    pack["original_user_question"] = getattr(query_understanding, "original_user_question", pack.get("question") or "")
+    pack["normalized_intent"] = query_understanding.intent
+    pack["response_strategy"] = getattr(query_understanding, "response_strategy", "render_table")
+    pack["response_strategy_reason"] = getattr(query_understanding, "response_strategy_reason", None)
+    pack["presentation_intent"] = {
+        "requested_output": getattr(query_understanding.presentation_intent, "requested_output", query_understanding.output_format),
+        "chart_type": getattr(query_understanding.presentation_intent, "chart_type", None),
+        "raw_format_phrase": getattr(query_understanding.presentation_intent, "raw_format_phrase", None),
+        "wants_clickable_sources": bool(getattr(query_understanding.presentation_intent, "wants_clickable_sources", False)),
+        "wants_intro": bool(getattr(query_understanding.presentation_intent, "wants_intro", True)),
+        "wants_conclusion": bool(getattr(query_understanding.presentation_intent, "wants_conclusion", True)),
+        "strict_columns": list(getattr(query_understanding.presentation_intent, "strict_columns", []) or []),
+        "unsupported_format": bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+        "user_requested_visualization": bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+        "presentation_confidence": float(getattr(query_understanding.presentation_intent, "presentation_confidence", 0.5)),
+        "unsupported_reason": getattr(query_understanding.presentation_intent, "unsupported_reason", None),
+        "recommended_output": getattr(query_understanding.presentation_intent, "recommended_output", None),
+        "unhandled_instructions": list(getattr(query_understanding.presentation_intent, "unhandled_instructions", []) or []),
+        "unsupported_presentation_reason": getattr(query_understanding.presentation_intent, "unsupported_presentation_reason", None),
+        "recommended_alternative_format": getattr(query_understanding.presentation_intent, "recommended_alternative_format", None),
+    }
     pack["answer_style"] = pack.get("answer_style") or query_understanding.answer_style
     pack["constraints"] = constraints
     pack["results"] = list(pack.get("evidences") or [])
@@ -1646,7 +1939,9 @@ def _table_header_label(col_key: str) -> str:
 def _table_cell_value(ev: dict[str, Any], col_key: str) -> str:
     key = str(col_key or "").strip().lower()
     if key == "analyte":
-        return str(ev.get("analyte") or "non précisé")
+        raw = str(ev.get("analyte") or "non précisé")
+        norm = str(ev.get("analyte_norm") or "").strip().lower()
+        return analyte_display_name(raw, norm or None) or raw
     if key == "valeur_actuelle":
         value = str(ev.get("current_value") or "non disponible")
         unit = str(ev.get("unit") or "").strip()
@@ -1938,6 +2233,12 @@ _STYLE_RETRY_KEYS = {
     "clickable_source_missing",
     "missing_conclusion",
     "ugly_pluralization",
+    "unsupported_format_silently_ignored",
+    "output_format_mismatch",
+    "display_name_required",
+    "chart_units_warning_missing",
+    "no_silent_default_table",
+    "forbidden_none_literal",
 }
 
 
@@ -2650,12 +2951,12 @@ def _build_response_transform_pack(
         else:
             requested_columns = ["analyte", "valeur_actuelle", "unite", "reference", "statut", "resultat_anterieur", "variation"]
 
-    output_format = query_understanding.output_format
-    if output_format == "list":
+    output_format = str(query_understanding.output_format or "auto")
+    if output_format in {"list", "auto"}:
         output_format = str(src.get("output_format") or "list").lower()
-    if output_format == "list" and ("json" in qn):
+    if output_format in {"list", "auto"} and ("json" in qn):
         output_format = "json"
-    if output_format == "list" and ("tableau" in qn or "table" in qn):
+    if output_format in {"list", "auto"} and ("tableau" in qn or "table" in qn):
         output_format = "table"
 
     return {
@@ -2722,6 +3023,21 @@ def run_generation(
     compare_query = bool(query_understanding.requires_comparison or _is_compare_query(qn))
     compare_previous = bool(query_understanding.requires_previous_results or _is_previous_result_query(qn) or compare_query)
 
+    # Follow-up transform priority: if user asks to reformat "this result" without new doc/analyte,
+    # reuse previous evidence pack instead of small-talk/retrieval routing.
+    if previous_structured_evidence_pack and _looks_like_transform_followup(q, query_understanding):
+        query_understanding = replace(
+            query_understanding,
+            intent="response_transform",
+            is_response_transform=True,
+            is_small_talk=False,
+            response_strategy="transform_previous_response",
+            response_strategy_reason="Follow-up de reformattage détecté sur le contexte précédent.",
+        )
+        intents["response_transform"] = True
+        intents["small_talk"] = False
+        intents["general_conversation"] = False
+
     if str(query_understanding.intent or "").strip().lower() in GENERAL_CONVERSATION_INTENTS:
         general_intent = str(query_understanding.intent or "small_talk").strip().lower()
         general_answer, general_err = generate_general_conversation_response(
@@ -2764,6 +3080,10 @@ def run_generation(
             source_clickable_requested=False,
             requested_value=None,
             comparison_operator=None,
+            raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+            unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+            user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+            requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
         )
         intro, conclusion = _extract_intro_conclusion(general_answer)
         quality = _quality_report(
@@ -2773,7 +3093,7 @@ def run_generation(
             recent_style_history=style_history,
         )
         elapsed = time.perf_counter() - started
-        return {
+        result = {
             "request_id": request_id,
             "query": q,
             "query_received": query_received,
@@ -2799,28 +3119,7 @@ def run_generation(
             "error_type": "llm_general_conversation_error" if general_err else None,
             "generation_mode": general_mode,
             "detected_analytes": [],
-            "query_understanding": {
-                "requested_doc_ids": [],
-                "requested_analytes": [],
-                "requested_value": None,
-                "requested_unit": None,
-                "comparison_operator": None,
-                "source_clickable_requested": False,
-                "patient_query": False,
-                "intent": general_intent,
-                "output_format": "paragraph",
-                "requested_table_columns": [],
-                "answer_style": "standard",
-                "requires_global_search": False,
-                "technical_condition": None,
-                "safety_intent": None,
-                "requires_previous_results": False,
-                "requires_comparison": False,
-                "requires_section_summary": False,
-                "is_small_talk": general_intent == "small_talk",
-                "is_response_transform": False,
-                "language": query_understanding.language,
-            },
+            "query_understanding": _query_understanding_payload(query_understanding),
             "structured_evidence_pack": {},
             "evidence_pack": [],
             "displayed_evidences": [],
@@ -2853,11 +3152,19 @@ def run_generation(
                 "intents": intents,
             },
         }
+        return _inject_visualization_payload(
+            result,
+            query_understanding=query_understanding,
+            displayed_evidences=[],
+        )
 
     if query_understanding.intent == "response_transform":
         if not previous_structured_evidence_pack:
             elapsed = time.perf_counter() - started
-            answer = "Je n’ai pas de réponse précédente exploitable à transformer."
+            answer = f"Je n’ai pas de résultat précédent exploitable à reformater. {INSUFFICIENT_CONTEXT_SENTENCE}"
+            if bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)):
+                visualization = _build_visualization_request(query_understanding=query_understanding, evidences=[])
+                answer = _ensure_chart_explanation(answer, query_understanding, visualization)
             validation = validate_answer(
                 query=q,
                 answer_text=answer,
@@ -2879,6 +3186,10 @@ def run_generation(
                 source_clickable_requested=bool(query_understanding.source_clickable_requested),
                 requested_value=query_understanding.requested_value,
                 comparison_operator=query_understanding.comparison_operator,
+                raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+                user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+                requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
             )
             quality = _quality_report(
                 answer=answer,
@@ -2887,7 +3198,8 @@ def run_generation(
                 recent_style_history=style_history,
             )
             intro_text, conclusion_text = _extract_intro_conclusion(answer)
-            return {
+            return _inject_visualization_payload(
+                {
                 "request_id": request_id,
                 "query": q,
                 "query_received": query_received,
@@ -2913,26 +3225,7 @@ def run_generation(
                 "error_type": None,
                 "generation_mode": "deterministic_response_transform",
                 "detected_analytes": exact_analytes,
-                "query_understanding": {
-                    "requested_doc_ids": query_understanding.requested_doc_ids,
-                    "requested_analytes": query_understanding.requested_analytes,
-                    "requested_value": query_understanding.requested_value,
-                    "requested_unit": query_understanding.requested_unit,
-                    "comparison_operator": query_understanding.comparison_operator,
-                    "source_clickable_requested": query_understanding.source_clickable_requested,
-                    "patient_query": query_understanding.patient_query,
-                    "intent": query_understanding.intent,
-                    "output_format": query_understanding.output_format,
-                    "requested_table_columns": query_understanding.requested_table_columns,
-                    "answer_style": query_understanding.answer_style,
-                    "requires_global_search": query_understanding.requires_global_search,
-                    "technical_condition": query_understanding.technical_condition,
-                    "safety_intent": query_understanding.safety_intent,
-                    "requires_previous_results": query_understanding.requires_previous_results,
-                    "requires_comparison": query_understanding.requires_comparison,
-                    "requires_section_summary": query_understanding.requires_section_summary,
-                    "language": query_understanding.language,
-                },
+                "query_understanding": _query_understanding_payload(query_understanding),
                 "structured_evidence_pack": {},
                 "evidence_pack": [],
                 "displayed_evidences": [],
@@ -2975,7 +3268,10 @@ def run_generation(
                     "retrieved_exact_analyte_count": 0,
                     "displayed_exact_analyte_count": 0,
                 },
-            }
+                },
+                query_understanding=query_understanding,
+                displayed_evidences=[],
+            )
 
         transformed_pack = _build_response_transform_pack(
             query=q,
@@ -3014,6 +3310,7 @@ def run_generation(
         source_citations = build_source_citations(displayed_evidences, resolver=source_resolver)
         transformed_pack = _attach_source_fields_to_structured_pack(transformed_pack, source_citations)
         transformed_pack["recent_style_history"] = style_history[-20:]
+        transformed_qu = _with_resolved_strategy(transformed_qu, transformed_pack)
         output_format = str(transformed_pack.get("output_format") or query_understanding.output_format or "list").lower()
         composed = compose_professional_answer(
             user_question=q,
@@ -3057,6 +3354,10 @@ def run_generation(
             source_clickable_requested=bool(transformed_qu.source_clickable_requested),
             requested_value=transformed_qu.requested_value,
             comparison_operator=transformed_qu.comparison_operator,
+            raw_format_phrase=getattr(transformed_qu, "raw_format_phrase", None),
+            unsupported_presentation=bool(getattr(transformed_qu.presentation_intent, "unsupported_format", False)),
+            user_requested_visualization=bool(getattr(transformed_qu.presentation_intent, "user_requested_visualization", False)),
+            requested_chart_type=getattr(transformed_qu.presentation_intent, "chart_type", None),
         )
         quality = _quality_report(
             answer=answer,
@@ -3066,7 +3367,8 @@ def run_generation(
         )
         intro_text, conclusion_text = _extract_intro_conclusion(answer)
         elapsed = time.perf_counter() - started
-        return {
+        return _inject_visualization_payload(
+            {
             "request_id": request_id,
             "query": q,
             "query_received": query_received,
@@ -3092,26 +3394,7 @@ def run_generation(
             "error_type": None,
             "generation_mode": generation_mode,
             "detected_analytes": exact_analytes,
-            "query_understanding": {
-                "requested_doc_ids": query_understanding.requested_doc_ids,
-                "requested_analytes": query_understanding.requested_analytes,
-                "requested_value": query_understanding.requested_value,
-                "requested_unit": query_understanding.requested_unit,
-                "comparison_operator": query_understanding.comparison_operator,
-                "source_clickable_requested": query_understanding.source_clickable_requested,
-                "patient_query": query_understanding.patient_query,
-                "intent": query_understanding.intent,
-                "output_format": query_understanding.output_format,
-                "requested_table_columns": query_understanding.requested_table_columns,
-                "answer_style": query_understanding.answer_style,
-                "requires_global_search": query_understanding.requires_global_search,
-                "technical_condition": query_understanding.technical_condition,
-                "safety_intent": query_understanding.safety_intent,
-                "requires_previous_results": query_understanding.requires_previous_results,
-                "requires_comparison": query_understanding.requires_comparison,
-                "requires_section_summary": query_understanding.requires_section_summary,
-                "language": query_understanding.language,
-            },
+            "query_understanding": _query_understanding_payload(query_understanding),
             "structured_evidence_pack": transformed_pack,
             "style_memory_entry": {
                 "intro_text": intro_text,
@@ -3154,7 +3437,10 @@ def run_generation(
                 "retrieved_exact_analyte_count": len(displayed_evidences),
                 "displayed_exact_analyte_count": len(displayed_evidences),
             },
-        }
+            },
+            query_understanding=transformed_qu,
+            displayed_evidences=displayed_evidences,
+        )
 
     if _is_structured_question_with_fast_path(intents, requested_doc_ids, exact_analytes) and (
         requested_doc_ids or query_understanding.intent in {"global_patient_lookup", "cohort_search"}
@@ -3174,6 +3460,7 @@ def run_generation(
         source_citations = build_source_citations(displayed_evidences, resolver=source_resolver)
         structured_pack = _attach_source_fields_to_structured_pack(structured_pack, source_citations)
         structured_pack["recent_style_history"] = style_history[-20:]
+        query_understanding = _with_resolved_strategy(query_understanding, structured_pack)
         composed = compose_professional_answer(
             user_question=q,
             query_understanding=query_understanding,
@@ -3273,6 +3560,10 @@ def run_generation(
             answer_style_requested=query_understanding.answer_style,
             requested_table_columns=query_understanding.requested_table_columns,
             requested_technical_condition=query_understanding.technical_condition,
+            raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+            unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+            user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+            requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
             source_clickable_requested=bool(query_understanding.source_clickable_requested),
             requested_value=query_understanding.requested_value,
             comparison_operator=query_understanding.comparison_operator,
@@ -3340,6 +3631,10 @@ def run_generation(
                     source_clickable_requested=bool(query_understanding.source_clickable_requested),
                     requested_value=query_understanding.requested_value,
                     comparison_operator=query_understanding.comparison_operator,
+                    raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                    unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+                    user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+                    requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
                 )
                 if str(retry_validation.get("validation_status") or "fail") != "fail":
                     final_answer = retry_answer
@@ -3392,6 +3687,10 @@ def run_generation(
                         source_clickable_requested=bool(query_understanding.source_clickable_requested),
                         requested_value=query_understanding.requested_value,
                         comparison_operator=query_understanding.comparison_operator,
+                        raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                        unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+                        user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+                        requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
                     )
                     quality = _quality_report(
                         answer=final_answer,
@@ -3411,7 +3710,8 @@ def run_generation(
             }
             for ev in displayed_evidences
         ]
-        return {
+        return _inject_visualization_payload(
+            {
             "request_id": request_id,
             "query": q,
             "query_received": query_received,
@@ -3437,26 +3737,7 @@ def run_generation(
             "error_type": "llm_writer_error" if writer_error else None,
             "generation_mode": generation_mode,
             "detected_analytes": exact_analytes,
-            "query_understanding": {
-                "requested_doc_ids": query_understanding.requested_doc_ids,
-                "requested_analytes": query_understanding.requested_analytes,
-                "requested_value": query_understanding.requested_value,
-                "requested_unit": query_understanding.requested_unit,
-                "comparison_operator": query_understanding.comparison_operator,
-                "source_clickable_requested": query_understanding.source_clickable_requested,
-                "patient_query": query_understanding.patient_query,
-                "intent": query_understanding.intent,
-                "output_format": query_understanding.output_format,
-                "requested_table_columns": query_understanding.requested_table_columns,
-                "answer_style": query_understanding.answer_style,
-                "requires_global_search": query_understanding.requires_global_search,
-                "technical_condition": query_understanding.technical_condition,
-                "safety_intent": query_understanding.safety_intent,
-                "requires_previous_results": query_understanding.requires_previous_results,
-                "requires_comparison": query_understanding.requires_comparison,
-                "requires_section_summary": query_understanding.requires_section_summary,
-                "language": query_understanding.language,
-            },
+            "query_understanding": _query_understanding_payload(query_understanding),
             "structured_evidence_pack": structured_pack,
             "style_memory_entry": {
                 "intro_text": intro_text,
@@ -3499,7 +3780,10 @@ def run_generation(
                 "retrieved_exact_analyte_count": len(found_requested_analytes),
                 "displayed_exact_analyte_count": len(found_requested_analytes),
             },
-        }
+            },
+            query_understanding=query_understanding,
+            displayed_evidences=displayed_evidences,
+        )
 
     if requested_doc_id:
         retrieval_filters.doc_id = requested_doc_id
@@ -3789,6 +4073,10 @@ def run_generation(
         source_clickable_requested=bool(query_understanding.source_clickable_requested),
         requested_value=query_understanding.requested_value,
         comparison_operator=query_understanding.comparison_operator,
+        raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+        unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+        user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+        requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
     )
     quality = _quality_report(
         answer=final_answer,
@@ -3826,6 +4114,33 @@ def run_generation(
         "error_type": error_type,
         "generation_mode": generation_mode,
         "detected_analytes": exact_analytes,
+        "query_understanding": _query_understanding_payload(query_understanding),
+        "structured_evidence_pack": {
+            "question": q,
+            "original_user_question": getattr(query_understanding, "original_user_question", q),
+            "intent": query_understanding.intent,
+            "response_strategy": getattr(query_understanding, "response_strategy", "render_table"),
+            "response_strategy_reason": getattr(query_understanding, "response_strategy_reason", None),
+            "output_format": query_understanding.output_format,
+            "answer_style": query_understanding.answer_style,
+            "requested_doc_ids": list(query_understanding.requested_doc_ids or []),
+            "requested_analytes": list(query_understanding.requested_analytes or []),
+            "requested_table_columns": list(query_understanding.requested_table_columns or []),
+            "technical_condition": query_understanding.technical_condition,
+            "presentation_intent": {
+                "requested_output": getattr(query_understanding.presentation_intent, "requested_output", query_understanding.output_format),
+                "chart_type": getattr(query_understanding.presentation_intent, "chart_type", None),
+                "raw_format_phrase": getattr(query_understanding.presentation_intent, "raw_format_phrase", None),
+                "unsupported_format": bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+                "user_requested_visualization": bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+                "unsupported_reason": getattr(query_understanding.presentation_intent, "unsupported_reason", None),
+                "recommended_output": getattr(query_understanding.presentation_intent, "recommended_output", None),
+                "recommended_alternative_format": getattr(query_understanding.presentation_intent, "recommended_alternative_format", None),
+            },
+            "evidences": list(displayed_evidences),
+            "results": list(displayed_evidences),
+            "sources": list(source_citations),
+        },
         "evidence_pack": evidence_pack,
         "displayed_evidences": displayed_evidences,
         "display": display_meta,
@@ -3869,7 +4184,11 @@ def run_generation(
         },
     }
 
-    return result
+    return _inject_visualization_payload(
+        result,
+        query_understanding=query_understanding,
+        displayed_evidences=displayed_evidences,
+    )
 
 
 def _parse_args() -> argparse.Namespace:

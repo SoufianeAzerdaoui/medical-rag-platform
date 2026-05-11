@@ -1,7 +1,14 @@
 import { create } from "zustand";
 import { clearChats, deleteChat, getChats, putChat } from "@/lib/indexeddb";
 import { uid } from "@/lib/utils";
-import type { AssistantDiagnostics, ChatItem, ChatMode, ChatSource, MessageItem } from "@/types/chat";
+import type {
+  AssistantDiagnostics,
+  ChatItem,
+  ChatMode,
+  ChatSource,
+  MessageItem,
+  VisualizationPayload,
+} from "@/types/chat";
 
 type Theme = "light" | "dark" | "system";
 
@@ -24,6 +31,8 @@ interface ChatState {
     content: string,
     sources?: ChatSource[],
     diagnostics?: AssistantDiagnostics,
+    visualization?: VisualizationPayload,
+    chartData?: VisualizationPayload,
   ) => void;
   failAssistantMessage: (chatId: string, messageId: string, content: string) => void;
   addAssistantMessage: (chatId: string, content: string, sources?: ChatSource[]) => void;
@@ -148,7 +157,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ chats: updated });
     return msg;
   },
-  resolveAssistantMessage: (chatId, messageId, content, sources, diagnostics) => {
+  resolveAssistantMessage: (chatId, messageId, content, sources, diagnostics, visualization, chartData) => {
     const { chats } = get();
     const updated = chats.map((chat) => {
       if (chat.id !== chatId) return chat;
@@ -160,6 +169,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
               status: "done",
               sources: sources ?? [],
               diagnostics: diagnostics ?? {},
+              visualization,
+              chart_data: chartData,
             }
           : m,
       );

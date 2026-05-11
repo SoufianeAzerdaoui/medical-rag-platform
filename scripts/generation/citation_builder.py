@@ -43,6 +43,7 @@ def _build_label(*, filename: str | None, doc_id: str, page: int | None, row: in
     base = re.sub(r"/home/[^\s\])]+", "", base).strip()
     base = re.sub(r"[A-Za-z]:\\[^\s\])]+", "", base).strip()
     base = re.sub(r"\bpage\s*(\d+)\s*row\s*(\d+)\b", r"page \1, ligne \2", base, flags=re.IGNORECASE)
+    base = re.sub(r"\bligne\s*(\d+)\s*ligne\s*\1\b", r"ligne \1", base, flags=re.IGNORECASE)
     base = re.sub(r"(ligne\s*\d+)\s*\1\b", r"\1", base, flags=re.IGNORECASE)
     if page is not None:
         has_page = re.search(r"\bpage\s*\d+\b", base, flags=re.IGNORECASE) is not None

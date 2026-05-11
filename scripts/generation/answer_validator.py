@@ -72,7 +72,6 @@ _TREATMENT_PATTERNS = [
 _DIAGNOSIS_PATTERNS = [
     r"\bdiagnostic\s+definitif\b",
     r"\bdiagnostic\s+confirm\w+\b",
-    r"\bvous\s+avez\b",
 ]
 
 _UNIT_REGEX = re.compile(
@@ -138,6 +137,9 @@ def _extract_numeric_tokens_for_validation(core_text: str) -> list[str]:
         line = re.sub(r"^\s*\d+\.\s*", "", line)
         line = re.sub(r"(?im)^\s*résultat\s+\d+\s*:\s*", "", line)
         line = re.sub(r"(?im)^\s*resultat\s+\d+\s*:\s*", "", line)
+        # Remove analyte-like labels that include numeric tokens (e.g. T3, T4, CA 15-3).
+        line = re.sub(r"\bT\d+\b", " ", line, flags=re.IGNORECASE)
+        line = re.sub(r"\bCA\s*\d+(?:\s*[-/]\s*\d+)+\b", " ", line, flags=re.IGNORECASE)
         line = re.sub(r"\breport[_\-]?\d+\b", " ", line, flags=re.IGNORECASE)
         line = re.sub(r"\bpat[_\-]?\d+\b", " ", line, flags=re.IGNORECASE)
 
@@ -515,6 +517,16 @@ def _parse_markdown_table_header_keys(text: str) -> list[str]:
     return keys
 
 
+def _is_markdown_table(text: str) -> bool:
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return False
+    for i in range(len(lines) - 1):
+        if "|" in lines[i] and re.search(r"^\|?\s*[-:| ]+\s*\|?\s*$", lines[i + 1]):
+            return True
+    return False
+
+
 def _canonical_analyte_key(value: str) -> str:
     key = _norm(value).replace("_", " ")
     key = key.replace("valporoique", "valproique")
@@ -562,6 +574,10 @@ def validate_answer(
     source_clickable_requested: bool = False,
     requested_value: str | None = None,
     comparison_operator: str | None = None,
+    raw_format_phrase: str | None = None,
+    unsupported_presentation: bool = False,
+    user_requested_visualization: bool = False,
+    requested_chart_type: str | None = None,
 ) -> dict[str, Any]:
     text = (answer_text or "").strip()
     text_norm = _norm(text)
@@ -605,6 +621,11 @@ def validate_answer(
         errors.append("Model thinking content exposed in final answer.")
     if check_internal_reasoning_leak(text):
         errors.append("internal_reasoning_leak")
+    if (
+        (output_format_requested or "").strip().lower() != "json"
+        and re.search(r"(?<![A-Za-z])None(?![A-Za-z])", text)
+    ):
+        errors.append("forbidden_none_literal")
 
     forbidden_internal_hits = [m for m in _FORBIDDEN_INTERNAL_MARKERS if m in text_norm]
     if forbidden_internal_hits or "/home/" in text or "\\home\\" in text or re.search(r"[A-Za-z]:\\", text):
@@ -613,12 +634,15 @@ def validate_answer(
         warnings.append("ugly_pluralization")
     if (
         re.search(r"page\s*\d+\s*row\s*\d+", text_norm, flags=re.IGNORECASE)
+        or re.search(r"ligne\s*\d+\s*ligne\s*\d+", text_norm, flags=re.IGNORECASE)
         or "chunk_id" in text_norm
         or "/home/" in text
         or "\\home\\" in text
         or re.search(r"[A-Za-z]:\\", text)
     ):
         errors.append("source_format_bad")
+    if re.search(r"\brendu\s+chart\b", text_norm, flags=re.IGNORECASE):
+        errors.append("render_internal_term_leak")
     if re.search(r"(?:^|[^a-z])page\s*\d+row\s*\d+", text_norm, flags=re.IGNORECASE):
         errors.append("source_format_bad")
     if any(sentence in text_norm for sentence in _GENERIC_COLD_SENTENCES):
@@ -1075,6 +1099,60 @@ def validate_answer(
         ):
             errors.append("output_format_not_respected")
             errors.append("yes_no_not_respected")
+    if (output_format_requested or "").strip().lower() == "chart":
+        has_chart_explanation = any(
+            k in core_norm
+            for k in [
+                "graphique",
+                "visualisation",
+                "visualization",
+                "chart",
+                "graph",
+                "composant graphique",
+                "donnees structurees",
+                "données structurées",
+                "rendu cote interface",
+                "rendu côté interface",
+                "barres",
+                "ratio",
+            ]
+        )
+        has_table_only = _is_markdown_table(core_text)
+        if not has_chart_explanation:
+            errors.append("unsupported_format_silently_ignored")
+        if has_table_only and not has_chart_explanation:
+            errors.append("output_format_mismatch")
+        units = {str(ev.get("unit") or "").strip().lower() for ev in (displayed if displayed else evidence_pack) if str(ev.get("unit") or "").strip()}
+        if len(units) > 1 and not any(k in core_norm for k in ["unites differentes", "unités différentes", "ratio", "barres", "bar chart"]):
+            warnings.append("chart_units_warning_missing")
+        if str(requested_chart_type or "").strip().lower() == "bar" and "graphique en barres" not in core_norm:
+            errors.append("bar_chart_phrase_missing")
+    raw_format_norm = _norm(str(raw_format_phrase or ""))
+    if unsupported_presentation and raw_format_norm:
+        mentions_requested_format = raw_format_norm in core_norm
+        has_limit_explanation = any(
+            k in core_norm
+            for k in [
+                "non supporte",
+                "non supporté",
+                "pas supporte",
+                "pas supporté",
+                "necessite un composant graphique",
+                "nécessite un composant graphique",
+                "format alternatif",
+                "recommandation",
+                "visualisation",
+                "visualization",
+            ]
+        )
+        if not (mentions_requested_format or has_limit_explanation):
+            errors.append("no_silent_default_table")
+    if user_requested_visualization and (output_format_requested or "").strip().lower() != "chart":
+        has_visualization_explainer = any(
+            k in core_norm for k in ["graphique", "visualisation", "visualization", "format alternatif", "recommandation"]
+        )
+        if not has_visualization_explainer:
+            errors.append("unsupported_format_silently_ignored")
     if (answer_style_requested or "").strip().lower() == "yes_no":
         compact = core_norm.strip()
         if not (
@@ -1141,6 +1219,13 @@ def validate_answer(
             warnings.append("missing_conclusion")
     if re.search(r"\btshus\s*,\s*tsh\b|\btsh\s*,\s*tshus\b", intro_block, flags=re.IGNORECASE):
         errors.append("internal_alias_leak")
+    if (output_format_requested or "").strip().lower() != "json":
+        if re.search(
+            r"\b(?:t4_libre|psa_totale|ca_15_3|acide_valproique|cholesterol_ldl|cholesterol_hdl|pro_bnp|peptide_c)\b",
+            core_norm,
+            flags=re.IGNORECASE,
+        ):
+            errors.append("display_name_required")
 
     if str(output_format_requested or "").strip().lower() == "json":
         stripped = (answer_text or "").strip()

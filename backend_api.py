@@ -66,6 +66,8 @@ class ChatResponse(BaseModel):
     validation_status: Literal["pass", "warning", "fail"] | None = None
     generation_mode: str | None = None
     generation_writer: Literal["llm_writer", "professional_fallback"] | None = None
+    visualization: dict[str, Any] | None = None
+    chart_data: dict[str, Any] | None = None
 
 
 class DocumentItem(BaseModel):
@@ -199,10 +201,12 @@ def chat(payload: ChatRequest) -> ChatResponse:
         _CONVERSATION_STATE[payload.chat_id]["last_evidence_pack"] = generation.get("structured_evidence_pack") or state.get(
             "last_evidence_pack"
         )
+        _CONVERSATION_STATE[payload.chat_id]["last_user_question"] = payload.message
         _CONVERSATION_STATE[payload.chat_id]["last_answer"] = generation.get("answer")
         _CONVERSATION_STATE[payload.chat_id]["last_query_understanding"] = generation.get("query_understanding")
         _CONVERSATION_STATE[payload.chat_id]["last_rendered_rows"] = generation.get("displayed_evidences")
         _CONVERSATION_STATE[payload.chat_id]["last_sources"] = generation.get("sources")
+        _CONVERSATION_STATE[payload.chat_id]["last_visualization"] = generation.get("visualization")
         style_hist = list(state.get("recent_style_history") or [])
         style_entry = generation.get("style_memory_entry")
         if isinstance(style_entry, dict):
@@ -225,6 +229,8 @@ def chat(payload: ChatRequest) -> ChatResponse:
             validation_status=str((generation.get("validation") or {}).get("validation_status") or "") or None,
             generation_mode=str(generation.get("generation_mode") or "") or None,
             generation_writer=str(((generation.get("debug") or {}).get("generation_writer") or "")) or None,
+            visualization=(generation.get("visualization") if isinstance(generation.get("visualization"), dict) else None),
+            chart_data=(generation.get("chart_data") if isinstance(generation.get("chart_data"), dict) else None),
         )
     except Exception as exc:  # pragma: no cover - defensive API guard
         raise HTTPException(status_code=500, detail=f"Generation error: {exc}") from exc

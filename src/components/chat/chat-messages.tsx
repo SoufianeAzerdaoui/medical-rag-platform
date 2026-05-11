@@ -4,11 +4,39 @@ import { motion } from "framer-motion";
 import { AlertTriangle, Copy, RotateCcw } from "lucide-react";
 import { AssistantMarkdown } from "@/components/chat/assistant-markdown";
 import { AssistantLoadingMessage } from "@/components/chat/assistant-loading-message";
+import { VisualizationRenderer } from "@/components/chat/visualization-renderer";
 import { ConversationQualityPanel } from "@/components/chat/conversation-quality-panel";
 import { QualityReportCard } from "@/components/chat/quality-report-card";
 import { SourceLinks, stripSourcesSection } from "@/components/sources/source-links";
 import { useChatStore } from "@/store/chat-store";
 import { useEffect, useRef } from "react";
+
+function isRenderableVisualization(message: {
+  visualization?: { type?: string; data?: unknown[] } | undefined;
+  chart_data?: { type?: string; data?: unknown[] } | undefined;
+}): boolean {
+  const chartData = message.chart_data;
+  const visualization = message.visualization;
+  const data = (Array.isArray(chartData?.data) ? chartData?.data : Array.isArray(visualization?.data) ? visualization?.data : []) || [];
+  if (data.length === 0) return false;
+  const t = String(chartData?.type || visualization?.type || "bar").toLowerCase().trim();
+  return t === "bar" || t === "line";
+}
+
+function stripVisualizationUnavailableText(content: string): string {
+  return content
+    .replace(/Vous avez demandé un [^\n.]+\.?/gi, "")
+    .replace(/Recommandation\s*:\s*[^\n.]+\.?/gi, "")
+    .replace(/rendu chart\.?/gi, "")
+    .replace(/Le rendu graphique n[’']est pas encore disponible dans l[’']interface\s*;?\s*je fournis les données nécessaires pour générer le graphique en barres\.?/gi, "")
+    .replace(/Le rendu graphique demandé nécessite un composant côté interface\.?/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function hasMarkdownTable(content: string): boolean {
+  return /\|[^\n]+\|\n\|(?:\s*[-:]+[-|\s:]*)+\|/m.test(content);
+}
 
 export function ChatMessages() {
   const chats = useChatStore((s) => s.chats);
@@ -53,7 +81,10 @@ export function ChatMessages() {
         const isError = isAssistant && status === "error";
         const isDone = isAssistant && status === "done";
         const shouldRenderSourceLinks = isDone && (message.sources?.length || 0) > 0;
-        const contentToRender = shouldRenderSourceLinks ? stripSourcesSection(message.content) : message.content;
+        const canRenderVisualization = isAssistant && isDone && isRenderableVisualization(message);
+        const withoutSources = shouldRenderSourceLinks ? stripSourcesSection(message.content) : message.content;
+        const contentToRender = canRenderVisualization ? stripVisualizationUnavailableText(withoutSources) : withoutSources;
+        const contentHasTable = hasMarkdownTable(contentToRender);
 
         return (
           <motion.article
@@ -77,7 +108,13 @@ export function ChatMessages() {
                     {contentToRender}
                   </div>
                 ) : isAssistant ? (
-                  <AssistantMarkdown content={contentToRender} />
+                  <>
+                    <VisualizationRenderer visualization={message.visualization} chartData={message.chart_data} />
+                    {canRenderVisualization && contentHasTable ? (
+                      <p className="mt-3 text-xs uppercase tracking-wide text-fg/65">Données utilisées</p>
+                    ) : null}
+                    <AssistantMarkdown content={contentToRender} />
+                  </>
                 ) : (
                   <p className="whitespace-pre-wrap text-sm leading-6">{contentToRender}</p>
                 )}
