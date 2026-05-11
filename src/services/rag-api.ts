@@ -1,5 +1,4 @@
-import { uid } from "@/lib/utils";
-import type { ChatMode, MessageItem, RagResponse } from "@/types/chat";
+import type { ChatMode, ChatSource, MessageItem, RagResponse } from "@/types/chat";
 
 const API_URL = process.env.NEXT_PUBLIC_RAG_API_URL;
 
@@ -31,31 +30,12 @@ export async function healthcheck() {
 }
 
 export async function sendChat(payload: ChatPayload): Promise<RagResponse> {
-  try {
-    return await request<RagResponse>("/chat", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : "Unknown error";
-    return {
-      answer:
-        `Erreur backend: ${reason}. Mode demo activé. Cette réponse ne remplace pas l'avis médical.`,
-      confidence: 0.45,
-      response_time: 1.1,
-      sources: [
-        {
-          id: uid("src"),
-          documentName: "Demo Clinical Note",
-          page: 1,
-          section: "Résumé",
-          excerpt: `Aucune donnée backend disponible. Détail erreur: ${reason}.`,
-          score: 0.45,
-          warning: "Vérifier les données sur le backend réel.",
-        },
-      ],
-    };
-  }
+  const response = await request<RagResponse>("/chat", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  const sources = Array.isArray(response.sources) ? (response.sources as ChatSource[]) : undefined;
+  return { ...response, sources };
 }
 
 export async function transcribeAudio(blob: Blob): Promise<string> {

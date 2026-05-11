@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, TypedDict
 
 try:
@@ -35,11 +36,24 @@ def _safe_int(value: Any) -> int | None:
         return None
 
 
-def _build_label(*, filename: str | None, doc_id: str, page: int | None) -> str:
+def _build_label(*, filename: str | None, doc_id: str, page: int | None, row: int | None = None) -> str:
     base = (filename or "").strip() or doc_id
+    base = re.sub(r"\[doc_id=.*?\]", "", base, flags=re.IGNORECASE).strip()
+    base = re.sub(r"chunk_id\s*=\s*[^\],\s]+", "", base, flags=re.IGNORECASE).strip()
+    base = re.sub(r"/home/[^\s\])]+", "", base).strip()
+    base = re.sub(r"[A-Za-z]:\\[^\s\])]+", "", base).strip()
+    base = re.sub(r"\bpage\s*(\d+)\s*row\s*(\d+)\b", r"page \1, ligne \2", base, flags=re.IGNORECASE)
+    base = re.sub(r"\bligne\s*(\d+)\s*ligne\s*\1\b", r"ligne \1", base, flags=re.IGNORECASE)
+    base = re.sub(r"(ligne\s*\d+)\s*\1\b", r"\1", base, flags=re.IGNORECASE)
     if page is not None:
-        return f"{base} — page {page}"
-    return base
+        has_page = re.search(r"\bpage\s*\d+\b", base, flags=re.IGNORECASE) is not None
+        if not has_page:
+            base = f"{base} — page {page}"
+    if row is not None:
+        has_line = re.search(r"\bligne(?:s)?\s*\d+", base, flags=re.IGNORECASE) is not None
+        if not has_line:
+            base = f"{base}, ligne {row}"
+    return " ".join(base.split())
 
 
 def build_citations(
@@ -109,7 +123,7 @@ def build_source_citations(
                 filename=filename,
                 page=page,
                 row=row,
-                label=_build_label(filename=filename, doc_id=doc_id, page=page),
+                label=_build_label(filename=filename, doc_id=doc_id, page=page, row=row),
                 url=page_url,
                 viewer_url=viewer_url,
             )
@@ -145,13 +159,12 @@ def append_source_citations(
     lines = [base, "", "Sources :"]
     if sources:
         for src in sources:
-            row = src.get("row")
-            row_text = f", row {row}" if row is not None else ""
-            doc_meta = f"(doc_id={src.get('doc_id')}{row_text})"
             if src.get("url"):
-                lines.append(f"- {src.get('label')} {doc_meta} : {src.get('url')}")
+                lines.append(f"- [{src.get('label')}]({src.get('url')})")
+            elif src.get("viewer_url"):
+                lines.append(f"- [{src.get('label')}]({src.get('viewer_url')})")
             else:
-                lines.append(f"- {src.get('label')} {doc_meta}")
+                lines.append(f"- {src.get('label')}")
     else:
         for citation in fallback_citations or []:
             lines.append(f"- {citation}")

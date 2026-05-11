@@ -1,7 +1,14 @@
 import { create } from "zustand";
 import { clearChats, deleteChat, getChats, putChat } from "@/lib/indexeddb";
 import { uid } from "@/lib/utils";
-import type { ChatItem, ChatMode, MessageItem, SourceItem } from "@/types/chat";
+import type {
+  AssistantDiagnostics,
+  ChatItem,
+  ChatMode,
+  ChatSource,
+  MessageItem,
+  VisualizationPayload,
+} from "@/types/chat";
 
 type Theme = "light" | "dark" | "system";
 
@@ -10,19 +17,32 @@ interface ChatState {
   activeChatId: string | null;
   search: string;
   privacyMode: boolean;
+  qualityDebugEnabled: boolean;
   theme: Theme;
   initialize: () => Promise<void>;
   newChat: () => string;
   setActiveChat: (id: string) => void;
   setSearch: (value: string) => void;
   addUserMessage: (content: string, mode: ChatMode) => MessageItem | null;
-  addAssistantMessage: (chatId: string, content: string, sources?: SourceItem[]) => void;
+  addAssistantLoadingMessage: (chatId: string) => MessageItem | null;
+  resolveAssistantMessage: (
+    chatId: string,
+    messageId: string,
+    content: string,
+    sources?: ChatSource[],
+    diagnostics?: AssistantDiagnostics,
+    visualization?: VisualizationPayload,
+    chartData?: VisualizationPayload,
+  ) => void;
+  failAssistantMessage: (chatId: string, messageId: string, content: string) => void;
+  addAssistantMessage: (chatId: string, content: string, sources?: ChatSource[]) => void;
   toggleFavorite: (chatId: string) => void;
   renameChat: (chatId: string, title: string) => void;
   removeChat: (chatId: string) => void;
   clearAllData: () => Promise<void>;
   setTheme: (theme: Theme) => void;
   togglePrivacyMode: () => void;
+  toggleQualityDebug: () => void;
   language: "fr" | "ar" | "en";
   setLanguage: (language: "fr" | "ar" | "en") => void;
   exportChat: (chatId: string, format: "json" | "txt") => string | null;
@@ -36,18 +56,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
   activeChatId: null,
   search: "",
   privacyMode: false,
+  qualityDebugEnabled: false,
   theme: "dark",
   language: "fr",
   initialize: async () => {
     const chats = await getChats();
     const theme = (localStorage.getItem("clinical-theme") as Theme | null) ?? "dark";
     const privacyMode = localStorage.getItem("clinical-privacy-mode") === "true";
+    const qualityDebugEnabled = localStorage.getItem("clinical-quality-debug") === "true";
     const language = (localStorage.getItem("clinical-lang") as "fr" | "ar" | "en" | null) ?? "fr";
     set({
       chats: chats.sort((a, b) => +new Date(b.updatedAt) - +new Date(a.updatedAt)),
       activeChatId: chats[0]?.id ?? null,
       theme,
       privacyMode,
+      qualityDebugEnabled,
       language,
     });
   },
@@ -115,6 +138,68 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (target) void putChat(target);
     set({ chats: updated });
   },
+  addAssistantLoadingMessage: (chatId) => {
+    const { chats } = get();
+    const msg: MessageItem = {
+      id: uid("msg"),
+      chatId,
+      role: "assistant",
+      content: "L’assistant prépare une réponse.",
+      createdAt: now(),
+      status: "loading",
+      sources: [],
+    };
+    const updated = chats.map((chat) =>
+      chat.id === chatId ? { ...chat, messages: [...chat.messages, msg], updatedAt: now() } : chat,
+    );
+    const target = updated.find((c) => c.id === chatId);
+    if (target) void putChat(target);
+    set({ chats: updated });
+    return msg;
+  },
+  resolveAssistantMessage: (chatId, messageId, content, sources, diagnostics, visualization, chartData) => {
+    const { chats } = get();
+    const updated = chats.map((chat) => {
+      if (chat.id !== chatId) return chat;
+      const messages: MessageItem[] = chat.messages.map((m): MessageItem =>
+        m.id === messageId
+          ? {
+              ...m,
+              content,
+              status: "done",
+              sources: sources ?? [],
+              diagnostics: diagnostics ?? {},
+              visualization,
+              chart_data: chartData,
+            }
+          : m,
+      );
+      return { ...chat, messages, updatedAt: now() };
+    });
+    const target = updated.find((c) => c.id === chatId);
+    if (target) void putChat(target);
+    set({ chats: updated });
+  },
+  failAssistantMessage: (chatId, messageId, content) => {
+    const { chats } = get();
+    const updated = chats.map((chat) => {
+      if (chat.id !== chatId) return chat;
+      const messages: MessageItem[] = chat.messages.map((m): MessageItem =>
+        m.id === messageId
+          ? {
+              ...m,
+              content,
+              status: "error",
+              sources: [],
+            }
+          : m,
+      );
+      return { ...chat, messages, updatedAt: now() };
+    });
+    const target = updated.find((c) => c.id === chatId);
+    if (target) void putChat(target);
+    set({ chats: updated });
+  },
   toggleFavorite: (chatId) => {
     const { chats } = get();
     const updated = chats.map((chat) =>
@@ -151,6 +236,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const nextValue = !state.privacyMode;
       localStorage.setItem("clinical-privacy-mode", String(nextValue));
       return { privacyMode: nextValue };
+    }),
+  toggleQualityDebug: () =>
+    set((state) => {
+      const nextValue = !state.qualityDebugEnabled;
+      localStorage.setItem("clinical-quality-debug", String(nextValue));
+      return { qualityDebugEnabled: nextValue };
     }),
   setLanguage: (language) => {
     localStorage.setItem("clinical-lang", language);

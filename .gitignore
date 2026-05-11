@@ -1,32 +1,47 @@
-# Virtual environment
+# ---- Environment / secrets ----
+.env
+.env.*
+!.env.example
 venv/
-.env/
+scripts/generation/.env
 
-# Python cache
+# ---- Python ----
 __pycache__/
 *.pyc
 *.pyo
-
-# Jupyter Notebook
 .ipynb_checkpoints/
 
-# Logs
+# ---- Node / Next.js ----
+node_modules/
+.next/
+out/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# ---- Logs ----
 *.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
 
-#agent
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ---- Local agent tooling ----
 medical-rag-codex-skills/
+.codex
+.codex/
 
-# Generated extraction outputs
-data
+# ---- Generated extraction outputs ----
+data/
 
-# Anonymization private/sensitive artifacts
+# ---- Sensitive anonymization artifacts ----
 data/private/
 data/chunks/chunks.raw.jsonl
 data/chunks/anonymization_mapping.xlsx
 data/chunks/anonymization_mapping.csv
-.codex
-
-node_modules
-.next/
-dist/
-build/
