@@ -37,12 +37,18 @@ Règles de style :
 
 Règles de format :
 - Si output_format = table, produis un tableau Markdown propre.
-- Si output_format = chart, respecte la demande graphique. Si le rendu graphique n’est pas supporté par le système, explique brièvement la limite et fournis un format alternatif fiable + données structurées prêtes à visualiser.
+- Si output_format = chart, respecte la demande de visualisation de l’utilisateur.
+- Si le type demandé est disponible et adapté, présente-le directement.
+- Si le type demandé n’est pas disponible ou pas adapté, tu dois nommer clairement la visualisation demandée, expliquer la limite, indiquer l’alternative affichée et pourquoi elle est plus fiable.
+- Tu ne dois jamais remplacer silencieusement un format demandé par un autre.
+- N’emploie pas de terme interne comme “chart type” ou “rendu chart”.
+- Utilise des termes humains : graphique en barres, courbe, graphique radar, heatmap, nuage de points.
 - Si source_clickable_requested = true, le tableau doit inclure une colonne Source avec le label source.
 - Si output_format = json ou answer_style = strict_json, retourne uniquement JSON valide, sans texte autour.
 - Si answer_style = yes_no, commence par Oui/Non ou Yes/No puis donne valeur, référence et source.
 - Pour les sources, utilise source_label.
 - N’affiche jamais chunk_id, path local, request_id ou logs techniques.
+- Ne génère jamais de code HTML, JavaScript ou Python à exécuter.
 
 Règles de grounding :
 - Tous les analytes affichés doivent exister dans results.
@@ -50,6 +56,21 @@ Règles de grounding :
 - Toutes les sources affichées doivent exister dans results.
 - Ne rajoute aucune ligne au tableau.
 - Ne supprime aucune ligne importante fournie dans results, sauf si l’utilisateur demande un filtre."""
+
+
+PROFESSIONAL_WRITER_VISUALIZATION_RULES = """
+Règles de reformulation visualisation :
+- Le backend fournit visualization_facts avec les faits obligatoires.
+- Tu peux varier le style, mais tu ne dois jamais modifier :
+  requested_type, rendered_type, fallback_reason, recommendation_reason, valeurs médicales, sources, statuts techniques.
+- Une seule justification méthodologique suffit ; évite de répéter la même explication dans l’introduction et la conclusion.
+- Si visualization_facts.fallback_used = true :
+  1) mentionne explicitement la visualisation demandée ;
+  2) mentionne explicitement la visualisation affichée ;
+  3) explique la raison du fallback ;
+  4) donne la raison de recommandation.
+- N’emploie jamais “chart” seul dans la réponse utilisateur.
+"""
 
 
 _COLD_CONCLUSIONS = {
@@ -294,10 +315,11 @@ def build_professional_intro(query_understanding: QueryUnderstanding, evidence_p
         return (
             f"Vous avez demandé un rendu {raw_phrase}. "
             "Ce format n’est pas supporté directement par le système ; "
-            f"je fournis ci-dessous le format alternatif le plus fiable ({recommended}) avec les données structurées."
+            f"j’affiche ci-dessous le format alternatif le plus fiable ({recommended})."
         )
     if output_format == "chart":
         raw_phrase = humanize_requested_output(query_understanding)
+        viz_facts = dict(evidence_pack.get("visualization_facts") or {})
         from_previous = str(intent) == "response_transform"
         doc_scope = ", ".join(query_understanding.requested_doc_ids or [])
         context_phrase = (
@@ -305,16 +327,21 @@ def build_professional_intro(query_understanding: QueryUnderstanding, evidence_p
             if from_previous
             else ""
         )
-        recommended = _safe_str(getattr(presentation, "recommended_alternative_format", ""))
-        if recommended:
+        metric_label = _safe_str(viz_facts.get("metric_label"), "écart normalisé à la référence")
+        metric_reason = _safe_str(viz_facts.get("metric_reason"), "")
+        rendered_label = _safe_str(viz_facts.get("rendered_label"), "")
+        if bool(viz_facts.get("fallback_used")) and rendered_label:
             return (
                 f"Vous avez demandé un {raw_phrase}{context_phrase}. "
-                "Le rendu graphique n’est pas encore disponible dans l’interface ; "
-                f"je fournis ci-dessous les données structurées avec une recommandation {recommended}."
+                f"Le rendu affiché utilise une alternative en {rendered_label}."
+            )
+        if metric_reason:
+            return (
+                f"Voici le {raw_phrase}{context_phrase}. "
+                f"L’axe vertical représente l’{metric_label.lower()} car {metric_reason.lower()}."
             )
         return (
-            f"Vous avez demandé un {raw_phrase}{context_phrase}. "
-            "Le rendu graphique n’est pas encore disponible dans l’interface ; je fournis ci-dessous les données structurées prêtes à être visualisées."
+            f"Voici le {raw_phrase}{context_phrase}."
         )
 
     evidences = list(evidence_pack.get("evidences") or evidence_pack.get("results") or [])
@@ -371,7 +398,7 @@ def humanize_requested_output(query_understanding: QueryUnderstanding) -> str:
         if chart_type == "bar":
             return "graphique en barres"
         if chart_type == "line":
-            return "graphique linéaire"
+            return "courbe"
         if chart_type == "radar":
             return "graphique radar"
         if chart_type == "scatter":
@@ -644,6 +671,7 @@ def build_writer_evidence_pack(
         "source_clickable_requested": bool(getattr(query_understanding, "source_clickable_requested", False)),
         "diagnostic_safety": bool(query_understanding.safety_intent),
     }
+    visualization_facts = dict(evidence_pack.get("visualization_facts") or {})
     return {
         "original_user_question": _safe_str(getattr(query_understanding, "original_user_question", "") or user_question),
         "user_question": user_question,
@@ -670,6 +698,21 @@ def build_writer_evidence_pack(
             "recommended_alternative_format": getattr(presentation, "recommended_alternative_format", None),
             "unhandled_instructions": list(getattr(presentation, "unhandled_instructions", []) or []),
         },
+        "visualization_facts": {
+            "requested_type": visualization_facts.get("requested_type"),
+            "requested_label": visualization_facts.get("requested_label"),
+            "rendered_type": visualization_facts.get("rendered_type"),
+            "rendered_label": visualization_facts.get("rendered_label"),
+            "supported": visualization_facts.get("supported"),
+            "suitable": visualization_facts.get("suitable"),
+            "fallback_used": visualization_facts.get("fallback_used"),
+            "fallback_reason": visualization_facts.get("fallback_reason"),
+            "recommendation_reason": visualization_facts.get("recommendation_reason"),
+            "metric_label": visualization_facts.get("metric_label"),
+            "metric_reason": visualization_facts.get("metric_reason"),
+            "result_count": visualization_facts.get("result_count"),
+            "raw_format_phrase": visualization_facts.get("raw_format_phrase"),
+        },
         "constraints": constraints,
         "results": results,
         "missing_items": list(evidence_pack.get("missing_items") or []),
@@ -683,6 +726,13 @@ def build_writer_evidence_pack(
             "must_include": ["critère utilisateur réel", "résultats extraits", "sources lisibles"],
             "must_not_include": ["chunk_id", "chemin local", "logs techniques", "diagnostic non autorisé", "aliases internes"],
             "grounding_policy": "Toutes les valeurs doivent venir de l’evidence_pack.",
+            "immutable_visualization_facts": [
+                "requested_type",
+                "rendered_type",
+                "fallback_reason",
+                "recommendation_reason",
+                "metric_reason",
+            ],
             "style_policy": {
                 "avoid_repetitive_intros": True,
                 "avoid_generic_sentences": True,
@@ -876,26 +926,37 @@ def _build_paragraph(evidences: list[dict[str, Any]], query: str) -> str:
     )
 
 
-def _build_chart_explanation(query_understanding: QueryUnderstanding, evidences: list[dict[str, Any]]) -> str:
+def _build_chart_explanation(
+    query_understanding: QueryUnderstanding,
+    evidences: list[dict[str, Any]],
+    evidence_pack: dict[str, Any] | None = None,
+) -> str:
     presentation = getattr(query_understanding, "presentation_intent", None)
     raw_phrase = humanize_requested_output(query_understanding)
+    viz_facts = dict((evidence_pack or {}).get("visualization_facts") or {})
     from_previous = str(getattr(query_understanding, "intent", "")).strip().lower() == "response_transform"
     doc_scope = ", ".join(query_understanding.requested_doc_ids or [])
     context_phrase = (f" à partir des résultats de {doc_scope}" if doc_scope else " à partir des résultats précédents") if from_previous else ""
     units = sorted({_safe_str(ev.get("unit")).lower() for ev in evidences if _safe_str(ev.get("unit"))})
     mixed_units = len(set(units)) > 1
-    recommended = _safe_str(getattr(presentation, "recommended_alternative_format", ""))
-    if not recommended:
-        recommended = "bar" if mixed_units else _safe_str(getattr(presentation, "chart_type", ""), "line")
-    if mixed_units:
+    metric_label = _safe_str(viz_facts.get("metric_label"), "écart normalisé à la référence")
+    metric_reason = _safe_str(viz_facts.get("metric_reason"), "les analytes utilisent des unités différentes")
+    requested_type = _safe_str(getattr(presentation, "chart_type", "unknown"), "unknown").lower()
+    if requested_type in {"radar", "scatter", "heatmap", "unknown"}:
         return (
-            f"Vous avez demandé un {raw_phrase}{context_phrase}. Le rendu graphique n’est pas encore disponible dans l’interface ; "
-            "je fournis les données nécessaires pour générer le graphique en barres. "
-            "Recommandation : graphique en barres ou ratio à la référence, car les unités biologiques diffèrent."
+            f"Vous avez demandé un {raw_phrase}{context_phrase}. "
+            "Ce type de visualisation n’est pas disponible tel quel dans l’interface ; "
+            f"j’affiche donc une alternative en graphique en barres basée sur l’{metric_label.lower()}."
+        )
+    if requested_type == "line" and mixed_units:
+        return (
+            f"Vous avez demandé une {raw_phrase}{context_phrase}. "
+            "Cette courbe n’est pas affichée telle quelle, car les unités biologiques sont différentes ; "
+            f"j’affiche une alternative en graphique en barres avec l’{metric_label.lower()}."
         )
     return (
-        f"Vous avez demandé un {raw_phrase}{context_phrase}. Le rendu graphique n’est pas encore disponible dans l’interface ; "
-        f"je fournis les données nécessaires pour générer le {recommended if recommended.startswith('graphique') else 'graphique en barres'}."
+        f"Voici le {raw_phrase} généré à partir des résultats retrouvés{context_phrase}. "
+        f"L’axe vertical représente l’{metric_label.lower()} car {metric_reason.lower()}."
     )
 
 
@@ -1030,7 +1091,7 @@ def render_professional_fallback(
         }
 
     if presentation == "chart":
-        chart_intro = _build_chart_explanation(query_understanding, evidences)
+        chart_intro = _build_chart_explanation(query_understanding, evidences, evidence_pack)
         content = (
             _build_content_table(
                 intent,
@@ -1042,8 +1103,11 @@ def render_professional_fallback(
             if evidences
             else "Aucune donnée structurée exploitable pour visualisation."
         )
-        conclusion = "Conclusion technique : données structurées fournies pour visualisation côté interface."
-        answer = "\n\n".join([p for p in [chart_intro, format_result_count(len(evidences)), content, conclusion] if p.strip()])
+        answer_parts = [chart_intro]
+        if evidences:
+            answer_parts.append("Données utilisées")
+        answer_parts.append(content)
+        answer = "\n\n".join([p for p in answer_parts if p.strip()])
         src_lines = _source_lines(source_citations or [])
         if src_lines:
             answer = answer.rstrip() + "\n\nSources :\n" + "\n".join(src_lines)
@@ -1051,7 +1115,7 @@ def render_professional_fallback(
             "intro": chart_intro,
             "content_type": "chart",
             "content": content.strip(),
-            "conclusion": conclusion,
+            "conclusion": "",
             "sources": sources,
             "rendering_hints": {"preferred_format": "chart", "show_sources": True, "strict_json": False},
             "answer": answer.strip(),
@@ -1165,7 +1229,7 @@ def compose_professional_answer(
     )
 
     prompt = (
-        f"{PROFESSIONAL_WRITER_SYSTEM_PROMPT}\n\n"
+        f"{PROFESSIONAL_WRITER_SYSTEM_PROMPT}\n\n{PROFESSIONAL_WRITER_VISUALIZATION_RULES}\n\n"
         "Sortie attendue: réponse finale uniquement.\n"
         "/no_think\n\n"
         "Question utilisateur:\n"
@@ -1201,6 +1265,35 @@ def compose_professional_answer(
             out["mode"] = "llm_writer_quality_fallback"
             out["llm_error"] = "ugly_pluralization"
             return out
+        if re.search(r"\bchart\b", norm_text(llm_answer), flags=re.IGNORECASE):
+            out = dict(fallback)
+            out["mode"] = "llm_writer_quality_fallback"
+            out["llm_error"] = "internal_chart_term_visible"
+            return out
+
+        viz = dict(compact_pack.get("visualization_facts") or {})
+        if bool(viz.get("fallback_used")):
+            requested_label = _safe_str(viz.get("requested_label")).lower()
+            rendered_label = _safe_str(viz.get("rendered_label")).lower()
+            fallback_reason = _safe_str(viz.get("fallback_reason")).lower()
+            ans_norm = norm_text(llm_answer)
+            if requested_label and norm_text(requested_label) not in ans_norm:
+                out = dict(fallback)
+                out["mode"] = "llm_writer_quality_fallback"
+                out["llm_error"] = "requested_visualization_not_respected"
+                return out
+            if rendered_label and norm_text(rendered_label) not in ans_norm:
+                out = dict(fallback)
+                out["mode"] = "llm_writer_quality_fallback"
+                out["llm_error"] = "rendered_visualization_not_mentioned"
+                return out
+            if fallback_reason:
+                key_terms = [tok for tok in re.findall(r"[a-zA-ZÀ-ÿ]{5,}", fallback_reason) if tok not in {"dans", "pour", "avec", "encore"}]
+                if key_terms and not any(norm_text(term) in ans_norm for term in key_terms[:4]):
+                    out = dict(fallback)
+                    out["mode"] = "llm_writer_quality_fallback"
+                    out["llm_error"] = "fallback_reason_missing"
+                    return out
 
         has_source_col = bool(re.search(r"(?im)^\|\s*.*\bsource\b.*\|$", llm_answer or ""))
         if "sources" not in llm_answer.lower() and not has_source_col:

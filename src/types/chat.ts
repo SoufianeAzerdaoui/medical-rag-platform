@@ -32,7 +32,14 @@ export type ChatSource = SourceCitation | LegacySourceItem | string;
 export interface VisualizationDatum {
   analyte?: string;
   value?: number | string | null;
+  raw_value?: string | null;
   value_numeric?: number | null;
+  reference_deviation?: number | null;
+  deviation_label?: string | null;
+  metric_available?: boolean;
+  lower_bound?: number | null;
+  upper_bound?: number | null;
+  status_code?: string;
   reference_ratio?: number | null;
   unit?: string;
   reference?: string;
@@ -42,11 +49,23 @@ export interface VisualizationDatum {
 
 export interface VisualizationPayload {
   requested?: boolean;
+  requested_type?: "radar" | "bar" | "line" | "scatter" | "heatmap" | "unknown" | string;
+  requested_label?: string;
+  rendered_type?: "radar" | "bar" | "line" | "table" | null | string;
+  rendered_label?: string;
+  suitable?: boolean;
+  fallback_used?: boolean;
+  fallback_reason?: string | null;
   type?: string;
   title?: string;
   source?: string;
   supported?: boolean;
   recommended_type?: string;
+  recommendation_reason?: string | null;
+  metric_label?: string;
+  metric_reason?: string;
+  result_count?: number;
+  calculable_count?: number;
   reason?: string;
   x_field?: string;
   y_field?: string;

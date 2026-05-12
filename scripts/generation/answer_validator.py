@@ -88,6 +88,42 @@ def _norm(value: str) -> str:
     return s
 
 
+def _reason_present_in_answer(reason: str, answer_norm: str) -> bool:
+    base = _norm(reason or "")
+    if not base:
+        return True
+    if base in answer_norm:
+        return True
+    tokens = [
+        tok
+        for tok in re.findall(r"[a-z0-9]+", base)
+        if len(tok) >= 5
+        and tok
+        not in {
+            "dans",
+            "avec",
+            "pour",
+            "cette",
+            "comme",
+            "donnee",
+            "donnees",
+            "graphique",
+            "radar",
+            "barres",
+            "courbe",
+            "nuage",
+            "points",
+            "heatmap",
+        }
+    ]
+    if not tokens:
+        return False
+    window = tokens[:6]
+    hit_count = sum(1 for tok in window if tok in answer_norm)
+    min_hits = 2 if len(window) >= 3 else 1
+    return hit_count >= min_hits
+
+
 def _is_true(value: Any) -> bool:
     try:
         return int(value or 0) == 1
@@ -578,6 +614,8 @@ def validate_answer(
     unsupported_presentation: bool = False,
     user_requested_visualization: bool = False,
     requested_chart_type: str | None = None,
+    visualization_payload: dict[str, Any] | None = None,
+    chart_data_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     text = (answer_text or "").strip()
     text_norm = _norm(text)
@@ -643,6 +681,10 @@ def validate_answer(
         errors.append("source_format_bad")
     if re.search(r"\brendu\s+chart\b", text_norm, flags=re.IGNORECASE):
         errors.append("render_internal_term_leak")
+    if re.search(r"\btype\s+chart\b", text_norm, flags=re.IGNORECASE):
+        errors.append("internal_chart_term_visible")
+    if re.search(r"\bchart\b", text_norm, flags=re.IGNORECASE):
+        errors.append("internal_chart_term_visible")
     if re.search(r"(?:^|[^a-z])page\s*\d+row\s*\d+", text_norm, flags=re.IGNORECASE):
         errors.append("source_format_bad")
     if any(sentence in text_norm for sentence in _GENERIC_COLD_SENTENCES):
@@ -1100,21 +1142,98 @@ def validate_answer(
             errors.append("output_format_not_respected")
             errors.append("yes_no_not_respected")
     if (output_format_requested or "").strip().lower() == "chart":
+        viz = visualization_payload or {}
+        requested_type = str(viz.get("requested_type") or requested_chart_type or "").strip().lower()
+        rendered_type = str(viz.get("rendered_type") or (chart_data_payload.get("rendered_type") if chart_data_payload else "")).strip().lower()
+        requested_label = _norm(str(viz.get("requested_label") or ""))
+        rendered_label = _norm(str(viz.get("rendered_label") or ""))
+        fallback_used = bool(viz.get("fallback_used"))
+        fallback_reason = str(viz.get("fallback_reason") or "").strip()
+        supported = bool(viz.get("supported")) if viz else None
+        suitable = bool(viz.get("suitable")) if viz else None
+        viz_data = list(viz.get("data") or (chart_data_payload.get("data") if chart_data_payload else []) or [])
+
+        if user_requested_visualization and not viz:
+            errors.append("visualization_payload_missing")
+        if "reference_ratio" in core_norm or _norm(str(viz.get("y_field") or "")) == "reference_ratio" or _norm(
+            str((chart_data_payload or {}).get("y_field") or "")
+        ) == "reference_ratio":
+            errors.append("bad_metric_label")
+        if requested_label and requested_label not in core_norm:
+            errors.append("requested_visualization_not_respected")
+        if fallback_used and rendered_type and requested_type and requested_type != rendered_type:
+            has_fallback_explainer = any(
+                k in core_norm
+                for k in [
+                    "vous avez demande",
+                    "vous avez demandé",
+                    "rendu affiche",
+                    "rendu affiché",
+                    "j affiche donc",
+                    "j’affiche donc",
+                    "alternative",
+                    "raison",
+                ]
+            )
+            if not has_fallback_explainer:
+                errors.append("silent_visualization_fallback")
+            if rendered_label and rendered_label not in core_norm:
+                errors.append("fallback_alternative_not_mentioned")
+            if fallback_reason and not _reason_present_in_answer(fallback_reason, core_norm):
+                errors.append("fallback_reason_missing_in_answer")
+        if supported is False and fallback_used and not fallback_reason:
+            errors.append("unsupported_visualization_without_reason")
+        if requested_type == "bar" and supported is True and suitable is True and rendered_type and rendered_type != "bar":
+            errors.append("wrong_rendered_type")
+
+        if viz_data:
+            missing_tooltip_rows = []
+            for idx, row in enumerate(viz_data):
+                if not isinstance(row, dict):
+                    continue
+                required = ["raw_value", "unit", "reference", "status"]
+                if any(k not in row for k in required):
+                    missing_tooltip_rows.append(idx)
+            if missing_tooltip_rows:
+                errors.append("tooltip_fields_missing")
+
+            for row in viz_data:
+                if not isinstance(row, dict):
+                    continue
+                analyte_norm = _norm(str(row.get("analyte") or ""))
+                reference_text = str(row.get("reference") or "")
+                metric_available = bool(row.get("metric_available"))
+                deviation = row.get("reference_deviation")
+                status_row = _norm(str(row.get("status_code") or row.get("status") or ""))
+
+                if ("anti tg" in analyte_norm or "anti-tg" in analyte_norm) and reference_text.strip().startswith("<"):
+                    if not metric_available or deviation in (None, ""):
+                        errors.append("antitg_ratio_missing")
+                        break
+
+                if ("below_reference" in status_row or "en dessous" in status_row) and metric_available and isinstance(deviation, (int, float)):
+                    if float(deviation) >= 0:
+                        errors.append("below_reference_negative_deviation")
+                        break
+
         has_chart_explanation = any(
             k in core_norm
             for k in [
                 "graphique",
                 "visualisation",
                 "visualization",
-                "chart",
                 "graph",
-                "composant graphique",
+                "non disponible",
+                "pas adapte",
+                "pas adapté",
                 "donnees structurees",
                 "données structurées",
                 "rendu cote interface",
                 "rendu côté interface",
                 "barres",
                 "ratio",
+                "ecart normalise",
+                "écart normalisé",
             ]
         )
         has_table_only = _is_markdown_table(core_text)
@@ -1125,8 +1244,24 @@ def validate_answer(
         units = {str(ev.get("unit") or "").strip().lower() for ev in (displayed if displayed else evidence_pack) if str(ev.get("unit") or "").strip()}
         if len(units) > 1 and not any(k in core_norm for k in ["unites differentes", "unités différentes", "ratio", "barres", "bar chart"]):
             warnings.append("chart_units_warning_missing")
+        if str(requested_chart_type or "").strip().lower() == "line" and len(units) > 1:
+            if not any(k in core_norm for k in ["unites differentes", "unités différentes", "ratio", "normalis"]):
+                errors.append("unsuitable_chart_without_warning")
         if str(requested_chart_type or "").strip().lower() == "bar" and "graphique en barres" not in core_norm:
             errors.append("bar_chart_phrase_missing")
+
+        repeated_explanation_markers = [
+            "unites biologiques",
+            "unités biologiques",
+            "ecart normalise",
+            "écart normalisé",
+        ]
+        for marker in repeated_explanation_markers:
+            if core_norm.count(_norm(marker)) > 1:
+                warnings.append("duplicate_explanation")
+                break
+        if "donnees structurees fournies pour visualisation cote interface" in core_norm:
+            warnings.append("generic_conclusion")
     raw_format_norm = _norm(str(raw_format_phrase or ""))
     if unsupported_presentation and raw_format_norm:
         mentions_requested_format = raw_format_norm in core_norm
@@ -1153,6 +1288,11 @@ def validate_answer(
         )
         if not has_visualization_explainer:
             errors.append("unsupported_format_silently_ignored")
+
+    if re.search(r"\b(chart\.js|chartjs|html|javascript|python)\b", core_norm, flags=re.IGNORECASE) and any(
+        k in core_norm for k in ["genere", "génère", "execute", "exécute", "copie ce code", "script"]
+    ):
+        errors.append("no_code_execution")
     if (answer_style_requested or "").strip().lower() == "yes_no":
         compact = core_norm.strip()
         if not (

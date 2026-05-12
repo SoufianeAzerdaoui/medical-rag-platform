@@ -588,6 +588,13 @@ def detect_presentation_intent(query: str) -> PresentationIntent:
         "visualization",
         "radar",
         "scatter",
+        "spider",
+        "heatmap",
+        "carte thermique",
+        "matrice",
+        "matrix",
+        "nuage de points",
+        "visualisation comparative",
         "arithmetic line graph",
         "arithmetic line-graph",
     ]
@@ -612,24 +619,36 @@ def detect_presentation_intent(query: str) -> PresentationIntent:
         requested_output = "chart"
         user_visualization = True
         confidence = 0.9
-        if any(m in qn for m in ["line graph", "line-graph", "line chart", "courbe", "arithmetic line graph", "arithmetic line-graph"]):
+        if any(
+            m in qn
+            for m in [
+                "line graph",
+                "line-graph",
+                "line chart",
+                "courbe",
+                "arithmetic line graph",
+                "arithmetic line-graph",
+            ]
+        ):
             chart_type = "line"
         elif any(m in qn for m in ["bar chart", "barres", "barre", "histogramme"]):
             chart_type = "bar"
-        elif "scatter" in qn:
+        elif any(m in qn for m in ["scatter", "nuage de points"]):
             chart_type = "scatter"
-        elif "radar" in qn:
+        elif any(m in qn for m in ["radar", "spider chart", "spider"]):
             chart_type = "radar"
+        elif any(m in qn for m in ["heatmap", "carte thermique", "matrix", "matrice"]):
+            chart_type = "heatmap"
         else:
             chart_type = "unknown"
         if "arithmetic line graph" in qn or "arithmetic line-graph" in qn:
-            unsupported = True
-            unsupported_reason = "Arithmetic Line-Graph non supporté nativement."
+            recommended = "line"
+        if chart_type in {"radar", "scatter", "heatmap"}:
             recommended = "bar"
-        if chart_type in {"radar", "scatter"}:
+        if chart_type == "unknown":
             unsupported = True
-            unsupported_reason = unsupported_reason or "Ce type de graphique n’est pas supporté directement."
-            recommended = recommended or "bar"
+            unsupported_reason = "Le type de graphique demandé n’est pas reconnu de manière déterministe."
+            recommended = "bar"
     elif any(m in qn for m in table_markers):
         requested_output = "table"
         confidence = 0.9
@@ -642,12 +661,23 @@ def detect_presentation_intent(query: str) -> PresentationIntent:
     else:
         raw_format_requested = _raw_format_instruction_detected(text)
         if raw_format_requested and raw_phrase:
-            requested_output = "unknown"
-            unsupported = True
-            unsupported_reason = "Le format demandé n’est pas reconnu de manière déterministe."
-            recommended = "table"
-            confidence = 0.4
-            unhandled.append(f"Instruction de présentation non gérée: {raw_phrase}")
+            raw_norm = normalize_analyte(raw_phrase)
+            if any(k in raw_norm for k in ["graphique", "chart", "graph", "courbe", "radar", "scatter", "heatmap", "matrix", "matrice"]):
+                requested_output = "chart"
+                user_visualization = True
+                chart_type = "unknown"
+                unsupported = True
+                unsupported_reason = "Le format de visualisation demandé est ambigu."
+                recommended = "bar"
+                confidence = 0.45
+                unhandled.append(f"Instruction de présentation non gérée: {raw_phrase}")
+            else:
+                requested_output = "unknown"
+                unsupported = True
+                unsupported_reason = "Le format demandé n’est pas reconnu de manière déterministe."
+                recommended = "table"
+                confidence = 0.4
+                unhandled.append(f"Instruction de présentation non gérée: {raw_phrase}")
         else:
             requested_output = "auto"
             confidence = 0.55
@@ -670,7 +700,7 @@ def detect_presentation_intent(query: str) -> PresentationIntent:
             unhandled.append(f"Type de graphique non précisé: {requested_phrase}")
         if unsupported and unsupported_reason:
             unhandled.append(unsupported_reason)
-        if raw_phrase and any(k in normalize_analyte(raw_phrase) for k in ["matrix", "comparative", "bio clinical"]):
+        if raw_phrase and any(k in normalize_analyte(raw_phrase) for k in ["matrix", "comparative", "bio clinical", "heatmap"]):
             unhandled.append(f"Instruction de présentation complexe à préserver: {raw_phrase}")
     elif raw_phrase and any(k in lower_text for k in ["line-graph", "line graph", "chart", "graphique", "diagramme", "visualisation", "visualization"]):
         unhandled.append(f"Instruction de présentation à préserver: {raw_phrase}")
@@ -714,7 +744,7 @@ def interpret_presentation_intent_with_llm(
         payload = {
             "user_question": str(user_question or ""),
             "supported_outputs": list(supported_outputs or ["table", "list", "json", "chart", "paragraph", "auto", "unknown"]),
-            "supported_chart_types": list(supported_chart_types or ["line", "bar", "scatter", "radar", "unknown"]),
+            "supported_chart_types": list(supported_chart_types or ["line", "bar", "scatter", "radar", "heatmap", "unknown"]),
             "current_detected_presentation": {
                 "requested_output": current_detected_presentation.requested_output,
                 "chart_type": current_detected_presentation.chart_type,

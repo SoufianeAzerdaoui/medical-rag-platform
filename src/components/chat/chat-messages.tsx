@@ -12,26 +12,43 @@ import { useChatStore } from "@/store/chat-store";
 import { useEffect, useRef } from "react";
 
 function isRenderableVisualization(message: {
-  visualization?: { type?: string; data?: unknown[] } | undefined;
-  chart_data?: { type?: string; data?: unknown[] } | undefined;
+  visualization?: { requested?: boolean; rendered_type?: string | null; type?: string; data?: unknown[] } | undefined;
+  chart_data?: { rendered_type?: string | null; type?: string; data?: unknown[] } | undefined;
 }): boolean {
   const chartData = message.chart_data;
   const visualization = message.visualization;
+  if (!visualization?.requested) return false;
   const data = (Array.isArray(chartData?.data) ? chartData?.data : Array.isArray(visualization?.data) ? visualization?.data : []) || [];
-  if (data.length === 0) return false;
-  const t = String(chartData?.type || visualization?.type || "bar").toLowerCase().trim();
-  return t === "bar" || t === "line";
+  const renderedType = String(chartData?.rendered_type || visualization?.rendered_type || chartData?.type || visualization?.type || "")
+    .toLowerCase()
+    .trim();
+  return renderedType.length > 0 || data.length > 0;
 }
 
 function stripVisualizationUnavailableText(content: string): string {
-  return content
+  const cleaned = content
     .replace(/Vous avez demandé un [^\n.]+\.?/gi, "")
+    .replace(/Graphique demandé\s*:\s*[^\n.]+\.?/gi, "")
+    .replace(/Rendu affiché\s*:\s*[^\n.]+\.?/gi, "")
     .replace(/Recommandation\s*:\s*[^\n.]+\.?/gi, "")
     .replace(/rendu chart\.?/gi, "")
     .replace(/Le rendu graphique n[’']est pas encore disponible dans l[’']interface\s*;?\s*je fournis les données nécessaires pour générer le graphique en barres\.?/gi, "")
     .replace(/Le rendu graphique demandé nécessite un composant côté interface\.?/gi, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+
+  const markerMatch = cleaned.match(/(?:^|\n)Données utilisées(?:\n|$)/i);
+  if (markerMatch) {
+    const idx = markerMatch.index ?? -1;
+    if (idx >= 0) {
+      return cleaned.slice(idx + markerMatch[0].length).trim();
+    }
+  }
+  const tableStart = cleaned.search(/\|[^\n]+\|\n\|(?:\s*[-:]+[-|\s:]*)+\|/m);
+  if (tableStart >= 0) {
+    return cleaned.slice(tableStart).trim();
+  }
+  return cleaned.replace(/Conclusion technique\s*:\s*données structurées[^\n.]*(?:\.|$)/gi, "").trim();
 }
 
 function hasMarkdownTable(content: string): boolean {

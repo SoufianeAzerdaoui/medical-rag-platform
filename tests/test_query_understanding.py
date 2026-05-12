@@ -150,7 +150,7 @@ class TestQueryUnderstanding(unittest.TestCase):
         self.assertEqual(qu.presentation_intent.requested_output, "chart")
         self.assertEqual(qu.presentation_intent.chart_type, "line")
         self.assertTrue(qu.presentation_intent.user_requested_visualization)
-        self.assertTrue(qu.presentation_intent.unsupported_format)
+        self.assertFalse(qu.presentation_intent.unsupported_format)
         self.assertIn("Arithmetic", str(qu.raw_format_phrase or ""))
 
     def test_chart_presentation_intent_bar(self) -> None:
@@ -163,10 +163,22 @@ class TestQueryUnderstanding(unittest.TestCase):
         qu = parse_query_understanding(
             "Dans report 16, affiche les résultats hors référence sous forme bio-clinical matrix radar comparative."
         )
-        self.assertIn(qu.output_format, {"chart", "unknown"})
+        self.assertEqual(qu.output_format, "chart")
         self.assertTrue(bool(qu.raw_format_phrase))
         self.assertTrue(bool(qu.unhandled_instructions))
-        self.assertEqual(qu.response_strategy, "explain_limit_and_provide_data")
+        self.assertEqual(qu.presentation_intent.chart_type, "radar")
+
+    def test_chart_presentation_intent_heatmap(self) -> None:
+        qu = parse_query_understanding("Affiche les résultats sous forme heatmap comparative.")
+        self.assertEqual(qu.output_format, "chart")
+        self.assertEqual(qu.presentation_intent.chart_type, "heatmap")
+        self.assertTrue(qu.presentation_intent.user_requested_visualization)
+
+    def test_chart_presentation_intent_unknown_type(self) -> None:
+        qu = parse_query_understanding("Donne les résultats sous forme bio-clinical matrix hyper-radar mode.")
+        self.assertEqual(qu.output_format, "chart")
+        self.assertTrue(qu.presentation_intent.user_requested_visualization)
+        self.assertTrue(bool(qu.raw_format_phrase))
 
     def test_ok_alone_is_small_talk(self) -> None:
         qu = parse_query_understanding("ok")

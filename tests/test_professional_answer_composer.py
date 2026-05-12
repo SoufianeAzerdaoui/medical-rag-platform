@@ -16,6 +16,7 @@ for root in (SCRIPTS_ROOT, GENERATION_ROOT):
 from answer_validator import validate_answer
 from llm_client import LLMClientError
 from professional_answer_composer import (
+    build_writer_evidence_pack,
     choose_presentation_format,
     compose_professional_answer,
     deduplicate_sources,
@@ -567,9 +568,9 @@ class TestProfessionalAnswerComposer(unittest.TestCase):
             source_citations=self._sources([2, 4]),
         )
         answer = str(composed.get("answer") or "")
-        self.assertIn("rendu graphique n’est pas encore disponible dans l’interface", answer)
-        self.assertIn("données structurées", answer)
-        self.assertIn("barres", answer.lower())
+        self.assertIn("Vous avez demandé une", answer)
+        self.assertIn("unités biologiques sont différentes", answer)
+        self.assertIn("écart normalisé", answer)
         self.assertIn("| Analyte |", answer)
 
     def test_19_unknown_format_no_silent_fallback(self) -> None:
@@ -611,8 +612,7 @@ class TestProfessionalAnswerComposer(unittest.TestCase):
         self.assertTrue(
             ("non support" in answer)
             or ("format alternatif" in answer)
-            or ("composant graphique" in answer)
-            or ("rendu graphique n’est pas encore disponible dans l’interface" in answer)
+            or ("n’est pas disponible" in answer)
         )
 
     def test_20_source_grouping_lines_range(self) -> None:
@@ -643,6 +643,50 @@ class TestProfessionalAnswerComposer(unittest.TestCase):
         answer = str(composed.get("answer") or "")
         self.assertIn("report (16).pdf — page 1, lignes 2–6", answer)
         self.assertNotIn("ligne 2ligne 2", answer)
+
+    def test_21_writer_pack_contains_visualization_facts(self) -> None:
+        qu = parse_query_understanding("Donne les résultats sous forme radar chart.")
+        pack = {
+            "question": "Q",
+            "intent": "doc_scoped_results",
+            "requested_doc_ids": ["report_16"],
+            "requested_analytes": ["tshus"],
+            "output_format": "chart",
+            "answer_style": "standard",
+            "evidences": [
+                {
+                    "doc_id": "report_16",
+                    "analyte": "TSHus",
+                    "analyte_norm": "tshus",
+                    "current_value": "55,00",
+                    "unit": "mUI/L",
+                    "reference": "0,35 à 4,94 mUI/l",
+                    "technical_status_code": "above_reference",
+                    "technical_status": "au-dessus de la référence",
+                }
+            ],
+            "visualization_facts": {
+                "requested_type": "radar",
+                "requested_label": "graphique radar",
+                "rendered_type": "bar",
+                "rendered_label": "graphique en barres",
+                "supported": False,
+                "suitable": True,
+                "fallback_used": True,
+                "fallback_reason": "Le graphique radar n’est pas encore disponible dans l’interface.",
+                "recommendation_reason": "Le graphique en barres permet une comparaison plus lisible.",
+            },
+        }
+        writer_pack = build_writer_evidence_pack(
+            user_question="Donne les résultats sous forme radar chart.",
+            query_understanding=qu,
+            evidence_pack=pack,
+            source_citations=[],
+        )
+        facts = writer_pack.get("visualization_facts") or {}
+        self.assertEqual(facts.get("requested_type"), "radar")
+        self.assertEqual(facts.get("rendered_type"), "bar")
+        self.assertTrue(facts.get("fallback_used"))
 
 
 if __name__ == "__main__":
