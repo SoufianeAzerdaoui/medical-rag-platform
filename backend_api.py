@@ -65,9 +65,10 @@ class ChatResponse(BaseModel):
     quality_report: dict[str, Any] | None = None
     validation_status: Literal["pass", "warning", "fail"] | None = None
     generation_mode: str | None = None
-    generation_writer: Literal["llm_writer", "professional_fallback"] | None = None
+    generation_writer: Literal["llm_writer", "professional_fallback", "deterministic_metadata_query", "deterministic_response_transform_json"] | None = None
     visualization: dict[str, Any] | None = None
     chart_data: dict[str, Any] | None = None
+    patients: list[dict[str, Any]] | None = None
 
 
 class DocumentItem(BaseModel):
@@ -231,6 +232,7 @@ def chat(payload: ChatRequest) -> ChatResponse:
             generation_writer=str(((generation.get("debug") or {}).get("generation_writer") or "")) or None,
             visualization=(generation.get("visualization") if isinstance(generation.get("visualization"), dict) else None),
             chart_data=(generation.get("chart_data") if isinstance(generation.get("chart_data"), dict) else None),
+            patients=generation.get("patients"),
         )
     except Exception as exc:  # pragma: no cover - defensive API guard
         raise HTTPException(status_code=500, detail=f"Generation error: {exc}") from exc

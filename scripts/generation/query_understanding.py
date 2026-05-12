@@ -349,6 +349,31 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         "how to use",
         "guide moi",
     }
+    patient_inventory_markers = {
+        "liste tous les patients",
+        "lister tous les patients",
+        "liste tous les patients exist",
+        "lister tous les patients exist",
+        "patients existants",
+        "patients indexes",
+        "patients indexés",
+        "tous les patients avec sources",
+        "donne moi les patients",
+        "donne-moi les patients",
+        "liste des patients",
+        "patients et leurs rapports",
+        "patients avec documents",
+        "patients avec sources",
+        "liste patients",
+        "lister patients",
+    }
+    patient_count_markers = {
+        "combien de patients",
+        "nombre de patients",
+        "count patients",
+        "combien de patients sont indexes",
+        "combien de patients sont indexés",
+    }
 
     has_compare = any(k in qn for k in ["compare", "comparaison", "versus", "vs"])
     has_summary = any(k in qn for k in ["resume", "synthese", "resume les", "fais une synthese", "liste", "anomalies"])
@@ -473,6 +498,16 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         and any(m in qn for m in help_markers)
     )
     is_general_conversation = is_small_talk or is_identity_question or is_capability_question or is_help_question
+    is_patient_inventory = (
+        len(doc_ids) == 0
+        and len(analyte_list) == 0
+        and any(m in qn for m in patient_inventory_markers)
+    )
+    is_patient_count = (
+        len(doc_ids) == 0
+        and len(analyte_list) == 0
+        and any(m in qn for m in patient_count_markers)
+    )
     has_global_patient_lookup = (
         len(doc_ids) == 0
         and len(analyte_list) >= 1
@@ -500,6 +535,8 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         "identity_question": is_identity_question,
         "capability_question": is_capability_question,
         "help_question": is_help_question,
+        "patient_inventory": is_patient_inventory,
+        "patient_inventory_count": is_patient_count,
         "response_transform": has_response_transform,
         "doc_scoped_results": has_doc_scope and (len(analyte_list) >= 1 or not has_summary),
         "doc_scoped_analyte_query": has_doc_scope and len(analyte_list) >= 1,
@@ -1028,6 +1065,10 @@ def detect_source_clickable_requested(query: str) -> bool:
 
 
 def _resolve_primary_intent(intents: dict[str, bool], *, requested_doc_ids: list[str], requested_analytes: list[str]) -> str:
+    if intents.get("patient_inventory_count"):
+        return "patient_inventory_count"
+    if intents.get("patient_inventory"):
+        return "patient_inventory"
     if intents.get("identity_question"):
         return "identity_question"
     if intents.get("capability_question"):

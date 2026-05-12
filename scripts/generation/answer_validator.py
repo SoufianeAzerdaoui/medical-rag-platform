@@ -60,6 +60,38 @@ _INTERNAL_REASONING_LEAK_PATTERNS = [
     "</think>",
 ]
 
+_CHART_LEAK_PATTERNS = [
+    r"INSULINE[A-Z0-9]+",
+    r"TSHus[A-Z0-9]+",
+    r"ANTI-TG-[0-9]+%",
+    r"[0-9]+%Écart",
+    r"Écart normalisé à la référence",
+]
+
+_ROBOTIC_VIZ_PATTERNS = [
+    r"Graphique demandé\s*:",
+    r"Rendu affiché\s*:",
+    r"Raison\s*:",
+]
+
+_GENERIC_VIZ_CONCLUSIONS = [
+    "données structurées fournies pour visualisation côté interface",
+    "vérifiez le backend",
+    "impossible de générer",
+]
+
+_ROBOTIC_VIZ_PATTERNS = [
+    r"Graphique demandé\s*:",
+    r"Rendu affiché\s*:",
+    r"Raison\s*:",
+]
+
+_GENERIC_VIZ_CONCLUSIONS = [
+    "données structurées fournies pour visualisation côté interface",
+    "vérifiez le backend",
+    "impossible de générer",
+]
+
 _TREATMENT_PATTERNS = [
     r"\btraitement\s+recommande\b",
     r"\bprescrire\b",
@@ -616,6 +648,7 @@ def validate_answer(
     requested_chart_type: str | None = None,
     visualization_payload: dict[str, Any] | None = None,
     chart_data_payload: dict[str, Any] | None = None,
+    patients: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     text = (answer_text or "").strip()
     text_norm = _norm(text)
@@ -1549,7 +1582,7 @@ def validate_answer(
     ):
         errors.append("llm_hallucination")
 
-    if not (displayed if displayed else evidence_pack):
+    if not (displayed if displayed else evidence_pack) and generation_mode not in {"deterministic_patient_inventory", "deterministic_patient_count"}:
         if re.search(r"\|\s*[^|\n]+\s*\|", core_text or "") or re.search(r"\bPAT[_\-]\w+\b", answer_text or "", flags=re.IGNORECASE):
             errors.append("no_evidence_hallucination")
 
@@ -1579,6 +1612,38 @@ def validate_answer(
 
     value_accuracy = len(unsupported_numeric) == 0
     unit_accuracy = len(unsupported_units) == 0
+
+    # Patient Inventory Specific Validation
+    if generation_mode in {"deterministic_patient_inventory", "deterministic_patient_count"}:
+        forbidden_inventory_markers = [
+            "non precise", "non-precise", "non précisé", "non-précisé",
+            "non disponible", "n/a", "reference non disponible", "référence non disponible",
+            "statut non interpretable", "statut non interprétable",
+            "analyte", "valeur actuelle", "reference", "référence", "statut"
+        ]
+        low_answer = _norm(answer_text)
+        found_forbidden = [m for m in forbidden_inventory_markers if m in low_answer]
+        if found_forbidden:
+            errors.append(f"patient_inventory_forbidden_markers:{found_forbidden}")
+        
+        if generation_mode == "deterministic_patient_inventory":
+            if "patient" not in low_answer:
+                errors.append("patient_inventory_requires_patient_column")
+            if "sources" not in low_answer:
+                errors.append("patient_inventory_requires_sources")
+
+    # ... (existing return dict building)
+    prod_checks = validate_production_ux(
+        answer_text=answer_text,
+        patients=patients,
+        user_requested_visualization=user_requested_visualization
+    )
+    
+    for pc in prod_checks:
+        if pc["status"] == "fail":
+            errors.append(f"{pc['id']}:{pc['message']}")
+        elif pc["status"] == "warning":
+            warnings.append(f"{pc['id']}:{pc['message']}")
 
     if errors:
         validation_status = "fail"
@@ -1629,4 +1694,50 @@ def validate_answer(
             "missing_count": len(missing_requested),
             "uncovered_count": max(0, len(set(requested_analyte_list) - (set(found_requested) | set(missing_requested)))),
         },
+        "production_ux_checks": prod_checks,
     }
+
+
+def validate_production_ux(
+    answer_text: str,
+    patients: list[dict[str, Any]] | None = None,
+    user_requested_visualization: bool = False,
+) -> list[dict[str, Any]]:
+    """
+    Reinforced production-ready UX checks.
+    """
+    from sort_utils import natural_report_sort_key
+    checks = []
+    an = _norm(answer_text)
+
+    # A. Chart Leak
+    for p in _CHART_LEAK_PATTERNS:
+        if re.search(p, answer_text):
+             checks.append({"id": "markdown_chart_leak", "status": "fail", "message": f"SVG/Recharts leak: {p}"})
+
+    # B. Robotic Phrasing
+    if any(re.search(p, answer_text) for p in _ROBOTIC_VIZ_PATTERNS):
+        checks.append({"id": "robotic_visualization_intro", "status": "warning", "message": "Style 'Graphique demandé / Rendu affiché' robotique."})
+
+    # C. Natural Sort & Range Labels
+    if patients:
+        for p in patients:
+            reports = [r["filename"] for r in p.get("reports", [])]
+            if reports != sorted(reports, key=natural_report_sort_key):
+                 checks.append({"id": "natural_sort_sources", "status": "fail", "message": f"Sources mal triées pour {p['patient']}"})
+            
+            range_label = p.get("report_range_label", "")
+            if "report.pdf" in reports and len(reports) > 1 and str(range_label).endswith("report.pdf"):
+                 checks.append({"id": "invalid_report_range_label", "status": "fail", "message": f"Range label finit par report.pdf pour {p['patient']}"})
+
+    # D. Long Cell
+    if "| ---" in answer_text:
+        cells = re.findall(r"\|([^|]+)\|", answer_text)
+        if any(len(c.strip()) > 150 for c in cells):
+             checks.append({"id": "patient_inventory_long_cell", "status": "warning", "message": "Cellule Markdown > 150 char."})
+
+    # E. Duplicate Sources
+    if patients and "**Sources consultées :**" in answer_text:
+         checks.append({"id": "duplicate_sources_block", "status": "warning", "message": "Sources répétées alors que patients[] est présent."})
+
+    return checks

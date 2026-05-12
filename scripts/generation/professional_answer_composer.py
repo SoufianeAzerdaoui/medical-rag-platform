@@ -59,17 +59,16 @@ Règles de grounding :
 
 
 PROFESSIONAL_WRITER_VISUALIZATION_RULES = """
-Règles de reformulation visualisation :
+Règles de formulation visualisation :
 - Le backend fournit visualization_facts avec les faits obligatoires.
-- Tu peux varier le style, mais tu ne dois jamais modifier :
-  requested_type, rendered_type, fallback_reason, recommendation_reason, valeurs médicales, sources, statuts techniques.
-- Une seule justification méthodologique suffit ; évite de répéter la même explication dans l’introduction et la conclusion.
+- Tu dois produire une introduction NATURELLE et PROFESSIONNELLE.
+- Ne pas utiliser de structure rigide de type "Graphique demandé : ... Rendu affiché : ...".
 - Si visualization_facts.fallback_used = true :
-  1) mentionne explicitement la visualisation demandée ;
-  2) mentionne explicitement la visualisation affichée ;
-  3) explique la raison du fallback ;
-  4) donne la raison de recommandation.
-- N’emploie jamais “chart” seul dans la réponse utilisateur.
+  1) mentionne le format demandé (ex: Arithmetic Line-Graph) ;
+  2) explique pourquoi une alternative (ex: graphique en barres) est utilisée ;
+  3) lie cette explication aux contraintes des données (ex: unités différentes, pas de série temporelle).
+- INTERDICTION ABSOLUE : ne jamais inclure de labels de données concaténés (ex: INSULINET4LIBRE, TSHusT3) ou de pourcentages d'écarts (ex: 600%) dans ton texte d'introduction. Ces éléments seront rendus séparément par l'interface graphique.
+- Ton texte doit être fluide, comme un expert s'adressant à un utilisateur.
 """
 
 
@@ -1187,6 +1186,146 @@ def render_professional_fallback(
     }
 
 
+def compose_visualization_answer(
+    user_question: str,
+    query_understanding: QueryUnderstanding,
+    evidence_pack: dict[str, Any],
+    llm_client: LLMClient | None = None,
+    provider: str = "ollama",
+    model: str = "qwen3:4b",
+) -> dict[str, Any]:
+    """ Specialized composer for visualization requests to ensure clean separation. """
+    viz_facts = dict(evidence_pack.get("visualization_facts") or {})
+    evidences = list(evidence_pack.get("evidences") or evidence_pack.get("results") or [])
+    
+    # Build a prompt to get ONLY the intro text
+    compact_pack = build_writer_evidence_pack(
+        user_question=user_question,
+        query_understanding=query_understanding,
+        evidence_pack=evidence_pack,
+        source_citations=[],
+    )
+    
+    prompt = (
+        f"{PROFESSIONAL_WRITER_SYSTEM_PROMPT}\n\n{PROFESSIONAL_WRITER_VISUALIZATION_RULES}\n\n"
+        "TASK: Rédige une introduction factuelle, naturelle et concise pour présenter les données et la visualisation ci-dessous.\n"
+        "RECO: Si c'est un fallback, explique-le avec fluidité (ex: 'Compte tenu de la disparité des unités...').\n"
+        "IMPORTANT: Ta réponse doit être UNIQUEMENT le texte de l'introduction. Ne génère JAMAIS de tableau, de liste de sources ou de labels techniques Recharts concaténés ici.\n"
+        "/no_think\n\n"
+        "evidence_pack JSON:\n"
+        f"{json.dumps(compact_pack, ensure_ascii=False)}\n"
+    )
+    
+    client = llm_client or LLMClient(provider=provider)
+    intro = client.generate(prompt=prompt, model=model).strip()
+    
+    # Post-generation sanitizer for Recharts leakage
+    # We remove patterns of uppercase joined words and percentage labels that often leak from Recharts DOM
+    intro = re.sub(r'[A-ZÀ-ÿ]{4,}(?=[A-ZÀ-ÿ][a-z])', '', intro) # Join between words
+    intro = re.sub(r'\b\d+%\b', '', intro) # 600% etc
+    intro = re.sub(r'Écart normalisé.*', '', intro) # Common leaked footer
+    intro = intro.strip()
+    
+    # Build the data table for display alongside the chart
+    data_table = []
+    for ev in evidences:
+        data_table.append({
+            "analyte": ev.get("analyte_display") or ev.get("analyte"),
+            "value": ev.get("value_raw"),
+            "unit": ev.get("unit"),
+            "reference": ev.get("reference_range"),
+            "status": ev.get("interpretation_status"),
+            "doc_id": ev.get("doc_id"),
+            "source": ev.get("source_label")
+        })
+
+    # Clean sources
+    sources = deduplicate_sources(evidence_pack.get("sources") or [])
+    
+    # The final 'answer' for the UI (Markdown)
+    answer = intro
+    if sources:
+        answer += "\n\n**Sources consultées :**\n" + "\n".join(_source_lines(sources))
+
+    return {
+        "intro": intro,
+        "visualization": viz_facts,
+        "data_table": data_table,
+        "sources": sources,
+        "conclusion": None,
+        "answer": answer,
+        "mode": "specialized_visualization_composer",
+    }
+
+
+def compose_patient_inventory_answer(
+    inventory: list[dict[str, Any]],
+    is_count_only: bool = False
+) -> dict[str, Any]:
+    """ 
+    Composes a professional answer for patient inventory requests.
+    Returns a structured object for the Frontend PatientInventoryRenderer.
+    """
+    if is_count_only:
+        count = len(inventory)
+        msg = f"Un total de {count} patient{'s' if count > 1 else ''} distinct{'s' if count > 1 else ''} est répertorié dans la base de données."
+        return {
+            "answer": msg,
+            "count": count,
+            "mode": "deterministic_patient_count",
+            "content_type": "text"
+        }
+
+    if not inventory:
+        return {
+            "answer": "Aucun patient n'est actuellement répertorié dans le système.",
+            "patients": [],
+            "mode": "deterministic_patient_inventory",
+            "content_type": "text"
+        }
+
+    patient_count = len(inventory)
+    intro = f"Les patients indexés dans la base sont listés ci-dessous avec leurs rapports associés ({patient_count} patient{'s' if patient_count > 1 else ''} trouvé{'s' if patient_count > 1 else ''})."
+    
+    # Build Markdown table for fallback (summarized)
+    table = "| Patient | Rapports | Aperçu |\n| :--- | :---: | :--- |\n"
+    
+    for item in inventory:
+        p_token = item["patient"]
+        count = item["report_count"]
+        range_label = item["report_range_label"]
+        
+        # In Markdown fallback, we only show the range and count to keep it clean.
+        # Clicking details happens in the UI component.
+        table += f"| **{p_token}** | {count} | {range_label} |\n"
+
+    # For the fallback Markdown answer, we include the intro + table.
+    # We do NOT add the global source citations block here if we expect the UI to handle it,
+    # but we provide it in the 'sources' field for the renderer.
+    
+    global_sources = []
+    for item in inventory:
+        for src in item["sources"]:
+            if not any(gs["doc_id"] == src["doc_id"] for gs in global_sources):
+                global_sources.append({
+                    "doc_id": src["doc_id"],
+                    "label": src["label"],
+                    "url": src["source_url"],
+                    "viewer_url": src["viewer_url"]
+                })
+
+    answer = f"{intro}\n\n{table}"
+    
+    return {
+        "intro": intro,
+        "patients": inventory, 
+        "sources": global_sources,
+        "answer": answer,
+        "mode": "deterministic_patient_inventory",
+        "content_type": "patient_inventory"
+    }
+
+
 def compose_professional_answer(
     user_question: str,
     query_understanding: QueryUnderstanding,
@@ -1212,6 +1351,22 @@ def compose_professional_answer(
 
     if mode == "fallback":
         return fallback
+
+    if bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)):
+        try:
+            return compose_visualization_answer(
+                user_question=user_question,
+                query_understanding=query_understanding,
+                evidence_pack=evidence_pack,
+                llm_client=llm_client,
+                provider=provider,
+                model=model,
+            )
+        except Exception as e:
+            # Fallback to standard answer if visualization generation fails
+            fb = dict(fallback)
+            fb["llm_error"] = str(e)
+            return fb
 
     presentation = choose_presentation_format(query_understanding, evidence_pack)
     if presentation in {"json", "yes_no"}:

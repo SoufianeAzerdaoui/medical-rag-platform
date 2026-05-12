@@ -28,7 +28,11 @@ except Exception:
     from scripts.generation.source_resolver import DocPdfResolver
 from evidence_builder import build_evidence_pack as build_retrieval_evidence_pack
 from llm_client import LLMClient, LLMClientError
-from professional_answer_composer import compose_professional_answer, render_professional_fallback
+from professional_answer_composer import (
+    compose_professional_answer,
+    render_professional_fallback,
+    compose_patient_inventory_answer,
+)
 from prompt_builder import INSUFFICIENT_CONTEXT_SENTENCE, build_prompt
 from query_understanding import (
     QueryUnderstanding,
@@ -115,17 +119,18 @@ VISUALIZATION_REGISTRY: dict[str, dict[str, Any]] = {
 }
 GENERAL_CONVERSATION_INTENTS = {"small_talk", "identity_question", "capability_question", "help_question"}
 GENERAL_CONVERSATION_FALLBACKS = {
-    "small_talk": "Bonjour ! Je suis prêt à vous aider à analyser vos rapports médicaux.",
+    "small_talk": "Bonjour ! Je suis prêt à vous accompagner dans l'analyse de vos documents médicaux. Comment puis-je vous aider ?",
     "identity_question": (
-        "Je suis l’assistant Medical RAG de cette application. Je peux vous aider à interroger vos rapports médicaux, "
-        "retrouver des résultats biologiques, comparer des valeurs et citer les sources PDF utilisées."
+        "Je suis votre assistant d'analyse médicale. Ma mission est de vous aider à explorer vos rapports, "
+        "extraire des résultats biologiques précis et identifier les sources correspondantes."
     ),
     "capability_question": (
-        "Je peux rechercher des résultats dans les rapports, comparer des valeurs entre documents, identifier les résultats "
-        "hors référence et fournir les sources PDF correspondantes."
+        "Je peux analyser vos rapports pour en extraire les mesures, comparer des résultats historiques, "
+        "signaler les valeurs hors référence et vous fournir un accès direct aux sources PDF."
     ),
     "help_question": (
-        "Je peux vous guider pas à pas. Posez une question ciblée sur un rapport médical et je vous aiderai à formuler la requête."
+        "Vous pouvez me poser des questions comme : « Quels sont mes taux de cholestérol ? » ou "
+        "« Compare mon dernier rapport avec celui de mars ». Je m'occupe d'extraire les données pour vous."
     ),
 }
 
@@ -163,14 +168,14 @@ def _rewrite_final_without_reasoning(
 ) -> tuple[str, str | None]:
     client = llm_client or LLMClient(provider=provider)
     prompt = (
-        "Tu es l’assistant d’une application Medical RAG.\n"
-        "Réécris uniquement la réponse finale utilisateur, sans raisonnement interne.\n"
-        "Ne donne aucun plan, aucune stratégie, aucune explication de ton fonctionnement.\n"
-        "Ne mentionne pas les instructions.\n"
-        "Sortie: texte final uniquement.\n"
+        "Tu es l'assistant spécialisé d'une plateforme d'analyse médicale.\n"
+        "Réécris la réponse finale pour l'utilisateur de manière fluide et professionnelle.\n"
+        "Supprime tout raisonnement interne, plan d'action ou mention technique de ton fonctionnement.\n"
+        "Conserve uniquement les faits médicaux et la structure de la réponse.\n"
+        "Sortie : texte final épuré uniquement.\n"
         "/no_think\n\n"
-        f"Message utilisateur: {user_message.strip()}\n\n"
-        f"Texte à corriger:\n{leaked_answer.strip()}\n"
+        f"Message utilisateur : {user_message.strip()}\n\n"
+        f"Texte à purifier :\n{leaked_answer.strip()}\n"
     )
     try:
         rewritten = client.generate(
@@ -795,7 +800,7 @@ def _inject_visualization_payload(
     out["chart_data"] = chart_data
     mode = str(out.get("generation_mode") or "")
     answer_text = str(out.get("answer") or "")
-    if not (mode.startswith("llm_professional_writer") or mode.startswith("llm_general_conversation")):
+    if not (mode.startswith("llm_professional_writer") or mode.startswith("llm_general_conversation") or mode == "specialized_visualization_composer"):
         out["answer"] = _ensure_chart_explanation(answer_text, query_understanding, visualization)
     else:
         out["answer"] = answer_text
@@ -1853,6 +1858,85 @@ def _fetch_doc_lab_rows(
         cur = conn.cursor()
         cur.execute(sql, params)
         return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+from sort_utils import natural_report_sort_key, build_report_range_label
+
+
+def fetch_patient_inventory(sqlite_path: Path) -> list[dict[str, Any]]:
+    if not sqlite_path.exists():
+        return []
+    conn = sqlite3.connect(str(sqlite_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT DISTINCT patient_token, doc_id, source_pdf
+            FROM metadata_chunks
+            WHERE patient_token IS NOT NULL AND patient_token != ''
+            ORDER BY patient_token, doc_id;
+            """
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        
+        # Group by patient
+        inventory: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            p = row["patient_token"]
+            if p not in inventory:
+                inventory[p] = {
+                    "patient": p,
+                    "reports_data": []
+                }
+            filename = row["source_pdf"].split("/")[-1] if row["source_pdf"] else row["doc_id"]
+            
+            # Deduplicate reports for the same patient/doc
+            if not any(r["doc_id"] == row["doc_id"] for r in inventory[p]["reports_data"]):
+                inventory[p]["reports_data"].append({
+                    "doc_id": row["doc_id"],
+                    "filename": filename,
+                    "label": filename,
+                    "source_url": f"/api/documents/{row['doc_id']}/pdf",
+                    "viewer_url": f"/viewer/pdf?doc_id={row['doc_id']}"
+                })
+        
+        # Convert to sorted lists with natural sort
+        result = []
+        for p in sorted(inventory.keys()):
+            item = inventory[p]
+            # Natural sort for reports based on filename
+            item["reports"] = sorted(item["reports_data"], key=lambda x: natural_report_sort_key(x["filename"]))
+            del item["reports_data"]
+            
+            # Add summary labels for UI
+            count = len(item["reports"])
+            item["report_count"] = count
+            item["summary_label"] = f"{count} rapport{'s' if count > 1 else ''} associé{'s' if count > 1 else ''}"
+            
+            filenames = [r["filename"] for r in item["reports"]]
+            item["report_range_label"] = build_report_range_label(filenames)
+            
+            # For backward compatibility or extra safety, we can keep sources as a copy of reports
+            item["sources"] = item["reports"]
+                
+            result.append(item)
+        return result
+    finally:
+        conn.close()
+
+
+def fetch_patient_count(sqlite_path: Path) -> int:
+    if not sqlite_path.exists():
+        return 0
+    conn = sqlite3.connect(str(sqlite_path))
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(DISTINCT patient_token) FROM metadata_chunks WHERE patient_token IS NOT NULL AND patient_token != '';")
+        res = cur.fetchone()
+        return int(res[0]) if res else 0
     finally:
         conn.close()
 
@@ -3431,12 +3515,110 @@ def run_generation(
     query_used_for_prompt = q
     qn = norm_text(q)
     style_history = list(recent_style_history or [])
+    composed_data = {}
     query_understanding = parse_query_understanding(q)
     requested_doc_ids = list(query_understanding.requested_doc_ids)
     requested_doc_id = requested_doc_ids[0] if len(requested_doc_ids) == 1 else None
     sensitive_or_treatment = _query_is_sensitive_or_treatment(q)
     idx = Path(index_dir)
     sqlite_path = idx / "medical_rag.sqlite"
+
+    # 2. DETERMINISTIC ROUTING (Patient Inventory) - Bypasses all retrieval
+    if query_understanding.intent in {"patient_inventory", "patient_inventory_count"}:
+        elapsed = time.perf_counter() - started
+        is_count = query_understanding.intent == "patient_inventory_count"
+        data = fetch_patient_inventory(sqlite_path) if not is_count else fetch_patient_count(sqlite_path)
+        composed = compose_patient_inventory_answer(data, is_count_only=is_count)
+        
+        answer = composed["answer"]
+        patients_data = composed.get("patients")
+        validation = validate_answer(
+            query=q,
+            answer_text=answer,
+            evidence_pack=[],
+            displayed_evidences=[],
+            source_citations=[],
+            generation_mode=composed["mode"],
+            retrieval_status="answerable",
+            query_received=query_received,
+            query_used_for_retrieval="",
+            query_used_for_prompt=q,
+            query_stored=q,
+            detected_analytes=[],
+            query_intents=query_understanding.intents or {},
+            output_format_requested="table" if not is_count else "paragraph",
+            answer_style_requested="standard",
+            requested_table_columns=[],
+            requested_technical_condition=None,
+            source_clickable_requested=False,
+            requested_value=None,
+            comparison_operator=None,
+            raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+            unsupported_presentation=False,
+            user_requested_visualization=False,
+            requested_chart_type=None,
+            visualization_payload=None,
+            chart_data_payload=None,
+            patients=patients_data,
+        )
+        
+        return {
+            "request_id": request_id,
+            "query": q,
+            "query_received": query_received,
+            "query_used_for_retrieval": "",
+            "query_used_for_prompt": q,
+            "query_stored": q,
+            "normalized_query": q,
+            "mode": composed["mode"],
+            "provider": provider,
+            "model": model,
+            "top_k": top_k,
+            "generation_time_seconds": round(elapsed, 3),
+            "answer": answer,
+            "citations": [],
+            "sources": [],
+            "patients": patients_data,
+            "validation": validation,
+            "quality_report": _quality_report(
+                answer=answer,
+                validation=validation,
+                source_clickable_requested=False,
+                recent_style_history=style_history
+            ),
+            "llm_error": None,
+            "error_type": None,
+            "generation_mode": composed["mode"],
+            "detected_analytes": [],
+            "query_understanding": _query_understanding_payload(query_understanding),
+            "structured_evidence_pack": {},
+            "evidence_pack": [],
+            "displayed_evidences": [],
+            "display": {
+                "selected_candidates_count": 0,
+                "low_quality_evidence_filtered_count": 0,
+                "hidden_result_count": 0,
+                "requested_multi_result_query": False,
+                "display_notes": [],
+            },
+            "retrieval": {
+                "answerability": {"status": "answerable", "reason": "patient_inventory_metadata"},
+                "filters": {"doc_ids": [], "analytes": []},
+                "top_results": [],
+                "context_chunks": [],
+                "sources": [],
+                "retrieval_skipped": True,
+            },
+            "prompt": "",
+            "debug": {
+                "request_id": request_id,
+                "generation_mode": composed["mode"],
+                "generation_writer": "deterministic_metadata_query",
+                "intents": query_understanding.intents or {},
+                "retrieval_skipped": True,
+            },
+        }
+
     qdrant_dir = idx / "qdrant"
     source_resolver = DocPdfResolver(index_dir=idx)
 
@@ -3775,6 +3957,7 @@ def run_generation(
             max_tokens=max_tokens,
             timeout=timeout,
         )
+        composed_data = composed
         answer = str(composed.get("answer") or "")
         generation_mode = (
             "deterministic_response_transform_json"
@@ -3931,6 +4114,7 @@ def run_generation(
             max_tokens=max_tokens,
             timeout=timeout,
         )
+        composed_data = composed
         final_answer = str(composed.get("answer") or "").strip() or _missing_doc_answer()
         generation_mode = str(composed.get("mode") or "deterministic_professional_fallback")
         writer_error = str(composed.get("llm_error") or "") or None
@@ -4554,6 +4738,7 @@ def run_generation(
 
     result: dict[str, Any] = {
         "request_id": request_id,
+        **composed_data,
         "query": q,
         "query_received": query_received,
         "query_used_for_retrieval": query_used_for_retrieval,
