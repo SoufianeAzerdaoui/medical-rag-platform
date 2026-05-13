@@ -28,7 +28,12 @@ except Exception:
     from scripts.generation.source_resolver import DocPdfResolver
 from evidence_builder import build_evidence_pack as build_retrieval_evidence_pack
 from llm_client import LLMClient, LLMClientError
-from professional_answer_composer import compose_professional_answer, render_professional_fallback
+from professional_answer_composer import (
+    compose_professional_answer,
+    render_professional_fallback,
+    compose_patient_inventory_answer,
+    compose_patient_inventory_count_answer,
+)
 from prompt_builder import INSUFFICIENT_CONTEXT_SENTENCE, build_prompt
 from query_understanding import (
     QueryUnderstanding,
@@ -76,20 +81,57 @@ _INTERNAL_REASONING_PATTERNS = [
 ]
 
 SMALL_TALK_FALLBACK_ANSWER = "Bonjour ! Je suis prêt à vous aider à analyser vos rapports médicaux."
-CHART_RENDERING_SUPPORTED = False
+VISUALIZATION_REGISTRY: dict[str, dict[str, Any]] = {
+    "bar": {
+        "label_fr": "graphique en barres",
+        "supported": True,
+        "best_for": ["comparaison", "écart à la référence", "plusieurs analytes"],
+        "requires_same_unit": False,
+    },
+    "line": {
+        "label_fr": "courbe",
+        "supported": True,
+        "best_for": ["évolution temporelle", "série chronologique"],
+        "requires_same_unit": True,
+    },
+    "radar": {
+        "label_fr": "graphique radar",
+        "supported": False,
+        "best_for": ["profil multivarié normalisé"],
+        "requires_normalized_values": True,
+    },
+    "scatter": {
+        "label_fr": "nuage de points",
+        "supported": False,
+        "best_for": ["relation entre deux variables"],
+        "requires_two_numeric_axes": True,
+    },
+    "heatmap": {
+        "label_fr": "heatmap",
+        "supported": False,
+        "best_for": ["matrice de valeurs"],
+        "requires_matrix_data": True,
+    },
+    "unknown": {
+        "label_fr": "format visuel demandé",
+        "supported": False,
+        "best_for": [],
+    },
+}
 GENERAL_CONVERSATION_INTENTS = {"small_talk", "identity_question", "capability_question", "help_question"}
 GENERAL_CONVERSATION_FALLBACKS = {
-    "small_talk": "Bonjour ! Je suis prêt à vous aider à analyser vos rapports médicaux.",
+    "small_talk": "Bonjour ! Je suis prêt à vous accompagner dans l'analyse de vos documents médicaux. Comment puis-je vous aider ?",
     "identity_question": (
-        "Je suis l’assistant Medical RAG de cette application. Je peux vous aider à interroger vos rapports médicaux, "
-        "retrouver des résultats biologiques, comparer des valeurs et citer les sources PDF utilisées."
+        "Je suis votre assistant d'analyse médicale. Ma mission est de vous aider à explorer vos rapports, "
+        "extraire des résultats biologiques précis et identifier les sources correspondantes."
     ),
     "capability_question": (
-        "Je peux rechercher des résultats dans les rapports, comparer des valeurs entre documents, identifier les résultats "
-        "hors référence et fournir les sources PDF correspondantes."
+        "Je peux analyser vos rapports pour en extraire les mesures, comparer des résultats historiques, "
+        "signaler les valeurs hors référence et vous fournir un accès direct aux sources PDF."
     ),
     "help_question": (
-        "Je peux vous guider pas à pas. Posez une question ciblée sur un rapport médical et je vous aiderai à formuler la requête."
+        "Vous pouvez me poser des questions comme : « Quels sont mes taux de cholestérol ? » ou "
+        "« Compare mon dernier rapport avec celui de mars ». Je m'occupe d'extraire les données pour vous."
     ),
 }
 
@@ -127,14 +169,14 @@ def _rewrite_final_without_reasoning(
 ) -> tuple[str, str | None]:
     client = llm_client or LLMClient(provider=provider)
     prompt = (
-        "Tu es l’assistant d’une application Medical RAG.\n"
-        "Réécris uniquement la réponse finale utilisateur, sans raisonnement interne.\n"
-        "Ne donne aucun plan, aucune stratégie, aucune explication de ton fonctionnement.\n"
-        "Ne mentionne pas les instructions.\n"
-        "Sortie: texte final uniquement.\n"
+        "Tu es l'assistant spécialisé d'une plateforme d'analyse médicale.\n"
+        "Réécris la réponse finale pour l'utilisateur de manière fluide et professionnelle.\n"
+        "Supprime tout raisonnement interne, plan d'action ou mention technique de ton fonctionnement.\n"
+        "Conserve uniquement les faits médicaux et la structure de la réponse.\n"
+        "Sortie : texte final épuré uniquement.\n"
         "/no_think\n\n"
-        f"Message utilisateur: {user_message.strip()}\n\n"
-        f"Texte à corriger:\n{leaked_answer.strip()}\n"
+        f"Message utilisateur : {user_message.strip()}\n\n"
+        f"Texte à purifier :\n{leaked_answer.strip()}\n"
     )
     try:
         rewritten = client.generate(
@@ -297,84 +339,371 @@ def _has_mixed_units(evidences: list[dict[str, Any]]) -> bool:
     return len(units) > 1
 
 
-def _build_chart_data(
-    *,
-    evidences: list[dict[str, Any]],
-    chart_type: str | None,
-) -> dict[str, Any] | None:
-    if not evidences:
-        return None
+def _visualization_label(kind: str | None) -> str:
+    key = str(kind or "unknown").strip().lower()
+    entry = VISUALIZATION_REGISTRY.get(key) or VISUALIZATION_REGISTRY["unknown"]
+    return str(entry.get("label_fr") or "visualisation")
+
+
+def _normalize_requested_visualization_type(chart_type: str | None, raw_format_phrase: str | None) -> str:
+    direct = str(chart_type or "").strip().lower()
+    if direct in VISUALIZATION_REGISTRY:
+        return direct
+    raw_norm = norm_text(str(raw_format_phrase or ""))
+    if any(k in raw_norm for k in ["bar chart", "bar graph", "barres", "barre", "histogramme"]):
+        return "bar"
+    if any(k in raw_norm for k in ["line graph", "line chart", "line-graph", "arithmetic line graph", "courbe"]):
+        return "line"
+    if any(k in raw_norm for k in ["radar", "spider"]):
+        return "radar"
+    if any(k in raw_norm for k in ["scatter", "nuage de points"]):
+        return "scatter"
+    if any(k in raw_norm for k in ["heatmap", "carte thermique", "matrix", "matrice"]):
+        return "heatmap"
+    return "unknown"
+
+
+def _has_temporal_axis(evidences: list[dict[str, Any]]) -> bool:
+    temporal_keys = ("observation_date", "date", "datetime", "timestamp", "collected_at", "report_date")
+    for ev in evidences:
+        for key in temporal_keys:
+            if str(ev.get(key) or "").strip():
+                return True
+    return False
+
+
+def _normalize_status_code(status: str | None, status_code: str | None = None) -> str:
+    code = str(status_code or "").strip().lower()
+    if code in {"above_reference", "below_reference", "within_reference", "not_interpretable"}:
+        return code
+    text = norm_text(str(status or ""))
+    if any(k in text for k in ["au dessus", "au-dessus", "above reference", "superieur", "supérieur"]):
+        return "above_reference"
+    if any(k in text for k in ["en dessous", "below reference", "inferieur", "inférieur"]):
+        return "below_reference"
+    if any(k in text for k in ["dans la reference", "within reference"]):
+        return "within_reference"
+    return "not_interpretable"
+
+
+def _parse_reference_bounds(reference: str) -> dict[str, Any]:
+    raw = str(reference or "").strip()
+    if not raw:
+        return {
+            "metric_available": False,
+            "reference_type": "missing",
+            "lower_bound": None,
+            "upper_bound": None,
+        }
+    raw_norm = norm_text(raw).replace("≤", "<=").replace("≥", ">=")
+    raw_comp = raw.lower().replace(",", ".").replace("≤", "<=").replace("≥", ">=").strip()
+    if any(k in raw_norm for k in ["qualitatif", "non disponible", "n a", "na", "negatif", "négatif", "positif"]):
+        return {
+            "metric_available": False,
+            "reference_type": "not_interpretable",
+            "lower_bound": None,
+            "upper_bound": None,
+        }
+
+    upper_match = re.match(r"^\s*(?:<|<=|≤)\s*([0-9]+(?:[.,][0-9]+)?)", raw, flags=re.IGNORECASE)
+    if upper_match:
+        upper = _value_to_float(upper_match.group(1))
+        return {
+            "metric_available": upper is not None and upper > 0,
+            "reference_type": "upper_threshold",
+            "lower_bound": None,
+            "upper_bound": upper,
+        }
+
+    lower_match = re.match(r"^\s*(?:>|>=|≥)\s*([0-9]+(?:[.,][0-9]+)?)", raw, flags=re.IGNORECASE)
+    if lower_match:
+        lower = _value_to_float(lower_match.group(1))
+        return {
+            "metric_available": lower is not None and lower > 0,
+            "reference_type": "lower_threshold",
+            "lower_bound": lower,
+            "upper_bound": None,
+        }
+
+    interval_match = re.search(
+        r"([0-9]+(?:\.[0-9]+)?)\s*(?:a|à|-|to|jusqu(?:a|à))\s*([0-9]+(?:\.[0-9]+)?)",
+        raw_comp,
+        flags=re.IGNORECASE,
+    )
+    if interval_match:
+        lo = _value_to_float(interval_match.group(1))
+        hi = _value_to_float(interval_match.group(2))
+        if lo is not None and hi is not None:
+            lower, upper = (lo, hi) if lo <= hi else (hi, lo)
+            return {
+                "metric_available": lower > 0 and upper > 0,
+                "reference_type": "interval",
+                "lower_bound": lower,
+                "upper_bound": upper,
+            }
+
+    nums = re.findall(r"\d+(?:[.,]\d+)?", raw)
+    if len(nums) >= 2:
+        lo = _value_to_float(nums[0])
+        hi = _value_to_float(nums[1])
+        if lo is not None and hi is not None:
+            lower, upper = (lo, hi) if lo <= hi else (hi, lo)
+            return {
+                "metric_available": lower > 0 and upper > 0,
+                "reference_type": "interval",
+                "lower_bound": lower,
+                "upper_bound": upper,
+            }
+
+    return {
+        "metric_available": False,
+        "reference_type": "not_interpretable",
+        "lower_bound": None,
+        "upper_bound": None,
+    }
+
+
+def _deviation_label(deviation: float | None, *, lower_bound: float | None, upper_bound: float | None, metric_available: bool) -> str:
+    if not metric_available or deviation is None:
+        return "non calculable"
+    if abs(deviation) < 1e-12:
+        return "dans la référence"
+    pct = abs(deviation) * 100.0
+    pct_txt = f"{pct:.0f}%"
+    if deviation > 0:
+        suffix = "de la limite haute" if upper_bound is not None else "du seuil de référence"
+        return f"+{pct_txt} au-dessus {suffix}"
+    suffix = "de la limite basse" if lower_bound is not None else "du seuil de référence"
+    return f"{pct_txt} en dessous {suffix}"
+
+
+def compute_reference_metric(value: Any, reference: str, status: str) -> dict[str, Any]:
+    numeric = _value_to_float(value)
+    bounds = _parse_reference_bounds(reference)
+    lower_bound = bounds.get("lower_bound")
+    upper_bound = bounds.get("upper_bound")
+    metric_available = bool(bounds.get("metric_available")) and numeric is not None
+    status_code = _normalize_status_code(status)
+    deviation: float | None = None
+
+    if metric_available:
+        if status_code == "within_reference":
+            deviation = 0.0
+        elif status_code == "above_reference":
+            denom = upper_bound if upper_bound is not None else lower_bound
+            if isinstance(denom, float) and denom > 0:
+                deviation = (numeric / denom) - 1.0
+        elif status_code == "below_reference":
+            denom = lower_bound if lower_bound is not None else upper_bound
+            if isinstance(denom, float) and denom > 0:
+                deviation = (numeric / denom) - 1.0
+        else:
+            if upper_bound is not None and upper_bound > 0:
+                deviation = (numeric / upper_bound) - 1.0
+            elif lower_bound is not None and lower_bound > 0:
+                deviation = (numeric / lower_bound) - 1.0
+
+    if deviation is None:
+        metric_available = False
+
+    return {
+        "metric_available": metric_available,
+        "reference_type": bounds.get("reference_type"),
+        "lower_bound": lower_bound,
+        "upper_bound": upper_bound,
+        "reference_deviation": (round(float(deviation), 6) if deviation is not None else None),
+        "deviation_label": _deviation_label(
+            deviation,
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
+            metric_available=metric_available,
+        ),
+    }
+
+
+def _build_visualization_data(evidences: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
     data: list[dict[str, Any]] = []
-    mixed_units = _has_mixed_units(evidences)
+    has_deviation = False
     for ev in evidences:
         analyte_norm = str(ev.get("analyte_norm") or "").strip().lower()
         analyte = analyte_display_name(str(ev.get("analyte") or analyte_norm or "analyte"), analyte_norm or None)
         ref = str(ev.get("reference") or ev.get("reference_range") or "").strip()
-        val = str(ev.get("current_value") or ev.get("value_raw") or "").strip()
-        numeric = _value_to_float(val)
-        ratio = None
-        if numeric is not None:
-            nums = re.findall(r"\d+(?:[.,]\d+)?", ref)
-            if len(nums) >= 2:
-                lo = _value_to_float(nums[0])
-                hi = _value_to_float(nums[1])
-                if lo is not None and hi is not None and hi > lo:
-                    ratio = (numeric - lo) / (hi - lo)
-        item = {
+        raw_value = str(ev.get("current_value") or ev.get("value_raw") or "").strip()
+        numeric = _value_to_float(raw_value)
+        status_text = str(ev.get("technical_status") or ev.get("status") or "").strip()
+        status_code = str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip()
+        metric = compute_reference_metric(raw_value, ref, status_code or status_text)
+        if metric.get("metric_available"):
+            has_deviation = True
+
+        item: dict[str, Any] = {
             "analyte": analyte,
-            "value": numeric if numeric is not None else val,
+            "value": numeric if numeric is not None else raw_value,
+            "raw_value": raw_value,
             "value_numeric": numeric,
             "unit": str(ev.get("unit") or "").strip(),
             "reference": ref,
-            "status": str(ev.get("technical_status") or ev.get("status") or "").strip(),
+            "status": status_text,
+            "status_code": _normalize_status_code(status_text, status_code),
+            "lower_bound": metric.get("lower_bound"),
+            "upper_bound": metric.get("upper_bound"),
+            "reference_deviation": metric.get("reference_deviation"),
+            "deviation_label": metric.get("deviation_label"),
+            "metric_available": bool(metric.get("metric_available")),
             "source_label": str(ev.get("source_label") or ev.get("source") or "").strip(),
         }
-        if ratio is not None:
-            item["reference_ratio"] = round(float(ratio), 6)
         data.append(item)
+    return data, has_deviation
 
-    y_field = "reference_ratio" if mixed_units else "value_numeric"
+
+def evaluate_visualization_suitability(requested_type: str, evidence_pack: list[dict[str, Any]]) -> dict[str, Any]:
+    evidences = list(evidence_pack or [])
+    mixed_units = _has_mixed_units(evidences)
+    has_time = _has_temporal_axis(evidences)
+    data, has_deviation = _build_visualization_data(evidences)
+    has_numeric_values = any(isinstance(item.get("value_numeric"), (int, float)) for item in data)
+    requested = str(requested_type or "unknown").strip().lower()
+
+    if requested == "unknown":
+        return {
+            "suitable": False,
+            "reason": "Le format demandé est ambigu et ne correspond pas à un type de visualisation reconnu.",
+            "recommended_type": "bar" if has_numeric_values else "table",
+            "recommendation_reason": "Un graphique en barres reste le format le plus lisible pour comparer plusieurs analytes.",
+        }
+    if requested == "line":
+        if not has_time:
+            return {
+                "suitable": False,
+                "reason": "Ces résultats ne forment pas une série temporelle, donc une courbe n’est pas fiable.",
+                "recommended_type": "bar" if has_numeric_values else "table",
+                "recommendation_reason": "Un graphique en barres permet une comparaison directe sans suggérer une évolution temporelle.",
+            }
+        if mixed_units:
+            return {
+                "suitable": False,
+                "reason": "Les résultats utilisent des unités biologiques différentes, ce qui rend une courbe brute trompeuse.",
+                "recommended_type": "bar",
+                "recommendation_reason": "Une comparaison en barres avec ratio à la référence est plus robuste quand les unités diffèrent.",
+            }
+    if requested == "radar" and not has_deviation:
+        return {
+            "suitable": False,
+            "reason": "Le profil radar nécessite des valeurs normalisées homogènes, indisponibles pour tous les analytes.",
+            "recommended_type": "bar" if has_numeric_values else "table",
+            "recommendation_reason": "Un graphique en barres garde une comparaison stable même avec des unités différentes.",
+        }
+    if requested == "scatter":
+        return {
+            "suitable": False,
+            "reason": "Un nuage de points exige deux axes numériques corrélés par observation, ce qui n’est pas le cas ici.",
+            "recommended_type": "bar" if has_numeric_values else "table",
+            "recommendation_reason": "La comparaison par analyte en barres correspond mieux à la structure des résultats biologiques.",
+        }
+    if requested == "heatmap":
+        return {
+            "suitable": False,
+            "reason": "Une heatmap requiert une matrice de valeurs structurée (lignes/colonnes), absente dans ces résultats.",
+            "recommended_type": "bar" if has_numeric_values else "table",
+            "recommendation_reason": "Le graphique en barres est plus fiable pour comparer des analytes indépendants.",
+        }
     return {
-        "type": "bar" if mixed_units else (chart_type or "line"),
-        "title": "Données structurées pour visualisation",
+        "suitable": True,
+        "reason": None,
+        "recommended_type": requested if requested in VISUALIZATION_REGISTRY else "bar",
+        "recommendation_reason": None,
+    }
+
+
+def build_visualization_payload(
+    requested_type: str,
+    evidence_pack: list[dict[str, Any]],
+    supported_visualizations: list[str],
+    *,
+    raw_format_phrase: str | None = None,
+    source: str = "current_retrieval",
+) -> dict[str, Any]:
+    requested = str(requested_type or "unknown").strip().lower()
+    requested_entry = VISUALIZATION_REGISTRY.get(requested) or VISUALIZATION_REGISTRY["unknown"]
+    supported_set = {str(v).strip().lower() for v in supported_visualizations if str(v).strip()}
+    supported = requested in supported_set
+
+    suitability = evaluate_visualization_suitability(requested, evidence_pack)
+    suitable = bool(suitability.get("suitable"))
+    recommendation_type = str(suitability.get("recommended_type") or "bar").strip().lower()
+    if recommendation_type not in VISUALIZATION_REGISTRY and recommendation_type != "table":
+        recommendation_type = "bar"
+    if not supported and recommendation_type == requested:
+        if "bar" in supported_set:
+            recommendation_type = "bar"
+        elif "line" in supported_set:
+            recommendation_type = "line"
+        else:
+            recommendation_type = "table"
+
+    rendered_type: str | None = None
+    fallback_reason: str | None = None
+
+    if supported and suitable:
+        rendered_type = requested
+    else:
+        rendered_type = recommendation_type if recommendation_type in supported_set else ("table" if evidence_pack else None)
+        if not supported:
+            if requested == "unknown":
+                phrase = str(raw_format_phrase or "").strip()
+                if phrase:
+                    fallback_reason = f"Le format « {phrase} » n’est pas directement reconnu par l’interface."
+                else:
+                    fallback_reason = "Le format demandé n’est pas reconnu par l’interface."
+            else:
+                fallback_reason = f"{_visualization_label(requested)} n’est pas encore disponible dans l’interface."
+        elif not suitable:
+            fallback_reason = str(suitability.get("reason") or "").strip() or "Ce format n’est pas adapté aux données disponibles."
+
+    data, has_deviation = _build_visualization_data(evidence_pack)
+    y_field = "reference_deviation" if has_deviation else "value_numeric"
+    rendered_label = _visualization_label(rendered_type) if rendered_type else None
+    metric_label = "Écart normalisé à la référence" if has_deviation else "Valeur mesurée"
+    metric_reason = (
+        "Les analytes utilisent des unités différentes."
+        if _has_mixed_units(evidence_pack)
+        else "Les valeurs suivent directement la mesure brute."
+    )
+    calculable_count = sum(1 for row in data if bool(row.get("metric_available")))
+    source_docs = sorted(
+        {
+            str(ev.get("doc_id") or "").strip().lower()
+            for ev in evidence_pack
+            if str(ev.get("doc_id") or "").strip()
+        }
+    )
+    title_doc = source_docs[0] if len(source_docs) == 1 else "rapports sélectionnés"
+
+    payload: dict[str, Any] = {
+        "requested": True,
+        "requested_type": requested,
+        "requested_label": str(requested_entry.get("label_fr") or "visualisation demandée"),
+        "rendered_type": rendered_type,
+        "rendered_label": rendered_label,
+        "supported": supported,
+        "suitable": suitable,
+        "fallback_used": bool(rendered_type != requested),
+        "fallback_reason": fallback_reason,
+        "recommended_type": recommendation_type,
+        "recommendation_reason": str(suitability.get("recommendation_reason") or "").strip() or None,
+        "source": source,
         "x_field": "analyte",
         "y_field": y_field,
+        "metric_label": metric_label,
+        "metric_reason": metric_reason,
+        "result_count": len(data),
+        "calculable_count": calculable_count,
         "data": data,
+        "type": rendered_type,
+        "title": f"Écart à la référence — {title_doc}" if rendered_type else "Écart à la référence",
+        "reason": fallback_reason or (str(suitability.get("reason") or "").strip() or None),
     }
-
-
-def _build_visualization_request(
-    *,
-    query_understanding: QueryUnderstanding,
-    evidences: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    presentation = getattr(query_understanding, "presentation_intent", None)
-    if not presentation or not bool(getattr(presentation, "user_requested_visualization", False)):
-        return None
-    mixed_units = _has_mixed_units(evidences)
-    requested_type = str(getattr(presentation, "chart_type", "") or "unknown")
-    recommended = "bar" if mixed_units else (requested_type if requested_type in {"line", "bar", "scatter", "radar"} else "bar")
-    unsupported_reason = getattr(presentation, "unsupported_reason", None)
-    unsupported_reason = str(unsupported_reason).strip() if unsupported_reason not in (None, "") else ""
-    legacy_reason = getattr(presentation, "unsupported_presentation_reason", None)
-    legacy_reason = str(legacy_reason).strip() if legacy_reason not in (None, "") else ""
-    reason = (
-        "Les résultats ont des unités différentes, une courbe unique peut être trompeuse."
-        if mixed_units
-        else (
-            unsupported_reason
-            or legacy_reason
-            or "Le rendu graphique demandé nécessite un composant côté interface."
-        )
-    )
-    return {
-        "requested": True,
-        "type": requested_type,
-        "source": "previous_evidence_pack" if str(getattr(query_understanding, "intent", "")).strip().lower() == "response_transform" else "current_retrieval",
-        "supported": bool(CHART_RENDERING_SUPPORTED),
-        "recommended_type": recommended,
-        "reason": reason,
-    }
+    return payload
 
 
 def _humanize_requested_output(query_understanding: QueryUnderstanding) -> str:
@@ -389,7 +718,7 @@ def _humanize_requested_output(query_understanding: QueryUnderstanding) -> str:
         if chart_type == "bar":
             return "graphique en barres"
         if chart_type == "line":
-            return "graphique linéaire"
+            return "courbe"
         if chart_type == "radar":
             return "graphique radar"
         if chart_type == "scatter":
@@ -407,9 +736,24 @@ def _ensure_chart_explanation(answer: str, query_understanding: QueryUnderstandi
         return answer
     text = str(answer or "").strip()
     norm = norm_text(text)
-    if any(k in norm for k in ["graphique", "visualisation", "visualization", "line-graph", "line graph"]):
+
+    if not visualization:
         return text
-    requested_output = _humanize_requested_output(query_understanding)
+
+    requested_label = str(visualization.get("requested_label") or _humanize_requested_output(query_understanding)).strip()
+    rendered_label = str(visualization.get("rendered_label") or _visualization_label(visualization.get("rendered_type"))).strip()
+    fallback_used = bool(visualization.get("fallback_used"))
+    fallback_reason = str(visualization.get("fallback_reason") or "").strip()
+    recommendation_reason = str(visualization.get("recommendation_reason") or "").strip()
+    metric_label = str(visualization.get("metric_label") or "écart normalisé à la référence").strip()
+    metric_reason = str(visualization.get("metric_reason") or "").strip()
+    rendered_type = str(visualization.get("rendered_type") or "").strip().lower()
+    requested_type = str(visualization.get("requested_type") or "").strip().lower()
+    requested_label_norm = norm_text(requested_label)
+    has_visual_words = any(k in norm for k in ["graphique", "visualisation", "visualization", "line-graph", "line graph"])
+    if has_visual_words and (not fallback_used or (requested_label_norm and requested_label_norm in norm)):
+        return text
+
     from_previous = str(getattr(query_understanding, "intent", "")).strip().lower() == "response_transform"
     doc_scope = ", ".join(query_understanding.requested_doc_ids or [])
     context_phrase = (
@@ -417,13 +761,25 @@ def _ensure_chart_explanation(answer: str, query_understanding: QueryUnderstandi
         if from_previous
         else ""
     )
-    reason = str((visualization or {}).get("reason") or "Ce rendu nécessite un composant côté interface.").strip()
-    prefix = (
-        f"Vous avez demandé un {requested_output}{context_phrase}. "
-        "Le rendu graphique n’est pas encore disponible dans l’interface ; "
-        "je fournis les données nécessaires pour générer le graphique en barres. "
-        f"{reason}"
-    ).strip()
+
+    if fallback_used:
+        base_reason = fallback_reason or "Le format demandé n’est pas disponible tel quel."
+        why_alt = recommendation_reason or f"Cette alternative permet une comparaison plus fiable via l’{metric_label.lower()}."
+        prefix = (
+            f"Vous avez demandé un {requested_label}{context_phrase}. "
+            f"Ce format n’est pas rendu tel quel : {base_reason} "
+            f"J’affiche donc un {rendered_label}. {why_alt}"
+        ).strip()
+    elif requested_type == "line" and rendered_type == "line" and not bool(visualization.get("suitable", True)):
+        prefix = (
+            f"Vous avez demandé une {requested_label}{context_phrase}. "
+            "Cette courbe n’est pas affichée telle quelle ; les données sont normalisées pour éviter une comparaison trompeuse."
+        ).strip()
+    else:
+        prefix = f"Voici le {rendered_label} généré à partir des résultats retrouvés{context_phrase}."
+        if metric_reason:
+            prefix += f" L’axe vertical représente l’{metric_label.lower()} car {metric_reason.lower()}"
+
     if not text:
         return prefix
     return f"{prefix}\n\n{text}"
@@ -436,16 +792,81 @@ def _inject_visualization_payload(
     displayed_evidences: list[dict[str, Any]],
 ) -> dict[str, Any]:
     out = dict(result)
-    visualization = _build_visualization_request(query_understanding=query_understanding, evidences=displayed_evidences)
-    out["visualization"] = visualization
-    if visualization:
-        out["chart_data"] = _build_chart_data(
-            evidences=displayed_evidences,
-            chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
-        )
-        out["answer"] = _ensure_chart_explanation(str(out.get("answer") or ""), query_understanding, visualization)
-    else:
+    visualization, chart_data = _preview_visualization_payload(query_understanding, displayed_evidences)
+    if not visualization:
+        out["visualization"] = None
         out["chart_data"] = None
+        return out
+    out["visualization"] = visualization
+    out["chart_data"] = chart_data
+    mode = str(out.get("generation_mode") or "")
+    answer_text = str(out.get("answer") or "")
+    if not (mode.startswith("llm_professional_writer") or mode.startswith("llm_general_conversation") or mode == "specialized_visualization_composer"):
+        out["answer"] = _ensure_chart_explanation(answer_text, query_understanding, visualization)
+    else:
+        out["answer"] = answer_text
+    return out
+
+
+def _preview_visualization_payload(
+    query_understanding: QueryUnderstanding,
+    evidences: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    presentation = getattr(query_understanding, "presentation_intent", None)
+    if not presentation or not bool(getattr(presentation, "user_requested_visualization", False)):
+        return None, None
+
+    requested_type = _normalize_requested_visualization_type(
+        getattr(presentation, "chart_type", None),
+        getattr(presentation, "raw_format_phrase", None),
+    )
+    source = "previous_evidence_pack" if str(getattr(query_understanding, "intent", "")).strip().lower() == "response_transform" else "current_retrieval"
+    visualization = build_visualization_payload(
+        requested_type=requested_type,
+        evidence_pack=evidences,
+        supported_visualizations=[k for k, cfg in VISUALIZATION_REGISTRY.items() if bool(cfg.get("supported"))],
+        raw_format_phrase=getattr(presentation, "raw_format_phrase", None),
+        source=source,
+    )
+    chart_data = {
+        "type": visualization.get("rendered_type"),
+        "x_field": visualization.get("x_field"),
+        "y_field": visualization.get("y_field"),
+        "metric_label": visualization.get("metric_label"),
+        "metric_reason": visualization.get("metric_reason"),
+        "data": visualization.get("data"),
+        "title": visualization.get("title"),
+        "requested_type": visualization.get("requested_type"),
+        "rendered_type": visualization.get("rendered_type"),
+        "fallback_used": visualization.get("fallback_used"),
+    }
+    return visualization, chart_data
+
+
+def _attach_visualization_facts_to_evidence_pack(
+    *,
+    query_understanding: QueryUnderstanding,
+    evidence_pack: dict[str, Any],
+    displayed_evidences: list[dict[str, Any]],
+) -> dict[str, Any]:
+    out = dict(evidence_pack or {})
+    visualization, _ = _preview_visualization_payload(query_understanding, displayed_evidences)
+    if visualization:
+        out["visualization_facts"] = {
+            "requested_type": visualization.get("requested_type"),
+            "requested_label": visualization.get("requested_label"),
+            "rendered_type": visualization.get("rendered_type"),
+            "rendered_label": visualization.get("rendered_label"),
+            "supported": visualization.get("supported"),
+            "suitable": visualization.get("suitable"),
+            "fallback_used": visualization.get("fallback_used"),
+            "fallback_reason": visualization.get("fallback_reason"),
+            "recommendation_reason": visualization.get("recommendation_reason"),
+            "metric_label": visualization.get("metric_label"),
+            "metric_reason": visualization.get("metric_reason"),
+            "result_count": visualization.get("result_count"),
+            "raw_format_phrase": getattr(getattr(query_understanding, "presentation_intent", None), "raw_format_phrase", None),
+        }
     return out
 
 
@@ -484,6 +905,16 @@ def _query_understanding_payload(qu: QueryUnderstanding) -> dict[str, Any]:
         "presentation_intent": {
             "requested_output": getattr(presentation, "requested_output", qu.output_format),
             "chart_type": getattr(presentation, "chart_type", None),
+            "requested_type": _normalize_requested_visualization_type(
+                getattr(presentation, "chart_type", None),
+                getattr(presentation, "raw_format_phrase", None),
+            ),
+            "requested_label": _visualization_label(
+                _normalize_requested_visualization_type(
+                    getattr(presentation, "chart_type", None),
+                    getattr(presentation, "raw_format_phrase", None),
+                )
+            ),
             "raw_format_phrase": getattr(presentation, "raw_format_phrase", None),
             "wants_clickable_sources": bool(getattr(presentation, "wants_clickable_sources", qu.source_clickable_requested)),
             "wants_intro": bool(getattr(presentation, "wants_intro", True)),
@@ -1432,6 +1863,85 @@ def _fetch_doc_lab_rows(
         conn.close()
 
 
+from sort_utils import natural_report_sort_key, build_report_range_label
+
+
+def fetch_patient_inventory(sqlite_path: Path) -> list[dict[str, Any]]:
+    if not sqlite_path.exists():
+        return []
+    conn = sqlite3.connect(str(sqlite_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT DISTINCT patient_token, doc_id, source_pdf
+            FROM metadata_chunks
+            WHERE patient_token IS NOT NULL AND patient_token != ''
+            ORDER BY patient_token, doc_id;
+            """
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        
+        # Group by patient
+        inventory: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            p = row["patient_token"]
+            if p not in inventory:
+                inventory[p] = {
+                    "patient": p,
+                    "reports_data": []
+                }
+            filename = row["source_pdf"].split("/")[-1] if row["source_pdf"] else row["doc_id"]
+            
+            # Deduplicate reports for the same patient/doc
+            if not any(r["doc_id"] == row["doc_id"] for r in inventory[p]["reports_data"]):
+                inventory[p]["reports_data"].append({
+                    "doc_id": row["doc_id"],
+                    "filename": filename,
+                    "label": filename,
+                    "source_url": f"/api/documents/{row['doc_id']}/pdf",
+                    "viewer_url": f"/viewer/pdf?doc_id={row['doc_id']}"
+                })
+        
+        # Convert to sorted lists with natural sort
+        result = []
+        for p in sorted(inventory.keys()):
+            item = inventory[p]
+            # Natural sort for reports based on filename
+            item["reports"] = sorted(item["reports_data"], key=lambda x: natural_report_sort_key(x["filename"]))
+            del item["reports_data"]
+            
+            # Add summary labels for UI
+            count = len(item["reports"])
+            item["report_count"] = count
+            item["summary_label"] = f"{count} rapport{'s' if count > 1 else ''} associé{'s' if count > 1 else ''}"
+            
+            filenames = [r["filename"] for r in item["reports"]]
+            item["report_range_label"] = build_report_range_label(filenames)
+            
+            # For backward compatibility or extra safety, we can keep sources as a copy of reports
+            item["sources"] = item["reports"]
+                
+            result.append(item)
+        return result
+    finally:
+        conn.close()
+
+
+def fetch_patient_count(sqlite_path: Path) -> int:
+    if not sqlite_path.exists():
+        return 0
+    conn = sqlite3.connect(str(sqlite_path))
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(DISTINCT patient_token) FROM metadata_chunks WHERE patient_token IS NOT NULL AND patient_token != '';")
+        res = cur.fetchone()
+        return int(res[0]) if res else 0
+    finally:
+        conn.close()
+
+
 def _fetch_doc_summary_rows(
     *,
     sqlite_path: Path,
@@ -2182,10 +2692,15 @@ def generate_grounded_response_with_llm(
     max_tokens: int,
     timeout: int,
 ) -> tuple[str, str, str | None]:
+    writer_pack = _attach_visualization_facts_to_evidence_pack(
+        query_understanding=query_understanding,
+        evidence_pack=evidence_pack,
+        displayed_evidences=list(evidence_pack.get("evidences") or evidence_pack.get("results") or []),
+    )
     composed = compose_professional_answer(
         user_question=user_question,
         query_understanding=query_understanding,
-        evidence_pack=evidence_pack,
+        evidence_pack=writer_pack,
         mode="auto",
         llm_client=llm_client,
         provider=provider,
@@ -2200,7 +2715,7 @@ def generate_grounded_response_with_llm(
     llm_error = composed.get("llm_error")
     if not answer:
         fallback = render_professional_fallback(
-            evidence_pack=evidence_pack,
+            evidence_pack=writer_pack,
             query_understanding=query_understanding,
             user_question=user_question,
         )
@@ -3001,12 +3516,114 @@ def run_generation(
     query_used_for_prompt = q
     qn = norm_text(q)
     style_history = list(recent_style_history or [])
+    composed_data = {}
     query_understanding = parse_query_understanding(q)
     requested_doc_ids = list(query_understanding.requested_doc_ids)
     requested_doc_id = requested_doc_ids[0] if len(requested_doc_ids) == 1 else None
     sensitive_or_treatment = _query_is_sensitive_or_treatment(q)
     idx = Path(index_dir)
     sqlite_path = idx / "medical_rag.sqlite"
+
+    # 2. DETERMINISTIC ROUTING (Patient Inventory) - Bypasses all retrieval
+    if query_understanding.intent in {"patient_inventory", "patient_inventory_count"}:
+        elapsed = time.perf_counter() - started
+        is_count = query_understanding.intent == "patient_inventory_count"
+        if is_count:
+            count = fetch_patient_count(sqlite_path)
+            composed = compose_patient_inventory_count_answer(count)
+        else:
+            data = fetch_patient_inventory(sqlite_path)
+            composed = compose_patient_inventory_answer(data)
+        
+        answer = composed["answer"]
+        patients_data = composed.get("patients")
+        validation = validate_answer(
+            query=q,
+            answer_text=answer,
+            evidence_pack=[],
+            displayed_evidences=[],
+            source_citations=[],
+            generation_mode=composed["mode"],
+            retrieval_status="answerable",
+            query_received=query_received,
+            query_used_for_retrieval="",
+            query_used_for_prompt=q,
+            query_stored=q,
+            detected_analytes=[],
+            query_intents=query_understanding.intents or {},
+            output_format_requested="table" if not is_count else "paragraph",
+            answer_style_requested="standard",
+            requested_table_columns=[],
+            requested_technical_condition=None,
+            source_clickable_requested=False,
+            requested_value=None,
+            comparison_operator=None,
+            raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+            unsupported_presentation=False,
+            user_requested_visualization=False,
+            requested_chart_type=None,
+            visualization_payload=None,
+            chart_data_payload=None,
+            patients=patients_data,
+        )
+        
+        return {
+            "request_id": request_id,
+            "query": q,
+            "query_received": query_received,
+            "query_used_for_retrieval": "",
+            "query_used_for_prompt": q,
+            "query_stored": q,
+            "normalized_query": q,
+            "mode": composed["mode"],
+            "provider": provider,
+            "model": model,
+            "top_k": top_k,
+            "generation_time_seconds": round(elapsed, 3),
+            "answer": answer,
+            "citations": [],
+            "sources": [],
+            "patients": patients_data,
+            "validation": validation,
+            "quality_report": _quality_report(
+                answer=answer,
+                validation=validation,
+                source_clickable_requested=False,
+                recent_style_history=style_history
+            ),
+            "llm_error": None,
+            "error_type": None,
+            "generation_mode": composed["mode"],
+            "detected_analytes": [],
+            "query_understanding": _query_understanding_payload(query_understanding),
+            "structured_evidence_pack": {},
+            "evidence_pack": [],
+            "displayed_evidences": [],
+            "display": {
+                "selected_candidates_count": 0,
+                "low_quality_evidence_filtered_count": 0,
+                "hidden_result_count": 0,
+                "requested_multi_result_query": False,
+                "display_notes": [],
+            },
+            "retrieval": {
+                "answerability": {"status": "answerable", "reason": "patient_inventory_metadata"},
+                "filters": {"doc_ids": [], "analytes": []},
+                "top_results": [],
+                "context_chunks": [],
+                "sources": [],
+                "retrieval_skipped": True,
+            },
+            "prompt": "",
+            "debug": {
+                "request_id": request_id,
+                "generation_mode": composed["mode"],
+                "generation_writer": "deterministic_metadata_query",
+                "intents": query_understanding.intents or {},
+                "retrieval_skipped": True,
+            },
+        }
+
     qdrant_dir = idx / "qdrant"
     source_resolver = DocPdfResolver(index_dir=idx)
 
@@ -3084,6 +3701,8 @@ def run_generation(
             unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
             user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
             requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+            visualization_payload=_preview_visualization_payload(query_understanding, [])[0],
+            chart_data_payload=_preview_visualization_payload(query_understanding, [])[1],
         )
         intro, conclusion = _extract_intro_conclusion(general_answer)
         quality = _quality_report(
@@ -3161,10 +3780,7 @@ def run_generation(
     if query_understanding.intent == "response_transform":
         if not previous_structured_evidence_pack:
             elapsed = time.perf_counter() - started
-            answer = f"Je n’ai pas de résultat précédent exploitable à reformater. {INSUFFICIENT_CONTEXT_SENTENCE}"
-            if bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)):
-                visualization = _build_visualization_request(query_understanding=query_understanding, evidences=[])
-                answer = _ensure_chart_explanation(answer, query_understanding, visualization)
+            answer = "Je n’ai pas de résultat précédent exploitable à reformater. Veuillez d’abord demander les résultats à afficher, puis préciser le format souhaité."
             validation = validate_answer(
                 query=q,
                 answer_text=answer,
@@ -3190,6 +3806,8 @@ def run_generation(
                 unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
                 user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
                 requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+                visualization_payload=_preview_visualization_payload(query_understanding, [])[0],
+                chart_data_payload=_preview_visualization_payload(query_understanding, [])[1],
             )
             quality = _quality_report(
                 answer=answer,
@@ -3310,6 +3928,11 @@ def run_generation(
         source_citations = build_source_citations(displayed_evidences, resolver=source_resolver)
         transformed_pack = _attach_source_fields_to_structured_pack(transformed_pack, source_citations)
         transformed_pack["recent_style_history"] = style_history[-20:]
+        transformed_pack = _attach_visualization_facts_to_evidence_pack(
+            query_understanding=transformed_qu,
+            evidence_pack=transformed_pack,
+            displayed_evidences=displayed_evidences,
+        )
         transformed_qu = _with_resolved_strategy(transformed_qu, transformed_pack)
         output_format = str(transformed_pack.get("output_format") or query_understanding.output_format or "list").lower()
         composed = compose_professional_answer(
@@ -3326,6 +3949,7 @@ def run_generation(
             max_tokens=max_tokens,
             timeout=timeout,
         )
+        composed_data = composed
         answer = str(composed.get("answer") or "")
         generation_mode = (
             "deterministic_response_transform_json"
@@ -3358,6 +3982,8 @@ def run_generation(
             unsupported_presentation=bool(getattr(transformed_qu.presentation_intent, "unsupported_format", False)),
             user_requested_visualization=bool(getattr(transformed_qu.presentation_intent, "user_requested_visualization", False)),
             requested_chart_type=getattr(transformed_qu.presentation_intent, "chart_type", None),
+            visualization_payload=_preview_visualization_payload(transformed_qu, displayed_evidences)[0],
+            chart_data_payload=_preview_visualization_payload(transformed_qu, displayed_evidences)[1],
         )
         quality = _quality_report(
             answer=answer,
@@ -3460,6 +4086,11 @@ def run_generation(
         source_citations = build_source_citations(displayed_evidences, resolver=source_resolver)
         structured_pack = _attach_source_fields_to_structured_pack(structured_pack, source_citations)
         structured_pack["recent_style_history"] = style_history[-20:]
+        structured_pack = _attach_visualization_facts_to_evidence_pack(
+            query_understanding=query_understanding,
+            evidence_pack=structured_pack,
+            displayed_evidences=displayed_evidences,
+        )
         query_understanding = _with_resolved_strategy(query_understanding, structured_pack)
         composed = compose_professional_answer(
             user_question=q,
@@ -3475,6 +4106,7 @@ def run_generation(
             max_tokens=max_tokens,
             timeout=timeout,
         )
+        composed_data = composed
         final_answer = str(composed.get("answer") or "").strip() or _missing_doc_answer()
         generation_mode = str(composed.get("mode") or "deterministic_professional_fallback")
         writer_error = str(composed.get("llm_error") or "") or None
@@ -3564,6 +4196,8 @@ def run_generation(
             unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
             user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
             requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+            visualization_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[0],
+            chart_data_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[1],
             source_clickable_requested=bool(query_understanding.source_clickable_requested),
             requested_value=query_understanding.requested_value,
             comparison_operator=query_understanding.comparison_operator,
@@ -3635,6 +4269,8 @@ def run_generation(
                     unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
                     user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
                     requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+                    visualization_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[0],
+                    chart_data_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[1],
                 )
                 if str(retry_validation.get("validation_status") or "fail") != "fail":
                     final_answer = retry_answer
@@ -3691,6 +4327,8 @@ def run_generation(
                         unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
                         user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
                         requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+                        visualization_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[0],
+                        chart_data_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[1],
                     )
                     quality = _quality_report(
                         answer=final_answer,
@@ -4077,6 +4715,8 @@ def run_generation(
         unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
         user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
         requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+        visualization_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[0],
+        chart_data_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[1],
     )
     quality = _quality_report(
         answer=final_answer,
@@ -4090,6 +4730,7 @@ def run_generation(
 
     result: dict[str, Any] = {
         "request_id": request_id,
+        **composed_data,
         "query": q,
         "query_received": query_received,
         "query_used_for_retrieval": query_used_for_retrieval,
@@ -4130,6 +4771,10 @@ def run_generation(
             "presentation_intent": {
                 "requested_output": getattr(query_understanding.presentation_intent, "requested_output", query_understanding.output_format),
                 "chart_type": getattr(query_understanding.presentation_intent, "chart_type", None),
+                "requested_type": _normalize_requested_visualization_type(
+                    getattr(query_understanding.presentation_intent, "chart_type", None),
+                    getattr(query_understanding.presentation_intent, "raw_format_phrase", None),
+                ),
                 "raw_format_phrase": getattr(query_understanding.presentation_intent, "raw_format_phrase", None),
                 "unsupported_format": bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
                 "user_requested_visualization": bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),

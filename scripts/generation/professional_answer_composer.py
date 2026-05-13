@@ -37,12 +37,18 @@ Règles de style :
 
 Règles de format :
 - Si output_format = table, produis un tableau Markdown propre.
-- Si output_format = chart, respecte la demande graphique. Si le rendu graphique n’est pas supporté par le système, explique brièvement la limite et fournis un format alternatif fiable + données structurées prêtes à visualiser.
+- Si output_format = chart, respecte la demande de visualisation de l’utilisateur.
+- Si le type demandé est disponible et adapté, présente-le directement.
+- Si le type demandé n’est pas disponible ou pas adapté, tu dois nommer clairement la visualisation demandée, expliquer la limite, indiquer l’alternative affichée et pourquoi elle est plus fiable.
+- Tu ne dois jamais remplacer silencieusement un format demandé par un autre.
+- N’emploie pas de terme interne comme “chart type” ou “rendu chart”.
+- Utilise des termes humains : graphique en barres, courbe, graphique radar, heatmap, nuage de points.
 - Si source_clickable_requested = true, le tableau doit inclure une colonne Source avec le label source.
 - Si output_format = json ou answer_style = strict_json, retourne uniquement JSON valide, sans texte autour.
 - Si answer_style = yes_no, commence par Oui/Non ou Yes/No puis donne valeur, référence et source.
 - Pour les sources, utilise source_label.
 - N’affiche jamais chunk_id, path local, request_id ou logs techniques.
+- Ne génère jamais de code HTML, JavaScript ou Python à exécuter.
 
 Règles de grounding :
 - Tous les analytes affichés doivent exister dans results.
@@ -50,6 +56,20 @@ Règles de grounding :
 - Toutes les sources affichées doivent exister dans results.
 - Ne rajoute aucune ligne au tableau.
 - Ne supprime aucune ligne importante fournie dans results, sauf si l’utilisateur demande un filtre."""
+
+
+PROFESSIONAL_WRITER_VISUALIZATION_RULES = """
+Règles de formulation visualisation :
+- Le backend fournit visualization_facts avec les faits obligatoires.
+- Tu dois produire une introduction NATURELLE et PROFESSIONNELLE.
+- Ne pas utiliser de structure rigide de type "Graphique demandé : ... Rendu affiché : ...".
+- Si visualization_facts.fallback_used = true :
+  1) mentionne le format demandé (ex: Arithmetic Line-Graph) ;
+  2) explique pourquoi une alternative (ex: graphique en barres) est utilisée ;
+  3) lie cette explication aux contraintes des données (ex: unités différentes, pas de série temporelle).
+- INTERDICTION ABSOLUE : ne jamais inclure de labels de données concaténés (ex: INSULINET4LIBRE, TSHusT3) ou de pourcentages d'écarts (ex: 600%) dans ton texte d'introduction. Ces éléments seront rendus séparément par l'interface graphique.
+- Ton texte doit être fluide, comme un expert s'adressant à un utilisateur.
+"""
 
 
 _COLD_CONCLUSIONS = {
@@ -294,10 +314,11 @@ def build_professional_intro(query_understanding: QueryUnderstanding, evidence_p
         return (
             f"Vous avez demandé un rendu {raw_phrase}. "
             "Ce format n’est pas supporté directement par le système ; "
-            f"je fournis ci-dessous le format alternatif le plus fiable ({recommended}) avec les données structurées."
+            f"j’affiche ci-dessous le format alternatif le plus fiable ({recommended})."
         )
     if output_format == "chart":
         raw_phrase = humanize_requested_output(query_understanding)
+        viz_facts = dict(evidence_pack.get("visualization_facts") or {})
         from_previous = str(intent) == "response_transform"
         doc_scope = ", ".join(query_understanding.requested_doc_ids or [])
         context_phrase = (
@@ -305,16 +326,21 @@ def build_professional_intro(query_understanding: QueryUnderstanding, evidence_p
             if from_previous
             else ""
         )
-        recommended = _safe_str(getattr(presentation, "recommended_alternative_format", ""))
-        if recommended:
+        metric_label = _safe_str(viz_facts.get("metric_label"), "écart normalisé à la référence")
+        metric_reason = _safe_str(viz_facts.get("metric_reason"), "")
+        rendered_label = _safe_str(viz_facts.get("rendered_label"), "")
+        if bool(viz_facts.get("fallback_used")) and rendered_label:
             return (
                 f"Vous avez demandé un {raw_phrase}{context_phrase}. "
-                "Le rendu graphique n’est pas encore disponible dans l’interface ; "
-                f"je fournis ci-dessous les données structurées avec une recommandation {recommended}."
+                f"Le rendu affiché utilise une alternative en {rendered_label}."
+            )
+        if metric_reason:
+            return (
+                f"Voici le {raw_phrase}{context_phrase}. "
+                f"L’axe vertical représente l’{metric_label.lower()} car {metric_reason.lower()}."
             )
         return (
-            f"Vous avez demandé un {raw_phrase}{context_phrase}. "
-            "Le rendu graphique n’est pas encore disponible dans l’interface ; je fournis ci-dessous les données structurées prêtes à être visualisées."
+            f"Voici le {raw_phrase}{context_phrase}."
         )
 
     evidences = list(evidence_pack.get("evidences") or evidence_pack.get("results") or [])
@@ -371,7 +397,7 @@ def humanize_requested_output(query_understanding: QueryUnderstanding) -> str:
         if chart_type == "bar":
             return "graphique en barres"
         if chart_type == "line":
-            return "graphique linéaire"
+            return "courbe"
         if chart_type == "radar":
             return "graphique radar"
         if chart_type == "scatter":
@@ -644,6 +670,7 @@ def build_writer_evidence_pack(
         "source_clickable_requested": bool(getattr(query_understanding, "source_clickable_requested", False)),
         "diagnostic_safety": bool(query_understanding.safety_intent),
     }
+    visualization_facts = dict(evidence_pack.get("visualization_facts") or {})
     return {
         "original_user_question": _safe_str(getattr(query_understanding, "original_user_question", "") or user_question),
         "user_question": user_question,
@@ -670,6 +697,21 @@ def build_writer_evidence_pack(
             "recommended_alternative_format": getattr(presentation, "recommended_alternative_format", None),
             "unhandled_instructions": list(getattr(presentation, "unhandled_instructions", []) or []),
         },
+        "visualization_facts": {
+            "requested_type": visualization_facts.get("requested_type"),
+            "requested_label": visualization_facts.get("requested_label"),
+            "rendered_type": visualization_facts.get("rendered_type"),
+            "rendered_label": visualization_facts.get("rendered_label"),
+            "supported": visualization_facts.get("supported"),
+            "suitable": visualization_facts.get("suitable"),
+            "fallback_used": visualization_facts.get("fallback_used"),
+            "fallback_reason": visualization_facts.get("fallback_reason"),
+            "recommendation_reason": visualization_facts.get("recommendation_reason"),
+            "metric_label": visualization_facts.get("metric_label"),
+            "metric_reason": visualization_facts.get("metric_reason"),
+            "result_count": visualization_facts.get("result_count"),
+            "raw_format_phrase": visualization_facts.get("raw_format_phrase"),
+        },
         "constraints": constraints,
         "results": results,
         "missing_items": list(evidence_pack.get("missing_items") or []),
@@ -683,6 +725,13 @@ def build_writer_evidence_pack(
             "must_include": ["critère utilisateur réel", "résultats extraits", "sources lisibles"],
             "must_not_include": ["chunk_id", "chemin local", "logs techniques", "diagnostic non autorisé", "aliases internes"],
             "grounding_policy": "Toutes les valeurs doivent venir de l’evidence_pack.",
+            "immutable_visualization_facts": [
+                "requested_type",
+                "rendered_type",
+                "fallback_reason",
+                "recommendation_reason",
+                "metric_reason",
+            ],
             "style_policy": {
                 "avoid_repetitive_intros": True,
                 "avoid_generic_sentences": True,
@@ -876,26 +925,37 @@ def _build_paragraph(evidences: list[dict[str, Any]], query: str) -> str:
     )
 
 
-def _build_chart_explanation(query_understanding: QueryUnderstanding, evidences: list[dict[str, Any]]) -> str:
+def _build_chart_explanation(
+    query_understanding: QueryUnderstanding,
+    evidences: list[dict[str, Any]],
+    evidence_pack: dict[str, Any] | None = None,
+) -> str:
     presentation = getattr(query_understanding, "presentation_intent", None)
     raw_phrase = humanize_requested_output(query_understanding)
+    viz_facts = dict((evidence_pack or {}).get("visualization_facts") or {})
     from_previous = str(getattr(query_understanding, "intent", "")).strip().lower() == "response_transform"
     doc_scope = ", ".join(query_understanding.requested_doc_ids or [])
     context_phrase = (f" à partir des résultats de {doc_scope}" if doc_scope else " à partir des résultats précédents") if from_previous else ""
     units = sorted({_safe_str(ev.get("unit")).lower() for ev in evidences if _safe_str(ev.get("unit"))})
     mixed_units = len(set(units)) > 1
-    recommended = _safe_str(getattr(presentation, "recommended_alternative_format", ""))
-    if not recommended:
-        recommended = "bar" if mixed_units else _safe_str(getattr(presentation, "chart_type", ""), "line")
-    if mixed_units:
+    metric_label = _safe_str(viz_facts.get("metric_label"), "écart normalisé à la référence")
+    metric_reason = _safe_str(viz_facts.get("metric_reason"), "les analytes utilisent des unités différentes")
+    requested_type = _safe_str(getattr(presentation, "chart_type", "unknown"), "unknown").lower()
+    if requested_type in {"radar", "scatter", "heatmap", "unknown"}:
         return (
-            f"Vous avez demandé un {raw_phrase}{context_phrase}. Le rendu graphique n’est pas encore disponible dans l’interface ; "
-            "je fournis les données nécessaires pour générer le graphique en barres. "
-            "Recommandation : graphique en barres ou ratio à la référence, car les unités biologiques diffèrent."
+            f"Vous avez demandé un {raw_phrase}{context_phrase}. "
+            "Ce type de visualisation n’est pas disponible tel quel dans l’interface ; "
+            f"j’affiche donc une alternative en graphique en barres basée sur l’{metric_label.lower()}."
+        )
+    if requested_type == "line" and mixed_units:
+        return (
+            f"Vous avez demandé une {raw_phrase}{context_phrase}. "
+            "Cette courbe n’est pas affichée telle quelle, car les unités biologiques sont différentes ; "
+            f"j’affiche une alternative en graphique en barres avec l’{metric_label.lower()}."
         )
     return (
-        f"Vous avez demandé un {raw_phrase}{context_phrase}. Le rendu graphique n’est pas encore disponible dans l’interface ; "
-        f"je fournis les données nécessaires pour générer le {recommended if recommended.startswith('graphique') else 'graphique en barres'}."
+        f"Voici le {raw_phrase} généré à partir des résultats retrouvés{context_phrase}. "
+        f"L’axe vertical représente l’{metric_label.lower()} car {metric_reason.lower()}."
     )
 
 
@@ -1030,7 +1090,7 @@ def render_professional_fallback(
         }
 
     if presentation == "chart":
-        chart_intro = _build_chart_explanation(query_understanding, evidences)
+        chart_intro = _build_chart_explanation(query_understanding, evidences, evidence_pack)
         content = (
             _build_content_table(
                 intent,
@@ -1042,8 +1102,11 @@ def render_professional_fallback(
             if evidences
             else "Aucune donnée structurée exploitable pour visualisation."
         )
-        conclusion = "Conclusion technique : données structurées fournies pour visualisation côté interface."
-        answer = "\n\n".join([p for p in [chart_intro, format_result_count(len(evidences)), content, conclusion] if p.strip()])
+        answer_parts = [chart_intro]
+        if evidences:
+            answer_parts.append("Données utilisées")
+        answer_parts.append(content)
+        answer = "\n\n".join([p for p in answer_parts if p.strip()])
         src_lines = _source_lines(source_citations or [])
         if src_lines:
             answer = answer.rstrip() + "\n\nSources :\n" + "\n".join(src_lines)
@@ -1051,7 +1114,7 @@ def render_professional_fallback(
             "intro": chart_intro,
             "content_type": "chart",
             "content": content.strip(),
-            "conclusion": conclusion,
+            "conclusion": "",
             "sources": sources,
             "rendering_hints": {"preferred_format": "chart", "show_sources": True, "strict_json": False},
             "answer": answer.strip(),
@@ -1123,6 +1186,154 @@ def render_professional_fallback(
     }
 
 
+def compose_visualization_answer(
+    user_question: str,
+    query_understanding: QueryUnderstanding,
+    evidence_pack: dict[str, Any],
+    llm_client: LLMClient | None = None,
+    provider: str = "ollama",
+    model: str = "qwen3:4b",
+) -> dict[str, Any]:
+    """ Specialized composer for visualization requests to ensure clean separation. """
+    viz_facts = dict(evidence_pack.get("visualization_facts") or {})
+    evidences = list(evidence_pack.get("evidences") or evidence_pack.get("results") or [])
+    
+    # Build a prompt to get ONLY the intro text
+    compact_pack = build_writer_evidence_pack(
+        user_question=user_question,
+        query_understanding=query_understanding,
+        evidence_pack=evidence_pack,
+        source_citations=[],
+    )
+    
+    prompt = (
+        f"{PROFESSIONAL_WRITER_SYSTEM_PROMPT}\n\n{PROFESSIONAL_WRITER_VISUALIZATION_RULES}\n\n"
+        "TASK: Rédige une introduction factuelle, naturelle et concise pour présenter les données et la visualisation ci-dessous.\n"
+        "RECO: Si c'est un fallback, explique-le avec fluidité (ex: 'Compte tenu de la disparité des unités...').\n"
+        "IMPORTANT: Ta réponse doit être UNIQUEMENT le texte de l'introduction. Ne génère JAMAIS de tableau, de liste de sources ou de labels techniques Recharts concaténés ici.\n"
+        "/no_think\n\n"
+        "evidence_pack JSON:\n"
+        f"{json.dumps(compact_pack, ensure_ascii=False)}\n"
+    )
+    
+    client = llm_client or LLMClient(provider=provider)
+    intro = client.generate(prompt=prompt, model=model).strip()
+    
+    # Post-generation sanitizer for Recharts leakage
+    # We remove patterns of uppercase joined words and percentage labels that often leak from Recharts DOM
+    intro = re.sub(r'[A-ZÀ-ÿ]{4,}(?=[A-ZÀ-ÿ][a-z])', '', intro) # Join between words
+    intro = re.sub(r'\b\d+%\b', '', intro) # 600% etc
+    intro = re.sub(r'Écart normalisé.*', '', intro) # Common leaked footer
+    intro = intro.strip()
+    
+    # Build the data table for display alongside the chart
+    data_table = []
+    for ev in evidences:
+        data_table.append({
+            "analyte": ev.get("analyte_display") or ev.get("analyte"),
+            "value": ev.get("value_raw"),
+            "unit": ev.get("unit"),
+            "reference": ev.get("reference_range"),
+            "status": ev.get("interpretation_status"),
+            "doc_id": ev.get("doc_id"),
+            "source": ev.get("source_label")
+        })
+
+    # Clean sources
+    sources = deduplicate_sources(evidence_pack.get("sources") or [])
+    
+    # The final 'answer' for the UI (Markdown)
+    answer = intro
+    if sources:
+        answer += "\n\n**Sources consultées :**\n" + "\n".join(_source_lines(sources))
+
+    return {
+        "intro": intro,
+        "visualization": viz_facts,
+        "data_table": data_table,
+        "sources": sources,
+        "conclusion": None,
+        "answer": answer,
+        "mode": "specialized_visualization_composer",
+    }
+
+
+def compose_patient_inventory_count_answer(count: int) -> dict[str, Any]:
+    """Composes deterministic count-only answer for patient metadata inventory."""
+    safe_count = int(count or 0)
+    msg = f"L’analyse des métadonnées identifie {safe_count} patient{'s' if safe_count > 1 else ''} distinct{'s' if safe_count > 1 else ''} indexé{'s' if safe_count > 1 else ''} dans la base."
+    return {
+        "answer": msg,
+        "count": safe_count,
+        "mode": "deterministic_patient_count",
+        "content_type": "text",
+    }
+
+
+def compose_patient_inventory_answer(
+    inventory: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """ 
+    Composes a professional answer for patient inventory requests.
+    Returns a structured object for the Frontend PatientInventoryRenderer.
+    """
+    if not inventory:
+        return {
+            "answer": "Aucun patient n'est actuellement répertorié dans le système.",
+            "patients": [],
+            "mode": "deterministic_patient_inventory",
+            "content_type": "text"
+        }
+
+    patient_count = len(inventory)
+    intro = f"Les patients indexés dans la base sont listés ci-dessous avec leurs rapports associés ({patient_count} patient{'s' if patient_count > 1 else ''} trouvé{'s' if patient_count > 1 else ''})."
+    
+    # Build Markdown table fallback with clickable sources.
+    table = "| Patient | Rapports | Aperçu | Sources |\n| :--- | :---: | :--- | :--- |\n"
+    
+    for item in inventory:
+        p_token = item["patient"]
+        count = item["report_count"]
+        range_label = item["report_range_label"]
+        
+        reports = list(item.get("reports") or [])
+        clickable = []
+        for rep in reports[:4]:
+            href = str(rep.get("source_url") or rep.get("viewer_url") or "").strip()
+            label = str(rep.get("label") or rep.get("filename") or rep.get("doc_id") or "rapport").strip()
+            if href:
+                clickable.append(f"[{label}]({href})")
+        suffix = ", …" if len(reports) > 4 else ""
+        source_cell = ", ".join(clickable) + suffix if clickable else "non disponible"
+        table += f"| **{p_token}** | {count} | {range_label} | {source_cell} |\n"
+
+    # For the fallback Markdown answer, we include the intro + table.
+    # We do NOT add the global source citations block here if we expect the UI to handle it,
+    # but we provide it in the 'sources' field for the renderer.
+    
+    global_sources = []
+    for item in inventory:
+        for src in item["sources"]:
+            if not any(gs["doc_id"] == src["doc_id"] for gs in global_sources):
+                global_sources.append({
+                    "doc_id": src["doc_id"],
+                    "label": src["label"],
+                    "url": src["source_url"],
+                    "viewer_url": src["viewer_url"]
+                })
+
+    answer = f"{intro}\n\n{table}"
+    
+    return {
+        "intro": intro,
+        "patients": inventory, 
+        "sources": global_sources,
+        "answer": answer,
+        "mode": "deterministic_patient_inventory",
+        "content_type": "patient_inventory"
+    }
+
+
 def compose_professional_answer(
     user_question: str,
     query_understanding: QueryUnderstanding,
@@ -1149,6 +1360,22 @@ def compose_professional_answer(
     if mode == "fallback":
         return fallback
 
+    if bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)):
+        try:
+            return compose_visualization_answer(
+                user_question=user_question,
+                query_understanding=query_understanding,
+                evidence_pack=evidence_pack,
+                llm_client=llm_client,
+                provider=provider,
+                model=model,
+            )
+        except Exception as e:
+            # Fallback to standard answer if visualization generation fails
+            fb = dict(fallback)
+            fb["llm_error"] = str(e)
+            return fb
+
     presentation = choose_presentation_format(query_understanding, evidence_pack)
     if presentation in {"json", "yes_no"}:
         return fallback
@@ -1165,7 +1392,7 @@ def compose_professional_answer(
     )
 
     prompt = (
-        f"{PROFESSIONAL_WRITER_SYSTEM_PROMPT}\n\n"
+        f"{PROFESSIONAL_WRITER_SYSTEM_PROMPT}\n\n{PROFESSIONAL_WRITER_VISUALIZATION_RULES}\n\n"
         "Sortie attendue: réponse finale uniquement.\n"
         "/no_think\n\n"
         "Question utilisateur:\n"
@@ -1201,6 +1428,35 @@ def compose_professional_answer(
             out["mode"] = "llm_writer_quality_fallback"
             out["llm_error"] = "ugly_pluralization"
             return out
+        if re.search(r"\bchart\b", norm_text(llm_answer), flags=re.IGNORECASE):
+            out = dict(fallback)
+            out["mode"] = "llm_writer_quality_fallback"
+            out["llm_error"] = "internal_chart_term_visible"
+            return out
+
+        viz = dict(compact_pack.get("visualization_facts") or {})
+        if bool(viz.get("fallback_used")):
+            requested_label = _safe_str(viz.get("requested_label")).lower()
+            rendered_label = _safe_str(viz.get("rendered_label")).lower()
+            fallback_reason = _safe_str(viz.get("fallback_reason")).lower()
+            ans_norm = norm_text(llm_answer)
+            if requested_label and norm_text(requested_label) not in ans_norm:
+                out = dict(fallback)
+                out["mode"] = "llm_writer_quality_fallback"
+                out["llm_error"] = "requested_visualization_not_respected"
+                return out
+            if rendered_label and norm_text(rendered_label) not in ans_norm:
+                out = dict(fallback)
+                out["mode"] = "llm_writer_quality_fallback"
+                out["llm_error"] = "rendered_visualization_not_mentioned"
+                return out
+            if fallback_reason:
+                key_terms = [tok for tok in re.findall(r"[a-zA-ZÀ-ÿ]{5,}", fallback_reason) if tok not in {"dans", "pour", "avec", "encore"}]
+                if key_terms and not any(norm_text(term) in ans_norm for term in key_terms[:4]):
+                    out = dict(fallback)
+                    out["mode"] = "llm_writer_quality_fallback"
+                    out["llm_error"] = "fallback_reason_missing"
+                    return out
 
         has_source_col = bool(re.search(r"(?im)^\|\s*.*\bsource\b.*\|$", llm_answer or ""))
         if "sources" not in llm_answer.lower() and not has_source_col:

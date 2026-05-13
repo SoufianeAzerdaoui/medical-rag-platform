@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+import logging
+import traceback
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 from collections import defaultdict
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -65,9 +68,10 @@ class ChatResponse(BaseModel):
     quality_report: dict[str, Any] | None = None
     validation_status: Literal["pass", "warning", "fail"] | None = None
     generation_mode: str | None = None
-    generation_writer: Literal["llm_writer", "professional_fallback"] | None = None
+    generation_writer: Literal["llm_writer", "professional_fallback", "deterministic_metadata_query", "deterministic_response_transform_json"] | None = None
     visualization: dict[str, Any] | None = None
     chart_data: dict[str, Any] | None = None
+    patients: list[dict[str, Any]] | None = None
 
 
 class DocumentItem(BaseModel):
@@ -76,6 +80,7 @@ class DocumentItem(BaseModel):
 
 
 app = FastAPI(title="Medical RAG Backend API", version="1.1.0")
+LOGGER = logging.getLogger("medical_rag.backend")
 
 
 _CONVERSATION_STATE: dict[str, dict[str, Any]] = defaultdict(dict)
@@ -180,6 +185,7 @@ def health() -> dict[str, Any]:
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(payload: ChatRequest) -> ChatResponse:
+    request_id = str(uuid4())
     try:
         query = f"{payload.message} doc_id {payload.document_id}" if payload.document_id else payload.message
         state = _CONVERSATION_STATE.get(payload.chat_id) or {}
@@ -231,9 +237,35 @@ def chat(payload: ChatRequest) -> ChatResponse:
             generation_writer=str(((generation.get("debug") or {}).get("generation_writer") or "")) or None,
             visualization=(generation.get("visualization") if isinstance(generation.get("visualization"), dict) else None),
             chart_data=(generation.get("chart_data") if isinstance(generation.get("chart_data"), dict) else None),
+            patients=generation.get("patients"),
         )
     except Exception as exc:  # pragma: no cover - defensive API guard
-        raise HTTPException(status_code=500, detail=f"Generation error: {exc}") from exc
+        LOGGER.exception(
+            "chat_generation_failed request_id=%s provider=%s intent=unknown query=%r error=%s\n%s",
+            request_id,
+            "ollama",
+            payload.message,
+            str(exc),
+            traceback.format_exc(),
+        )
+        safe_answer = (
+            "Une erreur interne a empêché la génération complète de la réponse. "
+            "Les données indexées restent disponibles ; veuillez relancer la demande ou simplifier la formulation."
+        )
+        return ChatResponse(
+            answer=safe_answer,
+            sources=[],
+            confidence=0.0,
+            document_ids=[],
+            response_time=0.0,
+            quality_report=None,
+            validation_status="warning",
+            generation_mode="controlled_error_fallback",
+            generation_writer="professional_fallback",
+            visualization=None,
+            chart_data=None,
+            patients=None,
+        )
 
 
 @app.get("/documents", response_model=list[DocumentItem])

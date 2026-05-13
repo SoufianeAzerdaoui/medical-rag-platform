@@ -349,6 +349,31 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         "how to use",
         "guide moi",
     }
+    patient_inventory_markers = {
+        "liste tous les patients",
+        "lister tous les patients",
+        "liste tous les patients exist",
+        "lister tous les patients exist",
+        "patients existants",
+        "patients indexes",
+        "patients indexés",
+        "tous les patients avec sources",
+        "donne moi les patients",
+        "donne-moi les patients",
+        "liste des patients",
+        "patients et leurs rapports",
+        "patients avec documents",
+        "patients avec sources",
+        "liste patients",
+        "lister patients",
+    }
+    patient_count_markers = {
+        "combien de patients",
+        "nombre de patients",
+        "count patients",
+        "combien de patients sont indexes",
+        "combien de patients sont indexés",
+    }
 
     has_compare = any(k in qn for k in ["compare", "comparaison", "versus", "vs"])
     has_summary = any(k in qn for k in ["resume", "synthese", "resume les", "fais une synthese", "liste", "anomalies"])
@@ -473,6 +498,16 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         and any(m in qn for m in help_markers)
     )
     is_general_conversation = is_small_talk or is_identity_question or is_capability_question or is_help_question
+    is_patient_inventory = (
+        len(doc_ids) == 0
+        and len(analyte_list) == 0
+        and any(m in qn for m in patient_inventory_markers)
+    )
+    is_patient_count = (
+        len(doc_ids) == 0
+        and len(analyte_list) == 0
+        and any(m in qn for m in patient_count_markers)
+    )
     has_global_patient_lookup = (
         len(doc_ids) == 0
         and len(analyte_list) >= 1
@@ -500,6 +535,8 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         "identity_question": is_identity_question,
         "capability_question": is_capability_question,
         "help_question": is_help_question,
+        "patient_inventory": is_patient_inventory,
+        "patient_inventory_count": is_patient_count,
         "response_transform": has_response_transform,
         "doc_scoped_results": has_doc_scope and (len(analyte_list) >= 1 or not has_summary),
         "doc_scoped_analyte_query": has_doc_scope and len(analyte_list) >= 1,
@@ -588,6 +625,13 @@ def detect_presentation_intent(query: str) -> PresentationIntent:
         "visualization",
         "radar",
         "scatter",
+        "spider",
+        "heatmap",
+        "carte thermique",
+        "matrice",
+        "matrix",
+        "nuage de points",
+        "visualisation comparative",
         "arithmetic line graph",
         "arithmetic line-graph",
     ]
@@ -612,24 +656,36 @@ def detect_presentation_intent(query: str) -> PresentationIntent:
         requested_output = "chart"
         user_visualization = True
         confidence = 0.9
-        if any(m in qn for m in ["line graph", "line-graph", "line chart", "courbe", "arithmetic line graph", "arithmetic line-graph"]):
+        if any(
+            m in qn
+            for m in [
+                "line graph",
+                "line-graph",
+                "line chart",
+                "courbe",
+                "arithmetic line graph",
+                "arithmetic line-graph",
+            ]
+        ):
             chart_type = "line"
         elif any(m in qn for m in ["bar chart", "barres", "barre", "histogramme"]):
             chart_type = "bar"
-        elif "scatter" in qn:
+        elif any(m in qn for m in ["scatter", "nuage de points"]):
             chart_type = "scatter"
-        elif "radar" in qn:
+        elif any(m in qn for m in ["radar", "spider chart", "spider"]):
             chart_type = "radar"
+        elif any(m in qn for m in ["heatmap", "carte thermique", "matrix", "matrice"]):
+            chart_type = "heatmap"
         else:
             chart_type = "unknown"
         if "arithmetic line graph" in qn or "arithmetic line-graph" in qn:
-            unsupported = True
-            unsupported_reason = "Arithmetic Line-Graph non supporté nativement."
+            recommended = "line"
+        if chart_type in {"radar", "scatter", "heatmap"}:
             recommended = "bar"
-        if chart_type in {"radar", "scatter"}:
+        if chart_type == "unknown":
             unsupported = True
-            unsupported_reason = unsupported_reason or "Ce type de graphique n’est pas supporté directement."
-            recommended = recommended or "bar"
+            unsupported_reason = "Le type de graphique demandé n’est pas reconnu de manière déterministe."
+            recommended = "bar"
     elif any(m in qn for m in table_markers):
         requested_output = "table"
         confidence = 0.9
@@ -642,12 +698,23 @@ def detect_presentation_intent(query: str) -> PresentationIntent:
     else:
         raw_format_requested = _raw_format_instruction_detected(text)
         if raw_format_requested and raw_phrase:
-            requested_output = "unknown"
-            unsupported = True
-            unsupported_reason = "Le format demandé n’est pas reconnu de manière déterministe."
-            recommended = "table"
-            confidence = 0.4
-            unhandled.append(f"Instruction de présentation non gérée: {raw_phrase}")
+            raw_norm = normalize_analyte(raw_phrase)
+            if any(k in raw_norm for k in ["graphique", "chart", "graph", "courbe", "radar", "scatter", "heatmap", "matrix", "matrice"]):
+                requested_output = "chart"
+                user_visualization = True
+                chart_type = "unknown"
+                unsupported = True
+                unsupported_reason = "Le format de visualisation demandé est ambigu."
+                recommended = "bar"
+                confidence = 0.45
+                unhandled.append(f"Instruction de présentation non gérée: {raw_phrase}")
+            else:
+                requested_output = "unknown"
+                unsupported = True
+                unsupported_reason = "Le format demandé n’est pas reconnu de manière déterministe."
+                recommended = "table"
+                confidence = 0.4
+                unhandled.append(f"Instruction de présentation non gérée: {raw_phrase}")
         else:
             requested_output = "auto"
             confidence = 0.55
@@ -670,7 +737,7 @@ def detect_presentation_intent(query: str) -> PresentationIntent:
             unhandled.append(f"Type de graphique non précisé: {requested_phrase}")
         if unsupported and unsupported_reason:
             unhandled.append(unsupported_reason)
-        if raw_phrase and any(k in normalize_analyte(raw_phrase) for k in ["matrix", "comparative", "bio clinical"]):
+        if raw_phrase and any(k in normalize_analyte(raw_phrase) for k in ["matrix", "comparative", "bio clinical", "heatmap"]):
             unhandled.append(f"Instruction de présentation complexe à préserver: {raw_phrase}")
     elif raw_phrase and any(k in lower_text for k in ["line-graph", "line graph", "chart", "graphique", "diagramme", "visualisation", "visualization"]):
         unhandled.append(f"Instruction de présentation à préserver: {raw_phrase}")
@@ -714,7 +781,7 @@ def interpret_presentation_intent_with_llm(
         payload = {
             "user_question": str(user_question or ""),
             "supported_outputs": list(supported_outputs or ["table", "list", "json", "chart", "paragraph", "auto", "unknown"]),
-            "supported_chart_types": list(supported_chart_types or ["line", "bar", "scatter", "radar", "unknown"]),
+            "supported_chart_types": list(supported_chart_types or ["line", "bar", "scatter", "radar", "heatmap", "unknown"]),
             "current_detected_presentation": {
                 "requested_output": current_detected_presentation.requested_output,
                 "chart_type": current_detected_presentation.chart_type,
@@ -897,6 +964,37 @@ def detect_comparison_operator(query: str) -> str | None:
     if any(
         k in qn
         for k in [
+            "superieure ou egale a",
+            "superieur ou egal a",
+            "supérieure ou égale à",
+            "supérieur ou égal à",
+            "superieure ou egale",
+            "superieur ou egal",
+            "au moins",
+            "at least",
+            ">=",
+            "ou plus",
+        ]
+    ):
+        return ">="
+    if any(
+        k in qn
+        for k in [
+            "inferieure ou egale a",
+            "inferieur ou egal a",
+            "inférieure ou égale à",
+            "inférieur ou égal à",
+            "inferieure ou egale",
+            "inferieur ou egal",
+            "at most",
+            "<=",
+            "ou moins",
+        ]
+    ):
+        return "<="
+    if any(
+        k in qn
+        for k in [
             "strictement superieure a",
             "strictement superieur a",
             "strictement supérieure à",
@@ -911,8 +1009,6 @@ def detect_comparison_operator(query: str) -> str | None:
         ]
     ):
         return ">"
-    if any(k in qn for k in ["ou plus", "superieure ou egale", "superieur ou egal", "at least", ">="]):
-        return ">="
     if any(
         k in qn
         for k in [
@@ -928,8 +1024,6 @@ def detect_comparison_operator(query: str) -> str | None:
         ]
     ):
         return "<"
-    if any(k in qn for k in ["ou moins", "inferieure ou egale", "inferieur ou egal", "at most", "<="]):
-        return "<="
     if any(k in qn for k in [">", "plus que"]):
         return ">"
     if any(k in qn for k in ["<", "moins que"]):
@@ -998,6 +1092,10 @@ def detect_source_clickable_requested(query: str) -> bool:
 
 
 def _resolve_primary_intent(intents: dict[str, bool], *, requested_doc_ids: list[str], requested_analytes: list[str]) -> str:
+    if intents.get("patient_inventory_count"):
+        return "patient_inventory_count"
+    if intents.get("patient_inventory"):
+        return "patient_inventory"
     if intents.get("identity_question"):
         return "identity_question"
     if intents.get("capability_question"):

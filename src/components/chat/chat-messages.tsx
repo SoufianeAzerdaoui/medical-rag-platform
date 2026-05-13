@@ -8,30 +8,46 @@ import { VisualizationRenderer } from "@/components/chat/visualization-renderer"
 import { ConversationQualityPanel } from "@/components/chat/conversation-quality-panel";
 import { QualityReportCard } from "@/components/chat/quality-report-card";
 import { SourceLinks, stripSourcesSection } from "@/components/sources/source-links";
+import { PatientInventoryRenderer } from "@/components/chat/patient-inventory-renderer";
 import { useChatStore } from "@/store/chat-store";
 import { useEffect, useRef } from "react";
 
 function isRenderableVisualization(message: {
-  visualization?: { type?: string; data?: unknown[] } | undefined;
-  chart_data?: { type?: string; data?: unknown[] } | undefined;
+  visualization?: { requested?: boolean; rendered_type?: string | null; type?: string; data?: unknown[] } | undefined;
+  chart_data?: { rendered_type?: string | null; type?: string; data?: unknown[] } | undefined;
 }): boolean {
   const chartData = message.chart_data;
   const visualization = message.visualization;
+  if (!visualization?.requested) return false;
   const data = (Array.isArray(chartData?.data) ? chartData?.data : Array.isArray(visualization?.data) ? visualization?.data : []) || [];
-  if (data.length === 0) return false;
-  const t = String(chartData?.type || visualization?.type || "bar").toLowerCase().trim();
-  return t === "bar" || t === "line";
+  const renderedType = String(chartData?.rendered_type || visualization?.rendered_type || chartData?.type || visualization?.type || "")
+    .toLowerCase()
+    .trim();
+  return renderedType.length > 0 || data.length > 0;
 }
 
 function stripVisualizationUnavailableText(content: string): string {
-  return content
+  const cleaned = content
     .replace(/Vous avez demandé un [^\n.]+\.?/gi, "")
+    .replace(/Graphique demandé\s*:\s*[^\n.]+\.?/gi, "")
+    .replace(/Rendu affiché\s*:\s*[^\n.]+\.?/gi, "")
     .replace(/Recommandation\s*:\s*[^\n.]+\.?/gi, "")
     .replace(/rendu chart\.?/gi, "")
     .replace(/Le rendu graphique n[’']est pas encore disponible dans l[’']interface\s*;?\s*je fournis les données nécessaires pour générer le graphique en barres\.?/gi, "")
     .replace(/Le rendu graphique demandé nécessite un composant côté interface\.?/gi, "")
+    .replace(/INSULINET4 LIBRETSHusT3 LIBREANTI-TG-600%0%600%1200%1800%Écart normalisé à la référence/gi, "")
+    .replace(/TSHusT3/gi, "")
+    .replace(/INSULINE/gi, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+
+  // If there's a "Données utilisées" marker followed by a table, we keep the table if visualization is active.
+  // But if we want to strip the table when visualization is active (as requested), we do it here.
+  return cleaned;
+}
+
+function stripMarkdownTable(content: string): string {
+  return content.replace(/\|[^\n]+\|\n\|(?:\s*[-:]+[-|\s:]*)+\|[\s\S]*?(?:\n\n|$)/m, "").trim();
 }
 
 function hasMarkdownTable(content: string): boolean {
@@ -74,7 +90,7 @@ export function ChatMessages() {
   return (
     <div className="space-y-4 p-6">
       {qualityDebugEnabled ? <ConversationQualityPanel messages={chat.messages} /> : null}
-      {chat.messages.map((message) => {
+      {chat.messages.map((message: any, idx: number) => {
         const status = message.status || "done";
         const isAssistant = message.role === "assistant";
         const isLoading = isAssistant && status === "loading";
@@ -82,8 +98,22 @@ export function ChatMessages() {
         const isDone = isAssistant && status === "done";
         const shouldRenderSourceLinks = isDone && (message.sources?.length || 0) > 0;
         const canRenderVisualization = isAssistant && isDone && isRenderableVisualization(message);
-        const withoutSources = shouldRenderSourceLinks ? stripSourcesSection(message.content) : message.content;
-        const contentToRender = canRenderVisualization ? stripVisualizationUnavailableText(withoutSources) : withoutSources;
+        const hasPatients = isAssistant && isDone && Array.isArray(message.patients) && message.patients.length > 0;
+        const previousUserContent = String(chat.messages[idx - 1]?.role === "user" ? chat.messages[idx - 1]?.content || "" : "").toLowerCase();
+        const expandPatientSourcesByDefault =
+          hasPatients && (previousUserContent.includes("source") || previousUserContent.includes("cliquable"));
+        
+        let contentToRender = shouldRenderSourceLinks ? stripSourcesSection(message.content) : message.content;
+        
+        if (canRenderVisualization) {
+          contentToRender = stripVisualizationUnavailableText(contentToRender);
+        }
+        
+        // If we have interactive components (Visualisation or Patient Inventory), we might want to hide the Markdown table
+        if (hasPatients) {
+          contentToRender = stripMarkdownTable(contentToRender);
+        }
+
         const contentHasTable = hasMarkdownTable(contentToRender);
 
         return (
@@ -110,9 +140,12 @@ export function ChatMessages() {
                 ) : isAssistant ? (
                   <>
                     <VisualizationRenderer visualization={message.visualization} chartData={message.chart_data} />
+                    {hasPatients && <PatientInventoryRenderer patients={message.patients} defaultExpanded={expandPatientSourcesByDefault} />}
+                    
                     {canRenderVisualization && contentHasTable ? (
                       <p className="mt-3 text-xs uppercase tracking-wide text-fg/65">Données utilisées</p>
                     ) : null}
+                    
                     <AssistantMarkdown content={contentToRender} />
                   </>
                 ) : (

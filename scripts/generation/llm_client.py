@@ -26,17 +26,85 @@ class LLMClient:
         timeout: int = 180,
         keep_alive: str = "10m",
     ) -> str:
-        if self.provider != "ollama":
+        if self.provider == "ollama":
+            return self._generate_ollama(
+                prompt=prompt,
+                model=model,
+                temperature=temperature,
+                num_ctx=num_ctx,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                keep_alive=keep_alive,
+            )
+        elif self.provider == "lmstudio":
+            return self._generate_lmstudio(
+                prompt=prompt,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+            )
+        else:
             raise LLMClientError(f"Unsupported provider: {self.provider}")
-        return self._generate_ollama(
-            prompt=prompt,
-            model=model,
-            temperature=temperature,
-            num_ctx=num_ctx,
-            max_tokens=max_tokens,
-            timeout=timeout,
-            keep_alive=keep_alive,
+
+    def _generate_lmstudio(
+        self,
+        *,
+        prompt: str,
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        timeout: int,
+    ) -> str:
+        # LM Studio is OpenAI compatible
+        import os
+        base_url = os.getenv("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1")
+        # Ensure url ends with /chat/completions if it's the v1 base
+        url = base_url.rstrip("/") + "/chat/completions"
+        
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": False,
+        }
+
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
         )
+
+        try:
+            with request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+                status = getattr(resp, "status", 200)
+        except Exception as exc:
+            raise LLMClientError(f"LM Studio request failed: {str(exc)}") from exc
+
+        if status >= 400:
+            raise LLMClientError(f"LM Studio HTTP error: status={status}")
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise LLMClientError("Invalid JSON response from LM Studio.") from exc
+
+        # OpenAI format: data['choices'][0]['message']['content']
+        choices = data.get("choices") or []
+        if not choices:
+            raise LLMClientError("LM Studio returned no choices.")
+        
+        response_text = choices[0].get("message", {}).get("content", "").strip()
+        if not response_text:
+            raise LLMClientError("LM Studio response is empty.")
+
+        return response_text
 
     def _generate_ollama(
         self,
