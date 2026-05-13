@@ -41,13 +41,13 @@ export function useChatActions() {
           generation_mode: response.generation_mode,
           generation_writer: response.generation_writer,
           response_time: response.response_time,
-        }, response.visualization, response.chart_data);
+        }, response.visualization, response.chart_data, response.patients);
         return response;
       } catch (error) {
         failAssistantMessage(
           chatId,
           loading.id,
-          "Impossible de generer la reponse pour le moment. Reessayez ou verifiez le backend.",
+          "Une erreur interne a empêché la génération complète de la réponse. Les données indexées restent disponibles ; veuillez relancer la demande ou simplifier la formulation.",
         );
         throw error;
       }

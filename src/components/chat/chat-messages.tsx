@@ -90,7 +90,7 @@ export function ChatMessages() {
   return (
     <div className="space-y-4 p-6">
       {qualityDebugEnabled ? <ConversationQualityPanel messages={chat.messages} /> : null}
-      {chat.messages.map((message: any) => {
+      {chat.messages.map((message: any, idx: number) => {
         const status = message.status || "done";
         const isAssistant = message.role === "assistant";
         const isLoading = isAssistant && status === "loading";
@@ -99,6 +99,9 @@ export function ChatMessages() {
         const shouldRenderSourceLinks = isDone && (message.sources?.length || 0) > 0;
         const canRenderVisualization = isAssistant && isDone && isRenderableVisualization(message);
         const hasPatients = isAssistant && isDone && Array.isArray(message.patients) && message.patients.length > 0;
+        const previousUserContent = String(chat.messages[idx - 1]?.role === "user" ? chat.messages[idx - 1]?.content || "" : "").toLowerCase();
+        const expandPatientSourcesByDefault =
+          hasPatients && (previousUserContent.includes("source") || previousUserContent.includes("cliquable"));
         
         let contentToRender = shouldRenderSourceLinks ? stripSourcesSection(message.content) : message.content;
         
@@ -137,7 +140,7 @@ export function ChatMessages() {
                 ) : isAssistant ? (
                   <>
                     <VisualizationRenderer visualization={message.visualization} chartData={message.chart_data} />
-                    {hasPatients && <PatientInventoryRenderer patients={message.patients} />}
+                    {hasPatients && <PatientInventoryRenderer patients={message.patients} defaultExpanded={expandPatientSourcesByDefault} />}
                     
                     {canRenderVisualization && contentHasTable ? (
                       <p className="mt-3 text-xs uppercase tracking-wide text-fg/65">Données utilisées</p>

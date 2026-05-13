@@ -1729,6 +1729,11 @@ def validate_production_ux(
             range_label = p.get("report_range_label", "")
             if "report.pdf" in reports and len(reports) > 1 and str(range_label).endswith("report.pdf"):
                  checks.append({"id": "invalid_report_range_label", "status": "fail", "message": f"Range label finit par report.pdf pour {p['patient']}"})
+            for rep in p.get("reports", []):
+                has_click = bool(str(rep.get("source_url") or "").strip() or str(rep.get("viewer_url") or "").strip())
+                if not has_click:
+                    checks.append({"id": "patient_inventory_clickable_sources", "status": "fail", "message": f"Source non cliquable pour {p.get('patient', 'patient')}"})
+                    break
 
     # D. Long Cell
     if "| ---" in answer_text:
@@ -1739,5 +1744,9 @@ def validate_production_ux(
     # E. Duplicate Sources
     if patients and "**Sources consultées :**" in answer_text:
          checks.append({"id": "duplicate_sources_block", "status": "warning", "message": "Sources répétées alors que patients[] est présent."})
+
+    # F. Generic / technical error leakage
+    if any(k in an for k in ["impossible de generer", "verifiez le backend", "object of type", "stack trace"]):
+        checks.append({"id": "no_generic_error_message", "status": "fail", "message": "Message d’erreur technique exposé côté utilisateur."})
 
     return checks

@@ -100,6 +100,7 @@ export interface MessageItem {
   sources?: ChatSource[];
   visualization?: VisualizationPayload;
   chart_data?: VisualizationPayload;
+  patients?: Array<Record<string, unknown>>;
   diagnostics?: AssistantDiagnostics;
   attachments?: string[];
   audio?: { mimeType: string; blobUrl: string };
@@ -130,4 +131,5 @@ export interface RagResponse {
   generation_writer?: "llm_writer" | "professional_fallback";
   visualization?: VisualizationPayload;
   chart_data?: VisualizationPayload;
+  patients?: Array<Record<string, unknown>>;
 }

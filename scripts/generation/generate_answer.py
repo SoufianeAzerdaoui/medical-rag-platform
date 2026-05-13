@@ -32,6 +32,7 @@ from professional_answer_composer import (
     compose_professional_answer,
     render_professional_fallback,
     compose_patient_inventory_answer,
+    compose_patient_inventory_count_answer,
 )
 from prompt_builder import INSUFFICIENT_CONTEXT_SENTENCE, build_prompt
 from query_understanding import (
@@ -3527,8 +3528,12 @@ def run_generation(
     if query_understanding.intent in {"patient_inventory", "patient_inventory_count"}:
         elapsed = time.perf_counter() - started
         is_count = query_understanding.intent == "patient_inventory_count"
-        data = fetch_patient_inventory(sqlite_path) if not is_count else fetch_patient_count(sqlite_path)
-        composed = compose_patient_inventory_answer(data, is_count_only=is_count)
+        if is_count:
+            count = fetch_patient_count(sqlite_path)
+            composed = compose_patient_inventory_count_answer(count)
+        else:
+            data = fetch_patient_inventory(sqlite_path)
+            composed = compose_patient_inventory_answer(data)
         
         answer = composed["answer"]
         patients_data = composed.get("patients")
@@ -3775,20 +3780,7 @@ def run_generation(
     if query_understanding.intent == "response_transform":
         if not previous_structured_evidence_pack:
             elapsed = time.perf_counter() - started
-            answer = f"Je n’ai pas de résultat précédent exploitable à reformater. {INSUFFICIENT_CONTEXT_SENTENCE}"
-            if bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)):
-                presentation = getattr(query_understanding, "presentation_intent", None)
-                visualization = build_visualization_payload(
-                    requested_type=_normalize_requested_visualization_type(
-                        getattr(presentation, "chart_type", None),
-                        getattr(presentation, "raw_format_phrase", None),
-                    ),
-                    evidence_pack=[],
-                    supported_visualizations=[k for k, cfg in VISUALIZATION_REGISTRY.items() if bool(cfg.get("supported"))],
-                    raw_format_phrase=getattr(presentation, "raw_format_phrase", None),
-                    source="previous_evidence_pack",
-                )
-                answer = _ensure_chart_explanation(answer, query_understanding, visualization)
+            answer = "Je n’ai pas de résultat précédent exploitable à reformater. Veuillez d’abord demander les résultats à afficher, puis préciser le format souhaité."
             validation = validate_answer(
                 query=q,
                 answer_text=answer,

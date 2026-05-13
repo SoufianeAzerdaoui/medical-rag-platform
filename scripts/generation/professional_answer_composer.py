@@ -1258,24 +1258,25 @@ def compose_visualization_answer(
     }
 
 
+def compose_patient_inventory_count_answer(count: int) -> dict[str, Any]:
+    """Composes deterministic count-only answer for patient metadata inventory."""
+    safe_count = int(count or 0)
+    msg = f"L’analyse des métadonnées identifie {safe_count} patient{'s' if safe_count > 1 else ''} distinct{'s' if safe_count > 1 else ''} indexé{'s' if safe_count > 1 else ''} dans la base."
+    return {
+        "answer": msg,
+        "count": safe_count,
+        "mode": "deterministic_patient_count",
+        "content_type": "text",
+    }
+
+
 def compose_patient_inventory_answer(
     inventory: list[dict[str, Any]],
-    is_count_only: bool = False
 ) -> dict[str, Any]:
     """ 
     Composes a professional answer for patient inventory requests.
     Returns a structured object for the Frontend PatientInventoryRenderer.
     """
-    if is_count_only:
-        count = len(inventory)
-        msg = f"Un total de {count} patient{'s' if count > 1 else ''} distinct{'s' if count > 1 else ''} est répertorié dans la base de données."
-        return {
-            "answer": msg,
-            "count": count,
-            "mode": "deterministic_patient_count",
-            "content_type": "text"
-        }
-
     if not inventory:
         return {
             "answer": "Aucun patient n'est actuellement répertorié dans le système.",
@@ -1287,17 +1288,24 @@ def compose_patient_inventory_answer(
     patient_count = len(inventory)
     intro = f"Les patients indexés dans la base sont listés ci-dessous avec leurs rapports associés ({patient_count} patient{'s' if patient_count > 1 else ''} trouvé{'s' if patient_count > 1 else ''})."
     
-    # Build Markdown table for fallback (summarized)
-    table = "| Patient | Rapports | Aperçu |\n| :--- | :---: | :--- |\n"
+    # Build Markdown table fallback with clickable sources.
+    table = "| Patient | Rapports | Aperçu | Sources |\n| :--- | :---: | :--- | :--- |\n"
     
     for item in inventory:
         p_token = item["patient"]
         count = item["report_count"]
         range_label = item["report_range_label"]
         
-        # In Markdown fallback, we only show the range and count to keep it clean.
-        # Clicking details happens in the UI component.
-        table += f"| **{p_token}** | {count} | {range_label} |\n"
+        reports = list(item.get("reports") or [])
+        clickable = []
+        for rep in reports[:4]:
+            href = str(rep.get("source_url") or rep.get("viewer_url") or "").strip()
+            label = str(rep.get("label") or rep.get("filename") or rep.get("doc_id") or "rapport").strip()
+            if href:
+                clickable.append(f"[{label}]({href})")
+        suffix = ", …" if len(reports) > 4 else ""
+        source_cell = ", ".join(clickable) + suffix if clickable else "non disponible"
+        table += f"| **{p_token}** | {count} | {range_label} | {source_cell} |\n"
 
     # For the fallback Markdown answer, we include the intro + table.
     # We do NOT add the global source citations block here if we expect the UI to handle it,

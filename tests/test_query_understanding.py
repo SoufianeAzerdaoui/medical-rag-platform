@@ -121,6 +121,11 @@ class TestQueryUnderstanding(unittest.TestCase):
         self.assertEqual(qu.comparison_operator, ">")
         self.assertEqual(qu.requested_value, "23,00")
 
+    def test_gte_operator_detection(self) -> None:
+        qu = parse_query_understanding("Liste-moi tous les patients qui ont ACTH avec une valeur supérieure ou égale à 23,00.")
+        self.assertEqual(qu.comparison_operator, ">=")
+        self.assertEqual(qu.requested_value, "23,00")
+
     def test_small_talk_intent(self) -> None:
         qu = parse_query_understanding("bonjour")
         self.assertEqual(qu.intent, "small_talk")

@@ -20,22 +20,23 @@ interface Patient {
 
 interface PatientInventoryRendererProps {
   patients: Patient[];
+  defaultExpanded?: boolean;
 }
 
-export function PatientInventoryRenderer({ patients }: PatientInventoryRendererProps) {
+export function PatientInventoryRenderer({ patients, defaultExpanded = false }: PatientInventoryRendererProps) {
   if (!patients || patients.length === 0) return null;
 
   return (
     <div className="mt-4 space-y-4">
       {patients.map((p) => (
-        <PatientCard key={p.patient} patient={p} />
+        <PatientCard key={p.patient} patient={p} defaultExpanded={defaultExpanded} />
       ))}
     </div>
   );
 }
 
-function PatientCard({ patient }: { patient: Patient }) {
-  const [isOpen, setIsOpen] = useState(false);
+function PatientCard({ patient, defaultExpanded }: { patient: Patient; defaultExpanded: boolean }) {
+  const [isOpen, setIsOpen] = useState(defaultExpanded);
 
   return (
     <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-all hover:border-border/80">
@@ -72,7 +73,7 @@ function PatientCard({ patient }: { patient: Patient }) {
                 {patient.reports.map((report) => (
                   <a
                     key={report.doc_id}
-                    href={report.viewer_url}
+                    href={report.viewer_url || report.source_url}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="flex items-center gap-2 rounded-lg border border-border bg-card p-2 text-sm transition-colors hover:bg-primary/5 hover:border-primary/30 group"

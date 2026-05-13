@@ -964,6 +964,37 @@ def detect_comparison_operator(query: str) -> str | None:
     if any(
         k in qn
         for k in [
+            "superieure ou egale a",
+            "superieur ou egal a",
+            "supérieure ou égale à",
+            "supérieur ou égal à",
+            "superieure ou egale",
+            "superieur ou egal",
+            "au moins",
+            "at least",
+            ">=",
+            "ou plus",
+        ]
+    ):
+        return ">="
+    if any(
+        k in qn
+        for k in [
+            "inferieure ou egale a",
+            "inferieur ou egal a",
+            "inférieure ou égale à",
+            "inférieur ou égal à",
+            "inferieure ou egale",
+            "inferieur ou egal",
+            "at most",
+            "<=",
+            "ou moins",
+        ]
+    ):
+        return "<="
+    if any(
+        k in qn
+        for k in [
             "strictement superieure a",
             "strictement superieur a",
             "strictement supérieure à",
@@ -978,8 +1009,6 @@ def detect_comparison_operator(query: str) -> str | None:
         ]
     ):
         return ">"
-    if any(k in qn for k in ["ou plus", "superieure ou egale", "superieur ou egal", "at least", ">="]):
-        return ">="
     if any(
         k in qn
         for k in [
@@ -995,8 +1024,6 @@ def detect_comparison_operator(query: str) -> str | None:
         ]
     ):
         return "<"
-    if any(k in qn for k in ["ou moins", "inferieure ou egale", "inferieur ou egal", "at most", "<="]):
-        return "<="
     if any(k in qn for k in [">", "plus que"]):
         return ">"
     if any(k in qn for k in ["<", "moins que"]):
