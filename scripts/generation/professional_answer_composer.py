@@ -912,17 +912,20 @@ def _build_paragraph(evidences: list[dict[str, Any]], query: str) -> str:
         return "Aucune donnée mesurée correspondante n’a été retrouvée."
 
     primary = evidences[0]
+    body = (
+        f"{_display_analyte(primary)} = {_safe_str(primary.get('current_value'), 'non disponible')}"
+        f"{(' ' + _safe_str(primary.get('unit'))) if _safe_str(primary.get('unit')) else ''} ; "
+        f"référence : {_safe_str(primary.get('reference'), 'non disponible')} ; "
+        f"statut technique : {_safe_str(primary.get('technical_status'), 'non interprétable')}."
+    )
+    if not _explicit_yes_no_requested(query):
+        return body
     yn = _yn_prefix(
         query,
         _safe_str(primary.get("technical_status_code")),
         _safe_str(primary.get("reference")),
     )
-    return (
-        f"{yn} — {_display_analyte(primary)} = {_safe_str(primary.get('current_value'), 'non disponible')}"
-        f"{(' ' + _safe_str(primary.get('unit'))) if _safe_str(primary.get('unit')) else ''} ; "
-        f"référence : {_safe_str(primary.get('reference'), 'non disponible')} ; "
-        f"statut technique : {_safe_str(primary.get('technical_status'), 'non interprétable')}."
-    )
+    return f"{yn} — {body}"
 
 
 def _build_chart_explanation(
@@ -1026,6 +1029,26 @@ def _yn_prefix(query: str, status_code: str | None, ref: str | None) -> str:
     return "Non" if in_range else "Oui"
 
 
+def _explicit_yes_no_requested(query: str) -> bool:
+    qn = norm_text(query)
+    markers = [
+        "yes/no",
+        "yes or no",
+        "yes no",
+        "answer only yes",
+        "respond only yes",
+        "yes ou no",
+        "oui/non",
+        "oui non",
+        "oui ou non",
+        "reponds uniquement oui",
+        "réponds uniquement oui",
+        "est ce que",
+        "est-ce que",
+    ]
+    return any(m in qn for m in markers)
+
+
 def render_professional_fallback(
     evidence_pack: dict[str, Any],
     query_understanding: QueryUnderstanding,
@@ -1060,10 +1083,14 @@ def render_professional_fallback(
         }
 
     if presentation == "yes_no":
+        explicit_yn = _explicit_yes_no_requested(user_question)
         if not evidences:
             doc_scope = ", ".join(query_understanding.requested_doc_ids or ["le document demandé"])
             analyte_text = humanize_analyte_list(query_understanding.requested_analytes, evidence_pack)
-            answer = f"Non — {analyte_text} non retrouvé dans {doc_scope}."
+            if explicit_yn:
+                answer = f"Non — {analyte_text} non retrouvé dans {doc_scope}."
+            else:
+                answer = f"{analyte_text} non retrouvé dans {doc_scope}."
         else:
             first = dict(evidences[0] or {})
             analyte = _display_analyte(first)
@@ -1071,9 +1098,12 @@ def render_professional_fallback(
             unit = _safe_str(first.get("unit"), "")
             reference = _safe_str(first.get("reference"), _safe_str(first.get("reference_range"), "non disponible"))
             status_code = _safe_str(first.get("technical_status_code"), "")
-            prefix = _yn_prefix(user_question, status_code, reference)
             value_text = value if not unit else f"{value} {unit}"
-            answer = f"{prefix} — {analyte}: {value_text} (référence: {reference})."
+            if explicit_yn:
+                prefix = _yn_prefix(user_question, status_code, reference)
+                answer = f"{prefix} — {analyte}: {value_text} (référence: {reference})."
+            else:
+                answer = f"{analyte}: {value_text} (référence: {reference})."
         src_lines = _source_lines(source_citations or [])
         if src_lines:
             answer = answer.rstrip() + "\n\nSources :\n" + "\n".join(src_lines)

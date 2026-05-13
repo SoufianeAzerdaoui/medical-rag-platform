@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import sqlite3
 import sys
@@ -50,11 +51,18 @@ from query_understanding import (
     norm_text,
 )
 from followup_scope_utils import resolve_followup_doc_scope
+from context_resolver import resolve_context_for_turn
 from qualitative_comment_utils import (
     build_qualitative_comment_answer,
     build_sourced_comment_block,
+    clean_qualitative_comment_text,
+    dedup_sources_for_qualitative,
+    escape_markdown_table_cell,
+    format_clickable_source_markdown,
     extract_comment_text_for_subject,
 )
+
+LOGGER = logging.getLogger("medical_rag.generation")
 
 
 def normalize_query(query: str) -> str:
@@ -912,6 +920,7 @@ def _query_understanding_payload(qu: QueryUnderstanding) -> dict[str, Any]:
         "latest_report": bool(getattr(qu, "latest_report", False)),
         "requested_context_type": getattr(qu, "requested_context_type", None),
         "inventory_view_type": getattr(qu, "inventory_view_type", None),
+        "qualitative_view_type": getattr(qu, "qualitative_view_type", None),
         "presentation_intent": {
             "requested_output": getattr(presentation, "requested_output", qu.output_format),
             "chart_type": getattr(presentation, "chart_type", None),
@@ -1011,6 +1020,26 @@ def _is_visualization_or_transform_request(query: str, query_understanding: Quer
     ]
     deictic_markers = ["affiche ca", "mets ca", "visualise ca", "ca ", "ça "]
     return any(m in qn for m in viz_markers) and any(m in qn for m in deictic_markers)
+
+
+def _explicit_yes_no_requested(query: str) -> bool:
+    qn = norm_text(query or "")
+    markers = [
+        "yes/no",
+        "yes or no",
+        "yes no",
+        "answer only yes",
+        "respond only yes",
+        "yes ou no",
+        "oui/non",
+        "oui non",
+        "oui ou non",
+        "reponds uniquement oui",
+        "réponds uniquement oui",
+        "est ce que",
+        "est-ce que",
+    ]
+    return any(m in qn for m in markers)
 
 
 def _build_no_transformable_context_response(
@@ -1172,7 +1201,23 @@ def _build_visualization_recommendation_response(
     last_intent = str(previous_context_intent or "").strip().lower()
     data_context_intent = str(previous_data_context_intent or "").strip().lower()
     data_context_type = str(previous_data_context_type or "").strip().lower()
+    qn = norm_text(query or "")
+    asks_about_comment = any(token in qn for token in ["ce commentaire", "ce comment", "cette note", "note interpretative", "note interprétative"])
     if (
+        data_context_type == "medical_qualitative_comment"
+        or data_context_intent == "comment_without_measured_value"
+        or asks_about_comment
+    ):
+        answer = (
+            "Pour un commentaire médical qualitatif, la présentation la plus fiable est textuelle et sourcée.\n"
+            "Je recommande :\n"
+            "1. une carte d’information médicale avec le commentaire principal ;\n"
+            "2. un bloc commentaire sourcé (document, page, ligne) ;\n"
+            "3. un tableau texte : sujet, commentaire, source ;\n"
+            "4. un encadré de note interprétative.\n\n"
+            "Un radar chart, une courbe ou un graphique en barres ne sont pas adaptés à ce type de donnée."
+        )
+    elif (
         data_context_type == "patient_inventory"
         or data_context_intent == "patient_inventory"
         or previous_has_patient_inventory
@@ -1195,16 +1240,6 @@ def _build_visualization_recommendation_response(
             "2. une courbe seulement s’il existe une vraie série temporelle ;\n"
             "3. un tableau avec statuts et sources cliquables pour la validation clinique.\n\n"
             "Le radar chart n’est pertinent que si les valeurs sont normalisées et comparables entre elles."
-        )
-    elif data_context_type == "medical_qualitative_comment" or data_context_intent == "comment_without_measured_value":
-        answer = (
-            "Pour un commentaire médical qualitatif, la présentation la plus fiable est textuelle et sourcée.\n"
-            "Je recommande :\n"
-            "1. une carte d’information médicale avec le commentaire principal ;\n"
-            "2. un bloc commentaire sourcé (document, page, ligne) ;\n"
-            "3. un tableau texte : sujet, commentaire, source ;\n"
-            "4. un encadré de note interprétative.\n\n"
-            "Un radar chart, une courbe ou un graphique en barres ne sont pas adaptés à ce type de donnée."
         )
     else:
         answer = (
@@ -1230,7 +1265,7 @@ def _build_visualization_recommendation_response(
         answer_style_requested="standard",
         requested_table_columns=[],
         requested_technical_condition=None,
-        source_clickable_requested=False,
+        source_clickable_requested=bool(getattr(query_understanding, "source_clickable_requested", False)),
         requested_value=None,
         comparison_operator=None,
         raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
@@ -1725,9 +1760,22 @@ def _build_qualitative_comment_render_response(
     pack = previous_qualitative_evidence_pack if isinstance(previous_qualitative_evidence_pack, dict) else {}
     evidences = list(pack.get("evidences") or pack.get("results") or [])
     first = evidences[0] if evidences else {}
-    comment_text = str(first.get("comment_text") or first.get("current_value") or "").strip()
+    comment_text = str(first.get("display_comment_text") or first.get("comment_text") or first.get("current_value") or "").strip()
     subject = str(first.get("subject") or first.get("analyte") or "Commentaire médical").strip()
     source = str(first.get("source") or "").strip()
+    source_label = source or str(first.get("source_label") or "").strip() or "source non disponible"
+    viewer_url = str(first.get("viewer_url") or "").strip() or None
+    source_url = str(first.get("source_url") or "").strip() or None
+    if not (viewer_url or source_url):
+        pack_sources = list(pack.get("sources") or [])
+        if pack_sources:
+            p0 = pack_sources[0]
+            viewer_url = str(p0.get("viewer_url") or "").strip() or None
+            source_url = str(p0.get("url") or p0.get("source_url") or "").strip() or None
+            source_label = str(p0.get("label") or source_label).strip()
+    source_markdown, has_clickable_source = format_clickable_source_markdown(source_label, viewer_url, source_url)
+    view_type = str(getattr(query_understanding, "qualitative_view_type", "") or "sourced_comment_block").strip() or "sourced_comment_block"
+    wants_clickable = bool(getattr(query_understanding, "source_clickable_requested", False))
     if not comment_text:
         answer = (
             "Je n’ai pas de commentaire médical qualitatif récent à afficher sous cette forme. "
@@ -1735,12 +1783,51 @@ def _build_qualitative_comment_render_response(
         )
         sources: list[dict[str, Any]] = []
     else:
-        answer = build_sourced_comment_block(
-            subject=subject,
-            comment_text=comment_text,
-            source_label=source or "source non disponible",
+        compact_comment = comment_text if len(comment_text) <= 520 else comment_text[:517].rstrip() + "..."
+        source_text_for_answer = source_markdown if has_clickable_source else source_label
+        if wants_clickable and not has_clickable_source:
+            source_text_for_answer = f"{source_label} (source non cliquable disponible uniquement en texte)"
+        if view_type == "text_table":
+            source_cell = source_markdown if has_clickable_source else escape_markdown_table_cell(source_text_for_answer)
+            answer = (
+                "| Sujet | Commentaire | Source |\n"
+                "|---|---|---|\n"
+                f"| {escape_markdown_table_cell(subject)} | {escape_markdown_table_cell(compact_comment)} | {source_cell} |"
+            )
+        elif view_type == "interpretive_note":
+            answer = (
+                "Note interprétative sourcée\n\n"
+                f"{subject}\n\n"
+                f"{comment_text}\n\n"
+                f"Source : {source_text_for_answer}"
+            )
+        elif view_type == "medical_info_card":
+            answer = (
+                "Carte d’information médicale\n\n"
+                f"Sujet : {subject}\n"
+                "Type : Commentaire qualitatif\n"
+                f"Message principal : {comment_text}\n"
+                f"Source : {source_text_for_answer}"
+            )
+        else:
+            view_type = "sourced_comment_block"
+            answer = build_sourced_comment_block(
+                subject=subject,
+                comment_text=comment_text,
+                source_label=source_text_for_answer,
+            )
+        sources = dedup_sources_for_qualitative(
+            [
+                {
+                    "label": source_label,
+                    "source_pdf": str(first.get("source_pdf") or ""),
+                    "page": first.get("page"),
+                    "row": first.get("row"),
+                    "url": source_url,
+                    "viewer_url": viewer_url,
+                }
+            ]
         )
-        sources = list(pack.get("sources") or [])
 
     validation = validate_answer(
         query=query,
@@ -1817,7 +1904,7 @@ def _build_qualitative_comment_render_response(
         },
         "visualization": None,
         "chart_data": None,
-        "qualitative_view": {"type": "sourced_comment_block"},
+        "qualitative_view": {"type": view_type},
     }
 
 
@@ -3305,7 +3392,9 @@ def render_evidence_pack_deterministic(evidence_pack: dict[str, Any], output_for
 
     if not evidences and output_format == "yes_no":
         analyte_label = _canonical_display_name(requested_analytes[0]) if requested_analytes else "analyte"
-        return f"Non - {analyte_label} non retrouvée dans {requested_doc} ; source : document demandé uniquement."
+        if _explicit_yes_no_requested(str(evidence_pack.get("question") or "")):
+            return f"Non - {analyte_label} non retrouvée dans {requested_doc} ; source : document demandé uniquement."
+        return f"{analyte_label} non retrouvée dans {requested_doc} ; source : document demandé uniquement."
 
     if not evidences:
         return _missing_doc_answer()
@@ -3323,9 +3412,11 @@ def render_evidence_pack_deterministic(evidence_pack: dict[str, Any], output_for
         src = str(primary.get("source") or "")
         analyte = str(primary.get("analyte") or "analyte")
         value = str(primary.get("current_value") or "non disponible")
-        if wants_en_yes_no:
-            return f"{yn} - {analyte} = {value} ; reference: {ref} ; source: {src}"
-        return f"{yn} - {analyte} = {value} ; référence : {ref} ; source : {src}"
+        if wants_en_yes_no or _explicit_yes_no_requested(str(evidence_pack.get("question") or "")):
+            if wants_en_yes_no:
+                return f"{yn} - {analyte} = {value} ; reference: {ref} ; source: {src}"
+            return f"{yn} - {analyte} = {value} ; référence : {ref} ; source : {src}"
+        return f"{analyte} = {value} ; référence : {ref} ; source : {src}"
 
     if output_format == "table":
         col_keys = _resolve_table_columns(evidence_pack, for_cohort=False)
@@ -3746,6 +3837,7 @@ def build_structured_evidence_pack(
         return _finalize_structured_pack(pack, query_understanding)
 
     if intent == "comment_without_measured_value":
+        qualitative_fetch_called = True
         rows = (
             _fetch_doc_lab_rows(
                 sqlite_path=sqlite_path,
@@ -3757,6 +3849,7 @@ def build_structured_evidence_pack(
             if requested_doc_ids
             else _fetch_global_comment_rows(sqlite_path=sqlite_path, term="troponine", limit=250)
         )
+        qualitative_rows_count = len(rows)
         measured = [
             r
             for r in rows
@@ -3766,10 +3859,21 @@ def build_structured_evidence_pack(
         ]
         if measured:
             pack["evidences"] = [_structured_record_from_row(measured[0])]
+            pack["qualitative_debug"] = {
+                "enters_comment_without_measured_value_branch": True,
+                "qualitative_fetch_called": qualitative_fetch_called,
+                "qualitative_rows_count": qualitative_rows_count,
+                "qualitative_comment_extracted": False,
+                "qualitative_comment_text_length": 0,
+                "qualitative_comment_text_preview": "",
+            }
         else:
             comment_text, cr = extract_comment_text_for_subject("troponine", rows)
             if comment_text and isinstance(cr, dict):
-                pack["comment_text"] = comment_text
+                raw_comment_text = str(cr.get("value_raw") or cr.get("text_for_keyword") or cr.get("text_for_embedding") or "").strip()
+                display_comment_text = clean_qualitative_comment_text(raw_comment_text or comment_text, "troponine") or comment_text
+                pack["comment_text"] = display_comment_text
+                pack["raw_comment_text"] = raw_comment_text
                 pack["evidences"] = [
                     {
                         "doc_id": str(cr.get("doc_id") or ""),
@@ -3780,8 +3884,10 @@ def build_structured_evidence_pack(
                         "analyte": "Troponine",
                         "subject": "Troponine",
                         "analyte_norm": "troponine",
-                        "current_value": comment_text,
-                        "comment_text": comment_text,
+                        "current_value": display_comment_text,
+                        "raw_comment_text": raw_comment_text,
+                        "display_comment_text": display_comment_text,
+                        "comment_text": display_comment_text,
                         "unit": "qualitative",
                         "reference": str(cr.get("reference_range") or "").strip(),
                         "previous_result": "",
@@ -3793,6 +3899,14 @@ def build_structured_evidence_pack(
                         "result_kind": "comment",
                     }
                 ]
+            pack["qualitative_debug"] = {
+                "enters_comment_without_measured_value_branch": True,
+                "qualitative_fetch_called": qualitative_fetch_called,
+                "qualitative_rows_count": qualitative_rows_count,
+                "qualitative_comment_extracted": bool(comment_text),
+                "qualitative_comment_text_length": len(comment_text or ""),
+                "qualitative_comment_text_preview": str((comment_text or "")[:80]),
+            }
         pack["rows"] = rows
         return _finalize_structured_pack(pack, query_understanding)
 
@@ -4230,6 +4344,7 @@ def run_generation(
     show_all_results: bool = False,
     show_low_quality: bool = False,
     previous_structured_evidence_pack: dict[str, Any] | None = None,
+    previous_displayed_evidence_pack: dict[str, Any] | None = None,
     previous_context_intent: str | None = None,
     previous_data_context_intent: str | None = None,
     previous_data_context_type: str | None = None,
@@ -4249,15 +4364,166 @@ def run_generation(
     qn = norm_text(q)
     style_history = list(recent_style_history or [])
     composed_data = {}
+    source_citations_for_response: list[dict[str, Any]] = []
     idx = Path(index_dir)
     sqlite_path = idx / "medical_rag.sqlite"
     query_understanding = parse_query_understanding(q)
+    preferred_previous_transformable_pack = (
+        previous_displayed_evidence_pack
+        if isinstance(previous_displayed_evidence_pack, dict)
+        and previous_displayed_evidence_pack
+        and evidence_pack_is_transformable(previous_displayed_evidence_pack)
+        else previous_structured_evidence_pack
+    )
+    state_for_resolution = {
+        "last_intent": previous_context_intent,
+        "last_data_context_type": previous_data_context_type,
+        "last_data_context_intent": previous_data_context_intent,
+        "last_doc_scope": {"doc_ids": list(previous_doc_scope or [])},
+        "last_patient_inventory": previous_patient_inventory if previous_has_patient_inventory else None,
+        "last_transformable_evidence_pack": preferred_previous_transformable_pack,
+        "last_qualitative_evidence_pack": previous_qualitative_evidence_pack,
+    }
+    context_resolution = resolve_context_for_turn(q, query_understanding, state_for_resolution)
+    qn_deictic = norm_text(q)
+    asks_table = any(token in qn_deictic for token in [" table", "table ", "tableau"])
+    asks_graph = any(token in qn_deictic for token in ["graphique", "chart", "courbe", "radar", "bar chart", "line graph", "visualise"])
+    is_deictic_render = bool(
+        any(token in qn_deictic for token in [" ca", "ça", "ces donnees", "ces données", "affiche", "mets"])
+        and (asks_table or asks_graph)
+    )
+    has_explicit_scope = bool(query_understanding.requested_doc_ids or query_understanding.requested_analytes or getattr(query_understanding, "requested_date_iso", None))
+    prev_ctx_type = str(previous_data_context_type or "").strip().lower()
+    if is_deictic_render and not has_explicit_scope:
+        if prev_ctx_type == "patient_inventory":
+            inventory_view = "filterable_table" if asks_table else (getattr(query_understanding, "inventory_view_type", None) or "patient_cards")
+            query_understanding = replace(
+                query_understanding,
+                intent="inventory_visualization_render",
+                inventory_view_type=inventory_view,
+                is_small_talk=False,
+                is_response_transform=False,
+            )
+        elif prev_ctx_type == "biological_numeric_results" and isinstance(preferred_previous_transformable_pack, dict) and preferred_previous_transformable_pack:
+            query_understanding = replace(
+                query_understanding,
+                intent="response_transform",
+                output_format="chart" if asks_graph else "table",
+                is_response_transform=True,
+                is_small_talk=False,
+            )
+            context_resolution["should_skip_retrieval"] = True
+            context_resolution["reason"] = "deictic_render_reuse_transformable"
+        elif prev_ctx_type == "medical_qualitative_comment" and isinstance(previous_qualitative_evidence_pack, dict) and previous_qualitative_evidence_pack:
+            query_understanding = replace(
+                query_understanding,
+                intent="qualitative_comment_render",
+                qualitative_view_type="text_table",
+                is_small_talk=False,
+                is_response_transform=False,
+            )
+            context_resolution["should_skip_retrieval"] = True
+            context_resolution["reason"] = "deictic_render_reuse_qualitative"
+        else:
+            return {
+                "request_id": request_id,
+                "query": q,
+                "query_received": query_received,
+                "query_used_for_retrieval": "",
+                "query_used_for_prompt": q,
+                "query_stored": q,
+                "normalized_query": q,
+                "mode": "response_transform",
+                "provider": provider,
+                "model": model,
+                "top_k": top_k,
+                "max_display_results": int(max_display_results),
+                "show_all_results": bool(show_all_results),
+                "show_low_quality": bool(show_low_quality),
+                "timeout": timeout,
+                "generation_time_seconds": round(time.perf_counter() - started, 3),
+                "answer": (
+                    "Je n’ai pas de contexte précédent exploitable à afficher sous cette forme. "
+                    "Demandez d’abord les données à présenter."
+                ),
+                "citations": [],
+                "sources": [],
+                "validation": validate_answer(
+                    query=q,
+                    answer_text=(
+                        "Je n’ai pas de contexte précédent exploitable à afficher sous cette forme. "
+                        "Demandez d’abord les données à présenter."
+                    ),
+                    evidence_pack=[],
+                    displayed_evidences=[],
+                    source_citations=[],
+                    generation_mode="deterministic_response_transform",
+                    retrieval_status="insufficient_context",
+                    query_received=query_received,
+                    query_used_for_retrieval="",
+                    query_used_for_prompt=q,
+                    query_stored=q,
+                    detected_analytes=[],
+                    query_intents={"response_transform": True},
+                    output_format_requested="chart" if asks_graph else "table",
+                    answer_style_requested="standard",
+                    requested_table_columns=[],
+                    requested_technical_condition=None,
+                    source_clickable_requested=bool(getattr(query_understanding, "source_clickable_requested", False)),
+                    requested_value=None,
+                    comparison_operator=None,
+                    raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                    unsupported_presentation=False,
+                    user_requested_visualization=False,
+                    requested_chart_type=None,
+                    visualization_payload=None,
+                    chart_data_payload=None,
+                ),
+                "quality_report": None,
+                "llm_error": None,
+                "error_type": None,
+                "generation_mode": "deterministic_response_transform",
+                "detected_analytes": [],
+                "query_understanding": _query_understanding_payload(query_understanding),
+                "structured_evidence_pack": {},
+                "evidence_pack": [],
+                "displayed_evidences": [],
+                "display": {
+                    "selected_candidates_count": 0,
+                    "low_quality_evidence_filtered_count": 0,
+                    "hidden_result_count": 0,
+                    "requested_multi_result_query": False,
+                    "display_notes": [],
+                },
+                "retrieval": {
+                    "answerability": {"status": "insufficient_context", "reason": "deictic_render_no_context"},
+                    "filters": {"doc_ids": [], "analytes": []},
+                    "top_results": [],
+                    "context_chunks": [],
+                    "sources": [],
+                    "retrieval_skipped": True,
+                },
+                "prompt": "",
+                "debug": {
+                    "request_id": request_id,
+                    "generation_mode": "deterministic_response_transform",
+                    "generation_writer": "professional_fallback",
+                    "context_resolution": context_resolution,
+                    "retrieval_skipped_due_to_no_transformable_context": True,
+                },
+                "visualization": None,
+                "chart_data": None,
+            }
     requested_doc_ids = resolve_followup_doc_scope(
         query=q,
         requested_analytes=list(query_understanding.requested_analytes or []),
         requested_doc_ids=list(query_understanding.requested_doc_ids),
         previous_doc_scope=previous_doc_scope,
     )
+    if not requested_doc_ids:
+        effective_scope = context_resolution.get("effective_doc_scope") if isinstance(context_resolution, dict) else None
+        if isinstance(effective_scope, dict):
+            requested_doc_ids = [str(d).strip() for d in (effective_scope.get("doc_ids") or []) if str(d).strip()]
     requested_date_iso = str(getattr(query_understanding, "requested_date_iso", "") or "").strip()
     latest_report = bool(getattr(query_understanding, "latest_report", False))
     if not requested_doc_ids and requested_date_iso:
@@ -4270,6 +4536,15 @@ def run_generation(
         query_understanding = replace(query_understanding, requested_doc_ids=requested_doc_ids)
     requested_doc_id = requested_doc_ids[0] if len(requested_doc_ids) == 1 else None
     sensitive_or_treatment = _query_is_sensitive_or_treatment(q)
+    if "troponine" in qn or str(getattr(query_understanding, "requested_context_type", "") or "") == "medical_qualitative_comment":
+        LOGGER.info(
+            "qa_qualitative_pre current_query=%r detected_intent=%s requested_context_type=%s requested_analytes=%s requested_doc_ids=%s",
+            q,
+            str(query_understanding.intent or ""),
+            str(getattr(query_understanding, "requested_context_type", "") or ""),
+            list(query_understanding.requested_analytes or []),
+            requested_doc_ids,
+        )
 
     # 2. DETERMINISTIC ROUTING (Patient Inventory) - Bypasses all retrieval
     if query_understanding.intent in {"patient_inventory", "patient_inventory_count"}:
@@ -4389,7 +4664,7 @@ def run_generation(
     visualization_or_transform_requested = _is_visualization_or_transform_request(q, query_understanding)
 
     if str(query_understanding.intent or "").strip().lower() == "visualization_recommendation":
-        return _build_visualization_recommendation_response(
+        out = _build_visualization_recommendation_response(
             request_id=request_id,
             started=started,
             query=q,
@@ -4409,10 +4684,15 @@ def run_generation(
             previous_data_context_intent=previous_data_context_intent,
             previous_data_context_type=previous_data_context_type,
             previous_has_patient_inventory=previous_has_patient_inventory,
-            has_transformable_context=bool(previous_structured_evidence_pack),
+            has_transformable_context=bool(preferred_previous_transformable_pack),
         )
+        out.setdefault("debug", {})["context_resolution"] = context_resolution
+        out.setdefault("debug", {})["retrieval_skipped_due_to_no_transformable_context"] = bool(
+            context_resolution.get("should_skip_retrieval")
+        )
+        return out
     if str(query_understanding.intent or "").strip().lower() == "inventory_visualization_render":
-        return _build_inventory_visualization_render_response(
+        out = _build_inventory_visualization_render_response(
             request_id=request_id,
             started=started,
             query=q,
@@ -4431,8 +4711,13 @@ def run_generation(
             previous_has_patient_inventory=previous_has_patient_inventory,
             previous_patient_inventory=previous_patient_inventory,
         )
+        out.setdefault("debug", {})["context_resolution"] = context_resolution
+        out.setdefault("debug", {})["retrieval_skipped_due_to_no_transformable_context"] = bool(
+            context_resolution.get("should_skip_retrieval")
+        )
+        return out
     if str(query_understanding.intent or "").strip().lower() == "qualitative_comment_render":
-        return _build_qualitative_comment_render_response(
+        out = _build_qualitative_comment_render_response(
             request_id=request_id,
             started=started,
             query=q,
@@ -4450,15 +4735,20 @@ def run_generation(
             intents=intents,
             previous_qualitative_evidence_pack=previous_qualitative_evidence_pack,
         )
+        out.setdefault("debug", {})["context_resolution"] = context_resolution
+        out.setdefault("debug", {})["retrieval_skipped_due_to_no_transformable_context"] = bool(
+            context_resolution.get("should_skip_retrieval")
+        )
+        return out
 
     # Strict guard: after non-transformable contexts (e.g. inventory), do not run retrieval
     # for deictic visualization/transform requests when no transformable context exists.
     if (
         visualization_or_transform_requested
-        and not previous_structured_evidence_pack
+        and not preferred_previous_transformable_pack
         and str(previous_context_intent or "").strip().lower() in {"patient_inventory", "patient_inventory_count"}
     ):
-        return _build_no_transformable_context_response(
+        out = _build_no_transformable_context_response(
             request_id=request_id,
             started=started,
             query=q,
@@ -4479,10 +4769,13 @@ def run_generation(
             qn=qn,
             previous_context_intent=previous_context_intent,
         )
+        out.setdefault("debug", {})["context_resolution"] = context_resolution
+        out.setdefault("debug", {})["retrieval_skipped_due_to_no_transformable_context"] = True
+        return out
 
     # Follow-up transform priority: if user asks to reformat "this result" without new doc/analyte,
     # reuse previous evidence pack instead of small-talk/retrieval routing.
-    if previous_structured_evidence_pack and _looks_like_transform_followup(q, query_understanding):
+    if preferred_previous_transformable_pack and _looks_like_transform_followup(q, query_understanding):
         query_understanding = replace(
             query_understanding,
             intent="response_transform",
@@ -4618,7 +4911,7 @@ def run_generation(
         )
 
     if query_understanding.intent == "response_transform":
-        if not previous_structured_evidence_pack:
+        if not preferred_previous_transformable_pack:
             return _build_no_transformable_context_response(
                 request_id=request_id,
                 started=started,
@@ -4638,13 +4931,13 @@ def run_generation(
                 exact_analytes=exact_analytes,
                 requested_doc_ids=requested_doc_ids,
                 qn=qn,
-                previous_context_intent=previous_context_intent,
+            previous_context_intent=previous_context_intent,
             )
 
         transformed_pack = _build_response_transform_pack(
             query=q,
             query_understanding=query_understanding,
-            previous_pack=previous_structured_evidence_pack,
+            previous_pack=preferred_previous_transformable_pack,
         )
         transformed_qu = replace(
             query_understanding,
@@ -4663,12 +4956,13 @@ def run_generation(
                 "source_pdf": ev.get("source_pdf"),
                 "analyte_norm": ev.get("analyte_norm"),
                 "analyte": ev.get("analyte"),
-                "value_raw": ev.get("current_value"),
-                "reference_range": ev.get("reference"),
+                "value_raw": ev.get("current_value") or ev.get("value_raw") or ev.get("value"),
+                "value_numeric": ev.get("value_numeric"),
+                "reference_range": ev.get("reference") or ev.get("reference_range"),
                 "unit": ev.get("unit"),
                 "previous_result": ev.get("previous_result"),
                 "patient_token": ev.get("patient_token"),
-                "interpretation_status": ev.get("technical_status_code"),
+                "interpretation_status": ev.get("technical_status_code") or ev.get("interpretation_status"),
                 "source": ev.get("source"),
                 "source_kind": "sqlite_deterministic",
                 "chunk_type": "lab_result",
@@ -4821,7 +5115,8 @@ def run_generation(
         )
 
     if _is_structured_question_with_fast_path(intents, requested_doc_ids, exact_analytes) and (
-        requested_doc_ids or query_understanding.intent in {"global_patient_lookup", "cohort_search"}
+        requested_doc_ids
+        or query_understanding.intent in {"global_patient_lookup", "cohort_search", "comment_without_measured_value"}
     ):
         structured_pack = build_structured_evidence_pack(
             query=q,
@@ -4836,6 +5131,12 @@ def run_generation(
         displayed_evidences = list(evidence_pack)
         citations = build_citations(displayed_evidences)
         source_citations = build_source_citations(displayed_evidences, resolver=source_resolver)
+        if str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
+            source_citations = dedup_sources_for_qualitative(source_citations)
+            # Source is rendered inline in the qualitative answer to avoid duplicate source blocks.
+            source_citations_for_response: list[dict[str, Any]] = []
+        else:
+            source_citations_for_response = source_citations
         structured_pack = _attach_source_fields_to_structured_pack(structured_pack, source_citations)
         structured_pack["recent_style_history"] = style_history[-20:]
         structured_pack = _attach_visualization_facts_to_evidence_pack(
@@ -4870,6 +5171,22 @@ def run_generation(
                 source_label=source_label or "source non disponible",
             )
         generation_mode = str(composed.get("mode") or "deterministic_professional_fallback")
+        if str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
+            qdbg = structured_pack.get("qualitative_debug") if isinstance(structured_pack.get("qualitative_debug"), dict) else {}
+            LOGGER.info(
+                "qa_qualitative_post current_query=%r detected_intent=%s requested_context_type=%s enters_comment_without_measured_value_branch=%s qualitative_fetch_called=%s qualitative_rows_count=%s qualitative_comment_extracted=%s qualitative_comment_text_length=%s qualitative_comment_text_preview=%r final_generation_mode=%s final_answer_starts_with_information_insuffisante=%s",
+                q,
+                str(query_understanding.intent or ""),
+                str(getattr(query_understanding, "requested_context_type", "") or ""),
+                bool(qdbg.get("enters_comment_without_measured_value_branch")),
+                bool(qdbg.get("qualitative_fetch_called")),
+                int(qdbg.get("qualitative_rows_count") or 0),
+                bool(qdbg.get("qualitative_comment_extracted")),
+                int(qdbg.get("qualitative_comment_text_length") or 0),
+                str(qdbg.get("qualitative_comment_text_preview") or ""),
+                generation_mode,
+                str(final_answer or "").strip().lower().startswith("information insuffisante"),
+            )
         writer_error = str(composed.get("llm_error") or "") or None
         if _contains_internal_reasoning_leak(final_answer):
             fallback_answer = str(
@@ -4977,7 +5294,7 @@ def run_generation(
                 query_understanding=query_understanding,
                 evidence_pack=structured_pack,
                 mode="auto",
-                source_citations=source_citations,
+            source_citations=source_citations,
                 llm_client=llm_client,
                 provider=provider,
                 model=model,
@@ -5573,6 +5890,10 @@ def run_generation(
             "detected_analytes": exact_analytes,
             "requested_doc_ids": requested_doc_ids,
             "generation_mode": generation_mode,
+            "context_resolution": context_resolution,
+            "retrieval_skipped_due_to_no_transformable_context": bool(
+                context_resolution.get("reason") == "response_transform_no_transformable_context"
+            ),
         },
         "exact_analyte_coverage": {
             "detected_exact_analyte": exact_analyte,

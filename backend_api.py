@@ -26,8 +26,11 @@ from scripts.generation.source_resolver import DocPdfResolver, is_valid_doc_id
 from scripts.generation.conversation_state_utils import (
     evidence_pack_is_transformable,
     get_transformable_context,
+    migrate_conversation_state,
     update_conversation_state,
 )
+from scripts.generation.conversation_state_store import InMemoryConversationStateStore
+from scripts.generation.source_normalization import dedup_normalized_sources
 
 
 class ChatHistoryItem(BaseModel):
@@ -89,6 +92,7 @@ LOGGER = logging.getLogger("medical_rag.backend")
 
 
 _CONVERSATION_STATE: dict[str, dict[str, Any]] = defaultdict(dict)
+_STATE_STORE = InMemoryConversationStateStore(_CONVERSATION_STATE)
 
 app.add_middleware(
     CORSMiddleware,
@@ -108,13 +112,13 @@ def _to_source_items(result: dict[str, Any]) -> list[SourceItem]:
     items: list[SourceItem] = []
 
     # Prefer new structured citations when available.
-    structured = list(result.get("sources") or [])
+    structured = dedup_normalized_sources(list(result.get("sources") or []))
     if structured:
         for idx, src in enumerate(structured, start=1):
             doc_id = str(src.get("doc_id") or "").strip() or None
-            filename = str(src.get("filename") or "").strip() or None
+            filename = str(src.get("filename") or src.get("source_pdf") or "").strip() or None
             page = src.get("page")
-            row = src.get("row")
+            row = src.get("line", src.get("row"))
             label = str(src.get("label") or "").strip() or None
             url = str(src.get("url") or "").strip() or None
             viewer_url = str(src.get("viewer_url") or "").strip() or None
@@ -200,6 +204,7 @@ def _update_conversation_state(chat_id: str, state: dict[str, Any], generation: 
         generation=generation,
         user_message=user_message,
     )
+    _STATE_STORE.save(chat_id, _CONVERSATION_STATE.get(chat_id) or {})
 
 
 @app.get("/health")
@@ -218,11 +223,15 @@ def chat(payload: ChatRequest) -> ChatResponse:
     request_id = str(uuid4())
     try:
         query = f"{payload.message} doc_id {payload.document_id}" if payload.document_id else payload.message
-        state = _CONVERSATION_STATE.get(payload.chat_id) or {}
+        state = _STATE_STORE.load(payload.chat_id)
+        state_version_before = int(state.get("state_version") or 1)
         previous_intent = str(state.get("last_intent") or "").strip().lower() or "none"
         transformable_context = _get_transformable_context(state)
+        qualitative_context = state.get("last_qualitative_evidence_pack") if isinstance(state.get("last_qualitative_evidence_pack"), dict) else None
         has_last_evidence_pack = isinstance(state.get("last_evidence_pack"), dict) and bool(state.get("last_evidence_pack"))
         has_last_transformable = isinstance(transformable_context, dict) and bool(transformable_context)
+        has_last_qualitative = isinstance(qualitative_context, dict) and bool(qualitative_context)
+        last_data_context_type_before = str(state.get("last_data_context_type") or "none")
         qn = payload.message.lower()
         visualization_request_detected = any(
             k in qn for k in ["radar", "chart", "graphique", "graphe", "visualisation", "courbe", "line graph", "bar chart", "diagramme"]
@@ -250,10 +259,19 @@ def chat(payload: ChatRequest) -> ChatResponse:
             index_dir="data/indexes",
             collection="medical_chunks",
             previous_structured_evidence_pack=transformable_context,
+            previous_displayed_evidence_pack=(
+                state.get("last_displayed_evidence_pack")
+                if isinstance(state.get("last_displayed_evidence_pack"), dict)
+                else None
+            ),
             previous_context_intent=str(state.get("last_intent") or ""),
             previous_data_context_intent=str(state.get("last_data_context_intent") or ""),
             previous_data_context_type=str(state.get("last_data_context_type") or ""),
-            previous_doc_scope=(state.get("last_doc_scope") if isinstance(state.get("last_doc_scope"), list) else []),
+            previous_doc_scope=(
+                list((state.get("last_doc_scope") or {}).get("doc_ids") or [])
+                if isinstance(state.get("last_doc_scope"), dict)
+                else []
+            ),
             previous_qualitative_evidence_pack=(
                 state.get("last_qualitative_evidence_pack")
                 if isinstance(state.get("last_qualitative_evidence_pack"), dict)
@@ -264,6 +282,8 @@ def chat(payload: ChatRequest) -> ChatResponse:
             recent_style_history=state.get("recent_style_history") or [],
         )
         _update_conversation_state(payload.chat_id, state, generation, payload.message)
+        new_state = _STATE_STORE.load(payload.chat_id)
+        state_version_after = int(new_state.get("state_version") or state_version_before)
         current_intent = str(((generation.get("query_understanding") or {}).get("intent") or "")).strip().lower() or "unknown"
         visualization = generation.get("visualization") if isinstance(generation.get("visualization"), dict) else None
         rendered_type = str((visualization or {}).get("rendered_type") or "").strip().lower() or None
@@ -274,14 +294,38 @@ def chat(payload: ChatRequest) -> ChatResponse:
             payload.chat_id,
             current_intent,
             previous_intent,
-            bool(isinstance((_CONVERSATION_STATE.get(payload.chat_id) or {}).get("last_evidence_pack"), dict) and (_CONVERSATION_STATE.get(payload.chat_id) or {}).get("last_evidence_pack")),
-            bool(isinstance((_CONVERSATION_STATE.get(payload.chat_id) or {}).get("last_transformable_evidence_pack"), dict) and (_CONVERSATION_STATE.get(payload.chat_id) or {}).get("last_transformable_evidence_pack")),
+            bool(isinstance(new_state.get("last_evidence_pack"), dict) and new_state.get("last_evidence_pack")),
+            bool(isinstance(new_state.get("last_transformable_evidence_pack"), dict) and new_state.get("last_transformable_evidence_pack")),
             bool(has_last_transformable),
             bool(visualization_request_detected),
             bool(((generation.get("debug") or {}).get("retrieval_skipped_due_to_no_transformable_context"))),
             bool(visualization),
             rendered_type,
             requested_type,
+        )
+        LOGGER.info(
+            "qa_state_versions request_id=%s conversation_id=%s state_version_before=%s state_version_after=%s last_data_context_type_before=%s last_data_context_type_after=%s requested_analytes=%s requested_date_iso=%s latest_report=%s requested_clickable_sources=%s previous_doc_scope_used=%s resolved_doc_scope=%s has_transformable_pack=%s has_qualitative_pack=%s sources_count=%s chart_generated=%s smalltalk_blocked=%s validator_status=%s",
+            request_id,
+            payload.chat_id,
+            state_version_before,
+            state_version_after,
+            last_data_context_type_before,
+            str(new_state.get("last_data_context_type") or "none"),
+            list((generation.get("query_understanding") or {}).get("requested_analytes") or []),
+            (generation.get("query_understanding") or {}).get("requested_date_iso"),
+            bool((generation.get("query_understanding") or {}).get("latest_report")),
+            bool((generation.get("query_understanding") or {}).get("source_clickable_requested")),
+            bool(((generation.get("debug") or {}).get("context_resolution") or {}).get("reuse_doc_scope")),
+            ((generation.get("debug") or {}).get("context_resolution") or {}).get("effective_doc_scope"),
+            bool(isinstance(new_state.get("last_transformable_evidence_pack"), dict) and new_state.get("last_transformable_evidence_pack")),
+            bool(isinstance(new_state.get("last_qualitative_evidence_pack"), dict) and new_state.get("last_qualitative_evidence_pack")),
+            len(list(generation.get("sources") or [])),
+            bool(visualization),
+            (
+                "bonjour ! je suis prêt" not in str(generation.get("answer") or "").lower()
+                and "comment puis-je vous aider" not in str(generation.get("answer") or "").lower()
+            ),
+            str((generation.get("validation") or {}).get("validation_status") or ""),
         )
         answer = str(generation.get("answer") or "").strip()
         if not answer:

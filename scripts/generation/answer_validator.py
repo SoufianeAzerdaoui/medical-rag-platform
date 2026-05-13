@@ -1664,6 +1664,12 @@ def validate_answer(
             required_any = ["inventaire", "patients", "rapports"]
             if not all(k in core_norm for k in required_any):
                 warnings.append("visualization_recommendation_inventory_context_missing")
+        if str(previous_intent or "").strip().lower() in {"comment_without_measured_value", "qualitative_comment_render"}:
+            forbidden_inventory = ["cartes patient", "accordeon", "accordéon", "timeline documentaire"]
+            if any(k in core_norm for k in forbidden_inventory):
+                errors.append("visualization_recommendation_wrong_context_inventory_after_qualitative")
+            if any(k in core_norm for k in ["graphique en barres", "radar chart", "courbe", "line chart"]):
+                errors.append("visualization_recommendation_wrong_numeric_chart_after_qualitative")
 
     if (query_intents or {}).get("inventory_visualization_render"):
         requested_inventory_view = str((inventory_view or {}).get("type") or "").strip().lower()
@@ -1679,6 +1685,16 @@ def validate_answer(
             errors.append("inventory_visualization_render_wrong_copy_for_accordion")
         if requested_inventory_view == "filterable_table" and "cartes patient" in core_norm:
             errors.append("inventory_visualization_render_wrong_copy_for_table")
+    qn_query = _norm(query or "")
+    if (
+        any(tok in qn_query for tok in ["ca", "ça", "ces donnees", "ces données"])
+        and any(tok in qn_query for tok in ["table", "tableau"])
+        and str(previous_intent or "").strip().lower() in {"patient_inventory", "inventory_visualization_render", "visualization_recommendation", "response_transform_no_context"}
+    ):
+        if any(tok in core_norm for tok in ["pus", "residus alimentaires", "résidus alimentaires", "analyte", "valeur actuelle"]):
+            errors.append("deictic_inventory_table_medical_leak")
+        if not patients:
+            errors.append("deictic_inventory_table_missing_patients")
 
     if (query_intents or {}).get("qualitative_comment_render"):
         if "bonjour" in core_norm or "je suis pret a vous accompagner" in core_norm:

@@ -29,6 +29,9 @@ except Exception:
             generation=generation,
             user_message=user_message,
         )
+    from scripts.generation.conversation_state_utils import migrate_conversation_state
+else:
+    from scripts.generation.conversation_state_utils import migrate_conversation_state
 
 
 def _old_medical_pack() -> dict:
@@ -67,6 +70,7 @@ class TestConversationStateManagement(unittest.TestCase):
         self.assertTrue(st.get("last_patient_inventory"))
         self.assertIsNone(st.get("last_transformable_evidence_pack"))
         self.assertEqual(st.get("last_evidence_pack"), old_pack)
+        self.assertGreaterEqual(int(st.get("state_version") or 0), 2)
 
     def test_b_inventory_count_invalidates_transformable_pack(self) -> None:
         chat_id = "ut-state-b"
@@ -132,7 +136,7 @@ class TestConversationStateManagement(unittest.TestCase):
         }
         _update_conversation_state(chat_id, {}, first_generation, "montre-moi ACTH du dernier rapport")
         st = _CONVERSATION_STATE[chat_id]
-        self.assertEqual(st.get("last_doc_scope"), ["report_31"])
+        self.assertEqual((st.get("last_doc_scope") or {}).get("doc_ids"), ["report_31"])
 
         second_generation = {
             "generation_mode": "deterministic_response_transform",
@@ -142,7 +146,79 @@ class TestConversationStateManagement(unittest.TestCase):
         }
         _update_conversation_state(chat_id, st, second_generation, "affiche ça en radar")
         st2 = _CONVERSATION_STATE[chat_id]
-        self.assertEqual(st2.get("last_doc_scope"), ["report_31"])
+        self.assertEqual((st2.get("last_doc_scope") or {}).get("doc_ids"), ["report_31"])
+
+    def test_followup_analyte_updates_transformable_pack_to_last_displayed_result(self) -> None:
+        chat_id = "ut-state-followup-tshus"
+        first_generation = {
+            "query_understanding": {"intent": "doc_scoped_results", "requested_doc_ids": ["report_16"], "requested_analytes": ["acth"]},
+            "answer": "ACTH ...",
+            "structured_evidence_pack": {
+                "requested_doc_ids": ["report_16"],
+                "requested_analytes": ["acth"],
+                "evidences": [{"analyte": "ACTH", "analyte_norm": "acth", "value_numeric": 23.0, "doc_id": "report_16", "source": "report (16).pdf — page 1, ligne 1"}],
+            },
+            "displayed_evidences": [{"analyte": "ACTH", "analyte_norm": "acth", "value_numeric": 23.0, "doc_id": "report_16", "source": "report (16).pdf — page 1, ligne 1"}],
+            "sources": [{"doc_id": "report_16", "label": "report (16).pdf — page 1, ligne 1"}],
+        }
+        _update_conversation_state(chat_id, {}, first_generation, "montre ACTH du dernier rapport")
+        second_generation = {
+            "query_understanding": {"intent": "doc_scoped_results", "requested_doc_ids": ["report_16"], "requested_analytes": ["tshus"]},
+            "answer": "TSHus ...",
+            "structured_evidence_pack": {
+                "requested_doc_ids": ["report_16"],
+                "requested_analytes": ["tshus"],
+                "evidences": [
+                    {"analyte": "ACTH", "analyte_norm": "acth", "value_numeric": 23.0, "doc_id": "report_16", "source": "report (16).pdf — page 1, ligne 1"},
+                    {"analyte": "TSHus", "analyte_norm": "tshus", "value_numeric": 55.0, "doc_id": "report_16", "source": "report (16).pdf — page 1, ligne 4"},
+                ],
+            },
+            # What matters for next transform is what was shown to the user now: TSHus only.
+            "displayed_evidences": [{"analyte": "TSHus", "analyte_norm": "tshus", "value_numeric": 55.0, "doc_id": "report_16", "source": "report (16).pdf — page 1, ligne 4"}],
+            "sources": [{"doc_id": "report_16", "label": "report (16).pdf — page 1, ligne 4"}],
+        }
+        _update_conversation_state(chat_id, _CONVERSATION_STATE[chat_id], second_generation, "et TSHus ?")
+        st = _CONVERSATION_STATE[chat_id]
+        pack = st.get("last_transformable_evidence_pack") or {}
+        displayed_pack = st.get("last_displayed_evidence_pack") or {}
+        evs = list(pack.get("evidences") or [])
+        displayed_evs = list(displayed_pack.get("evidences") or [])
+        self.assertEqual(len(evs), 1)
+        self.assertEqual(len(displayed_evs), 1)
+        self.assertEqual(str(evs[0].get("analyte_norm") or "").lower(), "tshus")
+        self.assertEqual(str(displayed_evs[0].get("analyte_norm") or "").lower(), "tshus")
+        self.assertNotEqual(str(evs[0].get("analyte_norm") or "").lower(), "acth")
+
+    def test_unstructured_followup_with_numeric_displayed_updates_transformable_pack(self) -> None:
+        chat_id = "ut-state-unstructured-followup"
+        _CONVERSATION_STATE[chat_id] = {
+            "last_intent": "doc_scoped_results",
+            "last_data_context_type": "biological_numeric_results",
+            "last_transformable_evidence_pack": {
+                "evidences": [{"analyte": "ACTH", "analyte_norm": "acth", "value_numeric": 23.0, "doc_id": "report_16"}]
+            },
+        }
+        generation = {
+            "query_understanding": {"intent": "unstructured", "requested_analytes": ["tshus"], "requested_doc_ids": ["report_16"]},
+            "answer": "TSHus = 55,00 mUI/L",
+            "displayed_evidences": [
+                {"analyte": "TSHus", "analyte_norm": "tshus", "value_numeric": 55.0, "doc_id": "report_16", "source": "report (16).pdf — page 1, ligne 4"}
+            ],
+            "structured_evidence_pack": {
+                "evidences": [
+                    {"analyte": "ACTH", "analyte_norm": "acth", "value_numeric": 23.0, "doc_id": "report_16"},
+                    {"analyte": "TSHus", "analyte_norm": "tshus", "value_numeric": 55.0, "doc_id": "report_16"},
+                ]
+            },
+            "sources": [{"doc_id": "report_16", "label": "report (16).pdf — page 1, ligne 4"}],
+        }
+        _update_conversation_state(chat_id, _CONVERSATION_STATE[chat_id], generation, "et TSHus ?")
+        st = _CONVERSATION_STATE[chat_id]
+        self.assertEqual(st.get("last_data_context_type"), "biological_numeric_results")
+        pack = st.get("last_transformable_evidence_pack") or {}
+        evs = list(pack.get("evidences") or [])
+        self.assertEqual(len(evs), 1)
+        self.assertEqual(str(evs[0].get("analyte_norm") or "").lower(), "tshus")
 
     def test_qualitative_context_is_recorded_as_non_transformable(self) -> None:
         chat_id = "ut-state-qualitative"
@@ -158,6 +234,38 @@ class TestConversationStateManagement(unittest.TestCase):
         st = _CONVERSATION_STATE[chat_id]
         self.assertEqual(st.get("last_data_context_type"), "medical_qualitative_comment")
         self.assertIsNone(st.get("last_transformable_evidence_pack"))
+
+    def test_qualitative_context_overrides_old_inventory_context(self) -> None:
+        chat_id = "ut-state-qual-overrides-inventory"
+        _CONVERSATION_STATE[chat_id] = {
+            "last_data_context_type": "patient_inventory",
+            "last_data_context_intent": "patient_inventory",
+            "last_patient_inventory": [{"patient": "PAT_000001"}],
+        }
+        generation = {
+            "query_understanding": {
+                "intent": "comment_without_measured_value",
+                "requested_context_type": "medical_qualitative_comment",
+            },
+            "answer": "Voici le commentaire retrouvé sur la troponine...",
+            "structured_evidence_pack": {
+                "evidences": [
+                    {
+                        "result_kind": "comment",
+                        "subject": "Troponine",
+                        "display_comment_text": "Valeur seuil au 99ème percentile : 26 ng/l.",
+                        "source": "report (18).pdf — page 1, ligne 1",
+                        "viewer_url": "/viewer/pdf?doc_id=report_18&page=1",
+                    }
+                ]
+            },
+        }
+        _update_conversation_state(chat_id, _CONVERSATION_STATE[chat_id], generation, "montre le commentaire sur la troponine")
+        st = _CONVERSATION_STATE[chat_id]
+        self.assertEqual(st.get("last_data_context_type"), "medical_qualitative_comment")
+        self.assertTrue(isinstance(st.get("last_qualitative_evidence_pack"), dict))
+        self.assertIsNone(st.get("last_transformable_evidence_pack"))
+        self.assertTrue(st.get("last_patient_inventory"))
 
     def test_response_transform_no_context_message_when_last_intent_inventory(self) -> None:
         try:
@@ -218,6 +326,12 @@ class TestConversationStateManagement(unittest.TestCase):
         self.assertEqual(updated.get("last_data_context_intent"), "patient_inventory")
         self.assertEqual(updated.get("last_data_context_type"), "patient_inventory")
         self.assertTrue(updated.get("last_patient_inventory"))
+
+    def test_state_migration_contract_defaults(self) -> None:
+        migrated = migrate_conversation_state({}, conversation_id="ut-state-migrate")
+        self.assertEqual(migrated.get("conversation_id"), "ut-state-migrate")
+        self.assertEqual(migrated.get("last_data_context_type"), "none")
+        self.assertIn("state_version", migrated)
 
     def test_visualization_recommendation_after_inventory_is_advisory_only(self) -> None:
         try:
@@ -301,6 +415,151 @@ class TestConversationStateManagement(unittest.TestCase):
         self.assertIsNone(result.get("visualization"))
         self.assertIsNone(result.get("chart_data"))
 
+    def test_inventory_recommendation_then_deictic_table(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible dans cet environnement: {exc}")
+        patients = [
+            {"patient": "PAT_000001", "report_count": 16, "reports": [{"doc_id": "report_1", "source_url": "/api/documents/report_1/pdf"}]},
+            {"patient": "PAT_000002", "report_count": 16, "reports": [{"doc_id": "report_16", "source_url": "/api/documents/report_16/pdf"}]},
+        ]
+        result = run_generation(
+            query="affiche ça en table",
+            index_dir="data/indexes",
+            previous_structured_evidence_pack=None,
+            previous_context_intent="visualization_recommendation",
+            previous_data_context_intent="patient_inventory",
+            previous_data_context_type="patient_inventory",
+            previous_has_patient_inventory=True,
+            previous_patient_inventory=patients,
+        )
+        answer = str(result.get("answer") or "").lower()
+        self.assertTrue(result.get("patients"))
+        self.assertEqual(((result.get("inventory_view") or {}).get("type")), "filterable_table")
+        self.assertIsNone(result.get("visualization"))
+        self.assertIsNone(result.get("chart_data"))
+        self.assertNotIn("pus", answer)
+        self.assertNotIn("résidus alimentaires", answer)
+
+    def test_deictic_table_after_biological_context_reuses_transformable(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible dans cet environnement: {exc}")
+        prev_pack = {
+            "evidences": [
+                {
+                    "doc_id": "report_16",
+                    "analyte": "ACTH",
+                    "analyte_norm": "acth",
+                    "current_value": "23,00",
+                    "unit": "pg/ml",
+                    "reference": "4,70 - 48,80 pg/ml",
+                    "technical_status_code": "within_reference",
+                    "technical_status": "dans la référence",
+                    "source": "report (16).pdf — page 1, ligne 1",
+                },
+                {
+                    "doc_id": "report_16",
+                    "analyte": "TSHus",
+                    "analyte_norm": "tshus",
+                    "current_value": "55,00",
+                    "unit": "mUI/L",
+                    "reference": "0,35 à 4,94 mUI/l",
+                    "technical_status_code": "above_reference",
+                    "technical_status": "au-dessus de la référence",
+                    "source": "report (16).pdf — page 1, ligne 4",
+                },
+            ]
+        }
+        result = run_generation(
+            query="affiche ça en table",
+            index_dir="data/indexes",
+            previous_structured_evidence_pack=prev_pack,
+            previous_context_intent="doc_scoped_results",
+            previous_data_context_intent="doc_scoped_results",
+            previous_data_context_type="biological_numeric_results",
+            previous_doc_scope=["report_16"],
+        )
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("acth", answer)
+        self.assertIn("tsh", answer)
+        self.assertIsNone(result.get("visualization"))
+        self.assertIsNone(result.get("chart_data"))
+
+    def test_deictic_graph_after_biological_context_no_crash(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible dans cet environnement: {exc}")
+        prev_pack = {
+            "evidences": [
+                {
+                    "doc_id": "report_16",
+                    "analyte": "ACTH",
+                    "analyte_norm": "acth",
+                    "current_value": "23,00",
+                    "unit": "pg/ml",
+                    "reference": "4,70 - 48,80 pg/ml",
+                    "technical_status_code": "within_reference",
+                    "technical_status": "dans la référence",
+                    "source": "report (16).pdf — page 1, ligne 1",
+                    "source_pdf": "report (16).pdf",
+                    "page": 1,
+                    "row": 1,
+                },
+                {
+                    "doc_id": "report_16",
+                    "analyte": "TSHus",
+                    "analyte_norm": "tshus",
+                    "current_value": "55,00",
+                    "unit": "mUI/L",
+                    "reference": "0,35 à 4,94 mUI/l",
+                    "technical_status_code": "above_reference",
+                    "technical_status": "au-dessus de la référence",
+                    "source": "report (16).pdf — page 1, ligne 4",
+                    "source_pdf": "report (16).pdf",
+                    "page": 1,
+                    "row": 4,
+                },
+            ]
+        }
+        result = run_generation(
+            query="affiche ça en graphique",
+            index_dir="data/indexes",
+            previous_structured_evidence_pack=prev_pack,
+            previous_context_intent="doc_scoped_results",
+            previous_data_context_intent="doc_scoped_results",
+            previous_data_context_type="biological_numeric_results",
+            previous_doc_scope=["report_16"],
+        )
+        self.assertIsInstance(result, dict)
+        self.assertNotEqual(str(((result.get("query_understanding") or {}).get("intent") or "")).strip().lower(), "unknown")
+        self.assertEqual(str(((result.get("query_understanding") or {}).get("intent") or "")).strip().lower(), "response_transform")
+        self.assertTrue(isinstance(result.get("sources"), list))
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("tsh", answer)
+        self.assertNotIn("pus", answer)
+
+    def test_deictic_table_without_context_returns_no_context_message(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible dans cet environnement: {exc}")
+        result = run_generation(
+            query="affiche ça en table",
+            index_dir="data/indexes",
+            previous_structured_evidence_pack=None,
+            previous_context_intent="",
+            previous_data_context_intent="",
+            previous_data_context_type="none",
+        )
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("contexte précédent exploitable", answer)
+        self.assertIsNone(result.get("visualization"))
+        self.assertIsNone(result.get("chart_data"))
+
     def test_inventory_visualization_render_timeline_fallback(self) -> None:
         try:
             from scripts.generation.generate_answer import run_generation
@@ -372,6 +631,129 @@ class TestConversationStateManagement(unittest.TestCase):
         self.assertNotIn("accordéon", answer)
         self.assertIsNone(result.get("visualization"))
         self.assertIsNone(result.get("chart_data"))
+
+    def test_visualization_recommendation_prefers_qualitative_over_inventory(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible dans cet environnement: {exc}")
+        result = run_generation(
+            query="quelle visualisation recommandes-tu à ce commentaire ?",
+            index_dir="data/indexes",
+            previous_structured_evidence_pack=None,
+            previous_context_intent="response_transform_no_context",
+            previous_data_context_intent="comment_without_measured_value",
+            previous_data_context_type="medical_qualitative_comment",
+            previous_has_patient_inventory=True,
+            previous_patient_inventory=[{"patient": "PAT_000001"}],
+            previous_qualitative_evidence_pack={
+                "evidences": [
+                    {
+                        "result_kind": "comment",
+                        "subject": "Troponine",
+                        "display_comment_text": "Valeur seuil au 99ème percentile : 26 ng/l.",
+                    }
+                ]
+            },
+        )
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("carte d’information médicale".lower(), answer)
+        self.assertIn("bloc commentaire sourcé".lower(), answer)
+        self.assertIn("tableau texte", answer)
+        self.assertIn("note interprétative".lower(), answer)
+        self.assertNotIn("cartes patient", answer)
+        self.assertNotIn("accordéon", answer)
+        self.assertNotIn("timeline documentaire", answer)
+        self.assertNotIn("graphique en barres", answer)
+        self.assertNotIn("radar", answer)
+
+    def test_qualitative_comment_render_text_table(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible dans cet environnement: {exc}")
+        pack = {
+            "evidences": [
+                {
+                    "subject": "Troponine",
+                    "display_comment_text": "Valeur seuil au 99ème percentile : 26 ng/l.",
+                    "source": "report (18).pdf — page 1, ligne 1",
+                    "viewer_url": "/viewer/pdf?doc_id=report_18&page=1",
+                }
+            ]
+        }
+        result = run_generation(
+            query="ok affiche ce commentaire dans un tableau texte : sujet, commentaire, source cliquable",
+            index_dir="data/indexes",
+            previous_context_intent="comment_without_measured_value",
+            previous_data_context_intent="comment_without_measured_value",
+            previous_data_context_type="medical_qualitative_comment",
+            previous_qualitative_evidence_pack=pack,
+        )
+        answer = str(result.get("answer") or "")
+        self.assertIn("| Sujet | Commentaire | Source |", answer)
+        self.assertIn("](/viewer/pdf?doc_id=report_18&page=1)", answer)
+        self.assertNotIn("Bloc commentaire sourcé", answer)
+        self.assertTrue(result.get("sources"))
+        self.assertIsNone(result.get("visualization"))
+        self.assertIsNone(result.get("chart_data"))
+
+    def test_qualitative_comment_render_interpretive_note(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible dans cet environnement: {exc}")
+        pack = {
+            "evidences": [
+                {
+                    "subject": "Troponine",
+                    "display_comment_text": "Valeur seuil au 99ème percentile : 26 ng/l.",
+                    "source": "report (18).pdf — page 1, ligne 1",
+                    "viewer_url": "/viewer/pdf?doc_id=report_18&page=1",
+                }
+            ]
+        }
+        result = run_generation(
+            query="ok affiche ce commentaire dans un encadré de note interprétative",
+            index_dir="data/indexes",
+            previous_context_intent="comment_without_measured_value",
+            previous_data_context_intent="comment_without_measured_value",
+            previous_data_context_type="medical_qualitative_comment",
+            previous_qualitative_evidence_pack=pack,
+        )
+        answer = str(result.get("answer") or "")
+        self.assertIn("Note interprétative", answer)
+        self.assertNotIn("Bloc commentaire sourcé", answer)
+        self.assertIn("](/viewer/pdf?doc_id=report_18&page=1)", answer)
+        self.assertTrue(result.get("sources"))
+        self.assertIsNone(result.get("visualization"))
+        self.assertIsNone(result.get("chart_data"))
+
+    def test_qualitative_comment_render_no_fake_clickable_source(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible dans cet environnement: {exc}")
+        pack = {
+            "evidences": [
+                {
+                    "subject": "Troponine",
+                    "display_comment_text": "Valeur seuil au 99ème percentile : 26 ng/l.",
+                    "source": "report (18).pdf — page 1, ligne 1",
+                }
+            ]
+        }
+        result = run_generation(
+            query="affiche ce commentaire dans un tableau texte : sujet, commentaire, source cliquable",
+            index_dir="data/indexes",
+            previous_context_intent="comment_without_measured_value",
+            previous_data_context_intent="comment_without_measured_value",
+            previous_data_context_type="medical_qualitative_comment",
+            previous_qualitative_evidence_pack=pack,
+        )
+        answer = str(result.get("answer") or "")
+        self.assertIn("source non cliquable disponible uniquement en texte", answer.lower())
+        self.assertNotIn("](/viewer/", answer)
 
 
 if __name__ == "__main__":

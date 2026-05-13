@@ -163,6 +163,7 @@ class QueryUnderstanding:
     requested_date_iso: str | None
     latest_report: bool
     requested_context_type: str | None
+    qualitative_view_type: str | None
 
 
 def norm_text(value: str) -> str:
@@ -1176,9 +1177,18 @@ def detect_source_clickable_requested(query: str) -> bool:
     markers = [
         "source cliquable",
         "sources cliquables",
+        "source clickable",
+        "sources clickables",
         "lien source",
         "liens source",
+        "avec liens",
         "avec source",
+        "ouvrir source",
+        "ouvrir les sources",
+        "ouvrir pdf",
+        "lien pdf",
+        "pdf cliquable",
+        "document cliquable",
         "cite les sources",
         "citer les sources",
         "source pdf",
@@ -1198,6 +1208,21 @@ def detect_inventory_view_type(query: str) -> str | None:
         return "document_timeline"
     if any(k in qn for k in ["cartes patient", "affiche en cartes", "sous forme de cartes", "nombre de rapports associes", "nombre de rapports associés"]):
         return "patient_cards"
+    return None
+
+
+def detect_qualitative_view_type(query: str) -> str | None:
+    qn = norm_text(query or "")
+    if not qn:
+        return None
+    if any(contains_exact_term(qn, k) for k in ["tableau texte", "sujet commentaire source", "affiche dans un tableau", "table"]):
+        return "text_table"
+    if any(contains_exact_term(qn, k) for k in ["encadre de note interpretative", "encadre note", "note interpretative", "note"]):
+        return "interpretive_note"
+    if any(contains_exact_term(qn, k) for k in ["carte d information medicale", "carte medicale", "fiche"]):
+        return "medical_info_card"
+    if any(contains_exact_term(qn, k) for k in ["bloc commentaire source", "bloc source", "bloc commentaire", "commentaire source"]):
+        return "sourced_comment_block"
     return None
 
 
@@ -1304,6 +1329,7 @@ def parse_query_understanding(query: str) -> QueryUnderstanding:
     requested_date_iso = detect_requested_date_iso(query or "")
     latest_report = detect_latest_report_flag(query or "")
     requested_context_type = detect_requested_context_type(query or "")
+    qualitative_view_type = detect_qualitative_view_type(query or "")
     preliminary_intent = _resolve_primary_intent(intents, requested_doc_ids=requested_doc_ids, requested_analytes=requested_analytes)
     if requested_analytes and comparison_operator and preliminary_intent == "unstructured":
         preliminary_intent = "cohort_search"
@@ -1350,6 +1376,7 @@ def parse_query_understanding(query: str) -> QueryUnderstanding:
         requested_date_iso=requested_date_iso,
         latest_report=latest_report,
         requested_context_type=requested_context_type,
+        qualitative_view_type=qualitative_view_type,
     )
     strategy = decide_response_strategy(preview_qu, evidence_pack=None)
 
@@ -1390,6 +1417,7 @@ def parse_query_understanding(query: str) -> QueryUnderstanding:
         requested_date_iso=requested_date_iso,
         latest_report=latest_report,
         requested_context_type=requested_context_type,
+        qualitative_view_type=qualitative_view_type,
     )
 
 

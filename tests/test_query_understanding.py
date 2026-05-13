@@ -247,6 +247,19 @@ class TestQueryUnderstanding(unittest.TestCase):
         qu = parse_query_understanding("ok affiche ce commentaire dans un bloc commentaire sourcé")
         self.assertEqual(qu.intent, "qualitative_comment_render")
         self.assertTrue(bool(qu.intents.get("qualitative_comment_render")))
+        self.assertEqual(qu.qualitative_view_type, "sourced_comment_block")
+
+    def test_qualitative_view_type_text_table(self) -> None:
+        qu = parse_query_understanding("ok affiche ce commentaire dans un tableau texte : sujet, commentaire, source")
+        self.assertEqual(qu.qualitative_view_type, "text_table")
+
+    def test_qualitative_view_type_interpretive_note(self) -> None:
+        qu = parse_query_understanding("ok affiche ce commentaire dans un encadré de note interprétative")
+        self.assertEqual(qu.qualitative_view_type, "interpretive_note")
+
+    def test_clickable_source_detection_extended_markers(self) -> None:
+        qu = parse_query_understanding("affiche ce commentaire dans un tableau texte avec source cliquable et ouvrir PDF")
+        self.assertTrue(qu.source_clickable_requested)
 
 
 if __name__ == "__main__":

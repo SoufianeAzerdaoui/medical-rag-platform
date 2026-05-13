@@ -186,12 +186,45 @@ class TestProfessionalAnswerComposer(unittest.TestCase):
         composed = render_professional_fallback(
             evidence_pack=pack,
             query_understanding=qu,
-            user_question="Q",
+            user_question="Dans report 16, est-ce que l’ACTH est hors référence ? Réponds uniquement yes ou no.",
             source_citations=self._sources([1]),
         )
         answer = str(composed.get("answer") or "").strip().lower()
         self.assertTrue(answer.startswith("non") or answer.startswith("no"))
         self.assertNotIn("| --- |", answer)
+
+    def test_08b_no_yesno_prefix_when_not_explicit_yesno(self) -> None:
+        qu = parse_query_understanding("Montre-moi ACTH du dernier rapport.")
+        pack = {
+            "question": "Montre-moi ACTH du dernier rapport.",
+            "intent": "doc_scoped_results",
+            "requested_doc_ids": ["report_16"],
+            "requested_analytes": ["acth"],
+            "output_format": "yes_no",
+            "answer_style": "yes_no",
+            "evidences": [
+                {
+                    "doc_id": "report_16",
+                    "analyte": "ACTH",
+                    "analyte_norm": "acth",
+                    "current_value": "23,00",
+                    "unit": "pg/ml",
+                    "reference": "4,70 - 48,80 pg/ml",
+                    "technical_status_code": "within_reference",
+                    "technical_status": "dans la référence",
+                }
+            ],
+            "missing_items": [],
+        }
+        composed = render_professional_fallback(
+            evidence_pack=pack,
+            query_understanding=qu,
+            user_question=pack["question"],
+            source_citations=self._sources([1]),
+        )
+        answer = str(composed.get("answer") or "")
+        self.assertNotIn("Non —", answer)
+        self.assertIn("ACTH", answer)
 
     def test_09_json_strict_only(self) -> None:
         qu = parse_query_understanding("Convertis la réponse précédente en JSON strict.")

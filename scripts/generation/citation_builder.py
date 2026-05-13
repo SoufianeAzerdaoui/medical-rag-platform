@@ -15,6 +15,7 @@ except Exception:  # pragma: no cover - package import fallback
         build_source_url,
         build_viewer_url,
     )
+from source_normalization import dedup_normalized_sources, normalize_source_for_response
 
 
 class SourceCitation(TypedDict):
@@ -25,6 +26,9 @@ class SourceCitation(TypedDict):
     label: str
     url: str | None
     viewer_url: str | None
+    source_pdf: str | None
+    line: int | None
+    is_clickable: bool
 
 
 def _safe_int(value: Any) -> int | None:
@@ -97,6 +101,7 @@ def build_source_citations(
     resolver: DocPdfResolver | None = None,
 ) -> list[SourceCitation]:
     out: list[SourceCitation] = []
+    raw_sources: list[dict[str, Any]] = []
     seen: set[tuple[str, int | None, int | None]] = set()
     pdf_resolver = resolver or DocPdfResolver()
 
@@ -117,18 +122,36 @@ def build_source_citations(
         page_url = build_source_url(doc_id, page) if resolved and resolved.pdf_path else None
         viewer_url = build_viewer_url(doc_id, page) if resolved and resolved.pdf_path else None
 
-        out.append(
-            SourceCitation(
-                doc_id=doc_id,
-                filename=filename,
-                page=page,
-                row=row,
-                label=_build_label(filename=filename, doc_id=doc_id, page=page, row=row),
-                url=page_url,
-                viewer_url=viewer_url,
-            )
+        raw_sources.append(
+            {
+                "doc_id": doc_id,
+                "filename": filename,
+                "source_pdf": filename,
+                "page": page,
+                "line": row,
+                "row": row,
+                "label": _build_label(filename=filename, doc_id=doc_id, page=page, row=row),
+                "url": page_url,
+                "source_url": page_url,
+                "viewer_url": viewer_url,
+            }
         )
 
+    for src in dedup_normalized_sources(raw_sources):
+        out.append(
+            SourceCitation(
+                doc_id=str(src.get("doc_id") or ""),
+                filename=src.get("source_pdf"),
+                page=src.get("page"),
+                row=src.get("line"),
+                label=str(src.get("label") or ""),
+                url=src.get("url"),
+                viewer_url=src.get("viewer_url"),
+                source_pdf=src.get("source_pdf"),
+                line=src.get("line"),
+                is_clickable=bool(src.get("is_clickable")),
+            )
+        )
     return out
 
 
