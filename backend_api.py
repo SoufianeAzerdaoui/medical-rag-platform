@@ -22,8 +22,12 @@ for p in (str(SCRIPTS_DIR), str(GENERATION_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from scripts.generation.generate_answer import run_generation
 from scripts.generation.source_resolver import DocPdfResolver, is_valid_doc_id
+from scripts.generation.conversation_state_utils import (
+    evidence_pack_is_transformable,
+    get_transformable_context,
+    update_conversation_state,
+)
 
 
 class ChatHistoryItem(BaseModel):
@@ -72,6 +76,7 @@ class ChatResponse(BaseModel):
     visualization: dict[str, Any] | None = None
     chart_data: dict[str, Any] | None = None
     patients: list[dict[str, Any]] | None = None
+    inventory_view: dict[str, Any] | None = None
 
 
 class DocumentItem(BaseModel):
@@ -172,6 +177,31 @@ def _confidence_from_result(result: dict[str, Any]) -> float | None:
     return None
 
 
+def _run_generation(**kwargs: Any) -> dict[str, Any]:
+    # Lazy import keeps state tests independent from retrieval-heavy optional deps.
+    from scripts.generation.generate_answer import run_generation
+
+    return run_generation(**kwargs)
+
+
+def _get_transformable_context(state: dict[str, Any]) -> dict[str, Any] | None:
+    return get_transformable_context(state)
+
+
+def _evidence_pack_is_transformable(pack: Any) -> bool:
+    return evidence_pack_is_transformable(pack)
+
+
+def _update_conversation_state(chat_id: str, state: dict[str, Any], generation: dict[str, Any], user_message: str) -> None:
+    update_conversation_state(
+        state_store=_CONVERSATION_STATE,
+        chat_id=chat_id,
+        state=state,
+        generation=generation,
+        user_message=user_message,
+    )
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     index_dir = Path("data/indexes")
@@ -189,7 +219,25 @@ def chat(payload: ChatRequest) -> ChatResponse:
     try:
         query = f"{payload.message} doc_id {payload.document_id}" if payload.document_id else payload.message
         state = _CONVERSATION_STATE.get(payload.chat_id) or {}
-        generation = run_generation(
+        previous_intent = str(state.get("last_intent") or "").strip().lower() or "none"
+        transformable_context = _get_transformable_context(state)
+        has_last_evidence_pack = isinstance(state.get("last_evidence_pack"), dict) and bool(state.get("last_evidence_pack"))
+        has_last_transformable = isinstance(transformable_context, dict) and bool(transformable_context)
+        qn = payload.message.lower()
+        visualization_request_detected = any(
+            k in qn for k in ["radar", "chart", "graphique", "graphe", "visualisation", "courbe", "line graph", "bar chart", "diagramme"]
+        )
+        LOGGER.info(
+            "qa_state_pre request_id=%s conversation_id=%s previous_intent=%s has_last_evidence_pack=%s has_last_transformable_evidence_pack=%s transformable_context_used=%s visualization_request_detected=%s",
+            request_id,
+            payload.chat_id,
+            previous_intent,
+            bool(has_last_evidence_pack),
+            bool(has_last_transformable),
+            bool(has_last_transformable),
+            bool(visualization_request_detected),
+        )
+        generation = _run_generation(
             query=query,
             top_k=5,
             mode="hybrid",
@@ -201,23 +249,40 @@ def chat(payload: ChatRequest) -> ChatResponse:
             timeout=120,
             index_dir="data/indexes",
             collection="medical_chunks",
-            previous_structured_evidence_pack=state.get("last_evidence_pack"),
+            previous_structured_evidence_pack=transformable_context,
+            previous_context_intent=str(state.get("last_intent") or ""),
+            previous_data_context_intent=str(state.get("last_data_context_intent") or ""),
+            previous_data_context_type=str(state.get("last_data_context_type") or ""),
+            previous_doc_scope=(state.get("last_doc_scope") if isinstance(state.get("last_doc_scope"), list) else []),
+            previous_qualitative_evidence_pack=(
+                state.get("last_qualitative_evidence_pack")
+                if isinstance(state.get("last_qualitative_evidence_pack"), dict)
+                else None
+            ),
+            previous_has_patient_inventory=bool(state.get("last_patient_inventory")),
+            previous_patient_inventory=(state.get("last_patient_inventory") if isinstance(state.get("last_patient_inventory"), list) else None),
             recent_style_history=state.get("recent_style_history") or [],
         )
-        _CONVERSATION_STATE[payload.chat_id]["last_evidence_pack"] = generation.get("structured_evidence_pack") or state.get(
-            "last_evidence_pack"
+        _update_conversation_state(payload.chat_id, state, generation, payload.message)
+        current_intent = str(((generation.get("query_understanding") or {}).get("intent") or "")).strip().lower() or "unknown"
+        visualization = generation.get("visualization") if isinstance(generation.get("visualization"), dict) else None
+        rendered_type = str((visualization or {}).get("rendered_type") or "").strip().lower() or None
+        requested_type = str((visualization or {}).get("requested_type") or "").strip().lower() or None
+        LOGGER.info(
+            "qa_state_post request_id=%s conversation_id=%s current_intent=%s previous_intent=%s has_last_evidence_pack=%s has_last_transformable_evidence_pack=%s transformable_context_used=%s visualization_request_detected=%s retrieval_skipped_due_to_no_transformable_context=%s response_has_visualization=%s response_rendered_type=%s response_requested_type=%s",
+            request_id,
+            payload.chat_id,
+            current_intent,
+            previous_intent,
+            bool(isinstance((_CONVERSATION_STATE.get(payload.chat_id) or {}).get("last_evidence_pack"), dict) and (_CONVERSATION_STATE.get(payload.chat_id) or {}).get("last_evidence_pack")),
+            bool(isinstance((_CONVERSATION_STATE.get(payload.chat_id) or {}).get("last_transformable_evidence_pack"), dict) and (_CONVERSATION_STATE.get(payload.chat_id) or {}).get("last_transformable_evidence_pack")),
+            bool(has_last_transformable),
+            bool(visualization_request_detected),
+            bool(((generation.get("debug") or {}).get("retrieval_skipped_due_to_no_transformable_context"))),
+            bool(visualization),
+            rendered_type,
+            requested_type,
         )
-        _CONVERSATION_STATE[payload.chat_id]["last_user_question"] = payload.message
-        _CONVERSATION_STATE[payload.chat_id]["last_answer"] = generation.get("answer")
-        _CONVERSATION_STATE[payload.chat_id]["last_query_understanding"] = generation.get("query_understanding")
-        _CONVERSATION_STATE[payload.chat_id]["last_rendered_rows"] = generation.get("displayed_evidences")
-        _CONVERSATION_STATE[payload.chat_id]["last_sources"] = generation.get("sources")
-        _CONVERSATION_STATE[payload.chat_id]["last_visualization"] = generation.get("visualization")
-        style_hist = list(state.get("recent_style_history") or [])
-        style_entry = generation.get("style_memory_entry")
-        if isinstance(style_entry, dict):
-            style_hist.append(style_entry)
-        _CONVERSATION_STATE[payload.chat_id]["recent_style_history"] = style_hist[-20:]
         answer = str(generation.get("answer") or "").strip()
         if not answer:
             answer = "Aucune réponse générée. Cette réponse ne remplace pas l'avis médical."
@@ -238,6 +303,7 @@ def chat(payload: ChatRequest) -> ChatResponse:
             visualization=(generation.get("visualization") if isinstance(generation.get("visualization"), dict) else None),
             chart_data=(generation.get("chart_data") if isinstance(generation.get("chart_data"), dict) else None),
             patients=generation.get("patients"),
+            inventory_view=(generation.get("inventory_view") if isinstance(generation.get("inventory_view"), dict) else None),
         )
     except Exception as exc:  # pragma: no cover - defensive API guard
         LOGGER.exception(
@@ -265,6 +331,7 @@ def chat(payload: ChatRequest) -> ChatResponse:
             visualization=None,
             chart_data=None,
             patients=None,
+            inventory_view=None,
         )
 
 

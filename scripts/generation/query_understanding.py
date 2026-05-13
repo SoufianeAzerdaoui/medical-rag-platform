@@ -27,6 +27,8 @@ ANALYTE_ALIASES: dict[str, set[str]] = {
     "psa_totale": {"psa totale", "psa total", "psa"},
     "ca_15_3": {"ca 15-3", "ca 15 3", "ca15-3"},
     "t4_libre": {"t4 libre", "t4l", "ft4", "thyroxine libre", "free t4"},
+    "t3_libre": {"t3 libre", "t3l", "ft3", "triiodothyronine libre", "free t3"},
+    "anti_tg": {"anti tg", "anti-tg", "anti thyroglobuline", "anticorps anti tg", "anti tg antibodies"},
     "ckmb": {"ckmb", "ck mb", "ck-mb"},
     "triglycerides": {"triglycerides", "triglycérides"},
     "cholesterol_ldl": {"ldl", "cholesterol ldl", "cholestérol ldl", "cholesterol ldl-c", "ldl c"},
@@ -66,6 +68,8 @@ ANALYTE_DISPLAY_NAMES: dict[str, str] = {
     "tsh": "TSH",
     "acth": "ACTH",
     "t4_libre": "T4 LIBRE",
+    "t3_libre": "T3 LIBRE",
+    "anti_tg": "ANTI-TG",
     "ckmb": "CKMB",
     "crp": "CRP",
     "ace": "ACE",
@@ -155,6 +159,10 @@ class QueryUnderstanding:
     presentation_confidence: float
     unsupported_presentation_reason: str | None
     recommended_alternative_format: str | None
+    inventory_view_type: str | None
+    requested_date_iso: str | None
+    latest_report: bool
+    requested_context_type: str | None
 
 
 def norm_text(value: str) -> str:
@@ -394,7 +402,17 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
     )
     has_immuno = any(k in qn for k in ["immunoanalyse", "immuno analyse"])
     has_troponin_comment = ("troponine" in qn) and any(
-        k in qn for k in ["valeur mesuree", "valeur mesurée", "seulement un commentaire", "commentaire d interpretation", "commentaire"]
+        k in qn
+        for k in [
+            "valeur mesuree",
+            "valeur mesurée",
+            "seulement un commentaire",
+            "commentaire d interpretation",
+            "commentaire",
+            "note",
+            "interpretation",
+            "interprétation",
+        ]
     )
     has_diagnostic_safety = ("cancer" in qn) or any(
         k in qn
@@ -460,6 +478,72 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         len(doc_ids) == 0
         and len(analyte_list) == 0
         and any(k in qn for k in transform_format_markers)
+    )
+    visualization_recommendation_markers = [
+        "recommande",
+        "recommander",
+        "quelle visualisation",
+        "quel graphique",
+        "visualisation adaptee",
+        "visualisation adaptée",
+        "correspond a ce type de donnees",
+        "correspond à ce type de données",
+        "comment visualiser",
+        "meilleure visualisation",
+        "quelle ui",
+        "donnees non transformables",
+        "données non transformables",
+        "pas des valeurs transformables",
+        "pas de valeurs transformables",
+    ]
+    has_visualization_recommendation = (
+        len(doc_ids) == 0
+        and len(analyte_list) == 0
+        and any(k in qn for k in visualization_recommendation_markers)
+        and any(k in qn for k in ["visualisation", "graphique", "chart", "ui", "visualiser", "donnees", "données"])
+    )
+    inventory_visualization_render_markers = [
+        "affiche avec des cartes patient",
+        "affiche en cartes",
+        "montre sous forme de cartes",
+        "cartes patient",
+        "nombre de rapports associes",
+        "nombre de rapports associés",
+        "accordeon",
+        "accordéon",
+        "table filtrable",
+        "timeline documentaire",
+        "montre l inventaire",
+        "montre l’inventaire",
+        "affiche cette visualisation",
+        "ok affiche comme ca",
+        "ok affiche comme ça",
+        "utilise cette visualisation",
+    ]
+    has_inventory_visualization_render = (
+        len(doc_ids) == 0
+        and len(analyte_list) == 0
+        and any(k in qn for k in inventory_visualization_render_markers)
+    )
+    qualitative_comment_render_markers = [
+        "affiche ce commentaire",
+        "affiche cette commentaire",
+        "ok affiche ce commentaire",
+        "ok affiche cette commentaire",
+        "affiche cette note",
+        "bloc commentaire source",
+        "bloc commentaire sourcé",
+        "dans un bloc commentaire",
+        "encadre note",
+        "encadré note",
+        "tableau texte",
+        "affiche cette interpretation",
+        "affiche cette interprétation",
+    ]
+    has_qualitative_comment_render = (
+        len(analyte_list) == 0
+        and any(k in qn for k in qualitative_comment_render_markers)
+        and any(k in qn for k in ["commentaire", "note", "interpretation", "interprétation", "bloc", "texte"])
     )
     has_yes_no_question = (
         qn.startswith("est ce que")
@@ -538,6 +622,9 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         "patient_inventory": is_patient_inventory,
         "patient_inventory_count": is_patient_count,
         "response_transform": has_response_transform,
+        "visualization_recommendation": has_visualization_recommendation,
+        "inventory_visualization_render": has_inventory_visualization_render,
+        "qualitative_comment_render": has_qualitative_comment_render,
         "doc_scoped_results": has_doc_scope and (len(analyte_list) >= 1 or not has_summary),
         "doc_scoped_analyte_query": has_doc_scope and len(analyte_list) >= 1,
         "doc_scoped_summary": has_doc_scope and has_summary,
@@ -546,7 +633,7 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         "multi_doc_comparison": has_multi_doc and has_compare,
         "toxicology_summary": has_doc_scope and has_toxicology,
         "immunoanalysis_summary": has_doc_scope and has_immuno,
-        "comment_without_measured_value": has_doc_scope and has_troponin_comment,
+        "comment_without_measured_value": has_troponin_comment,
         "diagnostic_safety_question": has_diagnostic_safety,
         "global_patient_lookup": has_global_patient_lookup,
         "cohort_search": has_global_patient_lookup,
@@ -933,9 +1020,9 @@ def detect_answer_style(query: str) -> str:
 
 def detect_technical_condition(query: str) -> str | None:
     qn = norm_text(query or "")
-    if any(k in qn for k in ["au dessus de la reference", "au-dessus de la reference", "above reference", "superieur"]):
+    if any(k in qn for k in ["au dessus de la reference", "au-dessus de la reference", "above reference"]):
         return "above_reference"
-    if any(k in qn for k in ["en dessous de la reference", "below reference", "inferieur"]):
+    if any(k in qn for k in ["en dessous de la reference", "below reference"]):
         return "below_reference"
     if any(k in qn for k in ["dans la reference", "within reference"]):
         return "within_reference"
@@ -970,6 +1057,10 @@ def detect_comparison_operator(query: str) -> str | None:
             "supérieur ou égal à",
             "superieure ou egale",
             "superieur ou egal",
+            "superieurs ou egaux",
+            "superieurs ou egaux a",
+            "supérieurs ou égaux",
+            "supérieurs ou égaux à",
             "au moins",
             "at least",
             ">=",
@@ -1001,6 +1092,10 @@ def detect_comparison_operator(query: str) -> str | None:
             "strictement supérieur à",
             "strictement superieur",
             "strictement superieure",
+            "strictement superieurs",
+            "strictement superieurs a",
+            "strictement supérieurs",
+            "strictement supérieurs à",
             "plus de",
             "superieure a",
             "superieur a",
@@ -1091,11 +1186,61 @@ def detect_source_clickable_requested(query: str) -> bool:
     return any(m in qn for m in markers)
 
 
+def detect_inventory_view_type(query: str) -> str | None:
+    qn = norm_text(query or "")
+    if not qn:
+        return None
+    if any(k in qn for k in ["accordeon", "ouvrir les rapports", "liste accordeon"]):
+        return "report_accordion"
+    if any(k in qn for k in ["table filtrable", "filtrer par patient", "par date", "nom de fichier", "table"]):
+        return "filterable_table"
+    if any(k in qn for k in ["timeline", "chronologie", "ordre des rapports"]):
+        return "document_timeline"
+    if any(k in qn for k in ["cartes patient", "affiche en cartes", "sous forme de cartes", "nombre de rapports associes", "nombre de rapports associés"]):
+        return "patient_cards"
+    return None
+
+
+def detect_requested_date_iso(query: str) -> str | None:
+    text = str(query or "")
+    m = re.search(r"\b(\d{2})/(\d{2})/(\d{4})\b", text)
+    if not m:
+        return None
+    dd, mm, yyyy = m.group(1), m.group(2), m.group(3)
+    return f"{yyyy}-{mm}-{dd}"
+
+
+def detect_latest_report_flag(query: str) -> bool:
+    qn = norm_text(query or "")
+    markers = [
+        "dernier rapport",
+        "dernier bilan",
+        "rapport le plus recent",
+        "rapport le plus récent",
+        "dernier resultat disponible",
+        "dernier résultat disponible",
+    ]
+    return any(m in qn for m in markers)
+
+
+def detect_requested_context_type(query: str) -> str | None:
+    qn = norm_text(query or "")
+    if any(k in qn for k in ["commentaire", "note", "interpretation", "interprétation", "valeur seuil", "troponine"]):
+        return "medical_qualitative_comment"
+    return "biological_numeric_results"
+
+
 def _resolve_primary_intent(intents: dict[str, bool], *, requested_doc_ids: list[str], requested_analytes: list[str]) -> str:
     if intents.get("patient_inventory_count"):
         return "patient_inventory_count"
     if intents.get("patient_inventory"):
         return "patient_inventory"
+    if intents.get("inventory_visualization_render"):
+        return "inventory_visualization_render"
+    if intents.get("qualitative_comment_render"):
+        return "qualitative_comment_render"
+    if intents.get("visualization_recommendation"):
+        return "visualization_recommendation"
     if intents.get("identity_question"):
         return "identity_question"
     if intents.get("capability_question"):
@@ -1155,7 +1300,19 @@ def parse_query_understanding(query: str) -> QueryUnderstanding:
     safety_intent = "diagnostic_safety_question" if intents.get("diagnostic_safety_question") else None
     requested_table_columns = list(presentation.strict_columns or [])
     technical_condition = detect_technical_condition(query or "")
+    inventory_view_type = detect_inventory_view_type(query or "")
+    requested_date_iso = detect_requested_date_iso(query or "")
+    latest_report = detect_latest_report_flag(query or "")
+    requested_context_type = detect_requested_context_type(query or "")
     preliminary_intent = _resolve_primary_intent(intents, requested_doc_ids=requested_doc_ids, requested_analytes=requested_analytes)
+    if requested_analytes and comparison_operator and preliminary_intent == "unstructured":
+        preliminary_intent = "cohort_search"
+    if requested_context_type == "medical_qualitative_comment" and "commentaire" in qn and preliminary_intent == "unstructured":
+        preliminary_intent = "comment_without_measured_value"
+    if latest_report and requested_analytes and preliminary_intent == "unstructured":
+        preliminary_intent = "doc_scoped_results"
+    if requested_date_iso and preliminary_intent == "unstructured":
+        preliminary_intent = "doc_scoped_results"
     preview_qu = QueryUnderstanding(
         requested_doc_ids=requested_doc_ids,
         requested_analytes=requested_analytes,
@@ -1189,6 +1346,10 @@ def parse_query_understanding(query: str) -> QueryUnderstanding:
         presentation_confidence=float(presentation.presentation_confidence),
         unsupported_presentation_reason=presentation.unsupported_presentation_reason,
         recommended_alternative_format=presentation.recommended_alternative_format,
+        inventory_view_type=inventory_view_type,
+        requested_date_iso=requested_date_iso,
+        latest_report=latest_report,
+        requested_context_type=requested_context_type,
     )
     strategy = decide_response_strategy(preview_qu, evidence_pack=None)
 
@@ -1225,6 +1386,10 @@ def parse_query_understanding(query: str) -> QueryUnderstanding:
         presentation_confidence=float(presentation.presentation_confidence),
         unsupported_presentation_reason=presentation.unsupported_presentation_reason,
         recommended_alternative_format=presentation.recommended_alternative_format,
+        inventory_view_type=inventory_view_type,
+        requested_date_iso=requested_date_iso,
+        latest_report=latest_report,
+        requested_context_type=requested_context_type,
     )
 
 

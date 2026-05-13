@@ -200,6 +200,54 @@ class TestQueryUnderstanding(unittest.TestCase):
         )
         self.assertIn("trak", qu.excluded_analytes)
 
+    def test_visualization_recommendation_intent(self) -> None:
+        qu = parse_query_understanding(
+            "ok si ces donnees ne sont pas des valeurs transformables, recommande-moi une visualisation qui correspond a ce type de donnees"
+        )
+        self.assertEqual(qu.intent, "visualization_recommendation")
+        self.assertTrue(bool(qu.intents.get("visualization_recommendation")))
+
+    def test_inventory_visualization_render_intent(self) -> None:
+        qu = parse_query_understanding("ok affiche a moi avec des cartes patient avec le nombre de rapports associés")
+        self.assertEqual(qu.intent, "inventory_visualization_render")
+        self.assertTrue(bool(qu.intents.get("inventory_visualization_render")))
+        self.assertEqual(qu.inventory_view_type, "patient_cards")
+
+    def test_inventory_view_type_accordion(self) -> None:
+        qu = parse_query_understanding("ok affiche ça dans liste accordéon pour ouvrir les rapports de chaque patient")
+        self.assertEqual(qu.inventory_view_type, "report_accordion")
+
+    def test_inventory_view_type_filterable_table(self) -> None:
+        qu = parse_query_understanding("ok affiche ça dans une table filtrable par patient, date ou nom de fichier")
+        self.assertEqual(qu.inventory_view_type, "filterable_table")
+
+    def test_multi_analytes_latest_report_detection(self) -> None:
+        qu = parse_query_understanding("montre les résultats ACTH, TSHus, T4 libre, T3 libre et ANTI-TG du dernier rapport")
+        self.assertTrue(qu.latest_report)
+        self.assertIn("acth", qu.requested_analytes)
+        self.assertIn("tshus", qu.requested_analytes)
+        self.assertIn("t4_libre", qu.requested_analytes)
+        self.assertIn("t3_libre", qu.requested_analytes)
+        self.assertIn("anti_tg", qu.requested_analytes)
+
+    def test_date_scope_extraction(self) -> None:
+        qu = parse_query_understanding("montre les résultats du rapport du 20/06/2025")
+        self.assertEqual(qu.requested_date_iso, "2025-06-20")
+
+    def test_plural_gte_operator_detection(self) -> None:
+        qu = parse_query_understanding("trouve les résultats ACTH supérieurs ou égaux à 23")
+        self.assertEqual(qu.comparison_operator, ">=")
+        self.assertEqual(qu.requested_value, "23")
+
+    def test_qualitative_context_detection(self) -> None:
+        qu = parse_query_understanding("montre le commentaire sur la troponine")
+        self.assertEqual(qu.requested_context_type, "medical_qualitative_comment")
+
+    def test_qualitative_comment_render_intent(self) -> None:
+        qu = parse_query_understanding("ok affiche ce commentaire dans un bloc commentaire sourcé")
+        self.assertEqual(qu.intent, "qualitative_comment_render")
+        self.assertTrue(bool(qu.intents.get("qualitative_comment_render")))
+
 
 if __name__ == "__main__":
     unittest.main()

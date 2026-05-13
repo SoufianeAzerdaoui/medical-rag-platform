@@ -18,6 +18,7 @@ from generate_answer import run_generation
 from llm_client import LLMClient
 from retrieval.search import SearchEngine
 from query_understanding import parse_query_understanding
+from conversation_state_utils import evidence_pack_is_transformable, NON_TRANSFORMABLE_INTENTS, TRANSFORMABLE_INTENTS
 
 
 @dataclass
@@ -45,6 +46,7 @@ class ConversationState:
     last_user_question: str = ""
     last_query_understanding: dict[str, Any] | None = None
     last_evidence_pack: dict[str, Any] | None = None
+    last_transformable_evidence_pack: dict[str, Any] | None = None
     last_answer: str = ""
     last_output_format: str = ""
     last_rendered_rows: list[dict[str, Any]] | None = None
@@ -338,7 +340,8 @@ def main() -> int:
                         max_display_results=state.max_display_results,
                         show_all_results=state.show_all_results,
                         show_low_quality=state.show_low_quality,
-                        previous_structured_evidence_pack=conversation_state.last_evidence_pack if qu.intent == "response_transform" else None,
+                        previous_structured_evidence_pack=conversation_state.last_transformable_evidence_pack if qu.intent == "response_transform" else None,
+                        previous_context_intent=conversation_state.last_intent or "",
                     )
             except KeyboardInterrupt:
                 print("\nInterruption détectée pendant la génération.")
@@ -358,6 +361,11 @@ def main() -> int:
                 conversation_state.last_user_question = question
                 conversation_state.last_query_understanding = result.get("query_understanding") or {}
                 conversation_state.last_evidence_pack = result.get("structured_evidence_pack") or {}
+                current_intent = str((conversation_state.last_query_understanding or {}).get("intent") or "").strip().lower()
+                if current_intent in TRANSFORMABLE_INTENTS and evidence_pack_is_transformable(conversation_state.last_evidence_pack):
+                    conversation_state.last_transformable_evidence_pack = conversation_state.last_evidence_pack
+                elif current_intent in NON_TRANSFORMABLE_INTENTS:
+                    conversation_state.last_transformable_evidence_pack = None
                 conversation_state.last_answer = str(result.get("answer") or "")
                 conversation_state.last_output_format = str((result.get("query_understanding") or {}).get("output_format") or "")
                 conversation_state.last_rendered_rows = list((result.get("structured_evidence_pack") or {}).get("evidences") or [])

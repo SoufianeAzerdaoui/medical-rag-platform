@@ -9,6 +9,7 @@ interface PatientReport {
   filename: string;
   source_url: string;
   viewer_url: string;
+  date?: string;
 }
 
 interface Patient {
@@ -21,15 +22,63 @@ interface Patient {
 interface PatientInventoryRendererProps {
   patients: Patient[];
   defaultExpanded?: boolean;
+  inventoryView?: { type?: "patient_cards" | "report_accordion" | "filterable_table" | "document_timeline" };
 }
 
-export function PatientInventoryRenderer({ patients, defaultExpanded = false }: PatientInventoryRendererProps) {
+export function PatientInventoryRenderer({ patients, defaultExpanded = false, inventoryView }: PatientInventoryRendererProps) {
   if (!patients || patients.length === 0) return null;
+  const viewType = inventoryView?.type || "patient_cards";
+
+  if (viewType === "filterable_table") {
+    return (
+      <div className="mt-4 rounded-xl border border-border bg-card p-3">
+        <p className="mb-2 text-xs uppercase tracking-wide text-fg/65">Table structurée prête à être filtrée</p>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border text-left text-fg/70">
+              <th className="py-2">Patient</th>
+              <th className="py-2">Rapports</th>
+              <th className="py-2">Date</th>
+              <th className="py-2">Fichier</th>
+              <th className="py-2">Lien</th>
+            </tr>
+          </thead>
+          <tbody>
+            {patients.flatMap((p) =>
+              p.reports.map((r) => (
+                <tr key={`${p.patient}-${r.doc_id}`} className="border-b border-border/60">
+                  <td className="py-2">{p.patient}</td>
+                  <td className="py-2">{p.report_count}</td>
+                  <td className="py-2">{r.date || "Date non disponible"}</td>
+                  <td className="py-2">{r.filename}</td>
+                  <td className="py-2">
+                    <a className="text-primary underline" href={r.viewer_url || r.source_url} target="_blank" rel="noopener noreferrer">
+                      Ouvrir
+                    </a>
+                  </td>
+                </tr>
+              )),
+            )}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  if (viewType === "document_timeline") {
+    return (
+      <div className="mt-4 space-y-4">
+        {patients.map((p) => (
+          <PatientCard key={p.patient} patient={p} defaultExpanded={defaultExpanded} />
+        ))}
+      </div>
+    );
+  }
 
   return (
     <div className="mt-4 space-y-4">
       {patients.map((p) => (
-        <PatientCard key={p.patient} patient={p} defaultExpanded={defaultExpanded} />
+        <PatientCard key={p.patient} patient={p} defaultExpanded={viewType === "report_accordion" ? true : defaultExpanded} />
       ))}
     </div>
   );

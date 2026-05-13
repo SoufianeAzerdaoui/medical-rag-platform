@@ -649,6 +649,9 @@ def validate_answer(
     visualization_payload: dict[str, Any] | None = None,
     chart_data_payload: dict[str, Any] | None = None,
     patients: list[dict[str, Any]] | None = None,
+    inventory_view: dict[str, Any] | None = None,
+    transformable_context_available: bool | None = None,
+    previous_intent: str | None = None,
 ) -> dict[str, Any]:
     text = (answer_text or "").strip()
     text_norm = _norm(text)
@@ -1512,9 +1515,20 @@ def validate_answer(
             ):
                 errors.append("identity_answer_required")
 
-    if (query_intents or {}).get("response_transform"):
-        if "pas de réponse précédente" in (answer_text or "").lower() or "pas de reponse precedente" in (answer_text or "").lower():
-            errors.append("response_transform_missing_context")
+    if (query_intents or {}).get("response_transform") and transformable_context_available is False:
+        no_context_markers = [
+            "pas de résultat précédent exploitable",
+            "pas de resultats biologiques numeriques recents a transformer",
+            "pas des valeurs médicales transformables",
+            "veuillez d’abord demander les résultats",
+        ]
+        if not any(m in core_norm for m in no_context_markers):
+            errors.append("response_transform_no_context_clean_missing")
+        if isinstance(visualization_payload, dict):
+            if str(visualization_payload.get("rendered_type") or "").strip():
+                errors.append("response_transform_no_context_visualization_forbidden")
+        if any(k in core_norm for k in ["ace", "psa totale", "ca 15-3"]) and str(previous_intent or "").strip().lower() in {"patient_inventory", "patient_inventory_count"}:
+            errors.append("response_transform_old_medical_context_leak")
 
     if (query_intents or {}).get("multi_doc_comparison"):
         if len(requested_doc_ids_norm) >= 2:
@@ -1631,6 +1645,65 @@ def validate_answer(
                 errors.append("patient_inventory_requires_patient_column")
             if "sources" not in low_answer:
                 errors.append("patient_inventory_requires_sources")
+
+    # Visualization recommendation must stay advisory-only (no rendered chart payload).
+    if (query_intents or {}).get("visualization_recommendation"):
+        if isinstance(visualization_payload, dict) and str(visualization_payload.get("rendered_type") or "").strip():
+            errors.append("visualization_recommendation_must_not_render_chart")
+        if isinstance(chart_data_payload, dict) and str(chart_data_payload.get("rendered_type") or "").strip():
+            errors.append("visualization_recommendation_chart_data_forbidden")
+        forbidden = [
+            "format visuel demande",
+            "j affiche donc un format visuel demande",
+            "bonjour ! je suis pret",
+        ]
+        for marker in forbidden:
+            if marker in core_norm:
+                errors.append(f"visualization_recommendation_placeholder_or_greeting:{marker}")
+        if str(previous_intent or "").strip().lower() in {"patient_inventory", "patient_inventory_count"}:
+            required_any = ["inventaire", "patients", "rapports"]
+            if not all(k in core_norm for k in required_any):
+                warnings.append("visualization_recommendation_inventory_context_missing")
+
+    if (query_intents or {}).get("inventory_visualization_render"):
+        requested_inventory_view = str((inventory_view or {}).get("type") or "").strip().lower()
+        if "bonjour" in core_norm or "je suis pret a vous accompagner" in core_norm:
+            errors.append("inventory_visualization_render_smalltalk_leak")
+        if isinstance(visualization_payload, dict) and str(visualization_payload.get("rendered_type") or "").strip():
+            errors.append("inventory_visualization_render_chart_forbidden")
+        if isinstance(chart_data_payload, dict) and str(chart_data_payload.get("rendered_type") or "").strip():
+            errors.append("inventory_visualization_render_chart_data_forbidden")
+        if str(previous_intent or "").strip().lower() in {"patient_inventory", "response_transform_no_context"} and not patients:
+            errors.append("inventory_visualization_render_missing_patients_payload")
+        if requested_inventory_view == "report_accordion" and "cartes patient" in core_norm:
+            errors.append("inventory_visualization_render_wrong_copy_for_accordion")
+        if requested_inventory_view == "filterable_table" and "cartes patient" in core_norm:
+            errors.append("inventory_visualization_render_wrong_copy_for_table")
+
+    if (query_intents or {}).get("qualitative_comment_render"):
+        if "bonjour" in core_norm or "je suis pret a vous accompagner" in core_norm:
+            errors.append("qualitative_comment_render_smalltalk_leak")
+        if isinstance(visualization_payload, dict) and str(visualization_payload.get("rendered_type") or "").strip():
+            errors.append("qualitative_comment_render_chart_forbidden")
+        if isinstance(chart_data_payload, dict) and str(chart_data_payload.get("rendered_type") or "").strip():
+            errors.append("qualitative_comment_render_chart_data_forbidden")
+        # If context exists, response should look like a sourced comment block.
+        if transformable_context_available is False and "bloc commentaire source" not in core_norm and "bloc commentaire sourc" not in core_norm:
+            warnings.append("qualitative_comment_render_block_copy_missing")
+
+    # Global business-flow guard: no greeting small-talk leak in deterministic business intents.
+    business_intent_keys = {
+        "response_transform",
+        "visualization_recommendation",
+        "inventory_visualization_render",
+        "qualitative_comment_render",
+        "doc_scoped_results",
+        "cohort_search",
+        "comment_without_measured_value",
+    }
+    if any((query_intents or {}).get(k) for k in business_intent_keys):
+        if "bonjour ! je suis pret" in core_norm or "je suis pret a vous accompagner" in core_norm:
+            errors.append("business_intent_smalltalk_leak")
 
     # ... (existing return dict building)
     prod_checks = validate_production_ux(
