@@ -164,6 +164,7 @@ class QueryUnderstanding:
     latest_report: bool
     requested_context_type: str | None
     qualitative_view_type: str | None
+    requested_summary_points: int | None = None
 
 
 def norm_text(value: str) -> str:
@@ -402,7 +403,7 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         ]
     )
     has_immuno = any(k in qn for k in ["immunoanalyse", "immuno analyse"])
-    has_troponin_comment = ("troponine" in qn) and any(
+    has_qualitative_comment_query = any(
         k in qn
         for k in [
             "valeur mesuree",
@@ -413,7 +414,13 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
             "note",
             "interpretation",
             "interprétation",
+            "valeur seuil",
         ]
+    ) and (
+        len(analyte_list) >= 1
+        or "ce commentaire" in qn
+        or "ce resultat" in qn
+        or "ce résultat" in qn
     )
     has_diagnostic_safety = ("cancer" in qn) or any(
         k in qn
@@ -546,6 +553,63 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         and any(k in qn for k in qualitative_comment_render_markers)
         and any(k in qn for k in ["commentaire", "note", "interpretation", "interprétation", "bloc", "texte"])
     )
+    source_followup_markers = [
+        "d ou vient",
+        "d'où vient",
+        "source exacte",
+        "source de ce commentaire",
+        "donne moi la source",
+        "donne-moi la source",
+        "quelle page",
+        "quel rapport",
+        "ouvre la source",
+        "source cliquable",
+    ]
+    has_source_followup = (
+        len(doc_ids) == 0
+        and any(k in qn for k in source_followup_markers)
+        and any(
+            k in qn
+            for k in [
+                "ce commentaire",
+                "cette commentaire",
+                "cette valeur",
+                "ce resultat",
+                "ce résultat",
+                "cette note",
+                "de ce commentaire",
+                "de cette valeur",
+            ]
+        )
+    )
+    context_summary_markers = [
+        "resume",
+        "résume",
+        "resumer",
+        "résumer",
+        "synthese",
+        "synthèse",
+        "synthetise",
+        "synthétise",
+    ]
+    context_summary_targets = [
+        "ce commentaire",
+        "cette commentaire",
+        "ce resultat",
+        "ce résultat",
+        "cette valeur",
+        "ces resultats",
+        "ces résultats",
+        "ce tableau",
+        "cette visualisation",
+        "ca",
+        "ça",
+    ]
+    has_context_summary_render = (
+        len(doc_ids) == 0
+        and any(k in qn for k in context_summary_markers)
+        and any(k in qn for k in context_summary_targets)
+    )
     has_yes_no_question = (
         qn.startswith("est ce que")
         or qn.startswith("est-ce que")
@@ -626,6 +690,8 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         "visualization_recommendation": has_visualization_recommendation,
         "inventory_visualization_render": has_inventory_visualization_render,
         "qualitative_comment_render": has_qualitative_comment_render,
+        "context_summary_render": has_context_summary_render,
+        "source_followup": has_source_followup,
         "doc_scoped_results": has_doc_scope and (len(analyte_list) >= 1 or not has_summary),
         "doc_scoped_analyte_query": has_doc_scope and len(analyte_list) >= 1,
         "doc_scoped_summary": has_doc_scope and has_summary,
@@ -634,7 +700,7 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         "multi_doc_comparison": has_multi_doc and has_compare,
         "toxicology_summary": has_doc_scope and has_toxicology,
         "immunoanalysis_summary": has_doc_scope and has_immuno,
-        "comment_without_measured_value": has_troponin_comment,
+        "comment_without_measured_value": has_qualitative_comment_query,
         "diagnostic_safety_question": has_diagnostic_safety,
         "global_patient_lookup": has_global_patient_lookup,
         "cohort_search": has_global_patient_lookup,
@@ -1235,6 +1301,38 @@ def detect_requested_date_iso(query: str) -> str | None:
     return f"{yyyy}-{mm}-{dd}"
 
 
+def detect_requested_summary_points(query: str) -> int | None:
+    text = str(query or "")
+    if not text:
+        return None
+    qn = norm_text(text)
+    if not any(k in qn for k in ["resume", "resumer", "synthese", "synthetise"]):
+        return None
+    word_to_number = {
+        "un": 1,
+        "une": 1,
+        "deux": 2,
+        "trois": 3,
+        "quatre": 4,
+        "cinq": 5,
+        "six": 6,
+        "sept": 7,
+        "huit": 8,
+        "neuf": 9,
+        "dix": 10,
+    }
+    m_digit = re.search(r"\ben\s*(\d{1,2})\s*points?\b", qn)
+    if m_digit:
+        try:
+            return max(1, min(10, int(m_digit.group(1))))
+        except Exception:
+            return None
+    m_word = re.search(r"\ben\s+(un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix)\s+points?\b", qn)
+    if m_word:
+        return max(1, min(10, int(word_to_number.get(m_word.group(1), 3))))
+    return None
+
+
 def detect_latest_report_flag(query: str) -> bool:
     qn = norm_text(query or "")
     markers = [
@@ -1250,7 +1348,7 @@ def detect_latest_report_flag(query: str) -> bool:
 
 def detect_requested_context_type(query: str) -> str | None:
     qn = norm_text(query or "")
-    if any(k in qn for k in ["commentaire", "note", "interpretation", "interprétation", "valeur seuil", "troponine"]):
+    if any(k in qn for k in ["commentaire", "note", "interpretation", "interprétation", "valeur seuil"]):
         return "medical_qualitative_comment"
     return "biological_numeric_results"
 
@@ -1264,6 +1362,10 @@ def _resolve_primary_intent(intents: dict[str, bool], *, requested_doc_ids: list
         return "inventory_visualization_render"
     if intents.get("qualitative_comment_render"):
         return "qualitative_comment_render"
+    if intents.get("context_summary_render"):
+        return "context_summary_render"
+    if intents.get("source_followup"):
+        return "source_followup"
     if intents.get("visualization_recommendation"):
         return "visualization_recommendation"
     if intents.get("identity_question"):
@@ -1330,6 +1432,7 @@ def parse_query_understanding(query: str) -> QueryUnderstanding:
     latest_report = detect_latest_report_flag(query or "")
     requested_context_type = detect_requested_context_type(query or "")
     qualitative_view_type = detect_qualitative_view_type(query or "")
+    requested_summary_points = detect_requested_summary_points(query or "")
     preliminary_intent = _resolve_primary_intent(intents, requested_doc_ids=requested_doc_ids, requested_analytes=requested_analytes)
     if requested_analytes and comparison_operator and preliminary_intent == "unstructured":
         preliminary_intent = "cohort_search"
@@ -1377,6 +1480,7 @@ def parse_query_understanding(query: str) -> QueryUnderstanding:
         latest_report=latest_report,
         requested_context_type=requested_context_type,
         qualitative_view_type=qualitative_view_type,
+        requested_summary_points=requested_summary_points,
     )
     strategy = decide_response_strategy(preview_qu, evidence_pack=None)
 
@@ -1418,6 +1522,7 @@ def parse_query_understanding(query: str) -> QueryUnderstanding:
         latest_report=latest_report,
         requested_context_type=requested_context_type,
         qualitative_view_type=qualitative_view_type,
+        requested_summary_points=requested_summary_points,
     )
 
 

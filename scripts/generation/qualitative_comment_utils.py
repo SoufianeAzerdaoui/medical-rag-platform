@@ -110,7 +110,7 @@ def extract_comment_text_for_subject(subject: str, rows: list[dict[str, Any]]) -
             score += 3
         if "attention" in low:
             score += 2
-        if "troponine" in low:
+        if subj in low:
             score += 2
         score += min(len(merged) // 120, 4)
         if score > best_score:
@@ -132,7 +132,7 @@ def build_qualitative_comment_answer(*, subject: str, comment_text: str, source_
     comment = (comment_text or "").strip()
     source = (source_label or "source non disponible").strip()
     if not comment:
-        return "Aucun commentaire troponine exploitable n’a été retrouvé dans les données indexées."
+        return f"Aucun commentaire exploitable n’a été retrouvé pour {sub} dans les données indexées."
     return (
         f"Voici le commentaire retrouvé sur la {sub.lower()} :\n\n"
         f"{comment}\n\n"
@@ -147,7 +147,7 @@ def build_sourced_comment_block(*, subject: str, comment_text: str, source_label
     if not comment:
         return (
             "Je n’ai pas de commentaire médical qualitatif récent à afficher sous cette forme. "
-            "Demandez d’abord le commentaire concerné (par exemple la troponine)."
+            "Demandez d’abord le commentaire concerné."
         )
     return (
         "Bloc commentaire sourcé\n"
@@ -172,7 +172,24 @@ def dedup_sources_for_qualitative(sources: list[dict[str, Any]]) -> list[dict[st
         if item.get("line") is None and item.get("row") is not None:
             item["line"] = item.get("row")
         cleaned.append(item)
-    return dedup_normalized_sources(cleaned)
+    deduped = dedup_normalized_sources(cleaned)
+    # Prefer precise source (page/line) over coarse "PDF-only" duplicate.
+    precise_by_pdf = {
+        str(s.get("source_pdf") or "").strip().lower()
+        for s in deduped
+        if str(s.get("source_pdf") or "").strip()
+        and (isinstance(s.get("page"), int) or isinstance(s.get("line"), int))
+    }
+    if not precise_by_pdf:
+        return deduped
+    filtered: list[dict[str, Any]] = []
+    for s in deduped:
+        pdf = str(s.get("source_pdf") or "").strip().lower()
+        has_precision = isinstance(s.get("page"), int) or isinstance(s.get("line"), int)
+        if pdf in precise_by_pdf and not has_precision:
+            continue
+        filtered.append(s)
+    return filtered
 
 
 def format_clickable_source_markdown(label: str, viewer_url: str | None, source_url: str | None) -> tuple[str, bool]:

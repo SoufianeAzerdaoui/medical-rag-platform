@@ -253,6 +253,34 @@ class TestQueryUnderstanding(unittest.TestCase):
         qu = parse_query_understanding("ok affiche ce commentaire dans un tableau texte : sujet, commentaire, source")
         self.assertEqual(qu.qualitative_view_type, "text_table")
 
+    def test_source_followup_intent(self) -> None:
+        qu = parse_query_understanding("d'où vient ce commentaire ?")
+        self.assertEqual(qu.intent, "source_followup")
+        self.assertTrue(bool(qu.intents.get("source_followup")))
+
+    def test_context_summary_render_intent_and_points_digit(self) -> None:
+        qu = parse_query_understanding("résume ce commentaire en 3 points")
+        self.assertEqual(qu.intent, "context_summary_render")
+        self.assertTrue(bool(qu.intents.get("context_summary_render")))
+        self.assertEqual(qu.requested_summary_points, 3)
+
+    def test_context_summary_render_points_word(self) -> None:
+        qu = parse_query_understanding("fais une synthèse de ça en cinq points")
+        self.assertEqual(qu.intent, "context_summary_render")
+        self.assertEqual(qu.requested_summary_points, 5)
+
+    def test_context_summary_render_points_two_and_six(self) -> None:
+        qu2 = parse_query_understanding("résume ça en 2 points")
+        qu6 = parse_query_understanding("résume ça en 6 points")
+        self.assertEqual(qu2.intent, "context_summary_render")
+        self.assertEqual(qu6.intent, "context_summary_render")
+        self.assertEqual(qu2.requested_summary_points, 2)
+        self.assertEqual(qu6.requested_summary_points, 6)
+
+    def test_same_action_for_subject_detects_analyte(self) -> None:
+        qu = parse_query_understanding("fais la même chose pour TSHus")
+        self.assertIn("tshus", qu.requested_analytes)
+
     def test_qualitative_view_type_interpretive_note(self) -> None:
         qu = parse_query_understanding("ok affiche ce commentaire dans un encadré de note interprétative")
         self.assertEqual(qu.qualitative_view_type, "interpretive_note")

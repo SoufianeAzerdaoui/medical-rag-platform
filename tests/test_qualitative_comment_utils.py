@@ -83,6 +83,17 @@ class TestQualitativeCommentUtils(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].get("source_pdf"), "report (18).pdf")
 
+    def test_dedup_sources_prefers_precise_page_line_over_pdf_only(self) -> None:
+        sources = [
+            {"label": "report (18).pdf", "source_pdf": "report (18).pdf"},
+            {"label": "report (18).pdf — page 1, ligne 1", "source_pdf": "report (18).pdf", "page": 1, "line": 1},
+        ]
+        out = dedup_sources_for_qualitative(sources)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].get("source_pdf"), "report (18).pdf")
+        self.assertEqual(out[0].get("page"), 1)
+        self.assertEqual(out[0].get("line"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

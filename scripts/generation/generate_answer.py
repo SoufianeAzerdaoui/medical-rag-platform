@@ -27,6 +27,10 @@ try:
     from source_resolver import DocPdfResolver
 except Exception:
     from scripts.generation.source_resolver import DocPdfResolver
+try:
+    from source_normalization import normalize_source_for_response
+except Exception:
+    from scripts.generation.source_normalization import normalize_source_for_response
 from evidence_builder import build_evidence_pack as build_retrieval_evidence_pack
 from llm_client import LLMClient, LLMClientError
 from professional_answer_composer import (
@@ -51,7 +55,8 @@ from query_understanding import (
     norm_text,
 )
 from followup_scope_utils import resolve_followup_doc_scope
-from context_resolver import resolve_context_for_turn
+from context_resolver import resolve_context_for_turn, resolve_deictic_request
+from conversation_state_utils import evidence_pack_is_transformable
 from qualitative_comment_utils import (
     build_qualitative_comment_answer,
     build_sourced_comment_block,
@@ -64,10 +69,83 @@ from qualitative_comment_utils import (
 
 LOGGER = logging.getLogger("medical_rag.generation")
 
+_GENERIC_COMMENT_SUBJECTS = {
+    "commentaire",
+    "commentaire medical",
+    "commentaire médical",
+    "comment",
+    "note",
+    "observation",
+    "interpretation",
+    "interprétation",
+    "qualitative",
+    "resultat",
+    "résultat",
+    "valeur",
+}
+
 
 def normalize_query(query: str) -> str:
     q = re.sub(r"\s+", " ", (query or "").strip())
     return q
+
+
+def _is_generic_subject(label: str | None) -> bool:
+    return norm_text(str(label or "")) in _GENERIC_COMMENT_SUBJECTS
+
+
+def resolve_medical_subject(
+    *,
+    query_understanding: QueryUnderstanding | None,
+    evidence: dict[str, Any] | None,
+    state_context: dict[str, Any] | None,
+    query: str,
+) -> str:
+    qu = query_understanding
+    ev = evidence if isinstance(evidence, dict) else {}
+    st = state_context if isinstance(state_context, dict) else {}
+
+    requested = []
+    if qu is not None:
+        requested = list(getattr(qu, "requested_analytes", []) or [])
+    if requested:
+        return analyte_display_name(requested[0], requested[0]).strip() or str(requested[0]).strip().title()
+
+    detected = detect_exact_analytes(query or "")
+    if detected:
+        candidate = str(detected[0]).strip().lower()
+        return analyte_display_name(candidate, candidate).strip() or candidate.title()
+
+    ev_subject = str(ev.get("subject") or "").strip()
+    if ev_subject and not _is_generic_subject(ev_subject):
+        return ev_subject
+    ev_analyte = str(ev.get("analyte") or ev.get("parameter") or "").strip()
+    if ev_analyte and not _is_generic_subject(ev_analyte):
+        return ev_analyte
+
+    ctx_subject = str(st.get("subject") or "").strip()
+    if ctx_subject and not _is_generic_subject(ctx_subject):
+        return ctx_subject
+
+    return "Commentaire médical"
+
+
+def _resolve_comment_subject_from_query(
+    *,
+    query_understanding: QueryUnderstanding,
+    query: str,
+) -> tuple[str, str]:
+    requested = [str(a).strip().lower() for a in (getattr(query_understanding, "requested_analytes", []) or []) if str(a).strip()]
+    if requested:
+        norm = requested[0]
+        label = analyte_display_name(norm, norm).strip() or str(norm).strip().upper()
+        return norm, label
+    detected = detect_exact_analytes(query or "")
+    if detected:
+        norm = str(detected[0]).strip().lower()
+        label = analyte_display_name(norm, norm).strip() or str(norm).strip().upper()
+        return norm, label
+    return "", "Commentaire médical"
 
 
 _INTERNAL_REASONING_PATTERNS = [
@@ -390,6 +468,10 @@ def _normalize_status_code(status: str | None, status_code: str | None = None) -
     code = str(status_code or "").strip().lower()
     if code in {"above_reference", "below_reference", "within_reference", "not_interpretable"}:
         return code
+    if code in {"in_reference", "normal"}:
+        return "within_reference"
+    if code in {"qualitative", "missing_value"}:
+        return "not_interpretable"
     text = norm_text(str(status or ""))
     if any(k in text for k in ["au dessus", "au-dessus", "above reference", "superieur", "supérieur"]):
         return "above_reference"
@@ -398,6 +480,15 @@ def _normalize_status_code(status: str | None, status_code: str | None = None) -
     if any(k in text for k in ["dans la reference", "within reference"]):
         return "within_reference"
     return "not_interpretable"
+
+
+def normalize_result_status(evidence_item: dict[str, Any]) -> dict[str, str]:
+    raw_status = _normalize_status_code(
+        str(evidence_item.get("technical_status") or evidence_item.get("status") or ""),
+        str(evidence_item.get("technical_status_code") or evidence_item.get("interpretation_status") or ""),
+    )
+    display_status = _interpretation_fr(raw_status)
+    return {"raw_status": raw_status, "display_status": display_status}
 
 
 def _parse_reference_bounds(reference: str) -> dict[str, Any]:
@@ -544,8 +635,9 @@ def _build_visualization_data(evidences: list[dict[str, Any]]) -> tuple[list[dic
         ref = str(ev.get("reference") or ev.get("reference_range") or "").strip()
         raw_value = str(ev.get("current_value") or ev.get("value_raw") or "").strip()
         numeric = _value_to_float(raw_value)
-        status_text = str(ev.get("technical_status") or ev.get("status") or "").strip()
-        status_code = str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip()
+        status_norm = normalize_result_status(ev)
+        status_text = str(ev.get("technical_status") or ev.get("status") or status_norm["display_status"]).strip()
+        status_code = status_norm["raw_status"]
         metric = compute_reference_metric(raw_value, ref, status_code or status_text)
         if metric.get("metric_available"):
             has_deviation = True
@@ -557,8 +649,8 @@ def _build_visualization_data(evidences: list[dict[str, Any]]) -> tuple[list[dic
             "value_numeric": numeric,
             "unit": str(ev.get("unit") or "").strip(),
             "reference": ref,
-            "status": status_text,
-            "status_code": _normalize_status_code(status_text, status_code),
+            "status": status_text or status_norm["display_status"],
+            "status_code": status_code,
             "lower_bound": metric.get("lower_bound"),
             "upper_bound": metric.get("upper_bound"),
             "reference_deviation": metric.get("reference_deviation"),
@@ -921,6 +1013,7 @@ def _query_understanding_payload(qu: QueryUnderstanding) -> dict[str, Any]:
         "requested_context_type": getattr(qu, "requested_context_type", None),
         "inventory_view_type": getattr(qu, "inventory_view_type", None),
         "qualitative_view_type": getattr(qu, "qualitative_view_type", None),
+        "requested_summary_points": getattr(qu, "requested_summary_points", None),
         "presentation_intent": {
             "requested_output": getattr(presentation, "requested_output", qu.output_format),
             "chart_type": getattr(presentation, "chart_type", None),
@@ -1214,8 +1307,7 @@ def _build_visualization_recommendation_response(
             "1. une carte d’information médicale avec le commentaire principal ;\n"
             "2. un bloc commentaire sourcé (document, page, ligne) ;\n"
             "3. un tableau texte : sujet, commentaire, source ;\n"
-            "4. un encadré de note interprétative.\n\n"
-            "Un radar chart, une courbe ou un graphique en barres ne sont pas adaptés à ce type de donnée."
+            "4. un encadré de note interprétative."
         )
     elif (
         data_context_type == "patient_inventory"
@@ -1375,6 +1467,8 @@ def _build_inventory_visualization_render_response(
     if view_type not in {"patient_cards", "report_accordion", "filterable_table", "document_timeline"}:
         view_type = "patient_cards"
     if previous_has_patient_inventory and patients:
+        qn = norm_text(query or "")
+        asks_radar = "radar" in qn
         if view_type == "report_accordion":
             answer = "D’accord. J’affiche l’inventaire sous forme de liste accordéon, afin d’ouvrir les rapports associés à chaque patient."
         elif view_type == "filterable_table":
@@ -1382,7 +1476,14 @@ def _build_inventory_visualization_render_response(
         elif view_type == "document_timeline":
             answer = "Cette vue n’est pas encore implémentée dans l’interface. J’affiche temporairement la vue cartes patient."
         else:
-            answer = "D’accord. J’affiche l’inventaire sous forme de cartes patient, avec le nombre de rapports associés pour chaque patient."
+            if asks_radar:
+                answer = (
+                    "Un inventaire patient n’est pas transformable en radar chart. "
+                    "J’affiche plutôt une vue d’inventaire adaptée.\n\n"
+                    "D’accord. J’affiche l’inventaire sous forme de cartes patient, avec le nombre de rapports associés pour chaque patient."
+                )
+            else:
+                answer = "D’accord. J’affiche l’inventaire sous forme de cartes patient, avec le nombre de rapports associés pour chaque patient."
     else:
         answer = "Je n’ai pas trouvé d’inventaire patient récent à afficher sous cette forme. Demandez d’abord la liste des patients."
     validation = validate_answer(
@@ -1738,6 +1839,498 @@ def _select_displayed_evidences(
     }
 
 
+def _normalize_summary_point(point: str) -> str:
+    return " ".join(str(point or "").strip().split())
+
+
+def deduplicate_summary_points(points: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: list[str] = []
+    for raw in points or []:
+        p = _normalize_summary_point(raw)
+        if not p:
+            continue
+        norm = norm_text(p)
+        if not norm:
+            continue
+        duplicate = norm in seen
+        if not duplicate:
+            for s in seen:
+                if len(s) >= 20 and len(norm) >= 20 and (norm in s or s in norm):
+                    duplicate = True
+                    break
+        if duplicate:
+            continue
+        seen.append(norm)
+        out.append(p)
+    return out
+
+
+def _split_text_into_summary_candidates(text: str) -> list[str]:
+    compact = " ".join(str(text or "").replace("\n", " ").split()).strip()
+    if not compact:
+        return []
+    candidates: list[str] = []
+    # First pass: sentence-like chunks.
+    for seg in re.split(r"(?<=[\.\!\?])\s+", compact):
+        s = seg.strip(" -•\t")
+        if s:
+            candidates.append(s)
+    # Second pass for one-line comments: split on semantic separators.
+    if len(candidates) <= 1:
+        for seg in re.split(r"\s+(?=Attention\s*:|Valeur\s+seuil\s*:?)", compact, flags=re.IGNORECASE):
+            s = seg.strip(" -•\t")
+            if s:
+                candidates.append(s)
+    if len(candidates) <= 1:
+        for seg in re.split(r"\s*;\s*", compact):
+            s = seg.strip(" -•\t")
+            if s:
+                candidates.append(s)
+    # Third pass for long one-line qualitative comments: extract semantic blocks.
+    if len(candidates) <= 1:
+        blocks: list[str] = []
+        seuil = re.search(r"(valeur\s+seuil[^:]{0,120}:\s*[^:]+?)(?=\s+attention\s*:|$)", compact, flags=re.IGNORECASE)
+        if seuil:
+            blocks.append(seuil.group(1).strip(" .;:"))
+        alert = re.search(r"(attention\s*:\s*[^:]+)(?::\s*|$)", compact, flags=re.IGNORECASE)
+        if alert:
+            blocks.append(alert.group(1).strip(" .;:"))
+            tail = compact[alert.end() :].strip(" .;:")
+            if tail:
+                blocks.append(f"Situations mentionnées : {tail}")
+        if blocks:
+            candidates.extend(blocks)
+    return deduplicate_summary_points(candidates)
+
+
+def _summary_limitation_text(found_points: int) -> str:
+    n = max(0, int(found_points))
+    return (
+        f"Je ne peux extraire que {n} point{'s' if n > 1 else ''} distinct"
+        f"{'s' if n > 1 else ''} à partir du contexte disponible."
+    )
+
+
+def _format_summary_answer(
+    *,
+    context_label: str,
+    requested_points: int,
+    points: list[str],
+    limitation: str | None,
+    sources: list[dict[str, Any]],
+    clickable_requested: bool,
+    include_inline_source: bool = False,
+) -> str:
+    lines = [f"Résumé en {requested_points} point{'s' if requested_points > 1 else ''} du {context_label}", ""]
+    for idx, p in enumerate(points, start=1):
+        lines.append(f"{idx}. {p}")
+    if limitation:
+        lines.append("")
+        lines.append(limitation)
+    if include_inline_source and sources:
+        primary = sources[0]
+        label = str(primary.get("label") or "source non disponible").strip()
+        md, has_click = format_clickable_source_markdown(
+            label,
+            str(primary.get("viewer_url") or "").strip() or None,
+            str(primary.get("source_url") or primary.get("url") or "").strip() or None,
+        )
+        source_render = md if has_click else label
+        if clickable_requested and not has_click:
+            source_render = f"{label} (source non cliquable disponible uniquement en texte)"
+        lines.extend(["", f"Source : {source_render}"])
+    return "\n".join(lines).strip()
+
+
+def _collect_sources_from_pack(pack: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(pack, dict):
+        return []
+    srcs: list[dict[str, Any]] = []
+    for src in list(pack.get("sources") or []):
+        if isinstance(src, dict):
+            srcs.append(normalize_source_for_response(src))
+    rows = list(pack.get("evidences") or pack.get("results") or [])
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        srcs.append(
+            normalize_source_for_response(
+                {
+                    "label": row.get("source_label") or row.get("source"),
+                    "source_pdf": row.get("source_pdf"),
+                    "doc_id": row.get("doc_id"),
+                    "page": row.get("page") if row.get("page") is not None else row.get("page_number"),
+                    "line": row.get("line") if row.get("line") is not None else row.get("row"),
+                    "viewer_url": row.get("viewer_url"),
+                    "source_url": row.get("source_url"),
+                }
+            )
+        )
+    deduped = dedup_sources_for_qualitative(srcs)
+    # Never expose internal placeholders when a real PDF source exists.
+    def _is_internal_source(s: dict[str, Any]) -> bool:
+        lbl = norm_text(str(s.get("label") or ""))
+        return lbl in {"sqlite deterministic", "sqlite_deterministic", "sqlite"} or "sqlite deterministic" in lbl
+
+    has_pdf_source = any(
+        str(s.get("source_pdf") or "").strip()
+        or str(s.get("label") or "").strip().lower().endswith(".pdf")
+        or ".pdf — page" in str(s.get("label") or "").strip().lower()
+        for s in deduped
+    )
+    if has_pdf_source:
+        deduped = [s for s in deduped if not _is_internal_source(s)]
+    # Prefer precise citation (page/line) first.
+    deduped.sort(
+        key=lambda s: (
+            0 if str(s.get("source_pdf") or "").strip() else 1,
+            0 if isinstance(s.get("page"), int) else 1,
+            0 if isinstance(s.get("line"), int) else 1,
+            str(s.get("label") or ""),
+        )
+    )
+    return deduped
+
+
+def _try_llm_grounded_summary(
+    *,
+    llm_client: LLMClient | None,
+    provider: str,
+    model: str,
+    timeout: int,
+    context_type: str,
+    subject: str,
+    display_text: str,
+    evidence_pack: dict[str, Any] | None,
+    sources: list[dict[str, Any]],
+    requested_summary_points: int,
+) -> tuple[list[str] | None, str | None]:
+    if llm_client is None:
+        return None, "no_llm_client"
+    payload = {
+        "context_type": context_type,
+        "subject": subject,
+        "display_text": display_text,
+        "evidence_pack": evidence_pack or {},
+        "sources": sources,
+        "requested_summary_points": requested_summary_points,
+    }
+    prompt = (
+        "Tu es un assistant de synthèse médicale.\n"
+        "Tu dois résumer uniquement le CONTEXTE FOURNI.\n"
+        "Tu ne dois pas ajouter de connaissance médicale externe.\n"
+        "Tu ne dois pas poser de diagnostic.\n"
+        "Tu ne dois pas inventer de valeur, source, patient, rapport ou interprétation.\n"
+        "Tu dois produire exactement N points si le contexte contient assez d’informations distinctes.\n"
+        "Si le contexte ne contient pas assez d’informations distinctes, produis seulement les points fiables et indique la limite.\n"
+        "Chaque point doit être court, non redondant, et fondé sur le contexte.\n"
+        "Réponds en JSON strict uniquement avec ce schéma:\n"
+        '{"title":"...","points":["..."],"limitations":null}\n'
+        f"N={requested_summary_points}\n\n"
+        f"CONTEXTE:\n{json.dumps(payload, ensure_ascii=False)}"
+    )
+    client = llm_client or LLMClient(provider=provider)
+    try:
+        raw = client.generate(
+            prompt=prompt,
+            model=model,
+            temperature=0.0,
+            num_ctx=3072,
+            max_tokens=420,
+            timeout=max(8, min(int(timeout), 35)),
+            keep_alive="5m",
+        ).strip()
+    except Exception as exc:  # pragma: no cover - network/runtime dependent
+        return None, str(exc)
+    if not raw:
+        return None, "empty_llm_summary"
+    data: dict[str, Any] | None = None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        m = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+        if m:
+            try:
+                data = json.loads(m.group(0))
+            except Exception:
+                data = None
+    if not isinstance(data, dict):
+        return None, "invalid_llm_summary_json"
+    pts = data.get("points")
+    if not isinstance(pts, list):
+        return None, "invalid_llm_summary_points"
+    cleaned = deduplicate_summary_points([str(p) for p in pts if str(p).strip()])[: max(1, int(requested_summary_points))]
+    if not cleaned:
+        return None, "empty_llm_summary_points"
+    limitation = str(data.get("limitations") or "").strip() or None
+    return cleaned, limitation
+
+
+def _build_context_summary_render_response(
+    *,
+    request_id: str,
+    started: float,
+    query: str,
+    query_received: str,
+    query_used_for_retrieval: str,
+    query_used_for_prompt: str,
+    top_k: int,
+    max_display_results: int,
+    show_all_results: bool,
+    show_low_quality: bool,
+    timeout: int,
+    provider: str,
+    model: str,
+    query_understanding: QueryUnderstanding,
+    intents: dict[str, bool],
+    previous_displayed_context: dict[str, Any] | None,
+    previous_qualitative_evidence_pack: dict[str, Any] | None,
+    previous_transformable_pack: dict[str, Any] | None,
+    previous_patient_inventory: list[dict[str, Any]] | None,
+    previous_data_context_type: str | None,
+    llm_client: LLMClient | None,
+) -> dict[str, Any]:
+    requested_points = int(getattr(query_understanding, "requested_summary_points", None) or 3)
+    requested_points = max(1, min(10, requested_points))
+    wants_clickable = bool(getattr(query_understanding, "source_clickable_requested", False))
+
+    ctx = previous_displayed_context if isinstance(previous_displayed_context, dict) else {}
+    context_type = str(ctx.get("context_type") or previous_data_context_type or "none").strip().lower()
+    if context_type not in {"medical_qualitative_comment", "biological_numeric_results", "patient_inventory"}:
+        context_type = "none"
+
+    points: list[str] = []
+    limitation: str | None = None
+    answer: str
+    sources: list[dict[str, Any]] = []
+    structured_pack: dict[str, Any] = {}
+
+    if context_type == "medical_qualitative_comment":
+        pack = previous_qualitative_evidence_pack if isinstance(previous_qualitative_evidence_pack, dict) else {}
+        structured_pack = pack
+        rows = list(pack.get("evidences") or pack.get("results") or [])
+        first = rows[0] if rows and isinstance(rows[0], dict) else {}
+        subject = resolve_medical_subject(
+            query_understanding=query_understanding,
+            evidence=first if isinstance(first, dict) else None,
+            state_context=ctx,
+            query=query,
+        )
+        comment_text = str(
+            first.get("display_comment_text")
+            or first.get("comment_text")
+            or first.get("current_value")
+            or ctx.get("display_text")
+            or ""
+        ).strip()
+        candidates = _split_text_into_summary_candidates(comment_text)
+        points = candidates[:requested_points]
+        if not points:
+            answer = "Je n’ai pas de commentaire qualitatif récent à résumer. Demandez d’abord le commentaire concerné."
+            sources = []
+        else:
+            llm_points, llm_limitation = _try_llm_grounded_summary(
+                llm_client=llm_client,
+                provider=provider,
+                model=model,
+                timeout=timeout,
+                context_type=context_type,
+                subject=subject,
+                display_text=comment_text,
+                evidence_pack=pack,
+                sources=_collect_sources_from_pack(pack),
+                requested_summary_points=requested_points,
+            )
+            if llm_points:
+                # Do not degrade quality if LLM returns fewer distinct points than deterministic extraction.
+                if len(llm_points) >= len(points):
+                    points = llm_points
+                    limitation = llm_limitation
+            if len(points) < requested_points:
+                limitation = _summary_limitation_text(len(points))
+            sources = _collect_sources_from_pack(pack)
+            answer = _format_summary_answer(
+                context_label=f"commentaire sur {subject}",
+                requested_points=requested_points,
+                points=points,
+                limitation=limitation,
+                sources=sources,
+                clickable_requested=wants_clickable,
+                include_inline_source=False,
+            )
+    elif context_type == "biological_numeric_results":
+        pack = previous_transformable_pack if isinstance(previous_transformable_pack, dict) else {}
+        structured_pack = pack
+        rows = [r for r in list(pack.get("evidences") or pack.get("results") or []) if isinstance(r, dict)]
+        if not rows:
+            answer = "Je n’ai pas de résultats biologiques récents à résumer. Demandez d’abord les résultats à afficher."
+            sources = []
+        else:
+            if len(rows) == 1:
+                row = rows[0]
+                analyte = str(row.get("analyte") or row.get("parameter") or "Analyte").strip()
+                value = str(row.get("current_value") or row.get("value_raw") or row.get("value_numeric") or "").strip()
+                unit = str(row.get("unit") or "").strip()
+                reference = str(row.get("reference_range") or row.get("reference") or "").strip()
+                status = str(row.get("technical_status") or row.get("status") or row.get("interpretation_status") or "").strip()
+                if value:
+                    points.append(f"{analyte} = {value}{(' ' + unit) if unit else ''}.")
+                if reference:
+                    points.append(f"Intervalle de référence : {reference}.")
+                if status:
+                    points.append(f"Statut technique : {status}.")
+            else:
+                points.append(f"{len(rows)} résultats biologiques ont été affichés.")
+                for row in rows:
+                    analyte = str(row.get("analyte") or row.get("parameter") or "").strip()
+                    if not analyte:
+                        continue
+                    value = str(row.get("current_value") or row.get("value_raw") or row.get("value_numeric") or "").strip()
+                    status = str(row.get("technical_status") or row.get("status") or row.get("interpretation_status") or "").strip()
+                    bits = [analyte]
+                    if value:
+                        bits.append(value)
+                    if status:
+                        bits.append(status)
+                    points.append(" : ".join([bits[0], " | ".join(bits[1:])]) if len(bits) > 1 else bits[0])
+                    if len(points) >= requested_points:
+                        break
+            points = deduplicate_summary_points(points)[:requested_points]
+            if not points:
+                answer = "Je n’ai pas assez d’informations numériques exploitables pour produire un résumé fiable."
+                sources = []
+            else:
+                if len(points) < requested_points:
+                    limitation = _summary_limitation_text(len(points))
+                sources = _collect_sources_from_pack(pack)
+                answer = _format_summary_answer(
+                    context_label="résultats biologiques affichés",
+                    requested_points=requested_points,
+                    points=points,
+                    limitation=limitation,
+                    sources=sources,
+                    clickable_requested=wants_clickable,
+                    include_inline_source=False,
+                )
+    elif context_type == "patient_inventory":
+        inventory = list(previous_patient_inventory or [])
+        if not inventory:
+            answer = "Je n’ai pas d’inventaire patient récent à résumer. Demandez d’abord la liste des patients."
+            sources = []
+        else:
+            points.append(f"{len(inventory)} patient{'s' if len(inventory) > 1 else ''} sont présents dans l’inventaire.")
+            for patient in inventory:
+                pid = str(patient.get("patient_id") or patient.get("label") or "Patient").strip()
+                reports = list(patient.get("reports") or [])
+                points.append(f"{pid} : {len(reports)} rapport{'s' if len(reports) > 1 else ''} associé{'s' if len(reports) > 1 else ''}.")
+                if len(points) >= requested_points:
+                    break
+            if len(points) < requested_points:
+                total_reports = sum(len(list(p.get("reports") or [])) for p in inventory if isinstance(p, dict))
+                points.append(f"Total des rapports listés : {total_reports}.")
+            points = deduplicate_summary_points(points)[:requested_points]
+            if len(points) < requested_points:
+                limitation = _summary_limitation_text(len(points))
+            answer = _format_summary_answer(
+                context_label="inventaire patient",
+                requested_points=requested_points,
+                points=points,
+                limitation=limitation,
+                sources=[],
+                clickable_requested=wants_clickable,
+                include_inline_source=False,
+            )
+    else:
+        answer = (
+            "Je n’ai pas de contexte précédent à résumer. "
+            "Demandez d’abord des résultats, un commentaire ou un inventaire."
+        )
+
+    validation = validate_answer(
+        query=query,
+        answer_text=answer,
+        evidence_pack=[],
+        displayed_evidences=[],
+        source_citations=sources,
+        generation_mode="deterministic_context_summary_render",
+        retrieval_status="not_required",
+        query_received=query_received,
+        query_used_for_retrieval=query_used_for_retrieval,
+        query_used_for_prompt=query_used_for_prompt,
+        query_stored=query,
+        detected_analytes=[],
+        query_intents=intents,
+        output_format_requested="list",
+        answer_style_requested="standard",
+        requested_table_columns=[],
+        requested_technical_condition=None,
+        source_clickable_requested=wants_clickable,
+        requested_value=None,
+        comparison_operator=None,
+        raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+        unsupported_presentation=False,
+        user_requested_visualization=False,
+        requested_chart_type=None,
+        visualization_payload=None,
+        chart_data_payload=None,
+    )
+    reason = "context_summary_no_retrieval"
+    if context_type == "medical_qualitative_comment":
+        reason = "qualitative_comment_summary_no_retrieval"
+    elapsed = time.perf_counter() - started
+    return {
+        "request_id": request_id,
+        "query": query,
+        "query_received": query_received,
+        "query_used_for_retrieval": "",
+        "query_used_for_prompt": query_used_for_prompt,
+        "query_stored": query,
+        "normalized_query": query,
+        "mode": "context_summary_render",
+        "provider": provider,
+        "model": model,
+        "top_k": top_k,
+        "max_display_results": int(max_display_results),
+        "show_all_results": bool(show_all_results),
+        "show_low_quality": bool(show_low_quality),
+        "timeout": timeout,
+        "generation_time_seconds": round(elapsed, 3),
+        "answer": answer,
+        "citations": [],
+        "sources": sources,
+        "validation": validation,
+        "quality_report": _quality_report(
+            answer=answer,
+            validation=validation,
+            source_clickable_requested=wants_clickable,
+            recent_style_history=[],
+        ),
+        "llm_error": None,
+        "error_type": None,
+        "generation_mode": "deterministic_context_summary_render",
+        "detected_analytes": [],
+        "query_understanding": _query_understanding_payload(query_understanding),
+        "structured_evidence_pack": structured_pack if isinstance(structured_pack, dict) else {},
+        "evidence_pack": [],
+        "displayed_evidences": [],
+        "retrieval": {"answerability": {"status": "not_required", "reason": reason}},
+        "prompt": "",
+        "debug": {
+            "request_id": request_id,
+            "generation_mode": "deterministic_context_summary_render",
+            "generation_writer": "deterministic_context_summary",
+            "intents": intents,
+            "retrieval_skipped": True,
+            "context_type": context_type,
+            "requested_summary_points": requested_points,
+            "produced_summary_points": len(points),
+        },
+        "visualization": None,
+        "chart_data": None,
+    }
+
+
 def _build_qualitative_comment_render_response(
     *,
     request_id: str,
@@ -1756,33 +2349,68 @@ def _build_qualitative_comment_render_response(
     query_understanding: QueryUnderstanding,
     intents: dict[str, bool],
     previous_qualitative_evidence_pack: dict[str, Any] | None,
+    previous_displayed_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     pack = previous_qualitative_evidence_pack if isinstance(previous_qualitative_evidence_pack, dict) else {}
     evidences = list(pack.get("evidences") or pack.get("results") or [])
     first = evidences[0] if evidences else {}
     comment_text = str(first.get("display_comment_text") or first.get("comment_text") or first.get("current_value") or "").strip()
-    subject = str(first.get("subject") or first.get("analyte") or "Commentaire médical").strip()
-    source = str(first.get("source") or "").strip()
-    source_label = source or str(first.get("source_label") or "").strip() or "source non disponible"
-    viewer_url = str(first.get("viewer_url") or "").strip() or None
-    source_url = str(first.get("source_url") or "").strip() or None
-    if not (viewer_url or source_url):
-        pack_sources = list(pack.get("sources") or [])
-        if pack_sources:
-            p0 = pack_sources[0]
-            viewer_url = str(p0.get("viewer_url") or "").strip() or None
-            source_url = str(p0.get("url") or p0.get("source_url") or "").strip() or None
-            source_label = str(p0.get("label") or source_label).strip()
+    subject = resolve_medical_subject(
+        query_understanding=query_understanding,
+        evidence=first if isinstance(first, dict) else None,
+        state_context=previous_displayed_context if isinstance(previous_displayed_context, dict) else None,
+        query=query,
+    )
+
+    # Build a user-facing source from structured fields first; never expose internal
+    # tags such as "sqlite_deterministic" when a PDF source is available.
+    source_candidates: list[dict[str, Any]] = []
+    source_from_first = str(first.get("source") or "").strip()
+    source_candidates.append(
+        {
+            "label": str(first.get("source_label") or "").strip(),
+            "source_pdf": str(first.get("source_pdf") or "").strip(),
+            "doc_id": str(first.get("doc_id") or "").strip(),
+            "page": first.get("page") if first.get("page") is not None else first.get("page_number"),
+            "line": first.get("line") if first.get("line") is not None else first.get("row"),
+            "viewer_url": str(first.get("viewer_url") or "").strip() or None,
+            "source_url": str(first.get("source_url") or "").strip() or None,
+        }
+    )
+    if source_from_first and source_from_first.lower() != "sqlite_deterministic":
+        source_candidates[0]["label"] = source_candidates[0].get("label") or source_from_first
+    for src in list(pack.get("sources") or []):
+        if isinstance(src, dict):
+            source_candidates.append(dict(src))
+
+    normalized_candidates = [normalize_source_for_response(s) for s in source_candidates if isinstance(s, dict)]
+    primary_source = next(
+        (
+            s
+            for s in normalized_candidates
+            if str(s.get("source_pdf") or "").strip()
+            or str(s.get("label") or "").strip().lower().endswith(".pdf")
+        ),
+        normalized_candidates[0] if normalized_candidates else normalize_source_for_response({}),
+    )
+    source_label = str(primary_source.get("label") or "").strip() or "source non disponible"
+    viewer_url = str(primary_source.get("viewer_url") or "").strip() or None
+    source_url = str(primary_source.get("source_url") or primary_source.get("url") or "").strip() or None
+    if source_label.lower() == "sqlite_deterministic":
+        # Safety net: avoid exposing internal source identifiers.
+        source_label = "source non disponible"
     source_markdown, has_clickable_source = format_clickable_source_markdown(source_label, viewer_url, source_url)
     view_type = str(getattr(query_understanding, "qualitative_view_type", "") or "sourced_comment_block").strip() or "sourced_comment_block"
     wants_clickable = bool(getattr(query_understanding, "source_clickable_requested", False))
     if not comment_text:
         answer = (
             "Je n’ai pas de commentaire médical qualitatif récent à afficher sous cette forme. "
-            "Demandez d’abord le commentaire concerné (par exemple la troponine)."
+            "Demandez d’abord le commentaire concerné."
         )
         sources: list[dict[str, Any]] = []
     else:
+        qn = norm_text(query or "")
+        graph_request_on_qualitative = any(k in qn for k in ["graphique", "chart", "courbe", "radar", "bar chart", "line graph"])
         compact_comment = comment_text if len(comment_text) <= 520 else comment_text[:517].rstrip() + "..."
         source_text_for_answer = source_markdown if has_clickable_source else source_label
         if wants_clickable and not has_clickable_source:
@@ -1816,18 +2444,15 @@ def _build_qualitative_comment_render_response(
                 comment_text=comment_text,
                 source_label=source_text_for_answer,
             )
-        sources = dedup_sources_for_qualitative(
-            [
-                {
-                    "label": source_label,
-                    "source_pdf": str(first.get("source_pdf") or ""),
-                    "page": first.get("page"),
-                    "row": first.get("row"),
-                    "url": source_url,
-                    "viewer_url": viewer_url,
-                }
-            ]
-        )
+        if graph_request_on_qualitative:
+            answer = (
+                "Ce commentaire est une donnée qualitative textuelle, pas une valeur biologique numérique transformable en graphique. "
+                "J’affiche plutôt une vue textuelle sourcée.\n\n"
+                f"{answer}"
+            )
+        # Source is already rendered inline in qualitative views; avoid duplicate
+        # "Source + Sources" blocks in the final user message.
+        sources = []
 
     validation = validate_answer(
         query=query,
@@ -3285,13 +3910,16 @@ def render_evidence_pack_deterministic(evidence_pack: dict[str, Any], output_for
 
     if intent == "comment_without_measured_value":
         comment = str(evidence_pack.get("comment_text") or "").strip()
+        rows_for_subject = list(evidence_pack.get("evidences") or evidence_pack.get("results") or [])
+        first = rows_for_subject[0] if rows_for_subject and isinstance(rows_for_subject[0], dict) else {}
+        subject = str(first.get("subject") or first.get("analyte") or "ce sujet").strip()
         if comment:
             snippet = comment if len(comment) <= 220 else comment[:217] + "..."
             return (
-                "Aucune valeur mesurée de troponine n’est retrouvée ; le document contient seulement un commentaire/interprétation "
+                f"Aucune valeur mesurée n’est retrouvée pour {subject} ; le document contient seulement un commentaire/interprétation "
                 f"avec seuil. Extrait: {snippet}"
             )
-        return "Aucun commentaire troponine exploitable n’a été retrouvé dans les données indexées."
+        return f"Aucun commentaire exploitable n’a été retrouvé pour {subject} dans les données indexées."
 
     if intent in {"global_patient_lookup", "cohort_search"}:
         if not evidences:
@@ -3838,22 +4466,32 @@ def build_structured_evidence_pack(
 
     if intent == "comment_without_measured_value":
         qualitative_fetch_called = True
+        comment_subject_norm, comment_subject_label = _resolve_comment_subject_from_query(
+            query_understanding=query_understanding,
+            query=query,
+        )
+        analyte_targets = [comment_subject_norm] if comment_subject_norm else []
+        search_term = comment_subject_norm or "commentaire"
         rows = (
             _fetch_doc_lab_rows(
                 sqlite_path=sqlite_path,
                 requested_doc_ids=requested_doc_ids,
-                analyte_norms=["troponine"],
-                include_text_search_terms=["troponine"],
+                analyte_norms=analyte_targets,
+                include_text_search_terms=[search_term],
                 limit=250,
             )
             if requested_doc_ids
-            else _fetch_global_comment_rows(sqlite_path=sqlite_path, term="troponine", limit=250)
+            else _fetch_global_comment_rows(sqlite_path=sqlite_path, term=search_term, limit=250)
         )
         qualitative_rows_count = len(rows)
         measured = [
             r
             for r in rows
-            if ("troponine" in norm_text(str(r.get("analyte_norm") or "")) or "troponine" in norm_text(str(r.get("analyte") or "")))
+            if (
+                not comment_subject_norm
+                or comment_subject_norm in norm_text(str(r.get("analyte_norm") or ""))
+                or comment_subject_norm in norm_text(str(r.get("analyte") or ""))
+            )
             and norm_text(str(r.get("analyte") or "")) != "commentaire"
             and str(r.get("value_raw") or "").strip() != ""
         ]
@@ -3868,10 +4506,14 @@ def build_structured_evidence_pack(
                 "qualitative_comment_text_preview": "",
             }
         else:
-            comment_text, cr = extract_comment_text_for_subject("troponine", rows)
+            extraction_subject = comment_subject_norm or search_term
+            comment_text, cr = extract_comment_text_for_subject(extraction_subject, rows)
             if comment_text and isinstance(cr, dict):
                 raw_comment_text = str(cr.get("value_raw") or cr.get("text_for_keyword") or cr.get("text_for_embedding") or "").strip()
-                display_comment_text = clean_qualitative_comment_text(raw_comment_text or comment_text, "troponine") or comment_text
+                display_comment_text = clean_qualitative_comment_text(raw_comment_text or comment_text, extraction_subject) or comment_text
+                row_subject = str(cr.get("analyte") or cr.get("parameter") or "").strip()
+                final_subject = comment_subject_label if comment_subject_norm else (row_subject or comment_subject_label)
+                final_subject_norm = comment_subject_norm or norm_text(final_subject)
                 pack["comment_text"] = display_comment_text
                 pack["raw_comment_text"] = raw_comment_text
                 pack["evidences"] = [
@@ -3881,9 +4523,9 @@ def build_structured_evidence_pack(
                         "page": cr.get("page_number"),
                         "row": cr.get("row_index"),
                         "chunk_id": cr.get("chunk_id"),
-                        "analyte": "Troponine",
-                        "subject": "Troponine",
-                        "analyte_norm": "troponine",
+                        "analyte": final_subject,
+                        "subject": final_subject,
+                        "analyte_norm": final_subject_norm,
                         "current_value": display_comment_text,
                         "raw_comment_text": raw_comment_text,
                         "display_comment_text": display_comment_text,
@@ -4198,34 +4840,45 @@ def _format_multi_doc_comparison_answer(
     return "\n".join(lines).strip(), missing
 
 
-def _format_troponine_comment_answer(rows: list[dict[str, Any]]) -> str:
+def _format_qualitative_comment_answer(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return _missing_doc_answer()
 
-    measured = [
-        r
-        for r in rows
-        if ("troponine" in norm_text(str(r.get("analyte_norm") or "")) or "troponine" in norm_text(str(r.get("analyte") or "")))
-        and norm_text(str(r.get("analyte") or "")) != "commentaire"
-        and str(r.get("value_raw") or "").strip() != ""
-    ]
+    first = rows[0] if rows and isinstance(rows[0], dict) else {}
+    subject = str(first.get("analyte") or first.get("parameter") or first.get("analyte_norm") or "ce paramètre").strip()
+    subject_norm = norm_text(subject)
+    measured = []
+    for r in rows:
+        an_norm = norm_text(str(r.get("analyte_norm") or ""))
+        an_lbl = norm_text(str(r.get("analyte") or ""))
+        if subject_norm and subject_norm not in an_norm and subject_norm not in an_lbl:
+            continue
+        if norm_text(str(r.get("analyte") or "")) == "commentaire":
+            continue
+        if str(r.get("value_raw") or "").strip() == "":
+            continue
+        measured.append(r)
     if measured:
         row = measured[0]
         unit = str(row.get("unit") or "").strip()
         ref = str(row.get("reference_range") or "non disponible")
         return (
-            f"Une valeur mesurée de troponine est retrouvée: {row.get('value_raw')}"
+            f"Une valeur mesurée est retrouvée pour {subject}: {row.get('value_raw')}"
             + (f" {unit}" if unit else "")
             + f" (référence: {ref})."
         )
 
-    comment_rows = [r for r in rows if "troponine" in norm_text(str(r.get("value_raw") or ""))]
+    comment_rows = []
+    for r in rows:
+        raw = norm_text(str(r.get("value_raw") or ""))
+        if subject_norm and subject_norm in raw:
+            comment_rows.append(r)
     if comment_rows:
         row = comment_rows[0]
         comment = str(row.get("value_raw") or "").strip()
         snippet = comment if len(comment) <= 220 else comment[:217] + "..."
         return (
-            "Aucune valeur mesurée de troponine n’est retrouvée ; le document contient seulement un commentaire/interprétation "
+            f"Aucune valeur mesurée n’est retrouvée pour {subject} ; le document contient seulement un commentaire/interprétation "
             f"avec seuil. Extrait: {snippet}"
         )
     return _missing_doc_answer()
@@ -4281,6 +4934,50 @@ def _count_displayed_exact_analyte(answer: str, analyte: str) -> int:
     return len(pattern.findall(text))
 
 
+def _normalize_transform_evidence_item(ev: dict[str, Any]) -> dict[str, Any]:
+    status_info = normalize_result_status(ev)
+    status_code = status_info["raw_status"]
+    page = ev.get("page")
+    if page in (None, ""):
+        page = ev.get("page_number")
+    row = ev.get("row")
+    if row in (None, ""):
+        row = ev.get("row_index")
+    current_value = ev.get("current_value")
+    if current_value in (None, ""):
+        current_value = ev.get("value_raw")
+    reference = ev.get("reference")
+    if reference in (None, ""):
+        reference = ev.get("reference_range")
+    out = dict(ev)
+    out.update(
+        {
+            "doc_id": ev.get("doc_id"),
+            "analyte": ev.get("analyte") or ev.get("parameter"),
+            "analyte_norm": ev.get("analyte_norm"),
+            "current_value": current_value,
+            "value_raw": ev.get("value_raw") if ev.get("value_raw") not in (None, "") else current_value,
+            "value_numeric": ev.get("value_numeric"),
+            "unit": ev.get("unit"),
+            "reference": reference,
+            "reference_range": ev.get("reference_range") if ev.get("reference_range") not in (None, "") else reference,
+            "previous_result": ev.get("previous_result") or ev.get("previous_result_value_raw"),
+            "technical_status_code": status_code or "not_interpretable",
+            "interpretation_status": status_code or "not_interpretable",
+            "technical_status": str(ev.get("technical_status") or ev.get("status") or status_info["display_status"]),
+            "source": ev.get("source"),
+            "source_pdf": ev.get("source_pdf"),
+            "page": page,
+            "page_number": page,
+            "row": row,
+            "row_index": row,
+            "viewer_url": ev.get("viewer_url"),
+            "source_url": ev.get("source_url"),
+        }
+    )
+    return out
+
+
 def _build_response_transform_pack(
     *,
     query: str,
@@ -4289,7 +4986,7 @@ def _build_response_transform_pack(
 ) -> dict[str, Any]:
     qn = norm_text(query)
     src = dict(previous_pack or {})
-    evidences = [dict(ev) for ev in (src.get("evidences") or [])]
+    evidences = [_normalize_transform_evidence_item(dict(ev)) for ev in (src.get("evidences") or [])]
 
     if "au dessus de la reference" in qn or "au-dessus de la reference" in qn or "above reference" in qn:
         evidences = [ev for ev in evidences if str(ev.get("technical_status_code") or "").strip().lower() == "above_reference"]
@@ -4345,6 +5042,7 @@ def run_generation(
     show_low_quality: bool = False,
     previous_structured_evidence_pack: dict[str, Any] | None = None,
     previous_displayed_evidence_pack: dict[str, Any] | None = None,
+    previous_displayed_context: dict[str, Any] | None = None,
     previous_context_intent: str | None = None,
     previous_data_context_intent: str | None = None,
     previous_data_context_type: str | None = None,
@@ -4383,48 +5081,284 @@ def run_generation(
         "last_patient_inventory": previous_patient_inventory if previous_has_patient_inventory else None,
         "last_transformable_evidence_pack": preferred_previous_transformable_pack,
         "last_qualitative_evidence_pack": previous_qualitative_evidence_pack,
+        "last_displayed_context": previous_displayed_context if isinstance(previous_displayed_context, dict) else None,
     }
     context_resolution = resolve_context_for_turn(q, query_understanding, state_for_resolution)
+    deictic_resolution = resolve_deictic_request(q, query_understanding, state_for_resolution)
     qn_deictic = norm_text(q)
     asks_table = any(token in qn_deictic for token in [" table", "table ", "tableau"])
     asks_graph = any(token in qn_deictic for token in ["graphique", "chart", "courbe", "radar", "bar chart", "line graph", "visualise"])
+    asks_context_summary = any(token in qn_deictic for token in ["resume", "résume", "resumer", "résumer", "synthese", "synthèse", "synthetise", "synthétise"]) and any(
+        token in qn_deictic for token in ["commentaire", "ce commentaire", "cette valeur", "ce resultat", "ce résultat", "ces resultats", "ces résultats", "ce tableau", "ca", "ça", "ceci"]
+    )
     is_deictic_render = bool(
         any(token in qn_deictic for token in [" ca", "ça", "ces donnees", "ces données", "affiche", "mets"])
         and (asks_table or asks_graph)
     )
     has_explicit_scope = bool(query_understanding.requested_doc_ids or query_understanding.requested_analytes or getattr(query_understanding, "requested_date_iso", None))
     prev_ctx_type = str(previous_data_context_type or "").strip().lower()
-    if is_deictic_render and not has_explicit_scope:
+    deictic_no_context = str(deictic_resolution.get("intent") or "") == "deictic_no_context"
+
+    if (is_deictic_render or asks_context_summary or deictic_no_context) and not has_explicit_scope:
         if prev_ctx_type == "patient_inventory":
-            inventory_view = "filterable_table" if asks_table else (getattr(query_understanding, "inventory_view_type", None) or "patient_cards")
-            query_understanding = replace(
-                query_understanding,
-                intent="inventory_visualization_render",
-                inventory_view_type=inventory_view,
-                is_small_talk=False,
-                is_response_transform=False,
-            )
+            if asks_context_summary:
+                query_understanding = replace(
+                    query_understanding,
+                    intent="context_summary_render",
+                    is_small_talk=False,
+                    is_response_transform=False,
+                )
+                context_resolution["should_skip_retrieval"] = True
+                context_resolution["reason"] = "deictic_summary_reuse_inventory"
+            else:
+                inventory_view = "filterable_table" if asks_table else (getattr(query_understanding, "inventory_view_type", None) or "patient_cards")
+                query_understanding = replace(
+                    query_understanding,
+                    intent="inventory_visualization_render",
+                    inventory_view_type=inventory_view,
+                    is_small_talk=False,
+                    is_response_transform=False,
+                )
         elif prev_ctx_type == "biological_numeric_results" and isinstance(preferred_previous_transformable_pack, dict) and preferred_previous_transformable_pack:
-            query_understanding = replace(
-                query_understanding,
-                intent="response_transform",
-                output_format="chart" if asks_graph else "table",
-                is_response_transform=True,
-                is_small_talk=False,
-            )
+            if asks_context_summary:
+                query_understanding = replace(
+                    query_understanding,
+                    intent="context_summary_render",
+                    is_small_talk=False,
+                    is_response_transform=False,
+                )
+            else:
+                query_understanding = replace(
+                    query_understanding,
+                    intent="response_transform",
+                    output_format="chart" if asks_graph else "table",
+                    is_response_transform=True,
+                    is_small_talk=False,
+                )
             context_resolution["should_skip_retrieval"] = True
-            context_resolution["reason"] = "deictic_render_reuse_transformable"
+            context_resolution["reason"] = "deictic_summary_reuse_transformable" if asks_context_summary else "deictic_render_reuse_transformable"
         elif prev_ctx_type == "medical_qualitative_comment" and isinstance(previous_qualitative_evidence_pack, dict) and previous_qualitative_evidence_pack:
+            if asks_context_summary:
+                query_understanding = replace(
+                    query_understanding,
+                    intent="context_summary_render",
+                    is_small_talk=False,
+                    is_response_transform=False,
+                )
+            else:
+                query_understanding = replace(
+                    query_understanding,
+                    intent="qualitative_comment_render",
+                    qualitative_view_type="text_table",
+                    is_small_talk=False,
+                    is_response_transform=False,
+                )
+            context_resolution["should_skip_retrieval"] = True
+            context_resolution["reason"] = "deictic_summary_reuse_qualitative" if asks_context_summary else "deictic_render_reuse_qualitative"
+        else:
+            if asks_context_summary:
+                no_context_answer = "Je n’ai pas de contexte précédent à résumer. Demandez d’abord des résultats, un commentaire ou un inventaire."
+            elif str(query_understanding.intent or "").strip().lower() == "inventory_visualization_render":
+                no_context_answer = (
+                    "Je n’ai pas d’inventaire patient récent à afficher sous cette forme. "
+                    "Demandez d’abord la liste des patients."
+                )
+            elif deictic_no_context:
+                no_context_answer = (
+                    "Je n’ai pas de contexte précédent à reformater. "
+                    "Je n’ai pas de contexte précédent exploitable à afficher sous cette forme. "
+                    "Demandez d’abord un résultat, un commentaire ou un inventaire."
+                )
+            else:
+                no_context_answer = (
+                    "Je n’ai pas de contexte précédent exploitable à afficher sous cette forme. "
+                    "Demandez d’abord les données à présenter."
+                )
+            no_context_mode = "context_summary_render" if asks_context_summary else "response_transform"
+            return {
+                "request_id": request_id,
+                "query": q,
+                "query_received": query_received,
+                "query_used_for_retrieval": "",
+                "query_used_for_prompt": q,
+                "query_stored": q,
+                "normalized_query": q,
+                "mode": no_context_mode,
+                "provider": provider,
+                "model": model,
+                "top_k": top_k,
+                "max_display_results": int(max_display_results),
+                "show_all_results": bool(show_all_results),
+                "show_low_quality": bool(show_low_quality),
+                "timeout": timeout,
+                "generation_time_seconds": round(time.perf_counter() - started, 3),
+                "answer": no_context_answer,
+                "citations": [],
+                "sources": [],
+                "validation": validate_answer(
+                    query=q,
+                    answer_text=(
+                        no_context_answer
+                    ),
+                    evidence_pack=[],
+                    displayed_evidences=[],
+                    source_citations=[],
+                    generation_mode="deterministic_response_transform",
+                    retrieval_status="insufficient_context",
+                    query_received=query_received,
+                    query_used_for_retrieval="",
+                    query_used_for_prompt=q,
+                    query_stored=q,
+                    detected_analytes=[],
+                    query_intents={"context_summary_render": True} if asks_context_summary else {"response_transform": True},
+                    output_format_requested="list" if asks_context_summary else ("chart" if asks_graph else "table"),
+                    answer_style_requested="standard",
+                    requested_table_columns=[],
+                    requested_technical_condition=None,
+                    source_clickable_requested=bool(getattr(query_understanding, "source_clickable_requested", False)),
+                    requested_value=None,
+                    comparison_operator=None,
+                    raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                    unsupported_presentation=False,
+                    user_requested_visualization=False,
+                    requested_chart_type=None,
+                    visualization_payload=None,
+                    chart_data_payload=None,
+                ),
+                "quality_report": None,
+                "llm_error": None,
+                "error_type": None,
+                "generation_mode": "deterministic_context_summary_render" if asks_context_summary else "deterministic_response_transform",
+                "detected_analytes": [],
+                "query_understanding": _query_understanding_payload(query_understanding),
+                "structured_evidence_pack": {},
+                "evidence_pack": [],
+                "displayed_evidences": [],
+                "display": {
+                    "selected_candidates_count": 0,
+                    "low_quality_evidence_filtered_count": 0,
+                    "hidden_result_count": 0,
+                    "requested_multi_result_query": False,
+                    "display_notes": [],
+                },
+                "retrieval": {
+                    "answerability": {
+                        "status": "not_required" if asks_context_summary else "insufficient_context",
+                        "reason": (
+                            "context_summary_no_context"
+                            if asks_context_summary
+                            else ("deictic_no_context_guard" if deictic_no_context else "deictic_render_no_context")
+                        ),
+                    },
+                    "filters": {"doc_ids": [], "analytes": []},
+                    "top_results": [],
+                    "context_chunks": [],
+                    "sources": [],
+                    "retrieval_skipped": True,
+                },
+                "prompt": "",
+                "debug": {
+                    "request_id": request_id,
+                    "generation_mode": "deterministic_response_transform",
+                    "summary_no_context": bool(asks_context_summary),
+                    "generation_writer": "professional_fallback",
+                    "context_resolution": context_resolution,
+                    "retrieval_skipped_due_to_no_transformable_context": True,
+                },
+                "visualization": None,
+                "chart_data": None,
+            }
+
+    # Dedicated deictic resolver overrides (same-action / fiche / status follow-up).
+    resolved_intent = str(deictic_resolution.get("intent") or "").strip().lower()
+    if deictic_resolution.get("resolved") and resolved_intent not in {"", "deictic_no_context"}:
+        if resolved_intent == "doc_scoped_results" and query_understanding.requested_analytes:
+            effective_scope = deictic_resolution.get("effective_doc_scope") if isinstance(deictic_resolution.get("effective_doc_scope"), dict) else {}
+            scoped_doc_ids = [str(d).strip() for d in (effective_scope.get("doc_ids") or []) if str(d).strip()]
+            if scoped_doc_ids:
+                query_understanding = replace(
+                    query_understanding,
+                    intent="doc_scoped_results",
+                    requested_doc_ids=scoped_doc_ids,
+                    is_small_talk=False,
+                    is_response_transform=False,
+                )
+        elif resolved_intent == "qualitative_comment_render":
+            view = str(deictic_resolution.get("render_type") or getattr(query_understanding, "qualitative_view_type", None) or "text_table")
             query_understanding = replace(
                 query_understanding,
                 intent="qualitative_comment_render",
-                qualitative_view_type="text_table",
+                qualitative_view_type=view,
                 is_small_talk=False,
                 is_response_transform=False,
             )
             context_resolution["should_skip_retrieval"] = True
-            context_resolution["reason"] = "deictic_render_reuse_qualitative"
-        else:
+            context_resolution["reason"] = "deictic_qualitative_render"
+        elif resolved_intent == "inventory_visualization_render":
+            inv_view = str(deictic_resolution.get("render_type") or getattr(query_understanding, "inventory_view_type", None) or "filterable_table")
+            query_understanding = replace(
+                query_understanding,
+                intent="inventory_visualization_render",
+                inventory_view_type=inv_view,
+                is_small_talk=False,
+                is_response_transform=False,
+            )
+            context_resolution["should_skip_retrieval"] = True
+            context_resolution["reason"] = "deictic_inventory_render"
+        elif resolved_intent == "context_summary_render":
+            query_understanding = replace(
+                query_understanding,
+                intent="context_summary_render",
+                is_small_talk=False,
+                is_response_transform=False,
+            )
+            context_resolution["should_skip_retrieval"] = True
+            context_resolution["reason"] = "deictic_context_summary"
+        elif resolved_intent == "response_transform":
+            query_understanding = replace(
+                query_understanding,
+                intent="response_transform",
+                is_small_talk=False,
+                is_response_transform=True,
+            )
+            context_resolution["should_skip_retrieval"] = True
+            context_resolution["reason"] = "deictic_response_transform"
+    if (
+        str(deictic_resolution.get("intent") or "").strip().lower() == "response_transform"
+        and str(deictic_resolution.get("render_type") or "").strip().lower() == "status_check"
+        and isinstance(previous_displayed_evidence_pack, dict)
+    ):
+        prev_rows = [r for r in list(previous_displayed_evidence_pack.get("evidences") or previous_displayed_evidence_pack.get("results") or []) if isinstance(r, dict)]
+        if prev_rows:
+            ev = prev_rows[0]
+            analyte = str(ev.get("analyte") or ev.get("parameter") or "Résultat").strip()
+            value = str(ev.get("current_value") or ev.get("value_raw") or ev.get("value_numeric") or "non disponible").strip()
+            unit = str(ev.get("unit") or "").strip()
+            reference = str(ev.get("reference") or ev.get("reference_range") or "non disponible").strip()
+            status = str(ev.get("technical_status") or ev.get("status") or ev.get("interpretation_status") or "non interprétable").strip()
+            if any(tok in norm_text(status) for tok in ["above_reference", "au dessus", "au-dessus"]):
+                yn = "Oui"
+            elif any(tok in norm_text(status) for tok in ["within_reference", "dans la reference", "dans la référence", "normal"]):
+                yn = "Non"
+            else:
+                yn = "Impossible à déterminer"
+            src = normalize_source_for_response(
+                {
+                    "label": ev.get("source_label") or ev.get("source"),
+                    "source_pdf": ev.get("source_pdf"),
+                    "doc_id": ev.get("doc_id"),
+                    "page": ev.get("page") if ev.get("page") is not None else ev.get("page_number"),
+                    "line": ev.get("line") if ev.get("line") is not None else ev.get("row"),
+                    "viewer_url": ev.get("viewer_url"),
+                    "source_url": ev.get("source_url"),
+                }
+            )
+            source_label = str(src.get("label") or "source non disponible").strip()
+            answer = (
+                f"{yn}. {analyte} est {status} :\n"
+                f"{analyte} = {value}{(' ' + unit) if unit else ''} ; référence : {reference}.\n"
+                f"Source : {source_label}."
+            )
             return {
                 "request_id": request_id,
                 "query": q,
@@ -4442,30 +5376,24 @@ def run_generation(
                 "show_low_quality": bool(show_low_quality),
                 "timeout": timeout,
                 "generation_time_seconds": round(time.perf_counter() - started, 3),
-                "answer": (
-                    "Je n’ai pas de contexte précédent exploitable à afficher sous cette forme. "
-                    "Demandez d’abord les données à présenter."
-                ),
+                "answer": answer,
                 "citations": [],
-                "sources": [],
+                "sources": [src],
                 "validation": validate_answer(
                     query=q,
-                    answer_text=(
-                        "Je n’ai pas de contexte précédent exploitable à afficher sous cette forme. "
-                        "Demandez d’abord les données à présenter."
-                    ),
-                    evidence_pack=[],
-                    displayed_evidences=[],
-                    source_citations=[],
+                    answer_text=answer,
+                    evidence_pack=prev_rows,
+                    displayed_evidences=prev_rows,
+                    source_citations=[src],
                     generation_mode="deterministic_response_transform",
-                    retrieval_status="insufficient_context",
+                    retrieval_status="not_required",
                     query_received=query_received,
                     query_used_for_retrieval="",
                     query_used_for_prompt=q,
                     query_stored=q,
                     detected_analytes=[],
                     query_intents={"response_transform": True},
-                    output_format_requested="chart" if asks_graph else "table",
+                    output_format_requested="paragraph",
                     answer_style_requested="standard",
                     requested_table_columns=[],
                     requested_technical_condition=None,
@@ -4485,35 +5413,16 @@ def run_generation(
                 "generation_mode": "deterministic_response_transform",
                 "detected_analytes": [],
                 "query_understanding": _query_understanding_payload(query_understanding),
-                "structured_evidence_pack": {},
-                "evidence_pack": [],
-                "displayed_evidences": [],
-                "display": {
-                    "selected_candidates_count": 0,
-                    "low_quality_evidence_filtered_count": 0,
-                    "hidden_result_count": 0,
-                    "requested_multi_result_query": False,
-                    "display_notes": [],
-                },
-                "retrieval": {
-                    "answerability": {"status": "insufficient_context", "reason": "deictic_render_no_context"},
-                    "filters": {"doc_ids": [], "analytes": []},
-                    "top_results": [],
-                    "context_chunks": [],
-                    "sources": [],
-                    "retrieval_skipped": True,
-                },
+                "structured_evidence_pack": previous_displayed_evidence_pack,
+                "evidence_pack": prev_rows,
+                "displayed_evidences": prev_rows,
+                "retrieval": {"answerability": {"status": "not_required", "reason": "deictic_status_from_last_displayed_context"}, "retrieval_skipped": True},
                 "prompt": "",
-                "debug": {
-                    "request_id": request_id,
-                    "generation_mode": "deterministic_response_transform",
-                    "generation_writer": "professional_fallback",
-                    "context_resolution": context_resolution,
-                    "retrieval_skipped_due_to_no_transformable_context": True,
-                },
+                "debug": {"request_id": request_id, "deictic_resolution": deictic_resolution, "context_resolution": context_resolution},
                 "visualization": None,
                 "chart_data": None,
             }
+
     requested_doc_ids = resolve_followup_doc_scope(
         query=q,
         requested_analytes=list(query_understanding.requested_analytes or []),
@@ -4536,7 +5445,7 @@ def run_generation(
         query_understanding = replace(query_understanding, requested_doc_ids=requested_doc_ids)
     requested_doc_id = requested_doc_ids[0] if len(requested_doc_ids) == 1 else None
     sensitive_or_treatment = _query_is_sensitive_or_treatment(q)
-    if "troponine" in qn or str(getattr(query_understanding, "requested_context_type", "") or "") == "medical_qualitative_comment":
+    if str(getattr(query_understanding, "requested_context_type", "") or "") == "medical_qualitative_comment":
         LOGGER.info(
             "qa_qualitative_pre current_query=%r detected_intent=%s requested_context_type=%s requested_analytes=%s requested_doc_ids=%s",
             q,
@@ -4734,12 +5643,154 @@ def run_generation(
             query_understanding=query_understanding,
             intents=intents,
             previous_qualitative_evidence_pack=previous_qualitative_evidence_pack,
+            previous_displayed_context=previous_displayed_context,
         )
         out.setdefault("debug", {})["context_resolution"] = context_resolution
         out.setdefault("debug", {})["retrieval_skipped_due_to_no_transformable_context"] = bool(
             context_resolution.get("should_skip_retrieval")
         )
         return out
+    if str(query_understanding.intent or "").strip().lower() == "context_summary_render":
+        out = _build_context_summary_render_response(
+            request_id=request_id,
+            started=started,
+            query=q,
+            query_received=query_received,
+            query_used_for_retrieval=query_used_for_retrieval,
+            query_used_for_prompt=query_used_for_prompt,
+            top_k=top_k,
+            max_display_results=max_display_results,
+            show_all_results=show_all_results,
+            show_low_quality=show_low_quality,
+            timeout=timeout,
+            provider=provider,
+            model=model,
+            query_understanding=query_understanding,
+            intents=intents,
+            previous_displayed_context=previous_displayed_context,
+            previous_qualitative_evidence_pack=previous_qualitative_evidence_pack,
+            previous_transformable_pack=preferred_previous_transformable_pack if isinstance(preferred_previous_transformable_pack, dict) else None,
+            previous_patient_inventory=previous_patient_inventory,
+            previous_data_context_type=previous_data_context_type,
+            llm_client=llm_client,
+        )
+        out.setdefault("debug", {})["context_resolution"] = context_resolution
+        out.setdefault("debug", {})["retrieval_skipped_due_to_no_transformable_context"] = True
+        return out
+    if str(query_understanding.intent or "").strip().lower() == "source_followup":
+        # Always answer from last displayed context (no retrieval).
+        ctx = previous_displayed_context if isinstance(previous_displayed_context, dict) else {}
+        ctx_type = str(ctx.get("context_type") or "").strip().lower()
+        ctx_subject = str(ctx.get("subject") or "ce commentaire").strip()
+        source_candidates = list(ctx.get("sources") or [])
+        if (not source_candidates) and isinstance(previous_qualitative_evidence_pack, dict):
+            qevs = list(previous_qualitative_evidence_pack.get("evidences") or previous_qualitative_evidence_pack.get("results") or [])
+            if qevs and isinstance(qevs[0], dict):
+                q0 = qevs[0]
+                source_candidates.append(
+                    {
+                        "label": str(q0.get("source") or q0.get("source_label") or "").strip(),
+                        "source_pdf": str(q0.get("source_pdf") or "").strip(),
+                        "doc_id": str(q0.get("doc_id") or "").strip(),
+                        "page": q0.get("page") if q0.get("page") is not None else q0.get("page_number"),
+                        "line": q0.get("line") if q0.get("line") is not None else q0.get("row"),
+                        "viewer_url": str(q0.get("viewer_url") or "").strip() or None,
+                        "source_url": str(q0.get("source_url") or "").strip() or None,
+                    }
+                )
+        srcs = dedup_sources_for_qualitative(source_candidates)
+        src0 = srcs[0] if srcs else {}
+        source_label = str(src0.get("label") or "").strip()
+        # Never expose internal source tags to users.
+        if source_label.lower() in {"sqlite_deterministic", "sqlite", "deterministic"}:
+            source_label = ""
+        if not source_label:
+            src_pdf = str(src0.get("source_pdf") or "").strip()
+            src_page = src0.get("page")
+            src_line = src0.get("line")
+            if src_pdf:
+                source_label = src_pdf
+                if isinstance(src_page, int):
+                    source_label += f" — page {src_page}"
+                if isinstance(src_line, int):
+                    source_label += f", ligne {src_line}"
+        if not source_label:
+            source_label = "source non disponible"
+        viewer_url = str(src0.get("viewer_url") or "").strip() or None
+        source_url = str(src0.get("source_url") or src0.get("url") or "").strip() or None
+        source_markdown, has_click = format_clickable_source_markdown(source_label, viewer_url, source_url)
+        source_txt = source_markdown if has_click else source_label
+        if not has_click:
+            source_txt = f"{source_label} (source non cliquable disponible uniquement en texte)"
+        if ctx_type == "medical_qualitative_comment":
+            subj = str(ctx_subject or "ce sujet").strip()
+            if _is_generic_subject(subj):
+                subj = "ce commentaire"
+            subj_phrase = f"la {subj.lower()}" if subj and not subj.lower().startswith(("le ", "la ", "l'")) else subj.lower()
+            if "source exacte" in norm_text(q or ""):
+                answer = f"La source exacte du commentaire sur {subj_phrase} est {source_txt}."
+            else:
+                answer = f"Ce commentaire sur {subj_phrase} provient de {source_txt}."
+        else:
+            answer = f"La source du dernier élément affiché est {source_txt}."
+        validation = validate_answer(
+            query=q,
+            answer_text=answer,
+            evidence_pack=[],
+            displayed_evidences=[],
+            source_citations=srcs,
+            generation_mode="deterministic_source_followup",
+            retrieval_status="not_required",
+            query_received=query_received,
+            query_used_for_retrieval="",
+            query_used_for_prompt=q,
+            query_stored=q,
+            detected_analytes=[],
+            query_intents=intents,
+            output_format_requested="paragraph",
+            answer_style_requested="standard",
+            requested_table_columns=[],
+            requested_technical_condition=None,
+            source_clickable_requested=bool(getattr(query_understanding, "source_clickable_requested", False)),
+            requested_value=None,
+            comparison_operator=None,
+            visualization_payload=None,
+            chart_data_payload=None,
+        )
+        return {
+            "request_id": request_id,
+            "query": q,
+            "query_received": query_received,
+            "query_used_for_retrieval": "",
+            "query_used_for_prompt": q,
+            "query_stored": q,
+            "normalized_query": q,
+            "mode": "source_followup",
+            "provider": provider,
+            "model": model,
+            "top_k": top_k,
+            "max_display_results": int(max_display_results),
+            "show_all_results": bool(show_all_results),
+            "show_low_quality": bool(show_low_quality),
+            "timeout": timeout,
+            "generation_time_seconds": round(time.perf_counter() - started, 3),
+            "answer": answer,
+            "citations": [],
+            "sources": srcs,
+            "validation": validation,
+            "quality_report": _quality_report(answer=answer, validation=validation, source_clickable_requested=False, recent_style_history=[]),
+            "llm_error": None,
+            "error_type": None,
+            "generation_mode": "deterministic_source_followup",
+            "detected_analytes": [],
+            "query_understanding": _query_understanding_payload(query_understanding),
+            "structured_evidence_pack": {},
+            "evidence_pack": [],
+            "displayed_evidences": [],
+            "retrieval": {"answerability": {"status": "not_required", "reason": "source_followup_no_retrieval"}},
+            "visualization": None,
+            "chart_data": None,
+        }
 
     # Strict guard: after non-transformable contexts (e.g. inventory), do not run retrieval
     # for deictic visualization/transform requests when no transformable context exists.
@@ -5165,8 +6216,15 @@ def run_generation(
             comment_text = str(structured_pack.get("comment_text") or "").strip()
             first_ev = (structured_pack.get("evidences") or [{}])[0] if isinstance(structured_pack.get("evidences"), list) else {}
             source_label = str(first_ev.get("source") or "").strip()
+            subject_label = str(first_ev.get("subject") or first_ev.get("analyte") or "").strip()
+            if not subject_label:
+                subject_norm, subject_guess = _resolve_comment_subject_from_query(
+                    query_understanding=query_understanding,
+                    query=q,
+                )
+                subject_label = subject_guess if subject_guess else (subject_norm or "Commentaire médical")
             final_answer = build_qualitative_comment_answer(
-                subject="Troponine",
+                subject=subject_label,
                 comment_text=comment_text,
                 source_label=source_label or "source non disponible",
             )
@@ -5219,8 +6277,12 @@ def run_generation(
             if any(_row_matches_analyte(row, analyte) for row in structured_rows):
                 found_requested_analytes.append(analyte)
                 continue
-            if analyte == "troponine" and str(structured_pack.get("comment_text") or "").strip():
-                found_requested_analytes.append(analyte)
+            if str(structured_pack.get("comment_text") or "").strip():
+                evs_for_subject = list(structured_pack.get("evidences") or [])
+                ev0 = evs_for_subject[0] if evs_for_subject and isinstance(evs_for_subject[0], dict) else {}
+                ev_norm = norm_text(str(ev0.get("analyte_norm") or ev0.get("analyte") or ev0.get("subject") or ""))
+                if ev_norm and (ev_norm == norm_text(analyte) or norm_text(analyte) in ev_norm):
+                    found_requested_analytes.append(analyte)
         missing_requested_analytes = sorted(
             {
                 str(a).strip().lower()

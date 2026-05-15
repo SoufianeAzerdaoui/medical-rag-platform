@@ -1429,8 +1429,11 @@ def validate_answer(
         warnings.append("llm_used_for_structured_query")
 
     if intents.get("comment_without_measured_value"):
-        has_troponine_comment = any("troponine" in _norm(str(ev.get("text_excerpt") or "")) for ev in (displayed if displayed else evidence_pack))
-        if has_troponine_comment and "information insuffisante" in core_norm:
+        has_qualitative_comment = any(
+            any(marker in _norm(str(ev.get("text_excerpt") or "")) for marker in ["commentaire", "valeur seuil", "attention"])
+            for ev in (displayed if displayed else evidence_pack)
+        )
+        if has_qualitative_comment and "information insuffisante" in core_norm:
             errors.append("insufficient_but_available")
 
     if intents.get("global_patient_lookup"):
@@ -1713,6 +1716,7 @@ def validate_answer(
         "visualization_recommendation",
         "inventory_visualization_render",
         "qualitative_comment_render",
+        "context_summary_render",
         "doc_scoped_results",
         "cohort_search",
         "comment_without_measured_value",
@@ -1811,7 +1815,11 @@ def validate_production_ux(
     # C. Natural Sort & Range Labels
     if patients:
         for p in patients:
-            reports = [r["filename"] for r in p.get("reports", [])]
+            reports = [
+                str(r.get("filename") or r.get("label") or r.get("doc_id") or "").strip()
+                for r in p.get("reports", [])
+                if isinstance(r, dict)
+            ]
             if reports != sorted(reports, key=natural_report_sort_key):
                  checks.append({"id": "natural_sort_sources", "status": "fail", "message": f"Sources mal triées pour {p['patient']}"})
             

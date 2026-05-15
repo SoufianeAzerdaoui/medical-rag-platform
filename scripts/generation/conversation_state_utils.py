@@ -37,6 +37,7 @@ class ConversationState(TypedDict, total=False):
     last_visualization: dict[str, Any] | None
     last_inventory_view: dict[str, Any] | None
     last_qualitative_view: dict[str, Any] | None
+    last_displayed_context: dict[str, Any] | None
     recent_turns: list[dict[str, Any]]
     created_at: str
     updated_at: str
@@ -77,8 +78,28 @@ TECHNICAL_INTENTS = {
     "visualization_recommendation",
     "inventory_visualization_render",
     "qualitative_comment_render",
+    "context_summary_render",
     "error",
 }
+
+_GENERIC_COMMENT_SUBJECTS = {
+    "commentaire",
+    "commentaire medical",
+    "commentaire médical",
+    "comment",
+    "note",
+    "observation",
+    "interpretation",
+    "interprétation",
+    "qualitative",
+    "resultat",
+    "résultat",
+    "valeur",
+}
+
+
+def _is_generic_subject(label: str | None) -> bool:
+    return re.sub(r"\s+", " ", str(label or "").strip().lower()) in _GENERIC_COMMENT_SUBJECTS
 
 
 def _now_iso() -> str:
@@ -126,6 +147,7 @@ def _empty_state(conversation_id: str) -> ConversationState:
         "last_visualization": None,
         "last_inventory_view": None,
         "last_qualitative_view": None,
+        "last_displayed_context": None,
         "recent_turns": [],
         "created_at": now,
         "updated_at": now,
@@ -408,6 +430,48 @@ def update_conversation_state_reducer(
     if isinstance(style_entry, dict):
         style_hist.append(style_entry)
     out["recent_style_history"] = style_hist[-20:]
+
+    # Canonical "what user just saw" context for deictic follow-ups.
+    displayed_ctx: dict[str, Any] = {
+        "context_type": str(out.get("last_data_context_type") or "none"),
+        "subject": None,
+        "display_text": str(answer or "")[:800] if answer else None,
+        "evidence_pack": evidence_pack if isinstance(evidence_pack, dict) else None,
+        "sources": list(sources or []),
+        "is_transformable_numeric": bool(evidence_pack_is_transformable(evidence_pack)),
+        "allowed_renders": [],
+        "created_from_intent": intent or None,
+    }
+    if displayed_ctx["context_type"] == "medical_qualitative_comment":
+        ev0 = {}
+        rows = []
+        if isinstance(evidence_pack, dict):
+            rows = list(evidence_pack.get("evidences") or evidence_pack.get("results") or [])
+        if rows and isinstance(rows[0], dict):
+            ev0 = rows[0]
+        requested = list((qu.get("requested_analytes") or [])) if isinstance(qu, dict) else []
+        preferred_subject = str(requested[0]).strip() if requested else ""
+        subject = preferred_subject or str(ev0.get("subject") or ev0.get("analyte") or "").strip()
+        if _is_generic_subject(subject):
+            # Keep known analyte from query context when evidence row is generic.
+            subject = preferred_subject or "Commentaire médical"
+        displayed_ctx["subject"] = subject
+        displayed_ctx["subject_normalized"] = str(subject).strip().lower()
+        displayed_ctx["is_transformable_numeric"] = False
+        displayed_ctx["allowed_renders"] = ["sourced_comment_block", "text_table", "interpretive_note", "medical_info_card"]
+    elif displayed_ctx["context_type"] == "biological_numeric_results":
+        ev0 = {}
+        rows = []
+        if isinstance(evidence_pack, dict):
+            rows = list(evidence_pack.get("evidences") or evidence_pack.get("results") or [])
+        if rows and isinstance(rows[0], dict):
+            ev0 = rows[0]
+        displayed_ctx["subject"] = str(ev0.get("analyte") or ev0.get("parameter") or "")
+        displayed_ctx["allowed_renders"] = ["chart", "table", "list"]
+    elif displayed_ctx["context_type"] == "patient_inventory":
+        displayed_ctx["allowed_renders"] = ["patient_cards", "report_accordion", "filterable_table", "document_timeline"]
+        displayed_ctx["is_transformable_numeric"] = False
+    out["last_displayed_context"] = displayed_ctx
     return out  # type: ignore[return-value]
 
 
@@ -425,6 +489,42 @@ def update_conversation_state(
     displayed = generation.get("displayed_evidences") if isinstance(generation.get("displayed_evidences"), list) else []
     # State should reflect what was actually shown to the user (especially follow-up analyte turns).
     if displayed:
+        normalized_displayed: list[dict[str, Any]] = []
+        for ev in displayed:
+            if not isinstance(ev, dict):
+                continue
+            page = ev.get("page")
+            if page in (None, ""):
+                page = ev.get("page_number")
+            row = ev.get("row")
+            if row in (None, ""):
+                row = ev.get("row_index")
+            current_value = ev.get("current_value")
+            if current_value in (None, ""):
+                current_value = ev.get("value_raw")
+            if current_value in (None, "") and ev.get("value_numeric") not in (None, ""):
+                current_value = str(ev.get("value_numeric"))
+            reference = ev.get("reference")
+            if reference in (None, ""):
+                reference = ev.get("reference_range")
+            status_code = str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+            normalized_displayed.append(
+                {
+                    **ev,
+                    "analyte": ev.get("analyte") or ev.get("parameter"),
+                    "current_value": current_value,
+                    "value_raw": ev.get("value_raw") if ev.get("value_raw") not in (None, "") else current_value,
+                    "value_numeric": ev.get("value_numeric"),
+                    "reference": reference,
+                    "reference_range": ev.get("reference_range") if ev.get("reference_range") not in (None, "") else reference,
+                    "technical_status_code": status_code or "not_interpretable",
+                    "interpretation_status": status_code or "not_interpretable",
+                    "page": page,
+                    "page_number": page,
+                    "row": row,
+                    "row_index": row,
+                }
+            )
         displayed_pack: dict[str, Any] = {
             "question": (evidence_pack or {}).get("question") if isinstance(evidence_pack, dict) else None,
             "intent": (evidence_pack or {}).get("intent") if isinstance(evidence_pack, dict) else intent,
@@ -432,8 +532,8 @@ def update_conversation_state(
             "answer_style": (evidence_pack or {}).get("answer_style") if isinstance(evidence_pack, dict) else None,
             "requested_doc_ids": list(((evidence_pack or {}).get("requested_doc_ids") or []) if isinstance(evidence_pack, dict) else []),
             "requested_analytes": list(((evidence_pack or {}).get("requested_analytes") or []) if isinstance(evidence_pack, dict) else []),
-            "evidences": list(displayed),
-            "results": list(displayed),
+            "evidences": list(normalized_displayed),
+            "results": list(normalized_displayed),
         }
         evidence_pack = displayed_pack
     patients = generation.get("patients") if isinstance(generation.get("patients"), list) else None
