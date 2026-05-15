@@ -5,6 +5,10 @@
 venv/
 scripts/generation/.env
 
+
+.venv
+.venv/
+.venv.*
 # ---- Python ----
 __pycache__/
 *.pyc
