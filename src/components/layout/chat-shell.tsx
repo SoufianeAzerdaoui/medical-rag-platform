@@ -2,25 +2,89 @@
 
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useEffect, useState } from "react";
+import { AuthPanel } from "@/components/auth/auth-panel";
 import { ChatMessages } from "@/components/chat/chat-messages";
 import { MessageComposer } from "@/components/chat/message-composer";
 import { ChatSidebar } from "@/components/sidebar/chat-sidebar";
 import { SourcesPanel } from "@/components/sources/sources-panel";
+import { ApiError } from "@/services/rag-api";
+import { useAuthStore } from "@/store/auth-store";
 import { useChatStore } from "@/store/chat-store";
 
-export function ChatShell() {
+interface ChatShellProps {
+  routeConversationId?: string | null;
+}
+
+export function ChatShell({ routeConversationId = null }: ChatShellProps) {
   const initialize = useChatStore((s) => s.initialize);
-  const activeChatId = useChatStore((s) => s.activeChatId);
-  const newChat = useChatStore((s) => s.newChat);
+  const selectConversation = useChatStore((s) => s.selectConversation);
+  const setActiveChat = useChatStore((s) => s.setActiveChat);
+  const initializeAuth = useAuthStore((s) => s.initializeAuth);
+  const logout = useAuthStore((s) => s.logout);
+  const accessToken = useAuthStore((s) => s.accessToken);
+  const authStatus = useAuthStore((s) => s.authStatus);
   const [sourcesOpenMobile, setSourcesOpenMobile] = useState(false);
+  const [conversationError, setConversationError] = useState<string | null>(null);
 
   useEffect(() => {
     void initialize();
-  }, [initialize]);
+    void initializeAuth();
+  }, [initialize, initializeAuth]);
 
   useEffect(() => {
-    if (!activeChatId) newChat();
-  }, [activeChatId, newChat]);
+    if (authStatus !== "authenticated") {
+      setConversationError(null);
+      return;
+    }
+    if (!routeConversationId) {
+      setConversationError(null);
+      return;
+    }
+    if (!accessToken) return;
+
+    let cancelled = false;
+    setConversationError(null);
+
+    void (async () => {
+      try {
+        await selectConversation(routeConversationId, accessToken);
+        if (!cancelled) setConversationError(null);
+      } catch (error) {
+        if (cancelled) return;
+        setActiveChat(routeConversationId);
+        if (error instanceof ApiError && error.status === 401) {
+          setConversationError("Session expirée. Veuillez vous reconnecter.");
+          await logout();
+          return;
+        }
+        if (error instanceof ApiError && error.status === 403) {
+          setConversationError("Accès interdit à cette conversation.");
+          return;
+        }
+        if (error instanceof ApiError && error.status === 404) {
+          setConversationError("Conversation introuvable.");
+          return;
+        }
+        setConversationError("Impossible de charger cette conversation.");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, authStatus, logout, routeConversationId, selectConversation, setActiveChat]);
+
+  if (authStatus === "loading") {
+    return (
+      <div className="flex h-screen items-center justify-center">
+        <p className="text-sm text-fg/70">Chargement de la session...</p>
+      </div>
+    );
+  }
+
+  if (authStatus === "unauthenticated") {
+    return <AuthPanel />;
+  }
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -37,6 +101,11 @@ export function ChatShell() {
           </button>
         </div>
         <div className="flex-1 overflow-auto">
+          {conversationError ? (
+            <div className="mx-6 mt-4 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+              {conversationError}
+            </div>
+          ) : null}
           <ChatMessages />
         </div>
         <MessageComposer />

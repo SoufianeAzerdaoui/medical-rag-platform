@@ -1,111 +1,69 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 import sys
-import logging
-import traceback
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal
-from collections import defaultdict
-from uuid import uuid4
+from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
 
-ROOT_DIR = Path(__file__).resolve().parent
-SCRIPTS_DIR = ROOT_DIR / "scripts"
-GENERATION_DIR = SCRIPTS_DIR / "generation"
-for p in (str(SCRIPTS_DIR), str(GENERATION_DIR)):
-    if p not in sys.path:
-        sys.path.insert(0, p)
-
-from scripts.generation.source_resolver import DocPdfResolver, is_valid_doc_id
-from scripts.generation.conversation_state_utils import (
-    evidence_pack_is_transformable,
-    get_transformable_context,
-    migrate_conversation_state,
-    update_conversation_state,
+from backend import config
+from backend.database import db_connect as _db_connect, init_schema as _init_auth_db
+from backend.models import (
+    AuthLoginRequest,
+    AuthRegisterRequest,
+    AuthResponse,
+    ChatRequest,
+    ChatResponse,
+    ConversationClearRequest,
+    ConversationClearResponse,
+    ConversationCreateRequest,
+    ConversationItem,
+    DocumentItem,
+    LogoutResponse,
+    MessageItemResponse,
+    UserResponse,
 )
-from scripts.generation.conversation_state_store import InMemoryConversationStateStore
-from scripts.generation.source_normalization import dedup_normalized_sources
+from backend.services import auth_service, conversation_service, message_service
+from backend.services.chat_service import process_chat
+from backend.services.conversation_state_store import (
+    ConversationStateService,
+    evidence_pack_transformable,
+    transformable_context,
+)
 
+ROOT_DIR = config.ROOT_DIR
+SCRIPTS_DIR = config.SCRIPTS_DIR
+GENERATION_DIR = config.GENERATION_DIR
+for module_path in (str(SCRIPTS_DIR), str(GENERATION_DIR)):
+    if module_path not in sys.path:
+        sys.path.insert(0, module_path)
 
-class ChatHistoryItem(BaseModel):
-    role: Literal["user", "assistant", "system"]
-    content: str
-
-
-class ChatRequest(BaseModel):
-    chat_id: str = Field(..., min_length=1)
-    message: str = Field(..., min_length=1)
-    history: list[ChatHistoryItem] = Field(default_factory=list)
-    document_id: str | None = None
-    mode: Literal["general", "document_analysis", "comparison", "summary"] = "general"
-
-
-class SourceItem(BaseModel):
-    id: str
-    documentName: str
-    documentId: str | None = None
-    page: int | None = None
-    section: str | None = None
-    excerpt: str | None = None
-    score: float | None = None
-    type: str | None = None
-    warning: str | None = None
-
-    # Structured citation fields (new)
-    doc_id: str | None = None
-    filename: str | None = None
-    row: int | None = None
-    label: str | None = None
-    url: str | None = None
-    viewer_url: str | None = None
-
-
-class ChatResponse(BaseModel):
-    answer: str
-    sources: list[SourceItem] = Field(default_factory=list)
-    confidence: float | None = None
-    document_ids: list[str] = Field(default_factory=list)
-    response_time: float | None = None
-    quality_report: dict[str, Any] | None = None
-    validation_status: Literal["pass", "warning", "fail"] | None = None
-    generation_mode: str | None = None
-    generation_writer: Literal[
-        "llm_writer",
-        "professional_fallback",
-        "deterministic_metadata_query",
-        "deterministic_response_transform_json",
-        "deterministic_context_summary",
-    ] | None = None
-    visualization: dict[str, Any] | None = None
-    chart_data: dict[str, Any] | None = None
-    patients: list[dict[str, Any]] | None = None
-    inventory_view: dict[str, Any] | None = None
-
-
-class DocumentItem(BaseModel):
-    id: str
-    name: str
-
+from scripts.generation.conversation_state_utils import update_conversation_state
+from scripts.generation.source_resolver import DocPdfResolver, is_valid_doc_id
 
 app = FastAPI(title="Medical RAG Backend API", version="1.1.0")
 LOGGER = logging.getLogger("medical_rag.backend")
 
+_STATE_SERVICE = ConversationStateService()
+_CONVERSATION_STATE = _STATE_SERVICE.legacy_state
+_STATE_STORE = _STATE_SERVICE.memory_store
 
-_CONVERSATION_STATE: dict[str, dict[str, Any]] = defaultdict(dict)
-_STATE_STORE = InMemoryConversationStateStore(_CONVERSATION_STATE)
+JWT_SECRET = config.JWT_SECRET
+FRONTEND_ORIGIN = config.FRONTEND_ORIGIN
+AUTH_SCHEME = auth_service.AUTH_SCHEME
+get_current_user = auth_service.get_current_user
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[origin.strip() for origin in FRONTEND_ORIGIN.split(",") if origin.strip()],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
@@ -114,92 +72,18 @@ def _resolver() -> DocPdfResolver:
     return DocPdfResolver(project_root=ROOT_DIR)
 
 
-def _to_source_items(result: dict[str, Any]) -> list[SourceItem]:
-    items: list[SourceItem] = []
-
-    # Prefer new structured citations when available.
-    structured = dedup_normalized_sources(list(result.get("sources") or []))
-    if structured:
-        for idx, src in enumerate(structured, start=1):
-            doc_id = str(src.get("doc_id") or "").strip() or None
-            filename = str(src.get("filename") or src.get("source_pdf") or "").strip() or None
-            page = src.get("page")
-            row = src.get("line", src.get("row"))
-            label = str(src.get("label") or "").strip() or None
-            url = str(src.get("url") or "").strip() or None
-            viewer_url = str(src.get("viewer_url") or "").strip() or None
-            warning = None if url else "source_pdf_unavailable"
-            items.append(
-                SourceItem(
-                    id=f"source-{idx}",
-                    documentName=filename or "Document médical",
-                    documentId=doc_id,
-                    page=page if isinstance(page, int) else None,
-                    section=None,
-                    excerpt=label,
-                    score=None,
-                    type="pdf_source",
-                    warning=warning,
-                    doc_id=doc_id,
-                    filename=filename,
-                    row=row if isinstance(row, int) else None,
-                    label=label,
-                    url=url,
-                    viewer_url=viewer_url,
-                )
-            )
-        return items
-
-    # Backward compatibility fallback from evidence pack.
-    evidences = list(result.get("displayed_evidences") or result.get("evidence_pack") or [])
-    for idx, ev in enumerate(evidences, start=1):
-        page_num: int | None = None
-        try:
-            page_value = ev.get("page_number")
-            page_num = int(page_value) if page_value is not None else None
-        except Exception:
-            page_num = None
-        items.append(
-            SourceItem(
-                id=f"legacy-{idx}",
-                documentName=str(ev.get("source_pdf") or ev.get("doc_id") or "Document médical"),
-                documentId=str(ev.get("doc_id") or "") or None,
-                page=page_num,
-                section=str(ev.get("section") or "") or None,
-                excerpt=str(ev.get("text_excerpt") or ev.get("source") or "")[:600] or None,
-                score=float(ev.get("final_score")) if ev.get("final_score") not in (None, "") else None,
-                type=str(ev.get("chunk_type") or "") or None,
-                warning=None,
-            )
-        )
-    return items
-
-
-def _confidence_from_result(result: dict[str, Any]) -> float | None:
-    validation = result.get("validation") or {}
-    status = str(validation.get("validation_status") or "").lower()
-    if status == "pass":
-        return 0.9
-    if status == "warning":
-        return 0.7
-    if status == "fail":
-        return 0.4
-    return None
-
-
 def _run_generation(**kwargs: Any) -> dict[str, Any]:
-    # Lazy import keeps state tests independent from retrieval-heavy optional deps.
     from scripts.generation.generate_answer import run_generation
 
     return run_generation(**kwargs)
 
 
-def _get_transformable_context(state: dict[str, Any]) -> dict[str, Any] | None:
-    return get_transformable_context(state)
-
-
 def _evidence_pack_is_transformable(pack: Any) -> bool:
-    return evidence_pack_is_transformable(pack)
+    return evidence_pack_transformable(pack)
+
+
+def _get_transformable_context(state: dict[str, Any]) -> dict[str, Any] | None:
+    return transformable_context(state)
 
 
 def _update_conversation_state(chat_id: str, state: dict[str, Any], generation: dict[str, Any], user_message: str) -> None:
@@ -210,7 +94,66 @@ def _update_conversation_state(chat_id: str, state: dict[str, Any], generation: 
         generation=generation,
         user_message=user_message,
     )
-    _STATE_STORE.save(chat_id, _CONVERSATION_STATE.get(chat_id) or {})
+    _STATE_SERVICE.save(chat_id, _CONVERSATION_STATE.get(chat_id) or {})
+
+
+def _get_user_by_id(user_id: str) -> dict[str, Any] | None:
+    return auth_service.get_user_by_id(user_id)
+
+
+def _get_user_by_email(email: str) -> dict[str, Any] | None:
+    return auth_service.get_user_by_email(email)
+
+
+def _normalize_email(email: str) -> str:
+    return auth_service.normalize_email(email)
+
+
+def _create_conversation_record(*, user_id: str, title: str | None = None, conversation_id: str | None = None) -> ConversationItem:
+    return ConversationItem(**conversation_service.create_conversation_record(user_id=user_id, title=title, conversation_id=conversation_id))
+
+
+def _get_conversation_for_user(conversation_id: str, user_id: str) -> dict[str, Any] | None:
+    return conversation_service.get_conversation_for_user(conversation_id, user_id)
+
+
+def _get_conversation_any_owner(conversation_id: str) -> dict[str, Any] | None:
+    return conversation_service.get_conversation_any_owner(conversation_id)
+
+
+def _require_owned_conversation(conversation_id: str, user_id: str) -> dict[str, Any]:
+    return conversation_service.require_owned_conversation(conversation_id, user_id)
+
+
+def _touch_conversation(conversation_id: str) -> None:
+    conversation_service.touch_conversation(conversation_id)
+
+
+def _save_message(conversation_id: str, role: str, content: str) -> MessageItemResponse:
+    return MessageItemResponse(**message_service.save_message(conversation_id, role, content))
+
+
+def _load_state_from_db(conversation_id: str) -> dict[str, Any] | None:
+    return _STATE_SERVICE.load_from_db(conversation_id)
+
+
+def _save_state_to_db(conversation_id: str, state: dict[str, Any]) -> None:
+    _STATE_SERVICE.save_to_db(conversation_id, state)
+
+
+def _delete_conversation_state(conversation_id: str) -> None:
+    _STATE_SERVICE.delete_db_state(conversation_id)
+
+
+def _to_user_response(user_row: dict[str, Any]) -> UserResponse:
+    return UserResponse(
+        id=str(user_row.get("id")),
+        email=str(user_row.get("email")),
+        created_at=str(user_row.get("created_at")),
+    )
+
+
+_init_auth_db()
 
 
 @app.get("/health")
@@ -224,170 +167,80 @@ def health() -> dict[str, Any]:
     }
 
 
+@app.post("/auth/register", response_model=AuthResponse)
+def auth_register(payload: AuthRegisterRequest) -> AuthResponse:
+    user = auth_service.register_user(email=payload.email, password=payload.password)
+    return AuthResponse(
+        access_token=auth_service.create_access_token(str(user["id"])),
+        user=_to_user_response(user),
+    )
+
+
+@app.post("/auth/login", response_model=AuthResponse)
+def auth_login(payload: AuthLoginRequest) -> AuthResponse:
+    user = auth_service.login_user(email=payload.email, password=payload.password)
+    return AuthResponse(
+        access_token=auth_service.create_access_token(str(user["id"])),
+        user=_to_user_response(user),
+    )
+
+
+@app.get("/auth/me", response_model=UserResponse)
+def auth_me(current_user: dict[str, Any] = Depends(get_current_user)) -> UserResponse:
+    return _to_user_response(current_user)
+
+
+@app.post("/auth/logout", response_model=LogoutResponse)
+def auth_logout(_: dict[str, Any] = Depends(get_current_user)) -> LogoutResponse:
+    return LogoutResponse(success=True)
+
+
+@app.get("/conversations", response_model=list[ConversationItem])
+def list_conversations(current_user: dict[str, Any] = Depends(get_current_user)) -> list[ConversationItem]:
+    rows = conversation_service.list_conversations_for_user(str(current_user["id"]))
+    return [ConversationItem(**row) for row in rows]
+
+
+@app.post("/conversations", response_model=ConversationItem)
+def create_conversation(
+    payload: ConversationCreateRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> ConversationItem:
+    row = conversation_service.create_conversation_record(user_id=str(current_user["id"]), title=payload.title)
+    return ConversationItem(**row)
+
+
+@app.get("/conversations/{conversation_id}/messages", response_model=list[MessageItemResponse])
+def get_conversation_messages(conversation_id: str, current_user: dict[str, Any] = Depends(get_current_user)) -> list[MessageItemResponse]:
+    conversation_service.require_owned_conversation(conversation_id, str(current_user["id"]))
+    rows = message_service.list_messages(conversation_id)
+    return [MessageItemResponse(**row) for row in rows]
+
+
+@app.delete("/conversations/{conversation_id}", response_model=LogoutResponse)
+def delete_conversation(conversation_id: str, current_user: dict[str, Any] = Depends(get_current_user)) -> LogoutResponse:
+    conversation_service.require_owned_conversation(conversation_id, str(current_user["id"]))
+    conversation_service.delete_conversation(conversation_id, str(current_user["id"]))
+    _delete_conversation_state(conversation_id)
+    return LogoutResponse(success=True)
+
+
 @app.post("/chat", response_model=ChatResponse)
-def chat(payload: ChatRequest) -> ChatResponse:
-    request_id = str(uuid4())
-    try:
-        query = f"{payload.message} doc_id {payload.document_id}" if payload.document_id else payload.message
-        state = _STATE_STORE.load(payload.chat_id)
-        state_version_before = int(state.get("state_version") or 1)
-        previous_intent = str(state.get("last_intent") or "").strip().lower() or "none"
-        transformable_context = _get_transformable_context(state)
-        qualitative_context = state.get("last_qualitative_evidence_pack") if isinstance(state.get("last_qualitative_evidence_pack"), dict) else None
-        has_last_evidence_pack = isinstance(state.get("last_evidence_pack"), dict) and bool(state.get("last_evidence_pack"))
-        has_last_transformable = isinstance(transformable_context, dict) and bool(transformable_context)
-        has_last_qualitative = isinstance(qualitative_context, dict) and bool(qualitative_context)
-        last_data_context_type_before = str(state.get("last_data_context_type") or "none")
-        qn = payload.message.lower()
-        visualization_request_detected = any(
-            k in qn for k in ["radar", "chart", "graphique", "graphe", "visualisation", "courbe", "line graph", "bar chart", "diagramme"]
-        )
-        LOGGER.info(
-            "qa_state_pre request_id=%s conversation_id=%s previous_intent=%s has_last_evidence_pack=%s has_last_transformable_evidence_pack=%s transformable_context_used=%s visualization_request_detected=%s",
-            request_id,
-            payload.chat_id,
-            previous_intent,
-            bool(has_last_evidence_pack),
-            bool(has_last_transformable),
-            bool(has_last_transformable),
-            bool(visualization_request_detected),
-        )
-        generation = _run_generation(
-            query=query,
-            top_k=5,
-            mode="hybrid",
-            provider="ollama",
-            model="qwen3:4b",
-            temperature=0.0,
-            num_ctx=4096,
-            max_tokens=600,
-            timeout=120,
-            index_dir="data/indexes",
-            collection="medical_chunks",
-            previous_structured_evidence_pack=transformable_context,
-            previous_displayed_evidence_pack=(
-                state.get("last_displayed_evidence_pack")
-                if isinstance(state.get("last_displayed_evidence_pack"), dict)
-                else None
-            ),
-            previous_displayed_context=(
-                state.get("last_displayed_context")
-                if isinstance(state.get("last_displayed_context"), dict)
-                else None
-            ),
-            previous_context_intent=str(state.get("last_intent") or ""),
-            previous_data_context_intent=str(state.get("last_data_context_intent") or ""),
-            previous_data_context_type=str(state.get("last_data_context_type") or ""),
-            previous_doc_scope=(
-                list((state.get("last_doc_scope") or {}).get("doc_ids") or [])
-                if isinstance(state.get("last_doc_scope"), dict)
-                else []
-            ),
-            previous_qualitative_evidence_pack=(
-                state.get("last_qualitative_evidence_pack")
-                if isinstance(state.get("last_qualitative_evidence_pack"), dict)
-                else None
-            ),
-            previous_has_patient_inventory=bool(state.get("last_patient_inventory")),
-            previous_patient_inventory=(state.get("last_patient_inventory") if isinstance(state.get("last_patient_inventory"), list) else None),
-            recent_style_history=state.get("recent_style_history") or [],
-        )
-        _update_conversation_state(payload.chat_id, state, generation, payload.message)
-        new_state = _STATE_STORE.load(payload.chat_id)
-        state_version_after = int(new_state.get("state_version") or state_version_before)
-        current_intent = str(((generation.get("query_understanding") or {}).get("intent") or "")).strip().lower() or "unknown"
-        visualization = generation.get("visualization") if isinstance(generation.get("visualization"), dict) else None
-        rendered_type = str((visualization or {}).get("rendered_type") or "").strip().lower() or None
-        requested_type = str((visualization or {}).get("requested_type") or "").strip().lower() or None
-        LOGGER.info(
-            "qa_state_post request_id=%s conversation_id=%s current_intent=%s previous_intent=%s has_last_evidence_pack=%s has_last_transformable_evidence_pack=%s transformable_context_used=%s visualization_request_detected=%s retrieval_skipped_due_to_no_transformable_context=%s response_has_visualization=%s response_rendered_type=%s response_requested_type=%s",
-            request_id,
-            payload.chat_id,
-            current_intent,
-            previous_intent,
-            bool(isinstance(new_state.get("last_evidence_pack"), dict) and new_state.get("last_evidence_pack")),
-            bool(isinstance(new_state.get("last_transformable_evidence_pack"), dict) and new_state.get("last_transformable_evidence_pack")),
-            bool(has_last_transformable),
-            bool(visualization_request_detected),
-            bool(((generation.get("debug") or {}).get("retrieval_skipped_due_to_no_transformable_context"))),
-            bool(visualization),
-            rendered_type,
-            requested_type,
-        )
-        LOGGER.info(
-            "qa_state_versions request_id=%s conversation_id=%s state_version_before=%s state_version_after=%s last_data_context_type_before=%s last_data_context_type_after=%s requested_analytes=%s requested_date_iso=%s latest_report=%s requested_clickable_sources=%s previous_doc_scope_used=%s resolved_doc_scope=%s has_transformable_pack=%s has_qualitative_pack=%s sources_count=%s chart_generated=%s smalltalk_blocked=%s validator_status=%s",
-            request_id,
-            payload.chat_id,
-            state_version_before,
-            state_version_after,
-            last_data_context_type_before,
-            str(new_state.get("last_data_context_type") or "none"),
-            list((generation.get("query_understanding") or {}).get("requested_analytes") or []),
-            (generation.get("query_understanding") or {}).get("requested_date_iso"),
-            bool((generation.get("query_understanding") or {}).get("latest_report")),
-            bool((generation.get("query_understanding") or {}).get("source_clickable_requested")),
-            bool(((generation.get("debug") or {}).get("context_resolution") or {}).get("reuse_doc_scope")),
-            ((generation.get("debug") or {}).get("context_resolution") or {}).get("effective_doc_scope"),
-            bool(isinstance(new_state.get("last_transformable_evidence_pack"), dict) and new_state.get("last_transformable_evidence_pack")),
-            bool(isinstance(new_state.get("last_qualitative_evidence_pack"), dict) and new_state.get("last_qualitative_evidence_pack")),
-            len(list(generation.get("sources") or [])),
-            bool(visualization),
-            (
-                "bonjour ! je suis prêt" not in str(generation.get("answer") or "").lower()
-                and "comment puis-je vous aider" not in str(generation.get("answer") or "").lower()
-            ),
-            str((generation.get("validation") or {}).get("validation_status") or ""),
-        )
-        answer = str(generation.get("answer") or "").strip()
-        if not answer:
-            answer = "Aucune réponse générée. Cette réponse ne remplace pas l'avis médical."
+def chat(payload: ChatRequest, current_user: dict[str, Any] = Depends(get_current_user)) -> ChatResponse:
+    return process_chat(
+        payload=payload,
+        current_user=current_user,
+        state_service=_STATE_SERVICE,
+        run_generation=_run_generation,
+        logger=LOGGER,
+    )
 
-        sources = _to_source_items(generation)
-        document_ids = sorted({s.documentId for s in sources if s.documentId})
 
-        return ChatResponse(
-            answer=answer,
-            sources=sources,
-            confidence=_confidence_from_result(generation),
-            document_ids=document_ids,
-            response_time=float(generation.get("generation_time_seconds") or 0.0),
-            quality_report=(generation.get("quality_report") if isinstance(generation.get("quality_report"), dict) else None),
-            validation_status=str((generation.get("validation") or {}).get("validation_status") or "") or None,
-            generation_mode=str(generation.get("generation_mode") or "") or None,
-            generation_writer=str(((generation.get("debug") or {}).get("generation_writer") or "")) or None,
-            visualization=(generation.get("visualization") if isinstance(generation.get("visualization"), dict) else None),
-            chart_data=(generation.get("chart_data") if isinstance(generation.get("chart_data"), dict) else None),
-            patients=generation.get("patients"),
-            inventory_view=(generation.get("inventory_view") if isinstance(generation.get("inventory_view"), dict) else None),
-        )
-    except Exception as exc:  # pragma: no cover - defensive API guard
-        LOGGER.exception(
-            "chat_generation_failed request_id=%s provider=%s intent=unknown query=%r error=%s\n%s",
-            request_id,
-            "ollama",
-            payload.message,
-            str(exc),
-            traceback.format_exc(),
-        )
-        safe_answer = (
-            "Une erreur interne a empêché la génération complète de la réponse. "
-            "Les données indexées restent disponibles ; veuillez relancer la demande ou simplifier la formulation."
-        )
-        return ChatResponse(
-            answer=safe_answer,
-            sources=[],
-            confidence=0.0,
-            document_ids=[],
-            response_time=0.0,
-            quality_report=None,
-            validation_status="warning",
-            generation_mode="controlled_error_fallback",
-            generation_writer="professional_fallback",
-            visualization=None,
-            chart_data=None,
-            patients=None,
-            inventory_view=None,
-        )
+@app.post("/chat/clear", response_model=ConversationClearResponse)
+def clear_conversation(payload: ConversationClearRequest, current_user: dict[str, Any] = Depends(get_current_user)) -> ConversationClearResponse:
+    conversation_service.require_owned_conversation(payload.conversation_id, str(current_user["id"]))
+    _delete_conversation_state(payload.conversation_id)
+    return ConversationClearResponse(success=True, conversation_id=str(payload.conversation_id))
 
 
 @app.get("/documents", response_model=list[DocumentItem])
@@ -395,8 +248,7 @@ def documents() -> list[DocumentItem]:
     seen: set[str] = set()
     out: list[DocumentItem] = []
 
-    # Preferred source: secure resolver mapping.
-    for doc_id, src in sorted(_resolver()._mapping().items()):  # noqa: SLF001 - internal cache read for listing
+    for doc_id, src in sorted(_resolver()._mapping().items()):  # noqa: SLF001
         if doc_id in seen:
             continue
         seen.add(doc_id)
@@ -435,7 +287,7 @@ def documents() -> list[DocumentItem]:
 
 @app.get("/api/documents/{doc_id}/pdf")
 def get_pdf(doc_id: str, page: int | None = Query(default=None, ge=1)) -> FileResponse:
-    _ = page  # kept for frontend viewer deep-linking compatibility
+    _ = page
     if not is_valid_doc_id(doc_id):
         raise HTTPException(status_code=404, detail="Document introuvable")
 

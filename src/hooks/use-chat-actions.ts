@@ -1,20 +1,32 @@
 import { useMutation } from "@tanstack/react-query";
-import { sendChat, toHistory } from "@/services/rag-api";
+import { useRouter } from "next/navigation";
+import { ApiError, sendChat, toHistory } from "@/services/rag-api";
+import { useAuthStore } from "@/store/auth-store";
 import { useChatStore } from "@/store/chat-store";
 import type { ChatMode } from "@/types/chat";
 
 export function useChatActions() {
+  const router = useRouter();
   const addUserMessage = useChatStore((s) => s.addUserMessage);
   const addAssistantLoadingMessage = useChatStore((s) => s.addAssistantLoadingMessage);
   const resolveAssistantMessage = useChatStore((s) => s.resolveAssistantMessage);
   const failAssistantMessage = useChatStore((s) => s.failAssistantMessage);
-  const newChat = useChatStore((s) => s.newChat);
+  const startNewConversation = useChatStore((s) => s.startNewConversation);
 
   const mutation = useMutation({
     mutationFn: async ({ content, mode }: { content: string; mode: ChatMode }) => {
-      let chatId = useChatStore.getState().activeChatId;
+      const auth = useAuthStore.getState();
+      const token = auth.accessToken;
+      if (!token) {
+        throw new Error("Authentification requise");
+      }
+
+      let chatId = useChatStore.getState().activeConversationId;
       if (!chatId) {
-        chatId = newChat();
+        chatId = await startNewConversation(token);
+        if (chatId) {
+          router.push(`/chat/${chatId}`);
+        }
       }
 
       const user = addUserMessage(content, mode);
@@ -30,11 +42,11 @@ export function useChatActions() {
 
       try {
         const response = await sendChat({
-          chat_id: chatId,
+          conversation_id: chatId,
           message: content,
           history: toHistory(chat?.messages || []),
           mode,
-        });
+        }, token);
         resolveAssistantMessage(chatId, loading.id, response.answer, response.sources, {
           quality_report: response.quality_report,
           validation_status: response.validation_status,
@@ -44,6 +56,35 @@ export function useChatActions() {
         }, response.visualization, response.chart_data, response.patients, response.inventory_view);
         return response;
       } catch (error) {
+        if (error instanceof ApiError && error.status === 401) {
+          await useAuthStore.getState().logout();
+          failAssistantMessage(
+            chatId,
+            loading.id,
+            "Session expirée. Veuillez vous reconnecter.",
+          );
+          throw error;
+        }
+        if (error instanceof ApiError && error.status === 403) {
+          failAssistantMessage(
+            chatId,
+            loading.id,
+            "Accès interdit à cette conversation.",
+          );
+          throw error;
+        }
+        if (error instanceof ApiError && error.status === 404) {
+          const token = useAuthStore.getState().accessToken;
+          if (token) {
+            await useChatStore.getState().loadConversations(token);
+          }
+          failAssistantMessage(
+            chatId,
+            loading.id,
+            "Conversation introuvable. La liste des conversations a été rechargée.",
+          );
+          throw error;
+        }
         failAssistantMessage(
           chatId,
           loading.id,

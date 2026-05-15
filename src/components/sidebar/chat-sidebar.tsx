@@ -1,9 +1,12 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { Download, Ellipsis, Heart, MessageSquarePlus, Search, Settings, SunMoon, Trash2 } from "lucide-react";
+import { Download, Ellipsis, Heart, LogOut, MessageSquarePlus, Search, Settings, SunMoon, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
+import { useAuthStore } from "@/store/auth-store";
 import { useChatStore } from "@/store/chat-store";
 import { cn, formatDateLabel } from "@/lib/utils";
 import { groupChatsByDate } from "@/lib/chat-groups";
@@ -13,15 +16,19 @@ export function ChatSidebar() {
   const activeChatId = useChatStore((s) => s.activeChatId);
   const search = useChatStore((s) => s.search);
   const setSearch = useChatStore((s) => s.setSearch);
-  const setActiveChat = useChatStore((s) => s.setActiveChat);
-  const newChat = useChatStore((s) => s.newChat);
+  const startNewConversation = useChatStore((s) => s.startNewConversation);
   const removeChat = useChatStore((s) => s.removeChat);
   const toggleFavorite = useChatStore((s) => s.toggleFavorite);
   const renameChat = useChatStore((s) => s.renameChat);
   const exportChat = useChatStore((s) => s.exportChat);
   const themePref = useChatStore((s) => s.theme);
   const setThemePref = useChatStore((s) => s.setTheme);
+  const user = useAuthStore((s) => s.user);
+  const token = useAuthStore((s) => s.accessToken);
+  const logout = useAuthStore((s) => s.logout);
   const { setTheme } = useTheme();
+  const router = useRouter();
+  const pathname = usePathname();
   const [menuChatId, setMenuChatId] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
@@ -74,17 +81,37 @@ export function ChatSidebar() {
     setTheme(next);
   }
 
+  async function onStartConversation() {
+    const createdId = await startNewConversation(token);
+    if (createdId) {
+      router.push(`/chat/${createdId}`);
+    }
+  }
+
+  async function onRemoveConversation(chatId: string) {
+    await removeChat(chatId, token);
+    if (pathname?.startsWith(`/chat/${chatId}`)) {
+      const nextConversationId = useChatStore.getState().activeConversationId;
+      if (nextConversationId) {
+        router.push(`/chat/${nextConversationId}`);
+      } else {
+        router.push("/chat");
+      }
+    }
+  }
+
   return (
     <aside className="glass flex h-screen w-80 flex-col p-4">
       <div className="mb-4">
         <h1 className="text-lg font-semibold">CHU Oujda Clinical Assistant</h1>
+        <p className="mt-1 text-xs text-fg/70">{user?.email || "Utilisateur connecté"}</p>
       </div>
       <button
         aria-label="Nouveau chat"
-        onClick={() => newChat()}
+        onClick={() => void onStartConversation()}
         className="mb-3 flex items-center gap-2 rounded-xl bg-accent/20 px-3 py-2 text-sm hover:bg-accent/30"
       >
-        <MessageSquarePlus size={16} /> Nouveau chat
+        <MessageSquarePlus size={16} /> Nouvelle conversation
       </button>
       <div className="mb-3 flex items-center gap-2 rounded-xl border border-border px-3 py-2">
         <Search size={14} />
@@ -107,7 +134,7 @@ export function ChatSidebar() {
               <button
                 key={fav.id}
                 className="rounded-full border border-border px-2 py-1 text-xs"
-                onClick={() => setActiveChat(fav.id)}
+                onClick={() => router.push(`/chat/${fav.id}`)}
               >
                 {fav.title.slice(0, 18)}
               </button>
@@ -132,7 +159,7 @@ export function ChatSidebar() {
                   >
                     <button
                       className="w-full text-left"
-                      onClick={() => setActiveChat(chat.id)}
+                      onClick={() => router.push(`/chat/${chat.id}`)}
                       title={chat.title}
                       aria-current={chat.id === activeChatId ? "page" : undefined}
                     >
@@ -147,7 +174,9 @@ export function ChatSidebar() {
                         aria-label="Supprimer"
                         title="Supprimer"
                         onClick={() => {
-                          if (window.confirm("Supprimer cette conversation ?")) removeChat(chat.id);
+                          if (window.confirm("Supprimer cette conversation ?")) {
+                            void onRemoveConversation(chat.id);
+                          }
                         }}
                         className="rounded p-1 hover:bg-card"
                       >
@@ -193,16 +222,16 @@ export function ChatSidebar() {
         )}
       </div>
       <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-        <a href="/documents" className="rounded-lg border border-border px-2 py-1 text-center">
+        <Link href="/documents" className="rounded-lg border border-border px-2 py-1 text-center">
           Documents
-        </a>
-        <a href="/settings" className="rounded-lg border border-border px-2 py-1 text-center">
+        </Link>
+        <Link href="/settings" className="rounded-lg border border-border px-2 py-1 text-center">
           <Settings className="mr-1 inline" size={12} />
           Settings
-        </a>
-        <a href="/dashboard" className="rounded-lg border border-border px-2 py-1 text-center">
+        </Link>
+        <Link href="/dashboard" className="rounded-lg border border-border px-2 py-1 text-center">
           Dashboard
-        </a>
+        </Link>
         <button
           className="rounded-lg border border-border px-2 py-1"
           onClick={toggleTheme}
@@ -215,6 +244,15 @@ export function ChatSidebar() {
         <button className="rounded-lg border border-border px-2 py-1" aria-label="Exporter" title="Exporter conversations">
           <Download className="mr-1 inline" size={12} />
           Export
+        </button>
+        <button
+          className="rounded-lg border border-border px-2 py-1"
+          onClick={() => void logout()}
+          aria-label="Se déconnecter"
+          title="Se déconnecter"
+        >
+          <LogOut className="mr-1 inline" size={12} />
+          Logout
         </button>
       </div>
     </aside>
