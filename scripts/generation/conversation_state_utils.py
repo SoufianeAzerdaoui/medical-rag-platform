@@ -26,6 +26,7 @@ class DocScope(TypedDict, total=False):
 class ConversationState(TypedDict, total=False):
     conversation_id: str
     state_version: int
+    messages: list[dict[str, Any]]
     last_intent: str | None
     last_data_context_type: DataContextType
     last_patient_inventory: list[dict[str, Any]] | None
@@ -132,10 +133,15 @@ def _is_qualitative_evidence_pack(pack: dict[str, Any] | None) -> bool:
 
 
 def _empty_state(conversation_id: str) -> ConversationState:
+    return create_empty_conversation_state(conversation_id)
+
+
+def create_empty_conversation_state(conversation_id: str) -> ConversationState:
     now = _now_iso()
     return {
         "conversation_id": conversation_id,
         "state_version": 1,
+        "messages": [],
         "last_intent": None,
         "last_data_context_type": "none",
         "last_patient_inventory": None,
@@ -155,7 +161,7 @@ def _empty_state(conversation_id: str) -> ConversationState:
         "last_data_context_payload": None,
         "last_answer": None,
         "last_user_question": None,
-        "last_sources": None,
+        "last_sources": [],
         "last_query_understanding": None,
         "last_rendered_rows": None,
         "recent_style_history": [],
@@ -173,6 +179,8 @@ def migrate_conversation_state(state: dict[str, Any] | None, *, conversation_id:
     if out.get("created_at") is None:
         out["created_at"] = _now_iso()
     out["updated_at"] = _now_iso()
+    if not isinstance(out.get("messages"), list):
+        out["messages"] = []
 
     # Backward compatibility for old list-based doc_scope.
     lds = out.get("last_doc_scope")
@@ -425,6 +433,13 @@ def update_conversation_state_reducer(
     if answer:
         recent_turns.append({"role": "assistant", "content": str(answer)[:900], "intent": intent})
     out["recent_turns"] = recent_turns[-20:]
+
+    messages = list(out.get("messages") or [])
+    if user_message:
+        messages.append({"role": "user", "content": str(user_message)[:2000]})
+    if answer:
+        messages.append({"role": "assistant", "content": str(answer)[:4000]})
+    out["messages"] = messages[-50:]
 
     style_hist = list(out.get("recent_style_history") or [])
     if isinstance(style_entry, dict):

@@ -111,6 +111,7 @@ export interface MessageItem {
 
 export interface ChatItem {
   id: string;
+  conversationId: string;
   title: string;
   createdAt: string;
   updatedAt: string;
@@ -123,6 +124,7 @@ export interface ChatItem {
 }
 
 export interface RagResponse {
+  conversation_id: string;
   answer: string;
   sources?: ChatSource[];
   confidence?: number;
