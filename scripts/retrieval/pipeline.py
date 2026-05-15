@@ -6,14 +6,25 @@ import re
 from typing import Any, List, Dict, Optional
 from dataclasses import dataclass
 
+import sys
+from pathlib import Path
+
+# Handle standalone vs package execution
+if __name__ == "__main__" or "." not in __name__:
+    current_dir = Path(__file__).parent.absolute()
+    if str(current_dir) not in sys.path:
+        sys.path.insert(0, str(current_dir))
+
 try:
     from .models import SearchResponse, RetrievalResult
     from .search import SearchEngine
     from .generation import AnswerGenerator, MedicalPrompter
-except ImportError:
+    from .config import DEFAULT_TOP_K, DEFAULT_CONTEXT_MAX_CHUNKS
+except (ImportError, ValueError):
     from models import SearchResponse, RetrievalResult
     from search import SearchEngine
     from generation import AnswerGenerator, MedicalPrompter
+    from config import DEFAULT_TOP_K, DEFAULT_CONTEXT_MAX_CHUNKS
 
 @dataclass
 class Evidence:
@@ -30,13 +41,22 @@ class EvidencePack:
         self.evidences = evidences
 
     def to_text(self) -> str:
-        lines = []
-        for i, ev in enumerate(self.evidences, 1):
-            source = f"Source: {ev.doc_id}"
-            if ev.page:
-                source += f", Page: {ev.page}"
-            lines.append(f"--- EVIDENCE {i} [{source}] ---\n{ev.text}")
-        return "\n\n".join(lines)
+        # Groupement par document pour une meilleure isolation
+        docs: Dict[str, List[Evidence]] = {}
+        for ev in self.evidences:
+            if ev.doc_id not in docs:
+                docs[ev.doc_id] = []
+            docs[ev.doc_id].append(ev)
+
+        output = []
+        for doc_id, ev_list in docs.items():
+            doc_section = [f"=== DOCUMENT: {doc_id} ==="]
+            for i, ev in enumerate(ev_list, 1):
+                page_info = f", Page: {ev.page}" if ev.page else ""
+                doc_section.append(f"[EXTRAIT {i}{page_info}]\n{ev.text}")
+            output.append("\n".join(doc_section))
+        
+        return "\n\n" + "\n\n".join(output)
 
 class AnswerValidator:
     """
@@ -134,10 +154,11 @@ class MedicalRagPipeline:
         
         return EvidencePack(query=response.query, evidences=evidences)
 
-    def run(self, user_question: str) -> Dict[str, Any]:
+    def run(self, user_question: str, history: List[Dict[str, str]] = None) -> Dict[str, Any]:
         """
         ÉCHELLE DU PIPELINE (9 ÉTAPES)
         """
+        history = history or []
         # 1. User Question (Reçue en argument)
         
         # 2. Query normalization
@@ -146,18 +167,16 @@ class MedicalRagPipeline:
         # 3 & 4. Clinical-aware retrieval & Context builder
         search_response = self.search_engine.search(
             query=normalized_query,
-            top_k=5
+            top_k=DEFAULT_TOP_K,
+            max_context_chunks=DEFAULT_CONTEXT_MAX_CHUNKS
         )
 
         # 5. Evidence pack builder
         evidence_pack = self.build_evidence_pack(search_response)
 
-        # 6. Prompt builder
-        context_text = evidence_pack.to_text()
-        full_prompt = f"CONTEXTE MÉDICAL (EVIDENCE PACK) :\n{context_text}\n\nQUESTION : {normalized_query}\n\nRÉPONSE MÉDICALE DÉTAILLÉE (avec citations) :"
-
-        # 7. LLM client
-        raw_answer = self.generator.generate_from_full_prompt(full_prompt)
+        # 6. Generate answer using prompter and generator
+        # Note: We use the specialized prompter with history
+        raw_answer = self.generator.generate_answer(search_response, history=history)
 
         # 8. Answer validator
         final_answer = self.validator.validate(raw_answer, evidence_pack)

@@ -6,10 +6,17 @@ import sys
 import json
 from pathlib import Path
 
+import os
+
+# Add the current directory to sys.path to handle standalone execution
+current_dir = Path(__file__).parent.absolute()
+if str(current_dir) not in sys.path:
+    sys.path.insert(0, str(current_dir))
+
 try:
     from .pipeline import MedicalRagPipeline
     from .config import DEFAULT_TOP_K, DEFAULT_LLM_MODEL
-except ImportError:
+except (ImportError, ValueError):
     from pipeline import MedicalRagPipeline
     from config import DEFAULT_TOP_K, DEFAULT_LLM_MODEL
 
