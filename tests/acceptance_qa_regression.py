@@ -18,8 +18,10 @@ for root in (PROJECT_ROOT, SCRIPTS_ROOT, GENERATION_ROOT):
 
 try:
     from backend_api import app
+    from backend_api import _CONVERSATION_STATE
 except Exception:  # pragma: no cover - optional dependency for API acceptance checks
     app = None
+    _CONVERSATION_STATE = None
 
 
 class TestAcceptanceQaRegression(unittest.TestCase):
@@ -149,6 +151,118 @@ class TestAcceptanceQaRegression(unittest.TestCase):
             self.assertEqual(response.status_code, 200, msg=f"status={response.status_code} query={query}")
             payload = response.json()
             self.assertTrue(str(payload.get("answer") or "").strip())
+
+    def test_11_inventory_then_radar_no_contamination(self) -> None:
+        if self.client is None or _CONVERSATION_STATE is None:
+            self.skipTest("fastapi/testclient non disponible")
+        chat_id = "qa-reg-inventory-radar"
+        _CONVERSATION_STATE[chat_id] = {
+            "last_evidence_pack": {
+                "evidences": [
+                    {"analyte": "ACE", "current_value": "22", "doc_id": "report_31", "source": "report (31).pdf"},
+                    {"analyte": "PSA TOTALE", "current_value": "33", "doc_id": "report_31", "source": "report (31).pdf"},
+                    {"analyte": "CA 15-3", "current_value": "44", "doc_id": "report_31", "source": "report (31).pdf"},
+                ]
+            },
+            "last_transformable_evidence_pack": {
+                "evidences": [
+                    {"analyte": "ACE", "current_value": "22", "doc_id": "report_31", "source": "report (31).pdf"}
+                ]
+            },
+            "last_intent": "doc_scoped_results",
+        }
+        inv = self.client.post(
+            "/chat",
+            json={"chat_id": chat_id, "message": "tu peux me lister tous les patients exist avec les sources cliquable", "history": [], "mode": "general"},
+        )
+        self.assertEqual(inv.status_code, 200)
+        radar = self.client.post(
+            "/chat",
+            json={"chat_id": chat_id, "message": "Donne-moi les mêmes résultats sous forme radar chart.", "history": [], "mode": "general"},
+        )
+        self.assertEqual(radar.status_code, 200)
+        payload = radar.json()
+        answer = str(payload.get("answer") or "").lower()
+        self.assertIn("inventaire de patients", answer)
+        self.assertNotIn("ace", answer)
+        self.assertNotIn("psa totale", answer)
+        self.assertNotIn("ca 15-3", answer)
+        self.assertFalse(payload.get("visualization"))
+
+    def test_12_patient_count_then_transform_refused(self) -> None:
+        if self.client is None:
+            self.skipTest("fastapi/testclient non disponible")
+        chat_id = "qa-reg-count-transform"
+        c1 = self.client.post(
+            "/chat",
+            json={"chat_id": chat_id, "message": "combien de patients sont indexés dans la base ?", "history": [], "mode": "general"},
+        )
+        self.assertEqual(c1.status_code, 200)
+        c2 = self.client.post(
+            "/chat",
+            json={"chat_id": chat_id, "message": "Donne-moi les mêmes résultats sous forme radar chart.", "history": [], "mode": "general"},
+        )
+        self.assertEqual(c2.status_code, 200)
+        payload = c2.json()
+        answer = str(payload.get("answer") or "").lower()
+        self.assertIn("pas des valeurs médicales transformables", answer)
+        self.assertFalse(payload.get("visualization"))
+
+    def test_13_sequential_state_lock_docscope_and_qualitative_render(self) -> None:
+        # Step 1: latest report scoped ACTH
+        step1 = self.run_generation(
+            query="montre-moi ACTH du dernier rapport",
+            index_dir="data/indexes",
+        )
+        scope = list(((step1.get("query_understanding") or {}).get("requested_doc_ids") or []))
+        self.assertTrue(scope)
+
+        # Step 2: follow-up analyte should stay in same doc scope.
+        step2 = self.run_generation(
+            query="et TSHus ?",
+            index_dir="data/indexes",
+            previous_doc_scope=scope,
+        )
+        answer2 = str(step2.get("answer") or "").lower()
+        self.assertIn("tshus", answer2)
+        self.assertIn(scope[0].lower(), answer2)
+
+        # Step 3: qualitative comment query creates qualitative context.
+        step3 = self.run_generation(
+            query="montre le commentaire sur la troponine",
+            index_dir="data/indexes",
+        )
+        q3 = step3.get("query_understanding") or {}
+        self.assertIn(str(q3.get("requested_context_type") or ""), {"medical_qualitative_comment"})
+        qual_pack = step3.get("structured_evidence_pack") if isinstance(step3.get("structured_evidence_pack"), dict) else {}
+
+        # Step 4: recommendation for comment must be text-UI, not chart.
+        step4 = self.run_generation(
+            query="quelle visualisation recommandes-tu à ce commentaire ?",
+            index_dir="data/indexes",
+            previous_context_intent="comment_without_measured_value",
+            previous_data_context_intent="comment_without_measured_value",
+            previous_data_context_type="medical_qualitative_comment",
+        )
+        answer4 = str(step4.get("answer") or "").lower()
+        self.assertIn("commentaire", answer4)
+        self.assertNotIn("cartes patient", answer4)
+        self.assertFalse(step4.get("visualization"))
+
+        # Step 5: render sourced qualitative block should not fall back to small-talk.
+        step5 = self.run_generation(
+            query="ok affiche ce commentaire dans un bloc commentaire sourcé",
+            index_dir="data/indexes",
+            previous_context_intent="comment_without_measured_value",
+            previous_data_context_intent="comment_without_measured_value",
+            previous_data_context_type="medical_qualitative_comment",
+            previous_qualitative_evidence_pack=qual_pack if isinstance(qual_pack, dict) else None,
+        )
+        answer5 = str(step5.get("answer") or "")
+        self.assertIn("Bloc commentaire sourcé", answer5)
+        self.assertNotIn("Bonjour ! Je suis prêt", answer5)
+        self.assertIsNone(step5.get("visualization"))
+        self.assertIsNone(step5.get("chart_data"))
 
 
 if __name__ == "__main__":

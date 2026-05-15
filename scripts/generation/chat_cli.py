@@ -5,6 +5,7 @@ import contextlib
 import json
 import os
 import sys
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,12 @@ from generate_answer import run_generation
 from llm_client import LLMClient
 from retrieval.search import SearchEngine
 from query_understanding import parse_query_understanding
+from conversation_state_utils import (
+    get_qualitative_context,
+    get_transformable_context,
+    migrate_conversation_state,
+    update_conversation_state,
+)
 
 
 @dataclass
@@ -38,20 +45,6 @@ class ChatState:
     show_context: bool = False
     json_output: bool = False
     debug: bool = False
-
-
-@dataclass
-class ConversationState:
-    last_user_question: str = ""
-    last_query_understanding: dict[str, Any] | None = None
-    last_evidence_pack: dict[str, Any] | None = None
-    last_answer: str = ""
-    last_output_format: str = ""
-    last_rendered_rows: list[dict[str, Any]] | None = None
-    last_sources: list[dict[str, Any]] | None = None
-    last_visualization: dict[str, Any] | None = None
-    last_intent: str = ""
-    last_requested_columns: list[str] | None = None
 
 
 def _startup_banner(state: ChatState) -> None:
@@ -294,7 +287,8 @@ def main() -> int:
         collection=state.collection,
     )
     llm_client = LLMClient(provider=state.provider)
-    conversation_state = ConversationState()
+    conversation_store: dict[str, dict[str, Any]] = defaultdict(dict)
+    conversation_id = "cli-session"
 
     try:
         while True:
@@ -319,6 +313,7 @@ def main() -> int:
 
             print("Génération en cours...")
             try:
+                state_snapshot = migrate_conversation_state(conversation_store.get(conversation_id), conversation_id=conversation_id)
                 qu = parse_query_understanding(question)
                 with _suppress_stdout_stderr(not state.debug):
                     result = run_generation(
@@ -338,7 +333,23 @@ def main() -> int:
                         max_display_results=state.max_display_results,
                         show_all_results=state.show_all_results,
                         show_low_quality=state.show_low_quality,
-                        previous_structured_evidence_pack=conversation_state.last_evidence_pack if qu.intent == "response_transform" else None,
+                        previous_structured_evidence_pack=get_transformable_context(state_snapshot),
+                        previous_context_intent=str(state_snapshot.get("last_intent") or ""),
+                        previous_data_context_intent=str(state_snapshot.get("last_data_context_intent") or ""),
+                        previous_data_context_type=str(state_snapshot.get("last_data_context_type") or ""),
+                        previous_doc_scope=(
+                            list((state_snapshot.get("last_doc_scope") or {}).get("doc_ids") or [])
+                            if isinstance(state_snapshot.get("last_doc_scope"), dict)
+                            else []
+                        ),
+                        previous_qualitative_evidence_pack=get_qualitative_context(state_snapshot),
+                        previous_has_patient_inventory=bool(state_snapshot.get("last_patient_inventory")),
+                        previous_patient_inventory=(
+                            state_snapshot.get("last_patient_inventory")
+                            if isinstance(state_snapshot.get("last_patient_inventory"), list)
+                            else None
+                        ),
+                        recent_style_history=list(state_snapshot.get("recent_style_history") or []),
                     )
             except KeyboardInterrupt:
                 print("\nInterruption détectée pendant la génération.")
@@ -355,18 +366,13 @@ def main() -> int:
                 _print_human_result(question, result, state.show_context, state.debug)
 
             if str((result.get("validation") or {}).get("validation_status") or "").lower() in {"pass", "warning"}:
-                conversation_state.last_user_question = question
-                conversation_state.last_query_understanding = result.get("query_understanding") or {}
-                conversation_state.last_evidence_pack = result.get("structured_evidence_pack") or {}
-                conversation_state.last_answer = str(result.get("answer") or "")
-                conversation_state.last_output_format = str((result.get("query_understanding") or {}).get("output_format") or "")
-                conversation_state.last_rendered_rows = list((result.get("structured_evidence_pack") or {}).get("evidences") or [])
-                conversation_state.last_sources = list(result.get("sources") or [])
-                conversation_state.last_visualization = dict(result.get("visualization") or {}) if isinstance(
-                    result.get("visualization"), dict
-                ) else None
-                conversation_state.last_intent = str((result.get("query_understanding") or {}).get("intent") or "")
-                conversation_state.last_requested_columns = list((result.get("query_understanding") or {}).get("requested_table_columns") or [])
+                update_conversation_state(
+                    state_store=conversation_store,
+                    chat_id=conversation_id,
+                    state=state_snapshot,
+                    generation=result,
+                    user_message=question,
+                )
 
             llm_error = str(result.get("llm_error") or "")
             generation_mode = str(result.get("generation_mode") or "")

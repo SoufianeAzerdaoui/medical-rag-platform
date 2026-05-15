@@ -34,6 +34,7 @@ interface ChatState {
     visualization?: VisualizationPayload,
     chartData?: VisualizationPayload,
     patients?: Array<Record<string, unknown>>,
+    inventoryView?: { type: "patient_cards" | "report_accordion" | "filterable_table" | "document_timeline" },
   ) => void;
   failAssistantMessage: (chatId: string, messageId: string, content: string) => void;
   addAssistantMessage: (chatId: string, content: string, sources?: ChatSource[]) => void;
@@ -158,7 +159,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ chats: updated });
     return msg;
   },
-  resolveAssistantMessage: (chatId, messageId, content, sources, diagnostics, visualization, chartData, patients) => {
+  resolveAssistantMessage: (chatId, messageId, content, sources, diagnostics, visualization, chartData, patients, inventoryView) => {
     const { chats } = get();
     const updated = chats.map((chat) => {
       if (chat.id !== chatId) return chat;
@@ -173,6 +174,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               visualization,
               chart_data: chartData,
               patients,
+              inventory_view: inventoryView,
             }
           : m,
       );

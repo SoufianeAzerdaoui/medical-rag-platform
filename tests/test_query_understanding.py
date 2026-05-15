@@ -200,6 +200,95 @@ class TestQueryUnderstanding(unittest.TestCase):
         )
         self.assertIn("trak", qu.excluded_analytes)
 
+    def test_visualization_recommendation_intent(self) -> None:
+        qu = parse_query_understanding(
+            "ok si ces donnees ne sont pas des valeurs transformables, recommande-moi une visualisation qui correspond a ce type de donnees"
+        )
+        self.assertEqual(qu.intent, "visualization_recommendation")
+        self.assertTrue(bool(qu.intents.get("visualization_recommendation")))
+
+    def test_inventory_visualization_render_intent(self) -> None:
+        qu = parse_query_understanding("ok affiche a moi avec des cartes patient avec le nombre de rapports associés")
+        self.assertEqual(qu.intent, "inventory_visualization_render")
+        self.assertTrue(bool(qu.intents.get("inventory_visualization_render")))
+        self.assertEqual(qu.inventory_view_type, "patient_cards")
+
+    def test_inventory_view_type_accordion(self) -> None:
+        qu = parse_query_understanding("ok affiche ça dans liste accordéon pour ouvrir les rapports de chaque patient")
+        self.assertEqual(qu.inventory_view_type, "report_accordion")
+
+    def test_inventory_view_type_filterable_table(self) -> None:
+        qu = parse_query_understanding("ok affiche ça dans une table filtrable par patient, date ou nom de fichier")
+        self.assertEqual(qu.inventory_view_type, "filterable_table")
+
+    def test_multi_analytes_latest_report_detection(self) -> None:
+        qu = parse_query_understanding("montre les résultats ACTH, TSHus, T4 libre, T3 libre et ANTI-TG du dernier rapport")
+        self.assertTrue(qu.latest_report)
+        self.assertIn("acth", qu.requested_analytes)
+        self.assertIn("tshus", qu.requested_analytes)
+        self.assertIn("t4_libre", qu.requested_analytes)
+        self.assertIn("t3_libre", qu.requested_analytes)
+        self.assertIn("anti_tg", qu.requested_analytes)
+
+    def test_date_scope_extraction(self) -> None:
+        qu = parse_query_understanding("montre les résultats du rapport du 20/06/2025")
+        self.assertEqual(qu.requested_date_iso, "2025-06-20")
+
+    def test_plural_gte_operator_detection(self) -> None:
+        qu = parse_query_understanding("trouve les résultats ACTH supérieurs ou égaux à 23")
+        self.assertEqual(qu.comparison_operator, ">=")
+        self.assertEqual(qu.requested_value, "23")
+
+    def test_qualitative_context_detection(self) -> None:
+        qu = parse_query_understanding("montre le commentaire sur la troponine")
+        self.assertEqual(qu.requested_context_type, "medical_qualitative_comment")
+
+    def test_qualitative_comment_render_intent(self) -> None:
+        qu = parse_query_understanding("ok affiche ce commentaire dans un bloc commentaire sourcé")
+        self.assertEqual(qu.intent, "qualitative_comment_render")
+        self.assertTrue(bool(qu.intents.get("qualitative_comment_render")))
+        self.assertEqual(qu.qualitative_view_type, "sourced_comment_block")
+
+    def test_qualitative_view_type_text_table(self) -> None:
+        qu = parse_query_understanding("ok affiche ce commentaire dans un tableau texte : sujet, commentaire, source")
+        self.assertEqual(qu.qualitative_view_type, "text_table")
+
+    def test_source_followup_intent(self) -> None:
+        qu = parse_query_understanding("d'où vient ce commentaire ?")
+        self.assertEqual(qu.intent, "source_followup")
+        self.assertTrue(bool(qu.intents.get("source_followup")))
+
+    def test_context_summary_render_intent_and_points_digit(self) -> None:
+        qu = parse_query_understanding("résume ce commentaire en 3 points")
+        self.assertEqual(qu.intent, "context_summary_render")
+        self.assertTrue(bool(qu.intents.get("context_summary_render")))
+        self.assertEqual(qu.requested_summary_points, 3)
+
+    def test_context_summary_render_points_word(self) -> None:
+        qu = parse_query_understanding("fais une synthèse de ça en cinq points")
+        self.assertEqual(qu.intent, "context_summary_render")
+        self.assertEqual(qu.requested_summary_points, 5)
+
+    def test_context_summary_render_points_two_and_six(self) -> None:
+        qu2 = parse_query_understanding("résume ça en 2 points")
+        qu6 = parse_query_understanding("résume ça en 6 points")
+        self.assertEqual(qu2.intent, "context_summary_render")
+        self.assertEqual(qu6.intent, "context_summary_render")
+        self.assertEqual(qu2.requested_summary_points, 2)
+        self.assertEqual(qu6.requested_summary_points, 6)
+
+    def test_same_action_for_subject_detects_analyte(self) -> None:
+        qu = parse_query_understanding("fais la même chose pour TSHus")
+        self.assertIn("tshus", qu.requested_analytes)
+
+    def test_qualitative_view_type_interpretive_note(self) -> None:
+        qu = parse_query_understanding("ok affiche ce commentaire dans un encadré de note interprétative")
+        self.assertEqual(qu.qualitative_view_type, "interpretive_note")
+
+    def test_clickable_source_detection_extended_markers(self) -> None:
+        qu = parse_query_understanding("affiche ce commentaire dans un tableau texte avec source cliquable et ouvrir PDF")
+        self.assertTrue(qu.source_clickable_requested)
+
 
 if __name__ == "__main__":
     unittest.main()

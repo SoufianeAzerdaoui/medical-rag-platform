@@ -140,7 +140,13 @@ export function ChatMessages() {
                 ) : isAssistant ? (
                   <>
                     <VisualizationRenderer visualization={message.visualization} chartData={message.chart_data} />
-                    {hasPatients && <PatientInventoryRenderer patients={message.patients} defaultExpanded={expandPatientSourcesByDefault} />}
+                    {hasPatients && (
+                      <PatientInventoryRenderer
+                        patients={message.patients}
+                        defaultExpanded={expandPatientSourcesByDefault}
+                        inventoryView={message.inventory_view}
+                      />
+                    )}
                     
                     {canRenderVisualization && contentHasTable ? (
                       <p className="mt-3 text-xs uppercase tracking-wide text-fg/65">Données utilisées</p>

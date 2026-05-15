@@ -41,7 +41,7 @@ export function useChatActions() {
           generation_mode: response.generation_mode,
           generation_writer: response.generation_writer,
           response_time: response.response_time,
-        }, response.visualization, response.chart_data, response.patients);
+        }, response.visualization, response.chart_data, response.patients, response.inventory_view);
         return response;
       } catch (error) {
         failAssistantMessage(

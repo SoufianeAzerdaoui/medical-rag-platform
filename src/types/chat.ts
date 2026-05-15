@@ -28,6 +28,8 @@ export type LegacySourceItem = {
 };
 
 export type ChatSource = SourceCitation | LegacySourceItem | string;
+export type InventoryViewType = "patient_cards" | "report_accordion" | "filterable_table" | "document_timeline";
+export type InventoryView = { type: InventoryViewType };
 
 export interface VisualizationDatum {
   analyte?: string;
@@ -101,6 +103,7 @@ export interface MessageItem {
   visualization?: VisualizationPayload;
   chart_data?: VisualizationPayload;
   patients?: Array<Record<string, unknown>>;
+  inventory_view?: InventoryView;
   diagnostics?: AssistantDiagnostics;
   attachments?: string[];
   audio?: { mimeType: string; blobUrl: string };
@@ -132,4 +135,5 @@ export interface RagResponse {
   visualization?: VisualizationPayload;
   chart_data?: VisualizationPayload;
   patients?: Array<Record<string, unknown>>;
+  inventory_view?: InventoryView;
 }
