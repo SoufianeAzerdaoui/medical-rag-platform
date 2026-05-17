@@ -17,9 +17,28 @@ from uuid import uuid4
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
+GENERATION_DIR = Path(__file__).resolve().parent
+if str(GENERATION_DIR) not in sys.path:
+    sys.path.insert(0, str(GENERATION_DIR))
 
-from retrieval.models import RetrievalFilters
-from retrieval.search import SearchEngine
+try:
+    from retrieval.models import RetrievalFilters
+    from retrieval.search import SearchEngine
+except Exception as _retrieval_import_error:  # pragma: no cover - import guard for lightweight test environments
+    try:
+        from scripts.retrieval.models import RetrievalFilters  # type: ignore[no-redef]
+        from scripts.retrieval.search import SearchEngine  # type: ignore[no-redef]
+    except Exception:  # pragma: no cover - final fallback when retrieval deps are unavailable
+        class RetrievalFilters(SimpleNamespace):  # type: ignore[no-redef]
+            def __init__(self, **kwargs: Any):
+                super().__init__(**kwargs)
+
+        class SearchEngine:  # type: ignore[no-redef]
+            def __init__(self, *_args: Any, **_kwargs: Any):
+                raise RuntimeError(
+                    "Retrieval backend dependencies are unavailable. "
+                    "Install retrieval dependencies (e.g. numpy) to enable search."
+                ) from _retrieval_import_error
 
 from answer_validator import validate_answer
 from citation_builder import append_source_citations, build_citations, build_source_citations
@@ -66,8 +85,24 @@ from qualitative_comment_utils import (
     format_clickable_source_markdown,
     extract_comment_text_for_subject,
 )
+from reference_range_parser import parse_reference_ranges
+from reference_range_selector import select_reference_range
+from reference_range_lookup_flow import run_reference_range_lookup_from_rows
+try:
+    from backend.services.feature_flag_service import get_feature_flag as _runtime_get_feature_flag
+except Exception:  # pragma: no cover - fallback for CLI-only runs without backend package
+    _runtime_get_feature_flag = None
 
 LOGGER = logging.getLogger("medical_rag.generation")
+
+
+def _is_feature_enabled(name: str, default: bool = True) -> bool:
+    if _runtime_get_feature_flag is None:
+        return default
+    try:
+        return bool(_runtime_get_feature_flag(str(name)))
+    except Exception:
+        return default
 
 _GENERIC_COMMENT_SUBJECTS = {
     "commentaire",
@@ -146,6 +181,172 @@ def _resolve_comment_subject_from_query(
         label = analyte_display_name(norm, norm).strip() or str(norm).strip().upper()
         return norm, label
     return "", "Commentaire médical"
+
+
+def _wants_all_comments_listing(query: str) -> bool:
+    qn = norm_text(query or "")
+    if "commentaire" not in qn and "commentaires" not in qn and "note" not in qn and "notes" not in qn:
+        return False
+    return any(
+        k in qn
+        for k in [
+            "liste",
+            "lister",
+            "montre",
+            "affiche",
+            "tous les commentaires",
+            "toutes les notes",
+            "tous les comment",
+        ]
+    )
+
+
+def _wants_single_comment(query: str) -> bool:
+    qn = norm_text(query or "")
+    if any(k in qn for k in ["tous les commentaires", "toutes les notes", "tous les comment"]):
+        return False
+    # Singular requests should yield one comment even without the word "seule".
+    if re.search(r"\bliste\s+(un|une)\s+commentaire\b", qn):
+        return True
+    return any(
+        k in qn
+        for k in [
+            "une seule commentaire",
+            "un seul commentaire",
+            "seulement un commentaire",
+            "juste un commentaire",
+            "1 commentaire",
+            "single comment",
+        ]
+    )
+
+
+def _row_looks_like_qualitative_comment(row: dict[str, Any]) -> bool:
+    analyte = norm_text(str(row.get("analyte") or row.get("analyte_norm") or ""))
+    section = norm_text(str(row.get("section") or row.get("section_norm") or ""))
+    merged = norm_text(
+        " ".join(
+            [
+                str(row.get("value_raw") or ""),
+                str(row.get("text_for_keyword") or ""),
+                str(row.get("text_for_embedding") or ""),
+            ]
+        )
+    )
+    if analyte in {"commentaire", "commentaire medical", "commentaire médical", "note", "interpretation", "interprétation"}:
+        return True
+    if "commentaire" in section or "note" in section or "interpretation" in section or "interprétation" in section:
+        return True
+    return any(marker in merged for marker in ["commentaire", "valeur seuil", "attention"])
+
+
+def _is_low_signal_comment_text(text: str) -> bool:
+    tn = norm_text(text or "")
+    if not tn:
+        return True
+    low_signal_markers = [
+        "resume du rapport medical",
+        "type de document",
+        "laboratoire",
+        "section medicale",
+        "laboratory results",
+    ]
+    if any(m in tn for m in low_signal_markers):
+        return True
+    # Keep very short but clinically meaningful comments such as "<4,11 IU/ml".
+    return False
+
+
+def _norm_comment_fingerprint(text: str) -> str:
+    fp = norm_text(text or "")
+    fp = re.sub(r"[^a-z0-9\s]", " ", fp)
+    fp = re.sub(r"\s+", " ", fp).strip()
+    return fp
+
+
+def _doc_recency_key(doc_id: str) -> tuple[int, str]:
+    d = str(doc_id or "").strip().lower()
+    m = re.search(r"(\d+)$", d)
+    if m:
+        return (int(m.group(1)), d)
+    return (0, d)
+
+
+def _format_comment_for_readability(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    out = raw
+    # Restore paragraph separation when packed on one line.
+    out = re.sub(r"\s+(Attention\s*:)", r"\n\1", out, flags=re.IGNORECASE)
+    out = re.sub(r"\s+(Valeur\s+seuil\s*:)", r"\n\1", out, flags=re.IGNORECASE)
+    # Restore bullet list markers.
+    out = re.sub(r"\s+-\s+", r"\n- ", out)
+    out = re.sub(r"\s*;\s*", " ; ", out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
+
+
+def _merge_comment_variants(texts: list[str]) -> str:
+    cleaned = [str(t or "").strip() for t in texts if str(t or "").strip()]
+    if not cleaned:
+        return ""
+    # Keep the richest version first, then append only complementary variants.
+    cleaned.sort(key=len, reverse=True)
+    merged = cleaned[0]
+    merged_fp = _norm_comment_fingerprint(merged)
+    for candidate in cleaned[1:]:
+        cand_fp = _norm_comment_fingerprint(candidate)
+        if not cand_fp or cand_fp in merged_fp or merged_fp in cand_fp:
+            continue
+        merged += "\n" + candidate
+        merged_fp = _norm_comment_fingerprint(merged)
+    return _format_comment_for_readability(merged)
+
+
+def _enrich_comment_with_unit_if_missing(text: str, unit: str) -> str:
+    comment = str(text or "").strip()
+    u = str(unit or "").strip()
+    if not comment or not u:
+        return comment
+    # If the comment is a compact threshold/value without explicit unit, append unit.
+    # Example: "<4,11" -> "<4,11 IU/ml"
+    has_letters = bool(re.search(r"[a-zA-Zµ]", comment))
+    looks_numeric_threshold = bool(re.fullmatch(r"[<>]=?\s*\d+(?:[.,]\d+)?", comment))
+    if looks_numeric_threshold and not has_letters:
+        return f"{comment} {u}"
+    # Also handle prefixed compact comments such as "Commentaire : <4,11".
+    prefixed_threshold = re.fullmatch(r"(?:(?P<prefix>[^:]{1,40}:\s*)?)(?P<th>[<>]=?\s*\d+(?:[.,]\d+)?)", comment)
+    if prefixed_threshold and not re.search(rf"\b{re.escape(u)}\b", comment, flags=re.IGNORECASE):
+        prefix = str(prefixed_threshold.group("prefix") or "")
+        threshold = str(prefixed_threshold.group("th") or "").strip()
+        return f"{prefix}{threshold} {u}".strip()
+    return comment
+
+
+def _build_multi_comment_answer(evidences: list[dict[str, Any]]) -> str:
+    if not evidences:
+        return "Aucun commentaire exploitable n’a été retrouvé dans les données indexées."
+    lines = ["### Commentaires retrouvés", ""]
+    use_bullets = len(evidences) > 1
+    for idx, ev in enumerate(evidences[:12], start=1):
+        subject = str(ev.get("subject") or ev.get("analyte") or "Commentaire médical").strip()
+        comment_text = str(ev.get("display_comment_text") or ev.get("comment_text") or ev.get("current_value") or "").strip()
+        if not comment_text:
+            continue
+        pretty = _format_comment_for_readability(comment_text)
+        if use_bullets:
+            one_line = " ".join(part.strip() for part in pretty.splitlines() if part.strip())
+            lines.append(f"- **{subject}** : {one_line}")
+        else:
+            lines.append(f"{idx}. **{subject}**")
+            lines.append(pretty)
+        lines.append("")
+    if len(lines) <= 2:
+        return "Aucun commentaire exploitable n’a été retrouvé dans les données indexées."
+    if len(evidences) > 12:
+        lines.append(f"- … {len(evidences) - 12} autre(s) commentaire(s) disponible(s).")
+    return "\n".join(lines)
 
 
 _INTERNAL_REASONING_PATTERNS = [
@@ -1009,10 +1210,14 @@ def _query_understanding_payload(qu: QueryUnderstanding) -> dict[str, Any]:
         "unsupported_presentation_reason": getattr(qu, "unsupported_presentation_reason", None),
         "recommended_alternative_format": getattr(qu, "recommended_alternative_format", None),
         "requested_date_iso": getattr(qu, "requested_date_iso", None),
+        "requested_report_type": getattr(qu, "requested_report_type", None),
         "latest_report": bool(getattr(qu, "latest_report", False)),
         "requested_context_type": getattr(qu, "requested_context_type", None),
         "inventory_view_type": getattr(qu, "inventory_view_type", None),
         "qualitative_view_type": getattr(qu, "qualitative_view_type", None),
+        "requested_reference_profile": getattr(qu, "requested_reference_profile", None),
+        "use_patient_profile": bool(getattr(qu, "use_patient_profile", False)),
+        "request_all_reference_ranges": bool(getattr(qu, "request_all_reference_ranges", False)),
         "requested_summary_points": getattr(qu, "requested_summary_points", None),
         "presentation_intent": {
             "requested_output": getattr(presentation, "requested_output", qu.output_format),
@@ -2416,12 +2621,50 @@ def _build_qualitative_comment_render_response(
         if wants_clickable and not has_clickable_source:
             source_text_for_answer = f"{source_label} (source non cliquable disponible uniquement en texte)"
         if view_type == "text_table":
-            source_cell = source_markdown if has_clickable_source else escape_markdown_table_cell(source_text_for_answer)
-            answer = (
-                "| Sujet | Commentaire | Source |\n"
-                "|---|---|---|\n"
-                f"| {escape_markdown_table_cell(subject)} | {escape_markdown_table_cell(compact_comment)} | {source_cell} |"
-            )
+            def _ev_source_cell(ev: dict[str, Any]) -> str:
+                ev_source = normalize_source_for_response(
+                    {
+                        "label": str(ev.get("source_label") or ev.get("source") or "").strip(),
+                        "source_pdf": str(ev.get("source_pdf") or "").strip(),
+                        "doc_id": str(ev.get("doc_id") or "").strip(),
+                        "page": ev.get("page") if ev.get("page") is not None else ev.get("page_number"),
+                        "line": ev.get("line") if ev.get("line") is not None else ev.get("row"),
+                        "viewer_url": str(ev.get("viewer_url") or "").strip() or None,
+                        "source_url": str(ev.get("source_url") or "").strip() or None,
+                    }
+                )
+                ev_label = str(ev_source.get("label") or "").strip() or "source non disponible"
+                ev_viewer = str(ev_source.get("viewer_url") or "").strip() or None
+                ev_url = str(ev_source.get("source_url") or ev_source.get("url") or "").strip() or None
+                md, clickable = format_clickable_source_markdown(ev_label, ev_viewer, ev_url)
+                if clickable:
+                    return md
+                if wants_clickable:
+                    return escape_markdown_table_cell(f"{ev_label} (source non cliquable disponible uniquement en texte)")
+                return escape_markdown_table_cell(ev_label)
+
+            rows = ["| Sujet | Commentaire | Source |", "|---|---|---|"]
+            if len(evidences) > 1:
+                for ev in evidences:
+                    if not isinstance(ev, dict):
+                        continue
+                    ev_subject = str(ev.get("subject") or ev.get("analyte") or subject or "Commentaire médical").strip()
+                    ev_comment_raw = str(ev.get("display_comment_text") or ev.get("comment_text") or ev.get("current_value") or "").strip()
+                    if not ev_comment_raw:
+                        continue
+                    ev_compact = ev_comment_raw if len(ev_comment_raw) <= 520 else ev_comment_raw[:517].rstrip() + "..."
+                    rows.append(
+                        f"| {escape_markdown_table_cell(ev_subject)} | {escape_markdown_table_cell(ev_compact)} | {_ev_source_cell(ev)} |"
+                    )
+                if len(rows) == 2:
+                    rows.append(
+                        f"| {escape_markdown_table_cell(subject)} | {escape_markdown_table_cell(compact_comment)} | "
+                        f"{source_markdown if has_clickable_source else escape_markdown_table_cell(source_text_for_answer)} |"
+                    )
+            else:
+                source_cell = source_markdown if has_clickable_source else escape_markdown_table_cell(source_text_for_answer)
+                rows.append(f"| {escape_markdown_table_cell(subject)} | {escape_markdown_table_cell(compact_comment)} | {source_cell} |")
+            answer = "\n".join(rows)
         elif view_type == "interpretive_note":
             answer = (
                 "Note interprétative sourcée\n\n"
@@ -3450,6 +3693,8 @@ def _fetch_global_comment_rows(
               m.unit,
               m.reference_range,
               m.interpretation_status,
+              m.section,
+              m.section_norm,
               m.row_index,
               COALESCE(m.source_pdf, o.source_pdf) AS source_pdf,
               COALESCE(m.page_number, o.page_number) AS page_number
@@ -3552,6 +3797,8 @@ def _rows_to_evidence(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "unit": row.get("unit"),
                 "reference_range": row.get("reference_range"),
                 "reference_range_raw": row.get("reference_range"),
+                "reference_raw": row.get("reference_range"),
+                "reference_ranges": parse_reference_ranges(str(row.get("reference_range") or ""), default_unit=str(row.get("unit") or "").strip() or None),
                 "interpretation_status": row.get("interpretation_status"),
                 "previous_result": previous_raw,
                 "previous_result_present": prev_flag,
@@ -3629,6 +3876,462 @@ def _missing_doc_answer() -> str:
     return "information non retrouvée dans le document demandé"
 
 
+def _resolve_reference_scope_doc_ids(
+    *,
+    sqlite_path: Path,
+    requested_doc_ids: list[str],
+    requested_date_iso: str | None,
+    requested_report_type: str | None,
+) -> list[str]:
+    explicit = [str(d).strip().lower() for d in (requested_doc_ids or []) if str(d).strip()]
+    if explicit:
+        return explicit
+    if not sqlite_path.exists():
+        return []
+    report_type = str(requested_report_type or "").strip().lower()
+    report_tokens_map: dict[str, list[str]] = {
+        "immunoanalyse": ["immuno", "immunoanalyse", "immuno analyse"],
+        "biochimie": ["biochimie", "bio chimie", "chimie"],
+        "toxicologie": ["toxico", "toxicologie"],
+    }
+    report_tokens = report_tokens_map.get(report_type, [report_type] if report_type else [])
+    conn = sqlite3.connect(str(sqlite_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        params: list[Any] = []
+        where = []
+        if requested_date_iso:
+            params.append(str(requested_date_iso).strip())
+            where.append("substr(coalesce(report_date, request_date, ''), 1, 10) = ?")
+        if report_tokens:
+            sub = []
+            for tok in report_tokens:
+                sub.append(
+                    "(instr(lower(coalesce(section_norm,'')), ?) > 0 OR instr(lower(coalesce(section,'')), ?) > 0 OR instr(lower(coalesce(document_type,'')), ?) > 0)"
+                )
+                params.extend([tok, tok, tok])
+            where.append("(" + " OR ".join(sub) + ")")
+        if not where:
+            return []
+        cur.execute(
+            f"""
+            SELECT DISTINCT lower(doc_id) AS doc_id
+            FROM metadata_chunks
+            WHERE {' AND '.join(where)}
+            ORDER BY doc_id ASC
+            """,
+            params,
+        )
+        docs = [str(r["doc_id"]).strip() for r in cur.fetchall() if str(r["doc_id"]).strip()]
+        if not requested_date_iso and not explicit and docs:
+            # Deterministic behavior for type-only queries: prefer most recent report id.
+            docs = sorted(docs, key=_doc_recency_key, reverse=True)
+            return [docs[0]]
+        return docs
+    finally:
+        conn.close()
+
+
+def _resolve_target_analyte_rows(rows: list[dict[str, Any]], requested_analyte: str) -> list[dict[str, Any]]:
+    target = norm_text(requested_analyte or "")
+    if not target:
+        return rows
+    exact = [
+        r
+        for r in rows
+        if norm_text(str(r.get("analyte_norm") or r.get("analyte") or "")) == target
+        or norm_text(str(r.get("analyte") or "")) == target
+    ]
+    if exact:
+        return exact
+    alias = [r for r in rows if _row_matches_analyte(r, target)]
+    if len(alias) == 1:
+        return alias
+    if len(alias) > 1:
+        return alias
+    return []
+
+
+def find_reference_range_candidate_rows(
+    sqlite_path: Path,
+    analyte_names: list[str],
+    requested_report_type: str | None = None,
+    requested_date_iso: str | None = None,
+    requested_doc_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    analytes = [str(a).strip().lower() for a in (analyte_names or []) if str(a).strip()]
+    if not analytes or not sqlite_path.exists():
+        return []
+    report_type = str(requested_report_type or "").strip().lower()
+    tokens_map = {
+        "immunoanalyse": ["immuno", "immunoanalyse", "immuno analyse"],
+        "biochimie": ["biochimie", "bio chimie", "chimie"],
+        "toxicologie": ["toxico", "toxicologie"],
+    }
+    r_tokens = tokens_map.get(report_type, [report_type] if report_type else [])
+
+    # 1) doc_ids + analyte
+    explicit = [str(d).strip().lower() for d in (requested_doc_ids or []) if str(d).strip()]
+    if explicit:
+        rows = _fetch_doc_lab_rows(sqlite_path=sqlite_path, requested_doc_ids=explicit, analyte_norms=analytes, limit=300)
+        if rows:
+            return rows
+
+    conn = sqlite3.connect(str(sqlite_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+
+        def _query(where_extra: list[str], params_extra: list[Any]) -> list[dict[str, Any]]:
+            analyte_clause = " OR ".join(
+                [
+                    "(instr(lower(coalesce(m.analyte_norm,'')), ?) > 0 OR instr(lower(coalesce(m.analyte,'')), ?) > 0)"
+                    for _ in analytes
+                ]
+            )
+            analyte_params: list[Any] = []
+            for a in analytes:
+                analyte_params.extend([a, a])
+            where = ["c.chunk_type = 'lab_result'", f"({analyte_clause})"]
+            where.extend(where_extra)
+            sql = f"""
+            SELECT
+              c.doc_id,
+              m.analyte,
+              m.analyte_norm,
+              m.value_raw,
+              m.value_numeric,
+              m.unit,
+              m.reference_range,
+              m.section,
+              m.section_norm,
+              m.document_type,
+              m.row_index,
+              COALESCE(m.source_pdf, o.source_pdf) AS source_pdf,
+              COALESCE(m.page_number, o.page_number) AS page_number,
+              substr(coalesce(m.report_date, m.request_date, ''), 1, 10) AS report_date
+            FROM metadata_chunks m
+            JOIN chunks c ON c.chunk_id = m.chunk_id
+            LEFT JOIN object_references o ON o.chunk_id = c.chunk_id
+            WHERE {' AND '.join(where)}
+            ORDER BY c.doc_id ASC, COALESCE(m.page_number, o.page_number, 999999) ASC, COALESCE(m.row_index, 999999) ASC
+            LIMIT 500
+            """
+            cur.execute(sql, analyte_params + params_extra)
+            return [dict(r) for r in cur.fetchall()]
+
+        # 2) date + type + analyte
+        if requested_date_iso:
+            where = ["substr(coalesce(m.report_date, m.request_date, ''), 1, 10) = ?"]
+            params: list[Any] = [str(requested_date_iso).strip()]
+            if r_tokens:
+                sub = []
+                for t in r_tokens:
+                    sub.append("(instr(lower(coalesce(m.section_norm,'')), ?) > 0 OR instr(lower(coalesce(m.section,'')), ?) > 0 OR instr(lower(coalesce(m.document_type,'')), ?) > 0)")
+                    params.extend([t, t, t])
+                where.append("(" + " OR ".join(sub) + ")")
+            rows = _query(where, params)
+            if rows:
+                return rows
+
+        # 3) type + analyte
+        if r_tokens:
+            sub = []
+            params = []
+            for t in r_tokens:
+                sub.append("(instr(lower(coalesce(m.section_norm,'')), ?) > 0 OR instr(lower(coalesce(m.section,'')), ?) > 0 OR instr(lower(coalesce(m.document_type,'')), ?) > 0)")
+                params.extend([t, t, t])
+            rows = _query(["(" + " OR ".join(sub) + ")"], params)
+            if rows:
+                return rows
+
+        # 4) analyte global fallback
+        return _query([], [])
+    finally:
+        conn.close()
+
+
+def _build_reference_range_lookup_response(
+    *,
+    request_id: str,
+    started: float,
+    query: str,
+    query_received: str,
+    query_used_for_retrieval: str,
+    query_used_for_prompt: str,
+    top_k: int,
+    max_display_results: int,
+    show_all_results: bool,
+    show_low_quality: bool,
+    timeout: int,
+    provider: str,
+    model: str,
+    query_understanding: QueryUnderstanding,
+    intents: dict[str, bool],
+    sqlite_path: Path,
+    requested_doc_ids: list[str],
+) -> dict[str, Any]:
+    strict_enabled = _is_feature_enabled("REFERENCE_RANGE_STRICT_MODE", default=True)
+    if not strict_enabled:
+        answer = (
+            "La recherche stricte de plages physiologiques est temporairement désactivée. "
+            "Veuillez préciser le rapport ou demander les résultats bruts."
+        )
+        validation = validate_answer(
+            query=query,
+            answer_text=answer,
+            evidence_pack=[],
+            displayed_evidences=[],
+            source_citations=[],
+            generation_mode="reference_range_lookup_disabled_by_feature_flag",
+            retrieval_status="not_required",
+            query_received=query_received,
+            query_used_for_retrieval=query_used_for_retrieval,
+            query_used_for_prompt=query_used_for_prompt,
+            query_stored=query,
+            detected_analytes=[],
+            # Do not run strict reference-range validation constraints while the feature is disabled.
+            query_intents={**dict(intents or {}), "reference_range_lookup": False},
+            output_format_requested="paragraph",
+            answer_style_requested="standard",
+            requested_table_columns=[],
+            requested_technical_condition=None,
+            source_clickable_requested=bool(getattr(query_understanding, "source_clickable_requested", False)),
+            requested_value=None,
+            comparison_operator=None,
+            raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+            unsupported_presentation=False,
+            user_requested_visualization=False,
+            requested_chart_type=None,
+            visualization_payload=None,
+            chart_data_payload=None,
+        )
+        validation = dict(validation or {})
+        warnings = list(validation.get("warnings") or [])
+        warnings.append("skipped_validation_because_feature_disabled")
+        validation["warnings"] = warnings
+        validation["validation_status"] = "warning"
+        return {
+            "request_id": request_id,
+            "query": query,
+            "query_received": query_received,
+            "query_used_for_retrieval": query_used_for_retrieval,
+            "query_used_for_prompt": query_used_for_prompt,
+            "query_stored": query,
+            "normalized_query": query,
+            "mode": "reference_range_lookup",
+            "provider": provider,
+            "model": model,
+            "top_k": top_k,
+            "max_display_results": int(max_display_results),
+            "show_all_results": bool(show_all_results),
+            "show_low_quality": bool(show_low_quality),
+            "timeout": timeout,
+            "generation_time_seconds": round(time.perf_counter() - started, 3),
+            "answer": answer,
+            "citations": [],
+            "sources": [],
+            "validation": validation,
+            "quality_report": _quality_report(answer=answer, validation=validation, source_clickable_requested=False, recent_style_history=[]),
+            "llm_error": None,
+            "error_type": None,
+            "generation_mode": "reference_range_lookup_disabled_by_feature_flag",
+            "detected_analytes": [],
+            "query_understanding": _query_understanding_payload(query_understanding),
+            "structured_evidence_pack": {},
+            "evidence_pack": [],
+            "displayed_evidences": [],
+            "retrieval": {"answerability": {"status": "not_required", "reason": "reference_range_strict_mode_disabled"}},
+            "prompt": "",
+            "debug": {
+                "request_id": request_id,
+                "selection_status": "disabled",
+                "feature_flags": {"REFERENCE_RANGE_STRICT_MODE": False},
+                "reference_range_debug": {
+                    "intent": "reference_range_lookup",
+                    "requested_analytes": list(query_understanding.requested_analytes or []),
+                    "requested_report_type": getattr(query_understanding, "requested_report_type", None),
+                    "requested_date_iso": getattr(query_understanding, "requested_date_iso", None),
+                    "reason": "strict_mode_disabled",
+                },
+            },
+            "visualization": None,
+            "chart_data": None,
+        }
+
+    analyte = str((query_understanding.requested_analytes or [""])[0] or "").strip().lower()
+    if not analyte:
+        answer = "Je n’ai pas détecté l’analyte demandé pour la plage de référence."
+        status = "no_match"
+        selected = None
+        candidates = []
+        source_label = "source non disponible"
+    else:
+        candidate_rows = find_reference_range_candidate_rows(
+            sqlite_path=sqlite_path,
+            analyte_names=[analyte],
+            requested_report_type=getattr(query_understanding, "requested_report_type", None),
+            requested_date_iso=getattr(query_understanding, "requested_date_iso", None),
+            requested_doc_ids=requested_doc_ids,
+        )
+        filtered_rows = _resolve_target_analyte_rows(candidate_rows, analyte)
+        for r in filtered_rows:
+            r["reference_raw"] = r.get("reference_raw") or r.get("reference_range")
+            r["page"] = r.get("page") if r.get("page") is not None else r.get("page_number")
+            r["row"] = r.get("row") if r.get("row") is not None else r.get("row_index")
+        patient_profile = None
+        flow = run_reference_range_lookup_from_rows(
+            rows=filtered_rows,
+            analyte=analyte,
+            requested_profile=getattr(query_understanding, "requested_reference_profile", None),
+            use_patient_profile=bool(getattr(query_understanding, "use_patient_profile", False)),
+            patient_profile=patient_profile,
+            request_all_ranges=bool(getattr(query_understanding, "request_all_reference_ranges", False)),
+            report_type=getattr(query_understanding, "requested_report_type", None),
+            date_iso=getattr(query_understanding, "requested_date_iso", None),
+        )
+        status = str(flow.get("status") or "no_match")
+        answer = str(flow.get("answer") or f"Aucune plage physiologique exploitable n’a été retrouvée pour {analyte_display_name(analyte, analyte)}.")
+        debug_extra = dict(flow.get("debug") or {})
+        flow_sources_raw = list(flow.get("sources") or [])
+        flow_sources: list[dict[str, Any]] = []
+        for src in flow_sources_raw:
+            if not isinstance(src, dict):
+                continue
+            normalized = normalize_source_for_response(src)
+            label = str(normalized.get("label") or "").strip()
+            if label.lower().startswith("docs/"):
+                normalized["label"] = label[5:].strip()
+            flow_sources.append(normalized)
+        ref_debug = {
+            "intent": "reference_range_lookup",
+            "requested_analytes": [analyte],
+            "requested_report_type": getattr(query_understanding, "requested_report_type", None),
+            "requested_date_iso": getattr(query_understanding, "requested_date_iso", None),
+            "requested_reference_profile": getattr(query_understanding, "requested_reference_profile", None),
+            "resolved_doc_ids": sorted({str(r.get("doc_id") or "").strip() for r in filtered_rows if str(r.get("doc_id") or "").strip()}),
+            "candidate_rows_count": len(filtered_rows),
+            "candidate_rows_preview": list(debug_extra.get("candidate_rows_preview") or [])[:8],
+            "reference_raw_found": bool(any(str(r.get("reference_raw") or r.get("reference_range") or "").strip() for r in filtered_rows)),
+            "parsed_ranges_count": int(debug_extra.get("parsed_ranges_count") or 0),
+            "parsed_ranges_preview": list((debug_extra.get("parsed_ranges_preview") or []))[:8],
+            "selected_range": debug_extra.get("selected_range"),
+            "selector_status": status,
+            "failure_reason": debug_extra.get("failure_reason"),
+        }
+    if 'ref_debug' not in locals():
+        ref_debug = {
+            "intent": "reference_range_lookup",
+            "requested_analytes": [analyte] if analyte else [],
+            "requested_report_type": getattr(query_understanding, "requested_report_type", None),
+            "requested_date_iso": getattr(query_understanding, "requested_date_iso", None),
+            "requested_reference_profile": getattr(query_understanding, "requested_reference_profile", None),
+            "resolved_doc_ids": [],
+            "candidate_rows_count": 0,
+            "candidate_rows_preview": [],
+            "reference_raw_found": False,
+            "parsed_ranges_count": 0,
+            "parsed_ranges_preview": [],
+            "selected_range": None,
+            "selector_status": status,
+            "failure_reason": "no_analyte_detected" if not analyte else None,
+        }
+    if "flow_sources" not in locals():
+        flow_sources = []
+    LOGGER.info(
+        "reference_range_debug request_id=%s debug=%s",
+        request_id,
+        json.dumps(ref_debug, ensure_ascii=False, default=str),
+    )
+    wants_clickable = bool(getattr(query_understanding, "source_clickable_requested", False))
+    answer_lines = [ln for ln in str(answer or "").splitlines() if not ln.strip().lower().startswith(("source :", "sources :"))]
+    answer = "\n".join(answer_lines).strip()
+    if wants_clickable and flow_sources:
+        src0 = flow_sources[0]
+        source_label = str(src0.get("label") or "").strip() or "source non disponible"
+        viewer_url = str(src0.get("viewer_url") or "").strip() or None
+        source_url = str(src0.get("url") or "").strip() or None
+        source_md, clickable = format_clickable_source_markdown(source_label, viewer_url, source_url)
+        if clickable:
+            answer += f"\n\nSource : {source_md}"
+        else:
+            answer += (
+                f"\n\nSource : {source_label}\n"
+                "Source disponible uniquement en texte ; aucun lien cliquable n’est disponible."
+            )
+    validation = validate_answer(
+        query=query,
+        answer_text=answer,
+        evidence_pack=[],
+        displayed_evidences=[],
+        source_citations=[],
+        generation_mode="deterministic_reference_range_lookup",
+        retrieval_status="answerable" if status in {"selected", "fallback", "ambiguous", "grouped_options"} else "insufficient_context",
+        query_received=query_received,
+        query_used_for_retrieval=query_used_for_retrieval,
+        query_used_for_prompt=query_used_for_prompt,
+        query_stored=query,
+        detected_analytes=[],
+        query_intents=intents,
+        output_format_requested="table" if bool(getattr(query_understanding, "request_all_reference_ranges", False)) else "paragraph",
+        answer_style_requested="standard",
+        requested_table_columns=[],
+        requested_technical_condition=None,
+        source_clickable_requested=wants_clickable,
+        requested_value=None,
+        comparison_operator=None,
+        raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+        unsupported_presentation=False,
+        user_requested_visualization=False,
+        requested_chart_type=None,
+        visualization_payload=None,
+        chart_data_payload=None,
+    )
+    return {
+        "request_id": request_id,
+        "query": query,
+        "query_received": query_received,
+        "query_used_for_retrieval": query_used_for_retrieval,
+        "query_used_for_prompt": query_used_for_prompt,
+        "query_stored": query,
+        "normalized_query": query,
+        "mode": "reference_range_lookup",
+        "provider": provider,
+        "model": model,
+        "top_k": top_k,
+        "max_display_results": int(max_display_results),
+        "show_all_results": bool(show_all_results),
+        "show_low_quality": bool(show_low_quality),
+        "timeout": timeout,
+        "generation_time_seconds": round(time.perf_counter() - started, 3),
+        "answer": answer,
+        "citations": [],
+        "sources": flow_sources,
+        "validation": validation,
+        "quality_report": _quality_report(answer=answer, validation=validation, source_clickable_requested=wants_clickable, recent_style_history=[]),
+        "llm_error": None,
+        "error_type": None,
+        "generation_mode": "deterministic_reference_range_lookup",
+        "detected_analytes": [analyte] if analyte else [],
+        "query_understanding": _query_understanding_payload(query_understanding),
+        "structured_evidence_pack": {},
+        "evidence_pack": [],
+        "displayed_evidences": [],
+        "retrieval": {"answerability": {"status": "answerable" if status in {"selected", "fallback", "ambiguous", "grouped_options"} else "insufficient_context", "reason": status}},
+        "prompt": "",
+        "debug": {
+            "request_id": request_id,
+            "selection_status": status,
+            "feature_flags": {"REFERENCE_RANGE_STRICT_MODE": True},
+            "llm_called": False,
+            "reference_range_debug": ref_debug,
+        },
+        "visualization": None,
+        "chart_data": None,
+    }
+
+
 def _source_label(row: dict[str, Any]) -> str:
     doc_id = str(row.get("doc_id") or "source").strip()
     source_pdf = str(row.get("source_pdf") or "").strip()
@@ -3702,6 +4405,7 @@ def _structured_record_from_row(row: dict[str, Any], *, requested_doc_id: str | 
     analyte_norm = str(row.get("analyte_norm") or "").strip().lower()
     analyte_raw = _clean_analyte_label(str(row.get("analyte") or row.get("parameter") or "non précisé"))
     analyte_human = analyte_display_name(analyte_raw, analyte_norm or None) or analyte_raw
+    reference_raw = str(row.get("reference_range") or "").strip()
     return {
         "doc_id": str(row.get("doc_id") or requested_doc_id or ""),
         "patient_token": str(row.get("patient_token") or "").strip(),
@@ -3712,7 +4416,9 @@ def _structured_record_from_row(row: dict[str, Any], *, requested_doc_id: str | 
         "analyte_norm": analyte_norm,
         "current_value": value_raw,
         "unit": unit,
-        "reference": str(row.get("reference_range") or "").strip(),
+        "reference": reference_raw,
+        "reference_raw": reference_raw,
+        "reference_ranges": parse_reference_ranges(reference_raw, default_unit=str(row.get("unit") or "").strip() or None),
         "previous_result": previous,
         "technical_status_code": status_code,
         "technical_status": _status_fr(status_code),
@@ -4466,6 +5172,9 @@ def build_structured_evidence_pack(
 
     if intent == "comment_without_measured_value":
         qualitative_fetch_called = True
+        wants_single_comment = _wants_single_comment(query)
+        wants_all_comments = _wants_all_comments_listing(query) and not wants_single_comment
+        wants_latest_comment = bool(getattr(query_understanding, "latest_report", False))
         comment_subject_norm, comment_subject_label = _resolve_comment_subject_from_query(
             query_understanding=query_understanding,
             query=query,
@@ -4483,7 +5192,27 @@ def build_structured_evidence_pack(
             if requested_doc_ids
             else _fetch_global_comment_rows(sqlite_path=sqlite_path, term=search_term, limit=250)
         )
+        # Fallback for "latest report": if scoped latest doc has no comment row,
+        # retry globally and keep the latest doc that actually contains a qualitative comment.
+        if bool(getattr(query_understanding, "latest_report", False)) and requested_doc_ids:
+            global_rows = _fetch_global_comment_rows(sqlite_path=sqlite_path, term=search_term, limit=600)
+            candidate_rows = [r for r in global_rows if _row_looks_like_qualitative_comment(r)]
+            scoped_comment_rows = [r for r in rows if _row_looks_like_qualitative_comment(r)]
+            if candidate_rows and not scoped_comment_rows:
+                latest_doc = max(
+                    (
+                        str(r.get("doc_id") or "").strip()
+                        for r in candidate_rows
+                        if str(r.get("doc_id") or "").strip()
+                    ),
+                    key=_doc_recency_key,
+                    default="",
+                )
+                if latest_doc:
+                    rows = [r for r in candidate_rows if str(r.get("doc_id") or "").strip().lower() == latest_doc.lower()]
+                    pack["requested_doc_ids"] = [latest_doc]
         qualitative_rows_count = len(rows)
+        comment_rows = [r for r in rows if _row_looks_like_qualitative_comment(r)]
         measured = [
             r
             for r in rows
@@ -4494,6 +5223,7 @@ def build_structured_evidence_pack(
             )
             and norm_text(str(r.get("analyte") or "")) != "commentaire"
             and str(r.get("value_raw") or "").strip() != ""
+            and not _row_looks_like_qualitative_comment(r)
         ]
         if measured:
             pack["evidences"] = [_structured_record_from_row(measured[0])]
@@ -4506,26 +5236,36 @@ def build_structured_evidence_pack(
                 "qualitative_comment_text_preview": "",
             }
         else:
-            extraction_subject = comment_subject_norm or search_term
-            comment_text, cr = extract_comment_text_for_subject(extraction_subject, rows)
-            if comment_text and isinstance(cr, dict):
-                raw_comment_text = str(cr.get("value_raw") or cr.get("text_for_keyword") or cr.get("text_for_embedding") or "").strip()
-                display_comment_text = clean_qualitative_comment_text(raw_comment_text or comment_text, extraction_subject) or comment_text
-                row_subject = str(cr.get("analyte") or cr.get("parameter") or "").strip()
-                final_subject = comment_subject_label if comment_subject_norm else (row_subject or comment_subject_label)
-                final_subject_norm = comment_subject_norm or norm_text(final_subject)
-                pack["comment_text"] = display_comment_text
-                pack["raw_comment_text"] = raw_comment_text
-                pack["evidences"] = [
-                    {
+            if (wants_all_comments or wants_single_comment or wants_latest_comment) and not comment_subject_norm:
+                seen_fingerprints: set[str] = set()
+                best_by_doc: dict[str, dict[str, Any]] = {}
+                variants_by_doc: dict[str, list[str]] = {}
+                for cr in comment_rows:
+                    raw_comment_text = str(cr.get("value_raw") or cr.get("text_for_keyword") or cr.get("text_for_embedding") or "").strip()
+                    if not raw_comment_text:
+                        continue
+                    display_comment_text = clean_qualitative_comment_text(raw_comment_text, "commentaire")
+                    if not display_comment_text or _is_low_signal_comment_text(display_comment_text):
+                        continue
+                    row_subject = str(cr.get("analyte") or cr.get("parameter") or "").strip() or "Commentaire médical"
+                    if _is_generic_subject(row_subject):
+                        row_subject = "Commentaire médical"
+                    row_unit = str(cr.get("unit") or "").strip()
+                    display_comment_text = _enrich_comment_with_unit_if_missing(display_comment_text, row_unit)
+                    fingerprint = _norm_comment_fingerprint(display_comment_text)
+                    if not fingerprint or fingerprint in seen_fingerprints:
+                        continue
+                    candidate = {
                         "doc_id": str(cr.get("doc_id") or ""),
                         "patient_token": str(cr.get("patient_token") or "").strip(),
                         "page": cr.get("page_number"),
+                        "page_number": cr.get("page_number"),
                         "row": cr.get("row_index"),
+                        "row_index": cr.get("row_index"),
                         "chunk_id": cr.get("chunk_id"),
-                        "analyte": final_subject,
-                        "subject": final_subject,
-                        "analyte_norm": final_subject_norm,
+                        "analyte": row_subject,
+                        "subject": row_subject,
+                        "analyte_norm": norm_text(row_subject),
                         "current_value": display_comment_text,
                         "raw_comment_text": raw_comment_text,
                         "display_comment_text": display_comment_text,
@@ -4540,14 +5280,86 @@ def build_structured_evidence_pack(
                         "source_pdf": str(cr.get("source_pdf") or ""),
                         "result_kind": "comment",
                     }
-                ]
+                    doc_key = str(candidate.get("doc_id") or "").strip().lower() or str(candidate.get("source_pdf") or "").strip().lower()
+                    if not doc_key:
+                        doc_key = fingerprint[:60]
+                    existing = best_by_doc.get(doc_key)
+                    variants_by_doc.setdefault(doc_key, []).append(display_comment_text)
+                    if existing is None:
+                        best_by_doc[doc_key] = candidate
+                        seen_fingerprints.add(fingerprint)
+                        continue
+                    existing_txt = str(existing.get("display_comment_text") or "")
+                    existing_precise = existing.get("page") is not None or existing.get("row") is not None
+                    candidate_precise = candidate.get("page") is not None or candidate.get("row") is not None
+                    if (candidate_precise and not existing_precise) or (len(display_comment_text) > len(existing_txt)):
+                        best_by_doc[doc_key] = candidate
+                        seen_fingerprints.add(fingerprint)
+                for doc_key, best in list(best_by_doc.items()):
+                    merged_text = _merge_comment_variants(variants_by_doc.get(doc_key, []))
+                    if merged_text:
+                        best["display_comment_text"] = merged_text
+                        best["comment_text"] = merged_text
+                        best["current_value"] = merged_text
+                built = sorted(
+                    list(best_by_doc.values()),
+                    key=lambda ev: (
+                        str(ev.get("doc_id") or "").lower(),
+                        int(ev.get("page")) if isinstance(ev.get("page"), int) else 999999,
+                        int(ev.get("row")) if isinstance(ev.get("row"), int) else 999999,
+                    ),
+                )
+                if (wants_single_comment or wants_latest_comment) and built:
+                    built = [max(built, key=lambda ev: _doc_recency_key(str(ev.get("doc_id") or "")))]
+                pack["comment_list_mode"] = bool(built)
+                pack["evidences"] = built
+            else:
+                extraction_subject = comment_subject_norm or search_term
+                comment_text, cr = extract_comment_text_for_subject(extraction_subject, comment_rows or rows)
+                if comment_text and isinstance(cr, dict):
+                    raw_comment_text = str(cr.get("value_raw") or cr.get("text_for_keyword") or cr.get("text_for_embedding") or "").strip()
+                    display_comment_text = clean_qualitative_comment_text(raw_comment_text or comment_text, extraction_subject) or comment_text
+                    row_subject = str(cr.get("analyte") or cr.get("parameter") or "").strip()
+                    final_subject = comment_subject_label if comment_subject_norm else (row_subject or comment_subject_label)
+                    final_subject_norm = comment_subject_norm or norm_text(final_subject)
+                    pack["comment_text"] = display_comment_text
+                    pack["raw_comment_text"] = raw_comment_text
+                    pack["evidences"] = [
+                        {
+                            "doc_id": str(cr.get("doc_id") or ""),
+                            "patient_token": str(cr.get("patient_token") or "").strip(),
+                            "page": cr.get("page_number"),
+                            "page_number": cr.get("page_number"),
+                            "row": cr.get("row_index"),
+                            "row_index": cr.get("row_index"),
+                            "chunk_id": cr.get("chunk_id"),
+                            "analyte": final_subject,
+                            "subject": final_subject,
+                            "analyte_norm": final_subject_norm,
+                            "current_value": display_comment_text,
+                            "raw_comment_text": raw_comment_text,
+                            "display_comment_text": display_comment_text,
+                            "comment_text": display_comment_text,
+                            "unit": "qualitative",
+                            "reference": str(cr.get("reference_range") or "").strip(),
+                            "previous_result": "",
+                            "technical_status_code": "not_interpretable",
+                            "technical_status": "commentaire qualitatif",
+                            "variation": "non comparable",
+                            "source": _source_label(cr),
+                            "source_pdf": str(cr.get("source_pdf") or ""),
+                            "result_kind": "comment",
+                        }
+                    ]
             pack["qualitative_debug"] = {
                 "enters_comment_without_measured_value_branch": True,
                 "qualitative_fetch_called": qualitative_fetch_called,
                 "qualitative_rows_count": qualitative_rows_count,
-                "qualitative_comment_extracted": bool(comment_text),
-                "qualitative_comment_text_length": len(comment_text or ""),
-                "qualitative_comment_text_preview": str((comment_text or "")[:80]),
+                "qualitative_comment_extracted": bool(pack.get("evidences")),
+                "qualitative_comment_text_length": len(str(pack.get("comment_text") or "")),
+                "qualitative_comment_text_preview": str(str(pack.get("comment_text") or "")[:80]),
+                "qualitative_comment_candidates_count": len(comment_rows),
+                "qualitative_comment_list_mode": bool(pack.get("comment_list_mode")),
             }
         pack["rows"] = rows
         return _finalize_structured_pack(pack, query_understanding)
@@ -5086,7 +5898,7 @@ def run_generation(
     context_resolution = resolve_context_for_turn(q, query_understanding, state_for_resolution)
     deictic_resolution = resolve_deictic_request(q, query_understanding, state_for_resolution)
     qn_deictic = norm_text(q)
-    asks_table = any(token in qn_deictic for token in [" table", "table ", "tableau"])
+    asks_table = any(token in qn_deictic for token in [" table", "table ", "tableau", "tabl", "une table", "dans une table"])
     asks_graph = any(token in qn_deictic for token in ["graphique", "chart", "courbe", "radar", "bar chart", "line graph", "visualise"])
     asks_context_summary = any(token in qn_deictic for token in ["resume", "résume", "resumer", "résumer", "synthese", "synthèse", "synthetise", "synthétise"]) and any(
         token in qn_deictic for token in ["commentaire", "ce commentaire", "cette valeur", "ce resultat", "ce résultat", "ces resultats", "ces résultats", "ce tableau", "ca", "ça", "ceci"]
@@ -5422,6 +6234,58 @@ def run_generation(
                 "visualization": None,
                 "chart_data": None,
             }
+
+    # Guardrail: reference-range wording should not drift to global multi-analyte listing.
+    # Force deterministic reference_range_lookup when user explicitly asks for norme/plage/référence.
+    reference_terms = ("norme", "plage", "référence", "reference", "valeur normale", "valeurs physiologiques", "intervalle de référence", "plage de référence")
+    has_reference_wording = any(term in qn for term in reference_terms)
+    if (
+        has_reference_wording
+        and list(query_understanding.requested_analytes or [])
+        and str(query_understanding.intent or "").strip().lower() != "reference_range_lookup"
+    ):
+        query_understanding = replace(
+            query_understanding,
+            intent="reference_range_lookup",
+            is_small_talk=False,
+            is_response_transform=False,
+        )
+
+    # Follow-up safeguard for reference ranges: if user only updates age, keep previous analyte/profile context.
+    if str(previous_context_intent or "").strip().lower() == "reference_range_lookup":
+        curr_profile = (
+            dict(getattr(query_understanding, "requested_reference_profile", None) or {})
+            if isinstance(getattr(query_understanding, "requested_reference_profile", None), dict)
+            else {}
+        )
+        has_age_update = any(curr_profile.get(k) not in (None, "") for k in ["age", "age_operator", "age_min", "age_max", "age_value"])
+        lacks_identity = all(curr_profile.get(k) in (None, "") for k in ["sex", "population", "condition"])
+        if has_age_update and lacks_identity:
+            prev_ctx = previous_displayed_context if isinstance(previous_displayed_context, dict) else {}
+            prev_profile = dict(prev_ctx.get("reference_profile") or {}) if isinstance(prev_ctx.get("reference_profile"), dict) else {}
+            merged_profile = dict(prev_profile)
+            for k, v in curr_profile.items():
+                if v not in (None, ""):
+                    merged_profile[k] = v
+            prev_analytes: list[str] = []
+            prev_subject = str(prev_ctx.get("subject") or "").strip()
+            if prev_subject:
+                prev_analytes = list(detect_exact_analytes(prev_subject) or [])
+            if not prev_analytes and isinstance(previous_displayed_evidence_pack, dict):
+                prev_rows = list(previous_displayed_evidence_pack.get("evidences") or previous_displayed_evidence_pack.get("results") or [])
+                if prev_rows and isinstance(prev_rows[0], dict):
+                    prev_label = str(prev_rows[0].get("analyte") or prev_rows[0].get("analyte_norm") or "").strip()
+                    if prev_label:
+                        prev_analytes = list(detect_exact_analytes(prev_label) or [])
+            if prev_analytes:
+                query_understanding = replace(
+                    query_understanding,
+                    intent="reference_range_lookup",
+                    requested_analytes=prev_analytes,
+                    requested_reference_profile=merged_profile if merged_profile else curr_profile,
+                    is_small_talk=False,
+                    is_response_transform=False,
+                )
 
     requested_doc_ids = resolve_followup_doc_scope(
         query=q,
@@ -5791,6 +6655,28 @@ def run_generation(
             "visualization": None,
             "chart_data": None,
         }
+    if str(query_understanding.intent or "").strip().lower() == "reference_range_lookup":
+        out = _build_reference_range_lookup_response(
+            request_id=request_id,
+            started=started,
+            query=q,
+            query_received=query_received,
+            query_used_for_retrieval=query_used_for_retrieval,
+            query_used_for_prompt=query_used_for_prompt,
+            top_k=top_k,
+            max_display_results=max_display_results,
+            show_all_results=show_all_results,
+            show_low_quality=show_low_quality,
+            timeout=timeout,
+            provider=provider,
+            model=model,
+            query_understanding=query_understanding,
+            intents=intents,
+            sqlite_path=sqlite_path,
+            requested_doc_ids=requested_doc_ids,
+        )
+        out.setdefault("debug", {})["context_resolution"] = context_resolution
+        return out
 
     # Strict guard: after non-transformable contexts (e.g. inventory), do not run retrieval
     # for deictic visualization/transform requests when no transformable context exists.
@@ -6110,7 +6996,7 @@ def run_generation(
             "generation_time_seconds": round(elapsed, 3),
             "answer": answer,
             "citations": [],
-            "sources": source_citations,
+            "sources": source_citations_for_response,
             "validation": validation,
             "quality_report": quality,
             "llm_error": None,
@@ -6174,8 +7060,19 @@ def run_generation(
             query_understanding=query_understanding,
             sqlite_path=sqlite_path,
         )
+        if str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
+            resolved_scope = [
+                str(d).strip()
+                for d in (structured_pack.get("requested_doc_ids") or [])
+                if str(d).strip()
+            ]
+            if resolved_scope:
+                requested_doc_ids = resolved_scope
         structured_rows = list(structured_pack.get("rows") or [])
-        evidence_pack = _rows_to_evidence(structured_rows)
+        if str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
+            evidence_pack = list(structured_pack.get("evidences") or [])
+        else:
+            evidence_pack = _rows_to_evidence(structured_rows)
         if requested_doc_ids:
             allowed_docs = {d.lower() for d in requested_doc_ids}
             evidence_pack = [ev for ev in evidence_pack if str(ev.get("doc_id") or "").strip().lower() in allowed_docs]
@@ -6184,8 +7081,12 @@ def run_generation(
         source_citations = build_source_citations(displayed_evidences, resolver=source_resolver)
         if str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
             source_citations = dedup_sources_for_qualitative(source_citations)
-            # Source is rendered inline in the qualitative answer to avoid duplicate source blocks.
-            source_citations_for_response: list[dict[str, Any]] = []
+            # For list mode, keep source list in response payload.
+            # For single-comment mode, source is rendered inline to avoid duplicates.
+            if bool(structured_pack.get("comment_list_mode")):
+                source_citations_for_response = source_citations
+            else:
+                source_citations_for_response = []
         else:
             source_citations_for_response = source_citations
         structured_pack = _attach_source_fields_to_structured_pack(structured_pack, source_citations)
@@ -6213,21 +7114,25 @@ def run_generation(
         composed_data = composed
         final_answer = str(composed.get("answer") or "").strip() or _missing_doc_answer()
         if str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
-            comment_text = str(structured_pack.get("comment_text") or "").strip()
-            first_ev = (structured_pack.get("evidences") or [{}])[0] if isinstance(structured_pack.get("evidences"), list) else {}
-            source_label = str(first_ev.get("source") or "").strip()
-            subject_label = str(first_ev.get("subject") or first_ev.get("analyte") or "").strip()
-            if not subject_label:
-                subject_norm, subject_guess = _resolve_comment_subject_from_query(
-                    query_understanding=query_understanding,
-                    query=q,
+            evidences = list(structured_pack.get("evidences") or [])
+            if bool(structured_pack.get("comment_list_mode")) and evidences:
+                final_answer = _build_multi_comment_answer(evidences)
+            else:
+                comment_text = str(structured_pack.get("comment_text") or "").strip()
+                first_ev = evidences[0] if evidences and isinstance(evidences[0], dict) else {}
+                source_label = str(first_ev.get("source") or "").strip()
+                subject_label = str(first_ev.get("subject") or first_ev.get("analyte") or "").strip()
+                if not subject_label:
+                    subject_norm, subject_guess = _resolve_comment_subject_from_query(
+                        query_understanding=query_understanding,
+                        query=q,
+                    )
+                    subject_label = subject_guess if subject_guess else (subject_norm or "Commentaire médical")
+                final_answer = build_qualitative_comment_answer(
+                    subject=subject_label,
+                    comment_text=comment_text,
+                    source_label=source_label or "source non disponible",
                 )
-                subject_label = subject_guess if subject_guess else (subject_norm or "Commentaire médical")
-            final_answer = build_qualitative_comment_answer(
-                subject=subject_label,
-                comment_text=comment_text,
-                source_label=source_label or "source non disponible",
-            )
         generation_mode = str(composed.get("mode") or "deterministic_professional_fallback")
         if str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
             qdbg = structured_pack.get("qualitative_debug") if isinstance(structured_pack.get("qualitative_debug"), dict) else {}

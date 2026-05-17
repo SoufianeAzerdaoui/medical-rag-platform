@@ -121,3 +121,15 @@ class ChatResponse(BaseModel):
 class DocumentItem(BaseModel):
     id: str
     name: str
+
+
+class FeatureFlagItemResponse(BaseModel):
+    name: str
+    enabled: bool
+    description: str
+    updated_at: str
+    updated_by: str
+
+
+class FeatureFlagUpdateRequest(BaseModel):
+    enabled: bool

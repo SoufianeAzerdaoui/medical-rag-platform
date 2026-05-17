@@ -1710,6 +1710,43 @@ def validate_answer(
         if transformable_context_available is False and "bloc commentaire source" not in core_norm and "bloc commentaire sourc" not in core_norm:
             warnings.append("qualitative_comment_render_block_copy_missing")
 
+    if (query_intents or {}).get("reference_range_lookup"):
+        if "source :" not in core_norm and "| source |" not in core_norm and "source non disponible" not in core_norm:
+            errors.append("reference_range_source_required")
+        if not any(k in core_norm for k in ["plage", "intervalle", "norme", "reference", "référence"]):
+            errors.append("reference_range_missing_main_fact")
+        if "resultats correspondants ont ete retrouves" in core_norm or "résultats correspondants ont été retrouvés" in core_norm:
+            errors.append("reference_range_forbidden_bulk_listing")
+        if any(tok in core_norm for tok in ["| analyte |", "| valeur actuelle |", "| statut | document |"]):
+            errors.append("reference_range_forbidden_multi_analyte_table")
+        if "valeur actuelle" in core_norm:
+            errors.append("reference_range_forbidden_current_value_render")
+        if "fallback" in core_norm and not any(k in core_norm for k in ["fallback", "pas trouve de plage specifique", "pas trouvé de plage spécifique"]):
+            errors.append("reference_range_fallback_not_explicit")
+    # Semantic guardrail: even if intent classification drifts, reference-range wording in query
+    # must never return a global multi-analyte bulk listing.
+    reference_semantic_query = any(
+        token in qn_query
+        for token in [
+            "plage normale",
+            "plage",
+            "norme",
+            "reference",
+            "référence",
+            "valeur normale",
+            "valeurs physiologiques",
+            "intervalle de reference",
+            "intervalle de référence",
+            "plage de reference",
+            "plage de référence",
+        ]
+    )
+    if reference_semantic_query:
+        if "resultats correspondants ont ete retrouves" in core_norm or "résultats correspondants ont été retrouvés" in core_norm:
+            errors.append("reference_semantic_forbidden_bulk_listing")
+        if any(tok in core_norm for tok in ["| analyte |", "| valeur actuelle |", "| statut | document |"]):
+            errors.append("reference_semantic_forbidden_multi_analyte_table")
+
     # Global business-flow guard: no greeting small-talk leak in deterministic business intents.
     business_intent_keys = {
         "response_transform",
@@ -1720,6 +1757,7 @@ def validate_answer(
         "doc_scoped_results",
         "cohort_search",
         "comment_without_measured_value",
+        "reference_range_lookup",
     }
     if any((query_intents or {}).get(k) for k in business_intent_keys):
         if "bonjour ! je suis pret" in core_norm or "je suis pret a vous accompagner" in core_norm:

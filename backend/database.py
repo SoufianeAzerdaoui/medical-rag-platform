@@ -42,6 +42,8 @@ def init_schema() -> None:
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
                 title TEXT NOT NULL,
+                -- TODO: add `title_source` ("auto" | "manual") to persist manual titles server-side.
+                -- Current implementation keeps this flag in frontend state only.
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -69,6 +71,31 @@ def init_schema() -> None:
                 FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
             )
             """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS feature_flags (
+                name TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL,
+                description TEXT,
+                updated_at TEXT NOT NULL,
+                updated_by TEXT
+            )
+            """
+        )
+        cur.execute(
+            """
+            INSERT INTO feature_flags (name, enabled, description, updated_at, updated_by)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(name) DO NOTHING
+            """,
+            (
+                "REFERENCE_RANGE_STRICT_MODE",
+                1,
+                "Enable strict deterministic reference range lookup flow",
+                now_iso(),
+                "system:init_schema",
+            ),
         )
         conn.commit()
     finally:

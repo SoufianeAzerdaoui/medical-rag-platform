@@ -483,6 +483,16 @@ def update_conversation_state_reducer(
             ev0 = rows[0]
         displayed_ctx["subject"] = str(ev0.get("analyte") or ev0.get("parameter") or "")
         displayed_ctx["allowed_renders"] = ["chart", "table", "list"]
+    if intent == "reference_range_lookup" and isinstance(qu, dict):
+        requested = list(qu.get("requested_analytes") or [])
+        if requested:
+            displayed_ctx["subject"] = str(requested[0]).strip()
+        displayed_ctx["reference_profile"] = (
+            dict(qu.get("requested_reference_profile") or {})
+            if isinstance(qu.get("requested_reference_profile"), dict)
+            else None
+        )
+        displayed_ctx["reference_intent"] = "reference_range_lookup"
     elif displayed_ctx["context_type"] == "patient_inventory":
         displayed_ctx["allowed_renders"] = ["patient_cards", "report_accordion", "filterable_table", "document_timeline"]
         displayed_ctx["is_transformable_numeric"] = False

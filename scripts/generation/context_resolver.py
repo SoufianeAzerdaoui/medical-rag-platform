@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from query_understanding import QueryUnderstanding, norm_text
@@ -7,6 +8,11 @@ from query_understanding import QueryUnderstanding, norm_text
 
 def resolve_deictic_request(message: str, query_understanding: QueryUnderstanding, state: dict[str, Any]) -> dict[str, Any]:
     qn = norm_text(message or "")
+    def _has_phrase(phrase: str) -> bool:
+        p = norm_text(phrase or "")
+        if not p:
+            return False
+        return bool(re.search(rf"(?<![a-z0-9]){re.escape(p)}(?![a-z0-9])", qn))
     requested_doc_ids = list(query_understanding.requested_doc_ids or [])
     requested_analytes = list(query_understanding.requested_analytes or [])
     explicit_scope = bool(requested_doc_ids or getattr(query_understanding, "requested_date_iso", None))
@@ -15,6 +21,7 @@ def resolve_deictic_request(message: str, query_understanding: QueryUnderstandin
     has_transformable = bool(state.get("last_transformable_evidence_pack")) if isinstance(state.get("last_transformable_evidence_pack"), dict) else False
     has_qualitative = bool(state.get("last_qualitative_evidence_pack")) if isinstance(state.get("last_qualitative_evidence_pack"), dict) else False
     previous_doc_scope = state.get("last_doc_scope") if isinstance(state.get("last_doc_scope"), dict) else None
+    last_intent = str(state.get("last_intent") or "").strip().lower()
     prev_doc_ids = [str(d).strip() for d in (previous_doc_scope.get("doc_ids") or [])] if isinstance(previous_doc_scope, dict) else []
     prev_ctx_type = str((last_displayed_context or {}).get("context_type") or state.get("last_data_context_type") or "none").strip().lower()
 
@@ -41,13 +48,56 @@ def resolve_deictic_request(message: str, query_understanding: QueryUnderstandin
             "la même chose pour",
         ]
     )
-    asks_table = any(k in qn for k in [" tableau", "tableau", " en table", " table "])
+    asks_table = any(
+        k in qn
+        for k in [
+            " tableau",
+            "tableau",
+            " en table",
+            " table ",
+            "une table",
+            "dans une table",
+            " tabl",
+            "table",
+        ]
+    )
     asks_chart = any(k in qn for k in ["graphique", "chart", "courbe", "radar", "bar chart", "line graph", "visualise"])
     asks_summary = any(k in qn for k in ["resume", "résume", "synthese", "synthèse"])
-    asks_note = any(k in qn for k in ["note interpretative", "note interprétative", "encadre", "encadré"])
-    asks_card = any(k in qn for k in ["fiche", "carte", "carte d information", "carte d’information", "fiche medicale", "fiche médicale", "format fiche", "format carte"])
+    asks_note = any(_has_phrase(k) for k in ["note interpretative", "note interprétative", "encadre", "encadré"])
+    asks_card = any(
+        _has_phrase(k)
+        for k in [
+            "fiche",
+            "carte",
+            "carte d information",
+            "carte d’information",
+            "fiche medicale",
+            "fiche médicale",
+            "format fiche",
+            "format carte",
+        ]
+    )
     asks_source = any(k in qn for k in ["d ou vient", "d'où vient", "source", "quelle page", "quel rapport", "ouvre la source"])
     asks_status = ("hors reference" in qn or "hors de la reference" in qn or "hors référence" in qn) and ("ce resultat" in qn or "ce résultat" in qn or "cette valeur" in qn)
+    has_correction_marker = any(
+        k in qn
+        for k in [
+            "non",
+            "plutot",
+            "plutôt",
+            "pas ca",
+            "pas ça",
+            "je voulais",
+            "je veux",
+        ]
+    )
+    correction_format_followup = bool(
+        asks_table
+        and has_correction_marker
+        and not explicit_scope
+        and not requested_doc_ids
+        and not requested_analytes
+    )
 
     same_action_markers = [
         "fais la meme chose pour",
@@ -99,6 +149,19 @@ def resolve_deictic_request(message: str, query_understanding: QueryUnderstandin
         return out
 
     # 2) same action for analyte -> keep previous doc scope
+    if same_action_for_subject and not explicit_scope and last_intent == "reference_range_lookup":
+        out.update(
+            {
+                "resolved": True,
+                "intent": "reference_range_lookup",
+                "reuse_last_displayed_context": True,
+                "reuse_doc_scope": bool(prev_doc_ids),
+                "skip_retrieval": False,
+                "reason": "same_action_for_subject_reuse_reference_lookup",
+            }
+        )
+        return out
+
     if same_action_for_subject and prev_doc_ids and not explicit_scope:
         out.update(
             {
@@ -113,7 +176,7 @@ def resolve_deictic_request(message: str, query_understanding: QueryUnderstandin
         return out
 
     # 3) render/summary/status from last displayed context
-    if (is_deictic or asks_summary) and not explicit_scope and has_any_context:
+    if (is_deictic or asks_summary or correction_format_followup) and not explicit_scope and has_any_context:
         intent = out["intent"]
         render_type = None
         if asks_summary:
