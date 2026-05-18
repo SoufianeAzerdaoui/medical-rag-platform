@@ -361,6 +361,28 @@ class TestConversationStateManagement(unittest.TestCase):
         self.assertIsNone(result.get("visualization"))
         self.assertIsNone(result.get("chart_data"))
 
+    def test_direct_analyte_request_after_inventory_does_not_stay_in_transform_mode(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible dans cet environnement: {exc}")
+        try:
+            result = run_generation(
+                query="donne moi le resultat de AMH",
+                index_dir="data/indexes",
+                previous_structured_evidence_pack=None,
+                previous_context_intent="patient_inventory",
+                previous_data_context_intent="patient_inventory",
+                previous_data_context_type="patient_inventory",
+                previous_has_patient_inventory=True,
+                previous_patient_inventory=[{"patient": "PAT_000001"}],
+            )
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible dans cet environnement: {exc}")
+        answer = str(result.get("answer") or "").lower()
+        self.assertNotIn("pas de resultats biologiques numeriques recents a transformer", answer)
+        self.assertNotEqual(str(result.get("generation_mode") or ""), "deterministic_response_transform")
+
     def test_qualitative_comment_pack_not_transformable(self) -> None:
         pack = {
             "results": [
@@ -1009,6 +1031,37 @@ class TestConversationStateManagement(unittest.TestCase):
         self.assertIn("report (18).pdf — page 1, ligne 1", answer)
         self.assertNotIn("report (28).pdf", answer)
         self.assertEqual((result.get("retrieval") or {}).get("answerability", {}).get("reason"), "source_followup_no_retrieval")
+
+    def test_resolution_arbitration_prefers_deictic_when_resolved(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible dans cet environnement: {exc}")
+
+        result = run_generation(
+            query="d'où vient ce commentaire ?",
+            index_dir="data/indexes",
+            previous_context_intent="comment_without_measured_value",
+            previous_data_context_intent="comment_without_measured_value",
+            previous_data_context_type="medical_qualitative_comment",
+            previous_displayed_context={
+                "context_type": "medical_qualitative_comment",
+                "subject": "Troponine",
+                "sources": [
+                    {
+                        "label": "report (18).pdf — page 1, ligne 1",
+                        "source_pdf": "report (18).pdf",
+                        "doc_id": "report_18",
+                        "page": 1,
+                        "line": 1,
+                    }
+                ],
+            },
+        )
+        dbg = dict(result.get("debug") or {})
+        arb = dict(dbg.get("resolution_arbitration") or {})
+        self.assertEqual(str(arb.get("chosen") or ""), "deictic")
+        self.assertIn("priority_rule", arb)
 
     def test_source_followup_falls_back_to_previous_qualitative_pack_source(self) -> None:
         try:

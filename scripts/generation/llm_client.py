@@ -5,6 +5,13 @@ import socket
 from dataclasses import dataclass
 from typing import Any
 from urllib import error, request
+from model_settings import (
+    DEFAULT_LLM_MODEL,
+    DEFAULT_LLM_NUM_CTX,
+    DEFAULT_LLM_PROVIDER,
+    DEFAULT_LLM_TEMPERATURE,
+    DEFAULT_LLM_TIMEOUT,
+)
 
 
 class LLMClientError(RuntimeError):
@@ -13,17 +20,17 @@ class LLMClientError(RuntimeError):
 
 @dataclass
 class LLMClient:
-    provider: str = "ollama"
+    provider: str = DEFAULT_LLM_PROVIDER
     ollama_url: str = "http://127.0.0.1:11434/api/generate"
 
     def generate(
         self,
         prompt: str,
-        model: str = "qwen3:4b",
-        temperature: float = 0.0,
-        num_ctx: int = 4096,
+        model: str = DEFAULT_LLM_MODEL,
+        temperature: float = DEFAULT_LLM_TEMPERATURE,
+        num_ctx: int = DEFAULT_LLM_NUM_CTX,
         max_tokens: int = 800,
-        timeout: int = 180,
+        timeout: int = DEFAULT_LLM_TIMEOUT,
         keep_alive: str = "10m",
     ) -> str:
         if self.provider == "ollama":

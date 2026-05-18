@@ -52,6 +52,14 @@ except Exception:
     from scripts.generation.source_normalization import normalize_source_for_response
 from evidence_builder import build_evidence_pack as build_retrieval_evidence_pack
 from llm_client import LLMClient, LLMClientError
+from model_settings import (
+    DEFAULT_LLM_MAX_TOKENS,
+    DEFAULT_LLM_MODEL,
+    DEFAULT_LLM_NUM_CTX,
+    DEFAULT_LLM_PROVIDER,
+    DEFAULT_LLM_TEMPERATURE,
+    DEFAULT_LLM_TIMEOUT,
+)
 from professional_answer_composer import (
     compose_professional_answer,
     render_professional_fallback,
@@ -62,6 +70,7 @@ from prompt_builder import INSUFFICIENT_CONTEXT_SENTENCE, build_prompt
 from query_understanding import (
     QueryUnderstanding,
     analyte_display_name,
+    build_intent_arbitration_debug,
     contains_exact_term,
     decide_response_strategy,
     detect_exact_analyte,
@@ -85,6 +94,8 @@ from qualitative_comment_utils import (
     format_clickable_source_markdown,
     extract_comment_text_for_subject,
 )
+from analyte_aliases import ANALYTE_ALIAS_GROUPS
+from analyte_resolver import resolve_requested_analytes, load_available_analytes, normalize_analyte_text
 from reference_range_parser import parse_reference_ranges
 from reference_range_selector import select_reference_range
 from reference_range_lookup_flow import run_reference_range_lookup_from_rows
@@ -103,6 +114,181 @@ def _is_feature_enabled(name: str, default: bool = True) -> bool:
         return bool(_runtime_get_feature_flag(str(name)))
     except Exception:
         return default
+
+
+def _is_critical_medical_intent(query_understanding: QueryUnderstanding) -> bool:
+    intent = str(getattr(query_understanding, "intent", "") or "").strip().lower()
+    if intent in {"reference_range_lookup", "diagnostic_safety_question"}:
+        return True
+    if intent in {"doc_scoped_results", "previous_result_comparison", "cohort_search", "global_patient_lookup"}:
+        # Numeric medical ask with threshold/range semantics should stay deterministic-first.
+        if str(getattr(query_understanding, "requested_value", "") or "").strip():
+            return True
+        if str(getattr(query_understanding, "comparison_operator", "") or "").strip():
+            return True
+        if str(getattr(query_understanding, "technical_condition", "") or "").strip():
+            return True
+    return False
+
+
+def _is_hybrid_structured_writer_intent(query_understanding: QueryUnderstanding) -> bool:
+    intent = str(getattr(query_understanding, "intent", "") or "").strip().lower()
+    technical_condition = str(getattr(query_understanding, "technical_condition", "") or "").strip().lower()
+    if intent in {
+        "doc_scoped_abnormal_results",
+        "global_analyte_abnormal_search",
+        "doc_pair_comparison",
+        "multi_doc_comparison",
+        "doc_scoped_medical_interpretation_guarded",
+        "diagnostic_safety_question",
+    }:
+        return True
+    if intent in {"doc_scoped_summary", "cohort_search"} and technical_condition == "out_of_reference":
+        return True
+    return False
+
+
+def _hybrid_writer_mode(query_understanding: QueryUnderstanding) -> str:
+    llm_rewrite_enabled = _is_feature_enabled("LLM_REWRITE_ENABLED", default=True)
+    llm_fallback_non_critical_only = _is_feature_enabled("LLM_FALLBACK_NON_CRITICAL_ONLY", default=True)
+    if not llm_rewrite_enabled:
+        return "fallback"
+    if _is_hybrid_structured_writer_intent(query_understanding):
+        return "hybrid_structured_llm_writer"
+    if llm_fallback_non_critical_only and _is_critical_medical_intent(query_understanding):
+        # deterministic backend selection + optional rewrite only
+        return "fallback"
+    return "auto"
+
+
+def _force_deterministic_mode_for_summary_anomalies(query_understanding: QueryUnderstanding, query_norm: str) -> bool:
+    intent = str(getattr(query_understanding, "intent", "") or "").strip().lower()
+    if intent not in {"doc_scoped_summary", "immunoanalysis_summary"}:
+        return False
+    return _query_requests_out_of_reference_only(query_norm)
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, flags=re.DOTALL | re.IGNORECASE)
+    candidate = fenced.group(1) if fenced else raw
+    # Try direct parse first
+    try:
+        parsed = json.loads(candidate)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        pass
+    # Best-effort: first balanced object
+    start = candidate.find("{")
+    end = candidate.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            parsed = json.loads(candidate[start : end + 1])
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+    return None
+
+
+def _normalize_llm_qu_intent(value: Any) -> str | None:
+    intent = str(value or "").strip().lower()
+    if not intent:
+        return None
+    allowed = {
+        "reference_range_lookup",
+        "doc_scoped_results",
+        "doc_scoped_summary",
+        "response_transform",
+        "cohort_search",
+        "global_patient_lookup",
+        "comment_without_measured_value",
+        "small_talk",
+    }
+    return intent if intent in allowed else None
+
+
+def _llm_assisted_query_understanding(
+    *,
+    query: str,
+    base_qu: QueryUnderstanding,
+    llm_client: LLMClient | None,
+    provider: str,
+    model: str,
+    timeout: int,
+) -> tuple[QueryUnderstanding, dict[str, Any]]:
+    debug: dict[str, Any] = {"enabled": False, "used": False, "error": None}
+    if not _is_feature_enabled("LLM_QUERY_UNDERSTANDING_ENABLED", default=False):
+        return base_qu, debug
+    debug["enabled"] = True
+    client = llm_client or LLMClient(provider=provider)
+    prompt = (
+        "Tu es un routeur de requêtes médicales. "
+        "Retourne UNIQUEMENT un JSON valide sans texte autour.\n"
+        "Ne déduis pas de valeurs biologiques. Tu fais seulement du query-understanding.\n"
+        "Schema:\n"
+        "{"
+        "\"intent\": string,"
+        "\"requested_analytes\": string[],"
+        "\"requested_report_type\": string|null,"
+        "\"requested_date_iso\": string|null,"
+        "\"requested_reference_profile\": object|null,"
+        "\"use_patient_profile\": boolean,"
+        "\"request_all_reference_ranges\": boolean,"
+        "\"output_format\": string|null,"
+        "\"answer_style\": string|null"
+        "}\n"
+        f"Question: {query}\n"
+    )
+    try:
+        raw = client.generate(
+            prompt=prompt,
+            model=model,
+            temperature=0.0,
+            num_ctx=max(2048, int(DEFAULT_LLM_NUM_CTX)),
+            max_tokens=220,
+            timeout=max(8, int(timeout)),
+            keep_alive="5m",
+        )
+        parsed = _extract_json_object(raw)
+        if not isinstance(parsed, dict):
+            debug["error"] = "invalid_json"
+            return base_qu, debug
+        debug["used"] = True
+        intent = _normalize_llm_qu_intent(parsed.get("intent")) or base_qu.intent
+        llm_analytes = [str(a).strip().lower() for a in (parsed.get("requested_analytes") or []) if str(a).strip()]
+        base_analytes = list(base_qu.requested_analytes or [])
+        # Keep deterministic extraction as anchor; allow LLM additions only when deterministic found nothing.
+        requested_analytes = base_analytes if base_analytes else llm_analytes
+        report_type = str(parsed.get("requested_report_type") or "").strip() or base_qu.requested_report_type
+        date_iso = str(parsed.get("requested_date_iso") or "").strip() or base_qu.requested_date_iso
+        profile = parsed.get("requested_reference_profile")
+        if not isinstance(profile, dict):
+            profile = base_qu.requested_reference_profile
+        use_patient_profile = bool(parsed.get("use_patient_profile")) if "use_patient_profile" in parsed else base_qu.use_patient_profile
+        request_all = bool(parsed.get("request_all_reference_ranges")) if "request_all_reference_ranges" in parsed else base_qu.request_all_reference_ranges
+        output_format = str(parsed.get("output_format") or "").strip().lower() or base_qu.output_format
+        answer_style = str(parsed.get("answer_style") or "").strip().lower() or base_qu.answer_style
+        merged = replace(
+            base_qu,
+            intent=intent,
+            requested_analytes=requested_analytes,
+            requested_report_type=report_type,
+            requested_date_iso=date_iso,
+            requested_reference_profile=profile,
+            use_patient_profile=use_patient_profile,
+            request_all_reference_ranges=request_all,
+            output_format=output_format,
+            answer_style=answer_style,
+            is_response_transform=(intent == "response_transform"),
+        )
+        debug["llm_intent"] = intent
+        debug["llm_requested_analytes"] = requested_analytes
+        return merged, debug
+    except Exception as exc:
+        debug["error"] = f"llm_error:{exc}"
+        return base_qu, debug
 
 _GENERIC_COMMENT_SUBJECTS = {
     "commentaire",
@@ -123,6 +309,129 @@ _GENERIC_COMMENT_SUBJECTS = {
 def normalize_query(query: str) -> str:
     q = re.sub(r"\s+", " ", (query or "").strip())
     return q
+
+
+def _has_any_reference_profile_slot(profile: dict[str, Any] | None) -> bool:
+    if not isinstance(profile, dict):
+        return False
+    return any(profile.get(k) not in (None, "") for k in ["sex", "population", "condition", "age", "age_min", "age_max", "age_operator", "age_value"])
+
+
+def _looks_like_reference_range_followup(query: str) -> bool:
+    qn = norm_text(query or "")
+    if not qn:
+        return False
+    markers = [
+        "et pour",
+        "et chez",
+        "meme chose pour",
+        "même chose pour",
+        "pour aussi",
+        "aussi pour",
+    ]
+    if any(m in qn for m in markers):
+        return True
+    return qn.startswith("et ")
+
+
+def _arbitrate_resolution(
+    *,
+    query_understanding: QueryUnderstanding,
+    context_resolution: dict[str, Any],
+    deictic_resolution: dict[str, Any],
+) -> dict[str, Any]:
+    base_intent = str(getattr(query_understanding, "intent", "") or "").strip().lower()
+    ctx_reason = str((context_resolution or {}).get("reason") or "").strip()
+    deictic_resolved = bool((deictic_resolution or {}).get("resolved"))
+    deictic_intent = str((deictic_resolution or {}).get("intent") or "").strip().lower()
+    deictic_reason = str((deictic_resolution or {}).get("reason") or "").strip()
+
+    chosen = "context"
+    if deictic_resolved and deictic_intent not in {"", "deictic_no_context"}:
+        chosen = "deictic"
+    elif deictic_intent == "deictic_no_context":
+        chosen = "deictic_guard"
+
+    conflict = bool(
+        deictic_resolved
+        and deictic_intent not in {"", "deictic_no_context"}
+        and base_intent
+        and deictic_intent != base_intent
+    )
+    return {
+        "base_intent": base_intent,
+        "context_reason": ctx_reason,
+        "deictic_resolved": deictic_resolved,
+        "deictic_intent": deictic_intent,
+        "deictic_reason": deictic_reason,
+        "chosen": chosen,
+        "conflict": conflict,
+        "priority_rule": "deictic_if_resolved_else_context",
+    }
+
+
+def _should_force_reference_range_lookup(query_norm: str, query_understanding: QueryUnderstanding) -> bool:
+    reference_terms = (
+        "norme",
+        "plage",
+        "référence",
+        "reference",
+        "valeur normale",
+        "valeurs physiologiques",
+        "intervalle de référence",
+        "plage de référence",
+    )
+    has_reference_wording = any(term in query_norm for term in reference_terms)
+    if not has_reference_wording:
+        return False
+    if not list(query_understanding.requested_analytes or []):
+        return False
+    if str(query_understanding.intent or "").strip().lower() == "reference_range_lookup":
+        return False
+
+    measurement_terms = (
+        "resultat",
+        "résultat",
+        "valeur mesuree",
+        "valeur mesurée",
+        "valeur actuelle",
+        "du rapport",
+        "dans le rapport",
+        "montre moi",
+        "affiche moi",
+        "donne moi",
+    )
+    has_measurement_wording = any(t in query_norm for t in measurement_terms)
+    has_explicit_scope = bool(
+        list(getattr(query_understanding, "requested_doc_ids", None) or [])
+        or str(getattr(query_understanding, "requested_date_iso", "") or "").strip()
+        or str(getattr(query_understanding, "requested_report_type", "") or "").strip()
+    )
+    measurement_intent_like = str(getattr(query_understanding, "intent", "") or "").strip().lower() in {
+        "doc_scoped_results",
+        "biological_numeric_results",
+        "cohort_search",
+        "global_patient_lookup",
+        "global_analyte_abnormal_search",
+        "doc_scoped_abnormal_results",
+        "doc_pair_comparison",
+        "single_analyte_lookup",
+    }
+    has_global_scope_markers = any(
+        t in query_norm
+        for t in [
+            "tous les rapports",
+            "tous les documents",
+            "quels documents",
+            "rapports disponibles",
+            "patients qui ont",
+        ]
+    )
+    has_abnormal_wording = any(
+        t in query_norm
+        for t in ["hors reference", "anormal", "above_reference", "below_reference", "above reference", "below reference"]
+    )
+    return not (has_measurement_wording or has_explicit_scope or measurement_intent_like or (has_global_scope_markers and has_abnormal_wording))
 
 
 def _is_generic_subject(label: str | None) -> bool:
@@ -288,20 +597,41 @@ def _format_comment_for_readability(text: str) -> str:
 
 
 def _merge_comment_variants(texts: list[str]) -> str:
+    max_variants = 4
+    max_chars = 1200
+
     cleaned = [str(t or "").strip() for t in texts if str(t or "").strip()]
     if not cleaned:
         return ""
     # Keep the richest version first, then append only complementary variants.
     cleaned.sort(key=len, reverse=True)
-    merged = cleaned[0]
+    merged_parts: list[str] = [cleaned[0][:max_chars].strip()]
+    merged = merged_parts[0]
     merged_fp = _norm_comment_fingerprint(merged)
     for candidate in cleaned[1:]:
+        if len(merged_parts) >= max_variants:
+            break
         cand_fp = _norm_comment_fingerprint(candidate)
         if not cand_fp or cand_fp in merged_fp or merged_fp in cand_fp:
             continue
-        merged += "\n" + candidate
+        remaining = max_chars - len(merged)
+        if remaining <= 0:
+            break
+        to_add = candidate
+        prefix_len = 1  # newline separator
+        if len(to_add) + prefix_len > remaining:
+            trim_to = max(0, remaining - prefix_len - 1)
+            if trim_to <= 0:
+                break
+            to_add = to_add[:trim_to].rstrip() + "…"
+            merged_parts.append(to_add)
+            merged = "\n".join(merged_parts)
+            merged_fp = _norm_comment_fingerprint(merged)
+            break
+        merged_parts.append(to_add)
+        merged = "\n".join(merged_parts)
         merged_fp = _norm_comment_fingerprint(merged)
-    return _format_comment_for_readability(merged)
+    return _format_comment_for_readability(merged[:max_chars].rstrip())
 
 
 def _enrich_comment_with_unit_if_missing(text: str, unit: str) -> str:
@@ -478,7 +808,7 @@ def _rewrite_final_without_reasoning(
             temperature=0.0,
             num_ctx=2048,
             max_tokens=180,
-            timeout=max(6, min(int(timeout), 30)),
+            timeout=max(6, int(timeout)),
             keep_alive="5m",
         )
     except LLMClientError as exc:
@@ -1219,6 +1549,7 @@ def _query_understanding_payload(qu: QueryUnderstanding) -> dict[str, Any]:
         "use_patient_profile": bool(getattr(qu, "use_patient_profile", False)),
         "request_all_reference_ranges": bool(getattr(qu, "request_all_reference_ranges", False)),
         "requested_summary_points": getattr(qu, "requested_summary_points", None),
+        "intent_arbitration": build_intent_arbitration_debug(qu),
         "presentation_intent": {
             "requested_output": getattr(presentation, "requested_output", qu.output_format),
             "chart_type": getattr(presentation, "chart_type", None),
@@ -1383,7 +1714,7 @@ def _build_no_transformable_context_response(
         query_used_for_prompt=query_used_for_prompt,
         query_stored=query,
         detected_analytes=exact_analytes,
-        query_intents=intents,
+        query_intents={**dict(intents or {}), "reference_range_lookup": True},
         output_format_requested=query_understanding.output_format,
         answer_style_requested=query_understanding.answer_style,
         requested_table_columns=query_understanding.requested_table_columns,
@@ -1557,7 +1888,7 @@ def _build_visualization_recommendation_response(
         query_used_for_prompt=query_used_for_prompt,
         query_stored=query,
         detected_analytes=[],
-        query_intents=intents,
+        query_intents={**dict(intents or {}), "reference_range_lookup": True},
         output_format_requested="paragraph",
         answer_style_requested="standard",
         requested_table_columns=[],
@@ -1860,6 +2191,14 @@ def _query_requests_out_of_reference_only(qn: str) -> bool:
             "outside reference",
             "out of reference",
             "en dehors de la reference",
+            "anomalie biologique",
+            "anomalies biologiques",
+            "anomalie",
+            "anomalies",
+            "valeurs anormales",
+            "anormaux",
+            "anormales",
+            "attention technique",
         ]
     ) or (_is_above_reference_query(qn) and "reference" in qn) or (_is_below_reference_query(qn) and "reference" in qn)
 
@@ -1911,8 +2250,8 @@ def generate_general_conversation_response(
     intent: str = "small_talk",
     language: str = "fr",
     llm_client: LLMClient | None = None,
-    provider: str = "ollama",
-    model: str = "qwen3:4b",
+    provider: str = DEFAULT_LLM_PROVIDER,
+    model: str = DEFAULT_LLM_MODEL,
     timeout: int = 30,
 ) -> tuple[str, str | None]:
     language_hint = "français" if str(language or "fr").lower().startswith("fr") else "la langue de l’utilisateur"
@@ -1957,7 +2296,7 @@ def generate_general_conversation_response(
             temperature=0.2,
             num_ctx=2048,
             max_tokens=120,
-            timeout=max(6, min(int(timeout), 30)),
+            timeout=max(6, int(timeout)),
             keep_alive="5m",
         ).strip()
         if ans:
@@ -1981,8 +2320,8 @@ def generate_small_talk_response(
     *,
     language: str = "fr",
     llm_client: LLMClient | None = None,
-    provider: str = "ollama",
-    model: str = "qwen3:4b",
+    provider: str = DEFAULT_LLM_PROVIDER,
+    model: str = DEFAULT_LLM_MODEL,
     timeout: int = 30,
 ) -> tuple[str, str | None]:
     return generate_general_conversation_response(
@@ -2243,7 +2582,7 @@ def _try_llm_grounded_summary(
             temperature=0.0,
             num_ctx=3072,
             max_tokens=420,
-            timeout=max(8, min(int(timeout), 35)),
+            timeout=max(8, int(timeout)),
             keep_alive="5m",
         ).strip()
     except Exception as exc:  # pragma: no cover - network/runtime dependent
@@ -2789,6 +3128,51 @@ def _to_float(value: Any) -> float | None:
         return None
 
 
+def _parse_numeric_value(raw: Any) -> float | None:
+    """Parse robust numeric values from lab strings (French decimal, attached units, thresholds)."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    s = s.replace(",", ".")
+    # Keep first numeric token; supports patterns like "< 5", "1.0 g/L", ">=0.8".
+    m = re.search(r"[-+]?\d+(?:\.\d+)?", s)
+    if not m:
+        return None
+    try:
+        return float(m.group(0))
+    except Exception:
+        return None
+
+
+def _normalize_unit(unit: Any) -> str:
+    return norm_text(str(unit or "")).replace(" ", "")
+
+
+def _units_compatible(unit_a: Any, unit_b: Any) -> bool:
+    ua = _normalize_unit(unit_a)
+    ub = _normalize_unit(unit_b)
+    if not ua or not ub:
+        return True
+    return ua == ub
+
+
+def _summarize_reference_for_comparison(reference_raw: str) -> str:
+    ref = str(reference_raw or "").strip()
+    if not ref:
+        return "non disponible"
+    # Compact and readable summary for long multi-profile references.
+    parts = re.split(r"\s{2,}|\n+", ref)
+    compact = " ".join(p.strip() for p in parts if p.strip())
+    if len(compact) <= 64:
+        return compact
+    has_profiles = any(k in norm_text(compact) for k in ["homme", "femme", "adulte", "enfant", "nourrisson", "ans", "jours", "mois", ">"])
+    if has_profiles:
+        return "Plusieurs plages selon l’âge/profil"
+    return compact[:61] + "..."
+
+
 def _comparison_label(current: Any, previous: Any) -> str:
     cf = _to_float(current)
     pf = _to_float(previous)
@@ -3332,6 +3716,53 @@ def _is_structured_question_with_fast_path(intents: dict[str, bool], requested_d
     if len(requested_analytes) >= 1:
         return True
     return False
+
+
+def _resolve_analytes_for_query(
+    *,
+    query: str,
+    requested_analytes: list[str],
+    sqlite_path: Path,
+    max_candidates: int = 5,
+) -> tuple[list[str], dict[str, Any]]:
+    before = [str(a).strip().lower() for a in (requested_analytes or []) if str(a).strip()]
+    debug: dict[str, Any] = {
+        "query": query,
+        "normalized_query": normalize_analyte_text(query),
+        "requested_analytes_before_resolver": before,
+        "requested_analytes_after_resolver": list(before),
+        "available_analytes_count": 0,
+        "resolved_analytes": [],
+        "ambiguous_candidates": [],
+        "match_reason": None,
+        "confidence": None,
+        "status": "passthrough" if before else "unresolved",
+    }
+    if before:
+        return before, debug
+    available = load_available_analytes(str(sqlite_path))
+    debug["available_analytes_count"] = len(available)
+    resolved = resolve_requested_analytes(
+        query=query,
+        available_analytes=available,
+        aliases=ANALYTE_ALIAS_GROUPS,
+        max_candidates=max_candidates,
+    )
+    if not resolved:
+        debug["status"] = "no_match"
+        return [], debug
+    first = resolved[0] if isinstance(resolved[0], dict) else {}
+    status = str(first.get("status") or "selected")
+    selected = [str(r.get("analyte_norm") or "").strip().lower() for r in resolved if str(r.get("analyte_norm") or "").strip()]
+    selected = list(dict.fromkeys(selected))
+    debug["resolved_analytes"] = selected
+    debug["requested_analytes_after_resolver"] = selected
+    debug["status"] = status
+    debug["match_reason"] = first.get("match_reason")
+    debug["confidence"] = first.get("confidence")
+    if status == "ambiguous":
+        debug["ambiguous_candidates"] = list(first.get("candidates") or [])
+    return (selected[:1] if status != "ambiguous" else []), debug
 
 
 def _build_analyte_terms(analyte_norm: str) -> list[str]:
@@ -4071,8 +4502,11 @@ def _build_reference_range_lookup_response(
     intents: dict[str, bool],
     sqlite_path: Path,
     requested_doc_ids: list[str],
+    previous_displayed_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     strict_enabled = _is_feature_enabled("REFERENCE_RANGE_STRICT_MODE", default=True)
+    llm_rewrite_enabled = _is_feature_enabled("LLM_REWRITE_ENABLED", default=True)
+    llm_fallback_non_critical_only = _is_feature_enabled("LLM_FALLBACK_NON_CRITICAL_ONLY", default=True)
     if not strict_enabled:
         answer = (
             "La recherche stricte de plages physiologiques est temporairement désactivée. "
@@ -4194,6 +4628,7 @@ def _build_reference_range_lookup_response(
         status = str(flow.get("status") or "no_match")
         answer = str(flow.get("answer") or f"Aucune plage physiologique exploitable n’a été retrouvée pour {analyte_display_name(analyte, analyte)}.")
         debug_extra = dict(flow.get("debug") or {})
+        selected_range = debug_extra.get("selected_range")
         flow_sources_raw = list(flow.get("sources") or [])
         flow_sources: list[dict[str, Any]] = []
         for src in flow_sources_raw:
@@ -4219,6 +4654,12 @@ def _build_reference_range_lookup_response(
             "selected_range": debug_extra.get("selected_range"),
             "selector_status": status,
             "failure_reason": debug_extra.get("failure_reason"),
+            "followup_resolved": bool(_looks_like_reference_range_followup(query)),
+            "previous_analyte": str((((previous_displayed_context or {}) if isinstance(previous_displayed_context, dict) else {}).get("last_reference_range_context") or {}).get("analyte") or ""),
+            "new_analyte": analyte,
+            "inherited_profile": getattr(query_understanding, "requested_reference_profile", None),
+            "resolved_intent": "reference_range_lookup",
+            "llm_called": False,
         }
     if 'ref_debug' not in locals():
         ref_debug = {
@@ -4260,12 +4701,119 @@ def _build_reference_range_lookup_response(
                 f"\n\nSource : {source_label}\n"
                 "Source disponible uniquement en texte ; aucun lien cliquable n’est disponible."
             )
+    # Hybrid professional mode: backend always selects medical facts; LLM can rewrite style only.
+    # Never let LLM decide values/sources for reference_range_lookup.
+    llm_rewrite_attempted = False
+    if strict_enabled and llm_rewrite_enabled and not llm_fallback_non_critical_only:
+        llm_rewrite_attempted = True
+        rr_rows = [r for r in filtered_rows if isinstance(r, dict)]
+        rr_primary = rr_rows[0] if rr_rows else {}
+        rr_pack = {
+            "intent": "reference_range_lookup",
+            "requested_doc_ids": [str(rr_primary.get("doc_id") or "").strip()] if str(rr_primary.get("doc_id") or "").strip() else [],
+            "requested_analytes": [analyte] if analyte else [],
+            "output_format": "paragraph",
+            "answer_style": "standard",
+            "evidences": [
+                {
+                    "doc_id": rr_primary.get("doc_id"),
+                    "filename": rr_primary.get("source_pdf"),
+                    "page": rr_primary.get("page"),
+                    "row": rr_primary.get("row"),
+                    "analyte": str(rr_primary.get("analyte") or rr_primary.get("analyte_norm") or analyte_display_name(analyte, analyte)),
+                    "analyte_norm": str(rr_primary.get("analyte_norm") or analyte),
+                    "reference": str(rr_primary.get("reference_raw") or rr_primary.get("reference_range") or ""),
+                    "reference_range": str(rr_primary.get("reference_raw") or rr_primary.get("reference_range") or ""),
+                    "unit": str(rr_primary.get("unit") or ""),
+                    "technical_status": "dans la référence",
+                    "technical_status_code": "within_reference",
+                }
+            ]
+            if rr_primary
+            else [],
+            "missing_items": [],
+        }
+        try:
+            # In critical medical mode, we still allow rewrite, but never free fallback to LLM-only decisions.
+            rewrite_mode = "fallback" if llm_fallback_non_critical_only else "auto"
+            rewritten = compose_professional_answer(
+                user_question=query,
+                query_understanding=query_understanding,
+                evidence_pack=rr_pack,
+                mode=rewrite_mode,
+                source_citations=flow_sources,
+                llm_client=None,
+                provider=provider,
+                model=model,
+                temperature=0.0,
+                num_ctx=DEFAULT_LLM_NUM_CTX,
+                max_tokens=DEFAULT_LLM_MAX_TOKENS,
+                timeout=timeout,
+            )
+            candidate = str(rewritten.get("answer") or "").strip()
+            # Guardrails: keep deterministic answer unless rewritten text keeps selected numeric facts.
+            keep = bool(candidate)
+            if keep and status in {"selected", "fallback"} and isinstance(selected_range, dict):
+                low = selected_range.get("low")
+                high = selected_range.get("high")
+                threshold = selected_range.get("threshold")
+                op = str(selected_range.get("operator") or "").strip()
+                cand_norm = norm_text(candidate)
+                if low is not None and high is not None:
+                    ltxt = norm_text(str(low).replace(".", ","))
+                    htxt = norm_text(str(high).replace(".", ","))
+                    if ltxt not in cand_norm and norm_text(str(low)) not in cand_norm:
+                        keep = False
+                    if htxt not in cand_norm and norm_text(str(high)) not in cand_norm:
+                        keep = False
+                elif threshold is not None and op in {"<", "<=", ">", ">="}:
+                    ttxt = norm_text(str(threshold).replace(".", ","))
+                    if ttxt not in cand_norm and norm_text(str(threshold)) not in cand_norm:
+                        keep = False
+            if keep:
+                answer = candidate
+                ref_debug["llm_called"] = str(rewritten.get("mode") or "").startswith("llm_")
+                ref_debug["llm_rewrite_mode"] = str(rewritten.get("mode") or "")
+            else:
+                ref_debug["llm_called"] = False
+                ref_debug["llm_rewrite_mode"] = "deterministic_retained_after_guardrail"
+        except Exception as exc:
+            ref_debug["llm_called"] = False
+            ref_debug["llm_rewrite_mode"] = f"deterministic_retained_llm_error:{exc}"
     validation = validate_answer(
         query=query,
         answer_text=answer,
-        evidence_pack=[],
-        displayed_evidences=[],
-        source_citations=[],
+        evidence_pack=[
+            {
+                "analyte": str(r.get("analyte") or r.get("analyte_norm") or analyte),
+                "analyte_norm": str(r.get("analyte_norm") or "").strip().lower() or analyte,
+                "reference_range": str(r.get("reference_raw") or r.get("reference_range") or "").strip(),
+                "reference": str(r.get("reference_raw") or r.get("reference_range") or "").strip(),
+                "unit": str(r.get("unit") or "").strip(),
+                "doc_id": r.get("doc_id"),
+                "source_pdf": r.get("source_pdf"),
+                "page_number": r.get("page") if r.get("page") is not None else r.get("page_number"),
+                "row_index": r.get("row") if r.get("row") is not None else r.get("row_index"),
+            }
+            for r in filtered_rows
+            if isinstance(r, dict)
+        ],
+        displayed_evidences=[
+            {
+                "analyte": str(r.get("analyte") or r.get("analyte_norm") or analyte),
+                "analyte_norm": str(r.get("analyte_norm") or "").strip().lower() or analyte,
+                "reference_range": str(r.get("reference_raw") or r.get("reference_range") or "").strip(),
+                "reference": str(r.get("reference_raw") or r.get("reference_range") or "").strip(),
+                "unit": str(r.get("unit") or "").strip(),
+                "doc_id": r.get("doc_id"),
+                "source_pdf": r.get("source_pdf"),
+                "page_number": r.get("page") if r.get("page") is not None else r.get("page_number"),
+                "row_index": r.get("row") if r.get("row") is not None else r.get("row_index"),
+            }
+            for r in filtered_rows
+            if isinstance(r, dict)
+        ],
+        source_citations=flow_sources,
         generation_mode="deterministic_reference_range_lookup",
         retrieval_status="answerable" if status in {"selected", "fallback", "ambiguous", "grouped_options"} else "insufficient_context",
         query_received=query_received,
@@ -4323,8 +4871,13 @@ def _build_reference_range_lookup_response(
         "debug": {
             "request_id": request_id,
             "selection_status": status,
-            "feature_flags": {"REFERENCE_RANGE_STRICT_MODE": True},
-            "llm_called": False,
+            "feature_flags": {
+                "REFERENCE_RANGE_STRICT_MODE": True,
+                "LLM_REWRITE_ENABLED": llm_rewrite_enabled,
+                "LLM_FALLBACK_NON_CRITICAL_ONLY": llm_fallback_non_critical_only,
+            },
+            "llm_called": bool(ref_debug.get("llm_called", False)),
+            "llm_rewrite_attempted": llm_rewrite_attempted,
             "reference_range_debug": ref_debug,
         },
         "visualization": None,
@@ -4595,6 +5148,28 @@ def render_evidence_pack_deterministic(evidence_pack: dict[str, Any], output_for
     requested_doc = requested_doc_ids[0] if requested_doc_ids else "le document demandé"
 
     if intent == "diagnostic_safety_question":
+        qn = norm_text(str(evidence_pack.get("question") or ""))
+        if any(k in qn for k in ["hyperthyro", "hypothyro", "thyroid", "thyroide", "thyroïde"]):
+            thyroid_norms = {"t4_libre", "t3_libre", "tshus", "anti_tg", "trak", "anti_tpo"}
+            thyroid_rows = [
+                ev for ev in evidences
+                if str(ev.get("analyte_norm") or "").strip().lower() in thyroid_norms
+            ]
+            if thyroid_rows:
+                details: list[str] = []
+                for ev in thyroid_rows:
+                    status = str(ev.get("technical_status_code") or "").strip().lower()
+                    analyte = str(ev.get("analyte") or "").strip()
+                    if status == "above_reference":
+                        details.append(f"{analyte} élevée")
+                    elif status == "below_reference":
+                        details.append(f"{analyte} basse")
+                details_txt = ", ".join(details) if details else "anomalies thyroïdiennes"
+                return (
+                    f"Le document montre des anomalies thyroïdiennes importantes : {details_txt}. "
+                    "Cependant, on ne peut pas conclure seul à un diagnostic thyroïdien à partir de ce document. "
+                    "Il faut corréler avec le contexte clinique, les traitements, les interférences analytiques et, si besoin, répéter/compléter le bilan."
+                )
         lines = [
             "Non, on ne peut pas conclure à un cancer uniquement à partir de ces marqueurs.",
             "Constat technique sur les marqueurs retrouvés :",
@@ -4673,7 +5248,7 @@ def render_evidence_pack_deterministic(evidence_pack: dict[str, Any], output_for
             )
         return "\n".join(rows)
 
-    if intent == "multi_doc_comparison":
+    if intent in {"multi_doc_comparison", "doc_pair_comparison"}:
         doc_ids = requested_doc_ids[:2]
         left = doc_ids[0] if len(doc_ids) >= 1 else "report_a"
         right = doc_ids[1] if len(doc_ids) >= 2 else "report_b"
@@ -4808,6 +5383,12 @@ def generate_grounded_response_with_llm(
     max_tokens: int,
     timeout: int,
 ) -> tuple[str, str, str | None]:
+    query_norm = _normalize_query_text(user_question)
+    compose_mode = (
+        "fallback"
+        if _force_deterministic_mode_for_summary_anomalies(query_understanding, query_norm)
+        else _hybrid_writer_mode(query_understanding)
+    )
     writer_pack = _attach_visualization_facts_to_evidence_pack(
         query_understanding=query_understanding,
         evidence_pack=evidence_pack,
@@ -4817,7 +5398,7 @@ def generate_grounded_response_with_llm(
         user_question=user_question,
         query_understanding=query_understanding,
         evidence_pack=writer_pack,
-        mode="auto",
+        mode=compose_mode,
         llm_client=llm_client,
         provider=provider,
         model=model,
@@ -4874,7 +5455,7 @@ _STYLE_RETRY_KEYS = {
 
 
 def _should_retry_with_validator(validation: dict[str, Any], generation_mode: str) -> bool:
-    if generation_mode != "llm_professional_writer":
+    if generation_mode not in {"llm_professional_writer", "hybrid_structured_llm_writer"}:
         return False
     errors = {str(e) for e in (validation.get("errors") or [])}
     warnings = {str(w) for w in (validation.get("warnings") or [])}
@@ -4995,6 +5576,18 @@ def build_structured_evidence_pack(
     qn = norm_text(query)
     compare_previous = query_understanding.requires_previous_results
     intent = query_understanding.intent
+    normalized_intent = intent
+    if intent == "global_analyte_abnormal_search":
+        normalized_intent = "cohort_search"
+    elif intent == "doc_pair_comparison":
+        normalized_intent = "multi_doc_comparison"
+    elif intent == "doc_scoped_abnormal_results":
+        normalized_intent = "doc_scoped_summary"
+    elif intent == "single_analyte_lookup":
+        normalized_intent = "doc_scoped_results"
+    elif intent == "doc_scoped_medical_interpretation_guarded":
+        normalized_intent = "diagnostic_safety_question"
+    analyte_resolution_debug: dict[str, Any] | None = None
 
     pack: dict[str, Any] = {
         "question": query,
@@ -5003,7 +5596,8 @@ def build_structured_evidence_pack(
         "excluded_analytes": excluded_analytes,
         "requested_value": query_understanding.requested_value,
         "technical_condition": query_understanding.technical_condition,
-        "intent": intent,
+        "intent": normalized_intent,
+        "original_intent": intent,
         "output_format": query_understanding.output_format,
         "requested_table_columns": list(query_understanding.requested_table_columns or []),
         "answer_style": query_understanding.answer_style,
@@ -5016,7 +5610,7 @@ def build_structured_evidence_pack(
         "comment_text": "",
     }
 
-    if intent in {"global_patient_lookup", "cohort_search"}:
+    if normalized_intent in {"global_patient_lookup", "cohort_search"}:
         target_values = [str(query_understanding.requested_value)] if query_understanding.requested_value else _extract_query_numeric_targets(query)
         rows = _fetch_global_lab_rows(
             sqlite_path=sqlite_path,
@@ -5030,6 +5624,8 @@ def build_structured_evidence_pack(
             if _row_matches_value_criterion(r, target_values, query_understanding.comparison_operator)
         ]
         technical_condition = str(query_understanding.technical_condition or "").strip().lower()
+        if technical_condition == "out_of_reference":
+            rows = [r for r in rows if _status_code(r) in {"above_reference", "below_reference"}]
         if technical_condition in {"above_reference", "below_reference", "within_reference", "not_interpretable"}:
             rows = [r for r in rows if _status_code(r) == technical_condition]
         if excluded_analytes:
@@ -5041,7 +5637,22 @@ def build_structured_evidence_pack(
 
     rows: list[dict[str, Any]] = []
 
-    if intent == "multi_doc_comparison" and len(requested_doc_ids) >= 2:
+    if normalized_intent == "multi_doc_comparison" and len(requested_doc_ids) >= 2:
+        resolved_analytes, analyte_resolution_debug = _resolve_analytes_for_query(
+            query=query,
+            requested_analytes=requested_analytes,
+            sqlite_path=sqlite_path,
+            max_candidates=5,
+        )
+        requested_analytes = list(resolved_analytes)
+        pack["requested_analytes"] = list(requested_analytes)
+        if analyte_resolution_debug:
+            pack["analyte_resolution_debug"] = analyte_resolution_debug
+        if not requested_analytes:
+            pack["rows"] = []
+            pack["evidences"] = []
+            pack["missing_items"] = ["analyte_not_identified_for_multi_doc_comparison"]
+            return _finalize_structured_pack(pack, query_understanding)
         rows = _fetch_doc_lab_rows(
             sqlite_path=sqlite_path,
             requested_doc_ids=requested_doc_ids,
@@ -5060,6 +5671,8 @@ def build_structured_evidence_pack(
             a = _best_row_for_analyte(left_rows, analyte)
             b = _best_row_for_analyte(right_rows, analyte)
             label = _canonical_display_name(analyte)
+            doc_a_label = str((a or {}).get("source_pdf") or left).split("/")[-1]
+            doc_b_label = str((b or {}).get("source_pdf") or right).split("/")[-1]
             if not a and not b:
                 missing.append(analyte)
                 evidences.append(
@@ -5073,38 +5686,143 @@ def build_structured_evidence_pack(
                         "current_value": f"{left}=non retrouvé | {right}=non retrouvé",
                         "unit": "",
                         "reference": "non disponible",
+                        "reference_summary": "non disponible",
                         "previous_result": "",
                         "technical_status_code": "not_interpretable",
-                        "technical_status": "différence technique",
+                        "technical_status": "non comparable",
+                        "comparison_status": "non_comparable",
+                        "conclusion_fact": "Aucune valeur exploitable n’a été retrouvée dans les deux rapports pour cet analyte.",
+                        "doc_a": left,
+                        "doc_b": right,
+                        "doc_a_label": doc_a_label,
+                        "doc_b_label": doc_b_label,
                         "variation": "non comparable",
                         "source": "",
                     }
                 )
                 continue
-            av = str((a or {}).get("value_raw") or "non retrouvé")
-            bv = str((b or {}).get("value_raw") or "non retrouvé")
-            unit = str((a or {}).get("unit") or (b or {}).get("unit") or "").strip()
+            av = str((a or {}).get("value_raw") or "non retrouvé").strip()
+            bv = str((b or {}).get("value_raw") or "non retrouvé").strip()
+            unit_a = str((a or {}).get("unit") or "").strip()
+            unit_b = str((b or {}).get("unit") or "").strip()
+            unit = unit_a or unit_b
+            value_a_num = _parse_numeric_value(av)
+            value_b_num = _parse_numeric_value(bv)
+            comparison_status = "non_comparable"
+            conclusion_fact = "Comparaison non exploitable numériquement."
+            delta_abs: float | None = None
+            delta_relative_percent: float | None = None
+            delta_unit = unit if _units_compatible(unit_a, unit_b) else ""
+
+            if a and not b:
+                comparison_status = "missing_in_b"
+                conclusion_fact = f"{label} est absent dans {right}."
+            elif b and not a:
+                comparison_status = "missing_in_a"
+                conclusion_fact = f"{label} est absent dans {left}."
+            elif value_a_num is not None and value_b_num is not None and _units_compatible(unit_a, unit_b):
+                delta_abs = value_b_num - value_a_num
+                if abs(delta_abs) <= 1e-12:
+                    comparison_status = "identical"
+                    delta_abs = 0.0
+                    delta_relative_percent = 0.0
+                    conclusion_fact = "Aucun écart numérique n’est observé."
+                elif delta_abs > 0:
+                    comparison_status = "increased"
+                    if abs(value_a_num) > 1e-12:
+                        delta_relative_percent = (delta_abs / value_a_num) * 100.0
+                    conclusion_fact = "Valeur augmentée dans le second rapport."
+                else:
+                    comparison_status = "decreased"
+                    if abs(value_a_num) > 1e-12:
+                        delta_relative_percent = (delta_abs / value_a_num) * 100.0
+                    conclusion_fact = "Valeur diminuée dans le second rapport."
+            elif a and b and (not _units_compatible(unit_a, unit_b)):
+                comparison_status = "non_comparable"
+                conclusion_fact = "Comparaison non comparable : unités différentes."
+            elif a and b:
+                comparison_status = "non_comparable"
+                conclusion_fact = "Comparaison non comparable : valeur non numérique."
+
+            ref_a = str((a or {}).get("reference_range") or "").strip()
+            ref_b = str((b or {}).get("reference_range") or "").strip()
+            ref_raw = ref_a or ref_b or "non disponible"
+            reference_summary = _summarize_reference_for_comparison(ref_raw)
             evidences.append(
                 {
                     "doc_id": f"{left} vs {right}",
-                    "page": None,
-                    "row": None,
+                    "page": (a or b or {}).get("page_number"),
+                    "row": (a or b or {}).get("row_index"),
+                    "page_number": (a or b or {}).get("page_number"),
+                    "row_index": (a or b or {}).get("row_index"),
                     "chunk_id": None,
                     "analyte": label,
                     "analyte_norm": analyte,
                     "current_value": f"{left}={av} | {right}={bv}",
+                    "value_a_raw": av,
+                    "value_b_raw": bv,
+                    "value_a_num": value_a_num,
+                    "value_b_num": value_b_num,
                     "unit": unit,
-                    "reference": str((a or {}).get("reference_range") or (b or {}).get("reference_range") or "non disponible").strip(),
+                    "unit_a": unit_a,
+                    "unit_b": unit_b,
+                    "reference": ref_raw,
+                    "reference_summary": reference_summary,
                     "previous_result": "",
-                    "technical_status_code": "not_interpretable",
-                    "technical_status": "différence technique",
+                    "technical_status_code": "within_reference" if comparison_status == "identical" else "not_interpretable",
+                    "technical_status": "valeurs identiques" if comparison_status == "identical" else "comparaison effectuée",
+                    "comparison_status": comparison_status,
+                    "delta_abs": delta_abs,
+                    "delta_unit": delta_unit,
+                    "delta_relative_percent": delta_relative_percent,
+                    "conclusion_fact": conclusion_fact,
+                    "doc_a": left,
+                    "doc_b": right,
+                    "doc_a_label": doc_a_label,
+                    "doc_b_label": doc_b_label,
+                    "source_a": {
+                        "doc_id": left,
+                        "source_pdf": (a or {}).get("source_pdf"),
+                        "page": (a or {}).get("page_number"),
+                        "line": (a or {}).get("row_index"),
+                    } if a else None,
+                    "source_b": {
+                        "doc_id": right,
+                        "source_pdf": (b or {}).get("source_pdf"),
+                        "page": (b or {}).get("page_number"),
+                        "line": (b or {}).get("row_index"),
+                    } if b else None,
+                    "comparison_sources": [
+                        {
+                            "doc_id": left,
+                            "source_pdf": (a or {}).get("source_pdf"),
+                            "page_number": (a or {}).get("page_number"),
+                            "row_index": (a or {}).get("row_index"),
+                        }
+                    ]
+                    + (
+                        [
+                            {
+                                "doc_id": right,
+                                "source_pdf": (b or {}).get("source_pdf"),
+                                "page_number": (b or {}).get("page_number"),
+                                "row_index": (b or {}).get("row_index"),
+                            }
+                        ]
+                        if b
+                        else []
+                    ),
                     "variation": _variation_label(bv, av) if a and b else "non comparable",
-                    "source": "",
+                    "source": _source_label((a or b or {})),
+                    "source_pdf": (a or b or {}).get("source_pdf"),
                 }
             )
         pack["evidences"] = evidences
         pack["missing_items"] = missing
         pack["rows"] = rows
+        if analyte_resolution_debug:
+            analyte_resolution_debug["structured_rows_found"] = len(rows)
+            analyte_resolution_debug["evidences_count"] = len(evidences)
         return _finalize_structured_pack(pack, query_understanding)
 
     if intent == "multi_doc_presence_diff" and len(requested_doc_ids) >= 2:
@@ -5368,7 +6086,12 @@ def build_structured_evidence_pack(
         return _finalize_structured_pack(pack, query_understanding)
 
     if intent == "diagnostic_safety_question":
-        safety_analytes = requested_analytes or ["ace", "psa_totale", "ca_15_3"]
+        if requested_analytes:
+            safety_analytes = requested_analytes
+        elif any(k in qn for k in ["hyperthyro", "hypothyro", "thyroid", "thyroide", "thyroïde"]):
+            safety_analytes = ["t4_libre", "t3_libre", "tshus", "anti_tg", "trak", "anti_tpo"]
+        else:
+            safety_analytes = ["ace", "psa_totale", "ca_15_3"]
         rows = _fetch_doc_lab_rows(
             sqlite_path=sqlite_path,
             requested_doc_ids=requested_doc_ids,
@@ -5839,12 +6562,12 @@ def run_generation(
     query: str,
     top_k: int = 5,
     mode: str = "hybrid",
-    provider: str = "ollama",
-    model: str = "qwen3:4b",
-    temperature: float = 0.0,
-    num_ctx: int = 4096,
-    max_tokens: int = 400,
-    timeout: int = 120,
+    provider: str = DEFAULT_LLM_PROVIDER,
+    model: str = DEFAULT_LLM_MODEL,
+    temperature: float = DEFAULT_LLM_TEMPERATURE,
+    num_ctx: int = DEFAULT_LLM_NUM_CTX,
+    max_tokens: int = DEFAULT_LLM_MAX_TOKENS,
+    timeout: int = DEFAULT_LLM_TIMEOUT,
     index_dir: str | Path = "data/indexes",
     collection: str = "medical_chunks",
     search_engine: SearchEngine | None = None,
@@ -5878,6 +6601,14 @@ def run_generation(
     idx = Path(index_dir)
     sqlite_path = idx / "medical_rag.sqlite"
     query_understanding = parse_query_understanding(q)
+    query_understanding, llm_qu_debug = _llm_assisted_query_understanding(
+        query=q,
+        base_qu=query_understanding,
+        llm_client=llm_client,
+        provider=provider,
+        model=model,
+        timeout=timeout,
+    )
     preferred_previous_transformable_pack = (
         previous_displayed_evidence_pack
         if isinstance(previous_displayed_evidence_pack, dict)
@@ -5897,6 +6628,28 @@ def run_generation(
     }
     context_resolution = resolve_context_for_turn(q, query_understanding, state_for_resolution)
     deictic_resolution = resolve_deictic_request(q, query_understanding, state_for_resolution)
+    resolution_arbitration = _arbitrate_resolution(
+        query_understanding=query_understanding,
+        context_resolution=context_resolution,
+        deictic_resolution=deictic_resolution,
+    )
+    if bool(resolution_arbitration.get("conflict")):
+        LOGGER.info(
+            "routing_resolution_conflict request_id=%s decision=%s",
+            request_id,
+            json.dumps(
+                {
+                    "query": q,
+                    "base_intent": resolution_arbitration.get("base_intent"),
+                    "deictic_intent": resolution_arbitration.get("deictic_intent"),
+                    "chosen": resolution_arbitration.get("chosen"),
+                    "context_reason": resolution_arbitration.get("context_reason"),
+                    "deictic_reason": resolution_arbitration.get("deictic_reason"),
+                },
+                ensure_ascii=False,
+                default=str,
+            ),
+        )
     qn_deictic = norm_text(q)
     asks_table = any(token in qn_deictic for token in [" table", "table ", "tableau", "tabl", "une table", "dans une table"])
     asks_graph = any(token in qn_deictic for token in ["graphique", "chart", "courbe", "radar", "bar chart", "line graph", "visualise"])
@@ -6075,6 +6828,8 @@ def run_generation(
                     "summary_no_context": bool(asks_context_summary),
                     "generation_writer": "professional_fallback",
                     "context_resolution": context_resolution,
+                    "deictic_resolution": deictic_resolution,
+                    "resolution_arbitration": resolution_arbitration,
                     "retrieval_skipped_due_to_no_transformable_context": True,
                 },
                 "visualization": None,
@@ -6083,7 +6838,7 @@ def run_generation(
 
     # Dedicated deictic resolver overrides (same-action / fiche / status follow-up).
     resolved_intent = str(deictic_resolution.get("intent") or "").strip().lower()
-    if deictic_resolution.get("resolved") and resolved_intent not in {"", "deictic_no_context"}:
+    if resolution_arbitration.get("chosen") == "deictic" and deictic_resolution.get("resolved") and resolved_intent not in {"", "deictic_no_context"}:
         if resolved_intent == "doc_scoped_results" and query_understanding.requested_analytes:
             effective_scope = deictic_resolution.get("effective_doc_scope") if isinstance(deictic_resolution.get("effective_doc_scope"), dict) else {}
             scoped_doc_ids = [str(d).strip() for d in (effective_scope.get("doc_ids") or []) if str(d).strip()]
@@ -6237,13 +6992,7 @@ def run_generation(
 
     # Guardrail: reference-range wording should not drift to global multi-analyte listing.
     # Force deterministic reference_range_lookup when user explicitly asks for norme/plage/référence.
-    reference_terms = ("norme", "plage", "référence", "reference", "valeur normale", "valeurs physiologiques", "intervalle de référence", "plage de référence")
-    has_reference_wording = any(term in qn for term in reference_terms)
-    if (
-        has_reference_wording
-        and list(query_understanding.requested_analytes or [])
-        and str(query_understanding.intent or "").strip().lower() != "reference_range_lookup"
-    ):
+    if _should_force_reference_range_lookup(qn, query_understanding):
         query_understanding = replace(
             query_understanding,
             intent="reference_range_lookup",
@@ -6251,41 +7000,84 @@ def run_generation(
             is_response_transform=False,
         )
 
-    # Follow-up safeguard for reference ranges: if user only updates age, keep previous analyte/profile context.
-    if str(previous_context_intent or "").strip().lower() == "reference_range_lookup":
-        curr_profile = (
-            dict(getattr(query_understanding, "requested_reference_profile", None) or {})
-            if isinstance(getattr(query_understanding, "requested_reference_profile", None), dict)
-            else {}
+    # Follow-up safeguard for reference ranges: preserve deterministic reference lookup across elliptical turns.
+    prev_ctx = previous_displayed_context if isinstance(previous_displayed_context, dict) else {}
+    prev_rr_ctx = prev_ctx.get("last_reference_range_context") if isinstance(prev_ctx.get("last_reference_range_context"), dict) else {}
+    prev_rr_intent = str(prev_rr_ctx.get("intent") or prev_ctx.get("reference_intent") or previous_context_intent or "").strip().lower()
+    curr_profile = (
+        dict(getattr(query_understanding, "requested_reference_profile", None) or {})
+        if isinstance(getattr(query_understanding, "requested_reference_profile", None), dict)
+        else {}
+    )
+    prev_profile = {}
+    if isinstance(prev_rr_ctx.get("requested_reference_profile"), dict):
+        prev_profile = dict(prev_rr_ctx.get("requested_reference_profile") or {})
+    elif isinstance(prev_ctx.get("reference_profile"), dict):
+        prev_profile = dict(prev_ctx.get("reference_profile") or {})
+    followup_like = _looks_like_reference_range_followup(q)
+    has_curr_analyte = bool(list(getattr(query_understanding, "requested_analytes", None) or []))
+    has_curr_profile = _has_any_reference_profile_slot(curr_profile)
+    if prev_rr_intent == "reference_range_lookup" and (followup_like or has_curr_analyte or has_curr_profile):
+        curr_analytes = [str(a).strip().lower() for a in list(getattr(query_understanding, "requested_analytes", None) or []) if str(a).strip()]
+        if not curr_analytes:
+            curr_analytes = [str(a).strip().lower() for a in (detect_exact_analytes(q) or []) if str(a).strip()]
+        if not curr_analytes:
+            prev_analyte = str(prev_rr_ctx.get("analyte") or prev_ctx.get("subject") or "").strip()
+            if prev_analyte:
+                curr_analytes = [str(a).strip().lower() for a in (detect_exact_analytes(prev_analyte) or []) if str(a).strip()]
+        merged_profile = dict(prev_profile)
+        for k, v in curr_profile.items():
+            if v not in (None, ""):
+                merged_profile[k] = v
+        # If user explicitly changed analyte only, keep inherited profile for potential specific lookup/fallback messaging.
+        final_profile = merged_profile if _has_any_reference_profile_slot(merged_profile) else curr_profile
+        if curr_analytes:
+            query_understanding = replace(
+                query_understanding,
+                intent="reference_range_lookup",
+                requested_analytes=curr_analytes,
+                requested_reference_profile=final_profile if _has_any_reference_profile_slot(final_profile) else None,
+                is_small_talk=False,
+                is_response_transform=False,
+            )
+
+    # Deterministic route normalization for production medical flows.
+    selected_route = str(query_understanding.intent or "").strip().lower()
+    route_reason = "intent_resolved_by_query_understanding"
+    if selected_route == "global_analyte_abnormal_search":
+        query_understanding = replace(
+            query_understanding,
+            intent="cohort_search",
+            requires_global_search=True,
+            technical_condition=(query_understanding.technical_condition or "out_of_reference"),
         )
-        has_age_update = any(curr_profile.get(k) not in (None, "") for k in ["age", "age_operator", "age_min", "age_max", "age_value"])
-        lacks_identity = all(curr_profile.get(k) in (None, "") for k in ["sex", "population", "condition"])
-        if has_age_update and lacks_identity:
-            prev_ctx = previous_displayed_context if isinstance(previous_displayed_context, dict) else {}
-            prev_profile = dict(prev_ctx.get("reference_profile") or {}) if isinstance(prev_ctx.get("reference_profile"), dict) else {}
-            merged_profile = dict(prev_profile)
-            for k, v in curr_profile.items():
-                if v not in (None, ""):
-                    merged_profile[k] = v
-            prev_analytes: list[str] = []
-            prev_subject = str(prev_ctx.get("subject") or "").strip()
-            if prev_subject:
-                prev_analytes = list(detect_exact_analytes(prev_subject) or [])
-            if not prev_analytes and isinstance(previous_displayed_evidence_pack, dict):
-                prev_rows = list(previous_displayed_evidence_pack.get("evidences") or previous_displayed_evidence_pack.get("results") or [])
-                if prev_rows and isinstance(prev_rows[0], dict):
-                    prev_label = str(prev_rows[0].get("analyte") or prev_rows[0].get("analyte_norm") or "").strip()
-                    if prev_label:
-                        prev_analytes = list(detect_exact_analytes(prev_label) or [])
-            if prev_analytes:
-                query_understanding = replace(
-                    query_understanding,
-                    intent="reference_range_lookup",
-                    requested_analytes=prev_analytes,
-                    requested_reference_profile=merged_profile if merged_profile else curr_profile,
-                    is_small_talk=False,
-                    is_response_transform=False,
-                )
+        selected_route = "global_analyte_abnormal_search"
+        route_reason = "global_scope+analyte+abnormal_wording"
+    elif selected_route == "doc_pair_comparison":
+        query_understanding = replace(query_understanding, intent="multi_doc_comparison")
+        selected_route = "doc_pair_comparison"
+        route_reason = "compare+two_or_more_reports"
+    elif selected_route == "doc_scoped_abnormal_results":
+        query_understanding = replace(
+            query_understanding,
+            intent="doc_scoped_summary",
+            technical_condition=(query_understanding.technical_condition or "out_of_reference"),
+        )
+        selected_route = "doc_scoped_abnormal_results"
+        route_reason = "doc_scope+abnormal_summary_request"
+    elif selected_route == "single_analyte_lookup":
+        query_understanding = replace(query_understanding, intent="doc_scoped_results")
+        selected_route = "single_analyte_lookup"
+        route_reason = "single_analyte+doc_scope_lookup"
+    elif selected_route == "doc_scoped_medical_interpretation_guarded":
+        query_understanding = replace(
+            query_understanding,
+            intent="diagnostic_safety_question",
+            answer_style="standard",
+            output_format="paragraph",
+        )
+        selected_route = "doc_scoped_medical_interpretation_guarded"
+        route_reason = "guarded_medical_interpretation_with_doc_scope"
 
     requested_doc_ids = resolve_followup_doc_scope(
         query=q,
@@ -6460,6 +7252,8 @@ def run_generation(
             has_transformable_context=bool(preferred_previous_transformable_pack),
         )
         out.setdefault("debug", {})["context_resolution"] = context_resolution
+        out.setdefault("debug", {})["deictic_resolution"] = deictic_resolution
+        out.setdefault("debug", {})["resolution_arbitration"] = resolution_arbitration
         out.setdefault("debug", {})["retrieval_skipped_due_to_no_transformable_context"] = bool(
             context_resolution.get("should_skip_retrieval")
         )
@@ -6485,6 +7279,8 @@ def run_generation(
             previous_patient_inventory=previous_patient_inventory,
         )
         out.setdefault("debug", {})["context_resolution"] = context_resolution
+        out.setdefault("debug", {})["deictic_resolution"] = deictic_resolution
+        out.setdefault("debug", {})["resolution_arbitration"] = resolution_arbitration
         out.setdefault("debug", {})["retrieval_skipped_due_to_no_transformable_context"] = bool(
             context_resolution.get("should_skip_retrieval")
         )
@@ -6510,6 +7306,8 @@ def run_generation(
             previous_displayed_context=previous_displayed_context,
         )
         out.setdefault("debug", {})["context_resolution"] = context_resolution
+        out.setdefault("debug", {})["deictic_resolution"] = deictic_resolution
+        out.setdefault("debug", {})["resolution_arbitration"] = resolution_arbitration
         out.setdefault("debug", {})["retrieval_skipped_due_to_no_transformable_context"] = bool(
             context_resolution.get("should_skip_retrieval")
         )
@@ -6539,6 +7337,8 @@ def run_generation(
             llm_client=llm_client,
         )
         out.setdefault("debug", {})["context_resolution"] = context_resolution
+        out.setdefault("debug", {})["deictic_resolution"] = deictic_resolution
+        out.setdefault("debug", {})["resolution_arbitration"] = resolution_arbitration
         out.setdefault("debug", {})["retrieval_skipped_due_to_no_transformable_context"] = True
         return out
     if str(query_understanding.intent or "").strip().lower() == "source_followup":
@@ -6652,6 +7452,12 @@ def run_generation(
             "evidence_pack": [],
             "displayed_evidences": [],
             "retrieval": {"answerability": {"status": "not_required", "reason": "source_followup_no_retrieval"}},
+            "debug": {
+                "request_id": request_id,
+                "context_resolution": context_resolution,
+                "deictic_resolution": deictic_resolution,
+                "resolution_arbitration": resolution_arbitration,
+            },
             "visualization": None,
             "chart_data": None,
         }
@@ -6674,8 +7480,11 @@ def run_generation(
             intents=intents,
             sqlite_path=sqlite_path,
             requested_doc_ids=requested_doc_ids,
+            previous_displayed_context=previous_displayed_context,
         )
         out.setdefault("debug", {})["context_resolution"] = context_resolution
+        out.setdefault("debug", {})["deictic_resolution"] = deictic_resolution
+        out.setdefault("debug", {})["resolution_arbitration"] = resolution_arbitration
         return out
 
     # Strict guard: after non-transformable contexts (e.g. inventory), do not run retrieval
@@ -6915,12 +7724,17 @@ def run_generation(
             displayed_evidences=displayed_evidences,
         )
         transformed_qu = _with_resolved_strategy(transformed_qu, transformed_pack)
+        transformed_compose_mode = (
+            "fallback"
+            if _force_deterministic_mode_for_summary_anomalies(transformed_qu, qn)
+            else _hybrid_writer_mode(transformed_qu)
+        )
         output_format = str(transformed_pack.get("output_format") or query_understanding.output_format or "list").lower()
         composed = compose_professional_answer(
             user_question=q,
             query_understanding=transformed_qu,
             evidence_pack=transformed_pack,
-            mode="auto",
+            mode=transformed_compose_mode,
             source_citations=source_citations,
             llm_client=llm_client,
             provider=provider,
@@ -7037,7 +7851,7 @@ def run_generation(
                 "detected_analytes": exact_analytes,
                 "requested_doc_ids": requested_doc_ids,
                 "generation_mode": generation_mode,
-                "generation_writer": "llm_writer" if generation_mode == "llm_professional_writer" else "professional_fallback",
+                "generation_writer": "llm_writer" if str(generation_mode).startswith("llm_") or generation_mode == "hybrid_structured_llm_writer" else "professional_fallback",
                 "intents": intents,
             },
             "exact_analyte_coverage": {
@@ -7097,11 +7911,12 @@ def run_generation(
             displayed_evidences=displayed_evidences,
         )
         query_understanding = _with_resolved_strategy(query_understanding, structured_pack)
+        compose_mode = _hybrid_writer_mode(query_understanding)
         composed = compose_professional_answer(
             user_question=q,
             query_understanding=query_understanding,
             evidence_pack=structured_pack,
-            mode="auto",
+            mode=compose_mode,
             source_citations=source_citations,
             llm_client=llm_client,
             provider=provider,
@@ -7113,6 +7928,15 @@ def run_generation(
         )
         composed_data = composed
         final_answer = str(composed.get("answer") or "").strip() or _missing_doc_answer()
+        llm_prompt_preview = str(composed.get("llm_prompt_preview") or "")[:1200]
+        llm_candidate_answer = str(composed.get("llm_candidate_answer") or final_answer)
+        retry_used = False
+        if (
+            str(query_understanding.intent or "").strip().lower() == "multi_doc_comparison"
+            and "analyte_not_identified_for_multi_doc_comparison" in set(structured_pack.get("missing_items") or [])
+            and not (structured_pack.get("evidences") or [])
+        ):
+            final_answer = "L’analyte demandé n’a pas été identifié pour la comparaison entre les documents demandés."
         if str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
             evidences = list(structured_pack.get("evidences") or [])
             if bool(structured_pack.get("comment_list_mode")) and evidences:
@@ -7151,6 +7975,23 @@ def run_generation(
                 str(final_answer or "").strip().lower().startswith("information insuffisante"),
             )
         writer_error = str(composed.get("llm_error") or "") or None
+        fallback_reason_debug = writer_error
+        if compose_mode == "hybrid_structured_llm_writer" and generation_mode in {
+            "llm_writer_error_fallback",
+            "llm_writer_format_fallback",
+            "llm_writer_quality_fallback",
+        }:
+            retry_used = True
+            fallback_composed = compose_professional_answer(
+                user_question=q,
+                query_understanding=query_understanding,
+                evidence_pack=structured_pack,
+                mode="fallback",
+                source_citations=source_citations,
+            )
+            final_answer = str(fallback_composed.get("answer") or final_answer).strip()
+            generation_mode = "deterministic_safety_fallback_after_llm_validation_failure"
+            writer_error = None
         if _contains_internal_reasoning_leak(final_answer):
             fallback_answer = str(
                 (
@@ -7255,13 +8096,14 @@ def run_generation(
         )
 
         if _should_retry_with_validator(validation, generation_mode):
+            retry_used = True
             retry_feedback = _build_validator_retry_feedback(validation)
             retry_composed = compose_professional_answer(
                 user_question=q,
                 query_understanding=query_understanding,
                 evidence_pack=structured_pack,
-                mode="auto",
-            source_citations=source_citations,
+                mode=compose_mode,
+                source_citations=source_citations,
                 llm_client=llm_client,
                 provider=provider,
                 model=model,
@@ -7274,6 +8116,10 @@ def run_generation(
             retry_answer = str(retry_composed.get("answer") or "").strip()
             retry_mode = str(retry_composed.get("mode") or generation_mode)
             retry_writer_error = str(retry_composed.get("llm_error") or "") or None
+            if retry_answer:
+                llm_candidate_answer = retry_answer
+            if str(retry_composed.get("llm_prompt_preview") or "").strip():
+                llm_prompt_preview = str(retry_composed.get("llm_prompt_preview") or "")[:1200]
             if retry_answer:
                 retry_validation = validate_answer(
                     query=q,
@@ -7331,8 +8177,8 @@ def run_generation(
                         source_citations=source_citations,
                     )
                     final_answer = str(fallback_composed.get("answer") or final_answer).strip()
-                    generation_mode = str(fallback_composed.get("mode") or "deterministic_professional_fallback")
-                    writer_error = retry_writer_error or writer_error
+                    generation_mode = "deterministic_safety_fallback_after_llm_validation_failure"
+                    writer_error = None
                     validation = validate_answer(
                         query=q,
                         answer_text=final_answer,
@@ -7340,7 +8186,7 @@ def run_generation(
                         displayed_evidences=displayed_evidences,
                         source_citations=source_citations,
                         exact_analyte=exact_analyte,
-                        llm_error=writer_error,
+                        llm_error=None,
                         generation_mode=generation_mode,
                         retrieval_status="answerable" if displayed_evidences else "insufficient_context",
                         show_low_quality=show_low_quality,
@@ -7381,6 +8227,16 @@ def run_generation(
                         source_clickable_requested=bool(query_understanding.source_clickable_requested),
                         recent_style_history=style_history,
                     )
+
+        route_mode_overrides = {
+            "doc_scoped_abnormal_results": "deterministic_doc_scoped_abnormal_results",
+            "global_analyte_abnormal_search": "deterministic_global_analyte_abnormal_search",
+            "doc_pair_comparison": "deterministic_doc_pair_comparison",
+            "doc_scoped_medical_interpretation_guarded": "deterministic_guarded_medical_interpretation",
+            "single_analyte_lookup": "deterministic_single_analyte_lookup",
+        }
+        if str(generation_mode or "").startswith("deterministic_") and selected_route in route_mode_overrides:
+            generation_mode = route_mode_overrides[selected_route]
 
         elapsed = time.perf_counter() - started
         intro_text, conclusion_text = _extract_intro_conclusion(final_answer)
@@ -7454,8 +8310,25 @@ def run_generation(
                 "detected_analytes": exact_analytes,
                 "requested_doc_ids": requested_doc_ids,
                 "generation_mode": generation_mode,
-                "generation_writer": "llm_writer" if generation_mode == "llm_professional_writer" else "professional_fallback",
+                "selected_route": selected_route,
+                "route_reason": route_reason,
+                "generation_mode_before_fallback": str(composed_data.get("mode") if isinstance(composed_data, dict) else "") or None,
+                "fallback_reason": fallback_reason_debug,
+                "generation_writer": "llm_writer" if str(generation_mode).startswith("llm_") or generation_mode == "hybrid_structured_llm_writer" else "professional_fallback",
+                "retry_used": retry_used,
+                "final_generation_mode": generation_mode,
+                "llm_prompt_preview": llm_prompt_preview,
+                "llm_candidate_answer": llm_candidate_answer,
                 "intents": intents,
+                "analyte_resolution_debug": structured_pack.get("analyte_resolution_debug"),
+                "query_understanding": _query_understanding_payload(query_understanding),
+                "evidence_rows_preview": list((structured_pack.get("rows") or [])[:8]),
+                "included_rows": list((structured_pack.get("evidences") or [])[:20]),
+                "excluded_rows": list(structured_pack.get("excluded_rows") or []),
+                "validation": {
+                    "errors": list((validation or {}).get("errors") or []),
+                    "warnings": list((validation or {}).get("warnings") or []),
+                },
             },
             "exact_analyte_coverage": {
                 "detected_exact_analyte": exact_analyte,
@@ -7858,6 +8731,8 @@ def run_generation(
             "requested_doc_ids": requested_doc_ids,
             "generation_mode": generation_mode,
             "context_resolution": context_resolution,
+            "deictic_resolution": deictic_resolution,
+            "resolution_arbitration": resolution_arbitration,
             "retrieval_skipped_due_to_no_transformable_context": bool(
                 context_resolution.get("reason") == "response_transform_no_transformable_context"
             ),
@@ -7890,12 +8765,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--query", required=True)
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--mode", choices=["keyword", "vector", "hybrid"], default="hybrid")
-    parser.add_argument("--provider", default="ollama")
-    parser.add_argument("--model", default="qwen3:4b")
-    parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--num-ctx", type=int, default=4096)
-    parser.add_argument("--max-tokens", type=int, default=400)
-    parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--provider", default=DEFAULT_LLM_PROVIDER)
+    parser.add_argument("--model", default=DEFAULT_LLM_MODEL)
+    parser.add_argument("--temperature", type=float, default=DEFAULT_LLM_TEMPERATURE)
+    parser.add_argument("--num-ctx", type=int, default=DEFAULT_LLM_NUM_CTX)
+    parser.add_argument("--max-tokens", type=int, default=DEFAULT_LLM_MAX_TOKENS)
+    parser.add_argument("--timeout", type=int, default=DEFAULT_LLM_TIMEOUT)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--show-context", action="store_true")
     parser.add_argument("--max-display-results", type=int, default=3)

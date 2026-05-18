@@ -5,47 +5,17 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
+try:
+    from analyte_aliases import ANALYTE_ALIAS_GROUPS
+    from analyte_resolver import resolve_requested_analytes, normalize_analyte_text
+except Exception:  # pragma: no cover
+    from scripts.generation.analyte_aliases import ANALYTE_ALIAS_GROUPS  # type: ignore
+    from scripts.generation.analyte_resolver import resolve_requested_analytes, normalize_analyte_text  # type: ignore
 
 # canonical analyte_norm -> accepted query/answer aliases
 ANALYTE_ALIASES: dict[str, set[str]] = {
-    "calcitonine": {"calcitonine"},
-    "procalcitonine": {"procalcitonine"},
-    "ferritine": {"ferritine"},
-    "lithium": {"lithium"},
-    "c3": {"c3", "complement c3", "complément c3"},
-    "c4": {"c4", "complement c4", "complément c4"},
-    "cholesterol_hdl": {"hdl", "cholesterol hdl", "cholestérol hdl", "cholesterol_hdl"},
-    "crp": {"crp"},
-    "peptide_c": {"peptide c", "peptide_c", "peptide-c"},
-    "insuline": {"insuline"},
-    "pro_bnp": {"pro bnp", "pro_bnp", "pro-bnp", "probnp"},
-    "tshus": {"tshus", "tsh us", "tsh ultra sensible", "tsh ultrasensible", "tsh"},
-    "tsh": {"tsh"},
-    "acth": {"acth"},
-    "troponine": {"troponine", "troponine i", "troponine t"},
-    "ace": {"ace"},
-    "psa_totale": {"psa totale", "psa total", "psa"},
-    "ca_15_3": {"ca 15-3", "ca 15 3", "ca15-3"},
-    "t4_libre": {"t4 libre", "t4l", "ft4", "thyroxine libre", "free t4"},
-    "t3_libre": {"t3 libre", "t3l", "ft3", "triiodothyronine libre", "free t3"},
-    "anti_tg": {"anti tg", "anti-tg", "anti thyroglobuline", "anticorps anti tg", "anti tg antibodies"},
-    "ckmb": {"ckmb", "ck mb", "ck-mb"},
-    "triglycerides": {"triglycerides", "triglycérides"},
-    "cholesterol_ldl": {"ldl", "cholesterol ldl", "cholestérol ldl", "cholesterol ldl-c", "ldl c"},
-    "microalbuminurie": {"microalbuminurie", "micro albuminurie", "microalbumine"},
-    "ethanol": {"ethanol", "éthanol", "alcool", "ethyl"},
-    "acide_valproique": {"acide valproique", "acide valproïque", "acide valporoique", "valproate", "valproique", "valporoique"},
-    "carbamazepine": {"carbamazepine", "carbamazépine"},
-    "calcium": {"calcium"},
-    "creatinine": {"creatinine", "créatinine"},
-    "amh": {"amh", "hormone anti mullerienne", "hormone anti müllerienne", "anti mullerienne"},
-    "pth_intact": {"pth intact", "pth", "parathormone intacte", "parathormone", "pthi"},
-    "vitamine_b12": {"vitamine b12", "vitamine_b12", "vit b12", "b12"},
-    "vitamine_d": {"vitamine d", "vitamine_d"},
-    "trichuris": {"trichuris", "trichuris trichiura"},
-    "ankylostoma": {"ankylostoma"},
-    "haptoglobine": {"haptoglobine"},
-    "phosphatase_alcaline": {"phosphatase alcaline", "pal", "alkaline phosphatase"},
+    str(k): {str(v) for v in vals}
+    for k, vals in ANALYTE_ALIAS_GROUPS.items()
 }
 
 
@@ -193,7 +163,7 @@ def norm_text(value: str) -> str:
 
 
 def normalize_analyte(text: str) -> str:
-    return norm_text(text).replace("-", " ")
+    return normalize_analyte_text(text).replace("-", " ")
 
 
 def detect_language(query: str) -> str:
@@ -258,15 +228,14 @@ def contains_exact_term(haystack: str, needle: str) -> bool:
 
 
 def detect_exact_analytes(query: str) -> list[str]:
-    qn = normalize_analyte(query)
-    found: list[str] = []
-    for canonical, aliases in ANALYTE_ALIASES.items():
-        all_aliases = get_analyte_aliases(canonical) | {normalize_analyte(a) for a in aliases}
-        for alias in sorted(all_aliases, key=len, reverse=True):
-            if contains_exact_term(qn, alias):
-                found.append(canonical)
-                break
-    return found
+    available = [{"display_name": analyte_display_name(k, k), "analyte_norm": k} for k in ANALYTE_ALIASES.keys()]
+    resolved = resolve_requested_analytes(query=query, available_analytes=available, aliases=ANALYTE_ALIAS_GROUPS, max_candidates=8)
+    if not resolved:
+        return []
+    selected = [str(r.get("analyte_norm") or "").strip().lower() for r in resolved if str(r.get("analyte_norm") or "").strip()]
+    if selected:
+        return list(dict.fromkeys(selected))
+    return []
 
 
 def detect_exact_analyte(query: str) -> str | None:
@@ -453,6 +422,53 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         or "ce résultat" in qn
         or has_generic_comment_request
     )
+    has_structured_status_request = any(
+        k in qn
+        for k in [
+            "hors reference",
+            "hors de la reference",
+            "hors référence",
+            "above_reference",
+            "below_reference",
+            "above reference",
+            "below reference",
+            "statut technique",
+            "parametre",
+            "paramètre",
+            "valeur",
+            "reference",
+            "référence",
+            "resultats",
+            "résultats",
+        ]
+    )
+    has_global_scope_markers = any(
+        k in qn
+        for k in [
+            "tous les rapports",
+            "tous les documents",
+            "quels documents",
+            "patients qui ont",
+            "rapports disponibles",
+            "dans tous les rapports",
+            "dans les rapports disponibles",
+        ]
+    )
+    has_abnormal_wording = any(
+        k in qn
+        for k in [
+            "hors reference",
+            "hors de la reference",
+            "anomalie",
+            "anomalies",
+            "anormal",
+            "anormaux",
+            "above_reference",
+            "below_reference",
+            "above reference",
+            "below reference",
+        ]
+    )
     reference_markers = [
         "plage",
         "norme",
@@ -497,10 +513,40 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
             "traitement",
             "est ce que le patient a",
             "est-ce que le patient a",
+            "hyperthyroid",
+            "hyperthyro",
+            "hypothyroid",
+            "hypothyro",
         ]
     )
     has_doc_scope = len(doc_ids) >= 1
+    # Guardrail: avoid misrouting structured status queries to qualitative-comment intent
+    # when the user says "sans interprétation médicale" or similar phrasing.
+    if has_qualitative_comment_query and has_doc_scope and has_structured_status_request:
+        has_qualitative_comment_query = False
     has_multi_doc = len(doc_ids) >= 2
+    has_doc_pair_comparison = has_multi_doc and has_compare
+    has_global_analyte_abnormal_search = (
+        len(doc_ids) == 0
+        and len(analyte_list) >= 1
+        and has_global_scope_markers
+        and has_abnormal_wording
+    )
+    has_doc_scoped_abnormal_results = (
+        len(doc_ids) >= 1
+        and has_abnormal_wording
+        and any(k in qn for k in ["uniquement", "anomal", "hors reference", "quels resultats", "quels résultats", "donne", "sans interpretation", "sans interprétation", "résume", "resume"])
+        and not any(k in qn for k in ["oui non", "oui/non", "oui ou non", "yes/no", "yes or no", "est ce que", "est-ce que"])
+    )
+    has_doc_scoped_medical_interpretation_guarded = (
+        len(doc_ids) >= 1
+        and any(k in qn for k in ["peut on conclure", "peut-on conclure", "conclure a", "conclure à", "hyperthyro", "hypothyro"])
+    )
+    has_single_analyte_lookup = (
+        len(doc_ids) >= 1
+        and len(analyte_list) == 1
+        and any(k in qn for k in ["valeur de", "resultat de", "résultat de", "donne", "affiche", "montre"])
+    )
     has_multi_analyte = len(analyte_list) >= 2
     has_presence_diff = has_multi_doc and (
         ("present" in qn and "absent" in qn)
@@ -520,10 +566,6 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         "retire la colonne",
         "garde seulement",
         "reformate",
-        "donne moi le resultat",
-        "donne-moi le resultat",
-        "affiche le resultat",
-        "mets le resultat",
         "meme resultat",
         "résultat précédent",
         "resultat precedent",
@@ -549,6 +591,18 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         and len(analyte_list) == 0
         and any(k in qn for k in transform_format_markers)
     )
+    measurement_lookup_markers = [
+        "donne moi le resultat de",
+        "donne-moi le resultat de",
+        "affiche le resultat de",
+        "montre le resultat de",
+        "donne moi la valeur de",
+        "affiche la valeur de",
+        "montre la valeur de",
+    ]
+    explicit_measurement_lookup = bool(len(analyte_list) >= 1 and any(k in qn for k in measurement_lookup_markers))
+    if explicit_measurement_lookup:
+        has_response_transform = False
     visualization_recommendation_markers = [
         "recommande",
         "recommander",
@@ -754,6 +808,11 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         "qualitative_comment_render": has_qualitative_comment_render,
         "context_summary_render": has_context_summary_render,
         "source_followup": has_source_followup,
+        "global_analyte_abnormal_search": has_global_analyte_abnormal_search,
+        "doc_pair_comparison": has_doc_pair_comparison,
+        "doc_scoped_medical_interpretation_guarded": has_doc_scoped_medical_interpretation_guarded,
+        "doc_scoped_abnormal_results": has_doc_scoped_abnormal_results,
+        "single_analyte_lookup": has_single_analyte_lookup,
         "doc_scoped_results": has_doc_scope and (len(analyte_list) >= 1 or not has_summary),
         "doc_scoped_analyte_query": has_doc_scope and len(analyte_list) >= 1,
         "doc_scoped_summary": has_doc_scope and has_summary,
@@ -1150,6 +1209,16 @@ def detect_answer_style(query: str) -> str:
 
 def detect_technical_condition(query: str) -> str | None:
     qn = norm_text(query or "")
+    if (
+        "hors reference" in qn
+        or "hors de la reference" in qn
+        or "resultats anormaux" in qn
+        or "résultats anormaux" in qn
+        or "anomalies biologiques" in qn
+        or ("above_reference" in qn and "below_reference" in qn)
+        or ("above reference" in qn and "below reference" in qn)
+    ):
+        return "out_of_reference"
     if any(k in qn for k in ["au dessus de la reference", "au-dessus de la reference", "above reference"]):
         return "above_reference"
     if any(k in qn for k in ["en dessous de la reference", "below reference"]):
@@ -1504,6 +1573,25 @@ def detect_request_all_reference_ranges(query: str) -> bool:
 
 
 def _resolve_primary_intent(intents: dict[str, bool], *, requested_doc_ids: list[str], requested_analytes: list[str]) -> str:
+    # When a concrete data task exists, keep it as primary and downgrade diagnostic safety
+    # to a secondary constraint (safety_intent) handled downstream.
+    has_data_task = any(
+        bool(intents.get(k))
+        for k in [
+            "reference_range_lookup",
+            "response_transform",
+            "global_patient_lookup",
+            "comment_without_measured_value",
+            "multi_doc_presence_diff",
+            "multi_doc_comparison",
+            "toxicology_summary",
+            "immunoanalysis_summary",
+            "previous_result_comparison",
+            "doc_scoped_summary",
+            "doc_scoped_results",
+        ]
+    ) or bool(requested_doc_ids)
+
     if intents.get("patient_inventory_count"):
         return "patient_inventory_count"
     if intents.get("patient_inventory"):
@@ -1526,18 +1614,26 @@ def _resolve_primary_intent(intents: dict[str, bool], *, requested_doc_ids: list
         return "help_question"
     if intents.get("small_talk") or intents.get("general_conversation"):
         return "small_talk"
+    if intents.get("multi_doc_presence_diff"):
+        return "multi_doc_presence_diff"
+    if intents.get("global_analyte_abnormal_search"):
+        return "global_analyte_abnormal_search"
+    if intents.get("doc_pair_comparison"):
+        return "doc_pair_comparison"
+    if intents.get("doc_scoped_medical_interpretation_guarded"):
+        return "doc_scoped_medical_interpretation_guarded"
+    if intents.get("doc_scoped_abnormal_results"):
+        return "doc_scoped_abnormal_results"
+    if intents.get("single_analyte_lookup"):
+        return "single_analyte_lookup"
     if intents.get("reference_range_lookup"):
         return "reference_range_lookup"
     if intents.get("response_transform"):
         return "response_transform"
     if intents.get("global_patient_lookup"):
         return "cohort_search"
-    if intents.get("diagnostic_safety_question"):
-        return "diagnostic_safety_question"
     if intents.get("comment_without_measured_value"):
         return "comment_without_measured_value"
-    if intents.get("multi_doc_presence_diff"):
-        return "multi_doc_presence_diff"
     if intents.get("multi_doc_comparison"):
         return "multi_doc_comparison"
     if intents.get("toxicology_summary"):
@@ -1554,17 +1650,72 @@ def _resolve_primary_intent(intents: dict[str, bool], *, requested_doc_ids: list
         return "doc_scoped_results"
     if len(requested_doc_ids) >= 1:
         return "doc_scoped_summary"
+    if intents.get("diagnostic_safety_question") and not has_data_task:
+        return "diagnostic_safety_question"
+    if intents.get("diagnostic_safety_question"):
+        return "doc_scoped_summary" if requested_doc_ids else "unstructured"
     return "unstructured"
+
+
+def build_intent_arbitration_debug(qu: QueryUnderstanding) -> dict[str, Any]:
+    intents = dict(getattr(qu, "intents", {}) or {})
+    candidate_intents = [k for k, v in intents.items() if bool(v) and k != "is_structured_query"]
+    winner = str(getattr(qu, "intent", "") or "").strip()
+    requested_doc_ids = list(getattr(qu, "requested_doc_ids", []) or [])
+    requested_analytes = list(getattr(qu, "requested_analytes", []) or [])
+    safety = str(getattr(qu, "safety_intent", "") or "").strip()
+
+    if winner == "doc_scoped_summary" and safety == "diagnostic_safety_question":
+        reason = (
+            "Arbitrage: intent métier doc-scoped prioritaire ; "
+            "la contrainte diagnostic est conservée en safety_intent."
+        )
+    elif winner == "diagnostic_safety_question":
+        reason = "Arbitrage: question de sécurité diagnostique sans tâche data prioritaire."
+    elif winner == "comment_without_measured_value":
+        reason = "Arbitrage: requête qualitative explicite (commentaire/note/interprétation)."
+    elif winner == "reference_range_lookup":
+        reason = "Arbitrage: requête de plage physiologique détectée."
+    elif winner == "global_analyte_abnormal_search":
+        reason = "Arbitrage: recherche globale/cohorte d’analytes hors référence."
+    elif winner == "doc_pair_comparison":
+        reason = "Arbitrage: comparaison de deux rapports détectée."
+    elif winner == "doc_scoped_medical_interpretation_guarded":
+        reason = "Arbitrage: interprétation médicale prudente document-scopée."
+    elif winner == "doc_scoped_abnormal_results":
+        reason = "Arbitrage: résultats anormaux document-scopés."
+    elif winner == "single_analyte_lookup":
+        reason = "Arbitrage: lookup ciblé d’un analyte dans un rapport."
+    elif winner == "multi_doc_comparison":
+        reason = "Arbitrage: comparaison multi-documents détectée."
+    elif winner == "doc_scoped_results":
+        reason = "Arbitrage: extraction de résultats structurés ciblés document."
+    elif winner == "doc_scoped_summary":
+        reason = "Arbitrage: synthèse document ciblé."
+    else:
+        reason = "Arbitrage: priorité standard des intents."
+
+    return {
+        "candidate_intents": candidate_intents,
+        "winner": winner,
+        "reason": reason,
+        "requested_doc_ids": requested_doc_ids,
+        "requested_analytes": requested_analytes,
+        "safety_intent": safety or None,
+    }
 
 
 def parse_query_understanding(query: str) -> QueryUnderstanding:
     presentation = detect_presentation_intent(query or "")
     requested_doc_ids = detect_requested_doc_ids(query or "")
     requested_analytes = detect_exact_analytes(query or "")
+    qn = norm_text(query or "")
+    if "hormones thyroid" in qn or "hormones thyro" in qn or "thyroidiennes" in qn or "thyroidiennes" in qn:
+        for k in ["t4_libre", "t3_libre", "tshus", "anti_tg", "trak", "anti_tpo"]:
+            if k not in requested_analytes:
+                requested_analytes.append(k)
     excluded_analytes = detect_excluded_analytes(query or "")
     intents = detect_query_intents(query or "", requested_doc_ids=requested_doc_ids, analytes=requested_analytes)
-
-    qn = norm_text(query or "")
     requires_previous_results = intents.get("previous_result_comparison", False) or (
         "anterieur" in qn or "antérieur" in qn or "previous" in qn
     )
@@ -1597,6 +1748,21 @@ def parse_query_understanding(query: str) -> QueryUnderstanding:
     if latest_report and requested_analytes and preliminary_intent == "unstructured":
         preliminary_intent = "doc_scoped_results"
     if requested_date_iso and preliminary_intent == "unstructured":
+        preliminary_intent = "doc_scoped_results"
+    direct_measurement_markers = [
+        "donne moi le resultat de",
+        "donne-moi le resultat de",
+        "affiche le resultat de",
+        "montre le resultat de",
+        "donne moi la valeur de",
+        "affiche la valeur de",
+        "montre la valeur de",
+    ]
+    if (
+        requested_analytes
+        and any(m in qn for m in direct_measurement_markers)
+        and preliminary_intent in {"unstructured", "response_transform"}
+    ):
         preliminary_intent = "doc_scoped_results"
     preview_qu = QueryUnderstanding(
         requested_doc_ids=requested_doc_ids,

@@ -13,6 +13,27 @@ if str(GENERATION_DIR) not in sys.path:
 
 
 class TestReferenceRangeLookupGeneration(unittest.TestCase):
+    def test_reference_force_guard_skips_measured_doc_scoped_query(self) -> None:
+        try:
+            from scripts.generation.generate_answer import _should_force_reference_range_lookup
+            from scripts.generation.query_understanding import parse_query_understanding, norm_text
+        except Exception as exc:
+            self.skipTest(f"imports indisponibles: {exc}")
+        q = "montre moi l'insuline avec sa référence du rapport 19"
+        qu = parse_query_understanding(q)
+        self.assertFalse(_should_force_reference_range_lookup(norm_text(q), qu))
+
+    def test_reference_force_guard_allows_reference_norm_query(self) -> None:
+        try:
+            from scripts.generation.generate_answer import _should_force_reference_range_lookup
+            from scripts.generation.query_understanding import parse_query_understanding, norm_text
+            from dataclasses import replace
+        except Exception as exc:
+            self.skipTest(f"imports indisponibles: {exc}")
+        q = "quelle est la plage normale AMH pour une femme de 30-34 ans ?"
+        qu = parse_query_understanding(q)
+        drifted = replace(qu, intent="small_talk")
+        self.assertTrue(_should_force_reference_range_lookup(norm_text(q), drifted))
     def test_reference_range_exact_selection(self) -> None:
         try:
             from scripts.generation.generate_answer import run_generation
@@ -33,7 +54,9 @@ class TestReferenceRangeLookupGeneration(unittest.TestCase):
                 "source_pdf": "report (1).pdf",
             }
         ]
-        with patch("scripts.generation.generate_answer._resolve_reference_scope_doc_ids", return_value=["report_1"]), patch(
+        with patch("scripts.generation.generate_answer._is_feature_enabled", return_value=True), patch(
+            "scripts.generation.generate_answer._resolve_reference_scope_doc_ids", return_value=["report_1"]
+        ), patch(
             "scripts.generation.generate_answer._fetch_doc_lab_rows", return_value=fake_rows
         ):
             result = run_generation(
@@ -71,7 +94,9 @@ class TestReferenceRangeLookupGeneration(unittest.TestCase):
                 "source_pdf": "report (1).pdf",
             }
         ]
-        with patch("scripts.generation.generate_answer._resolve_reference_scope_doc_ids", return_value=["report_1"]), patch(
+        with patch("scripts.generation.generate_answer._is_feature_enabled", return_value=True), patch(
+            "scripts.generation.generate_answer._resolve_reference_scope_doc_ids", return_value=["report_1"]
+        ), patch(
             "scripts.generation.generate_answer._fetch_doc_lab_rows", return_value=fake_rows
         ):
             result = run_generation(
@@ -695,6 +720,267 @@ class TestReferenceRangeLookupGeneration(unittest.TestCase):
         self.assertIn("15–65 pg/ml", answer.replace(",0", ""))
         self.assertTrue("soit 1,6–6,9 pmol/l" in answer or "soit 1.6–6.9 pmol/l" in answer)
         self.assertNotIn("plusieurs sous-profils", answer.lower())
+
+    def test_reference_followup_switch_analyte_keeps_reference_mode(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible: {exc}")
+
+        def _fake_find_rows(**kwargs):
+            analytes = [str(a).strip().lower() for a in (kwargs.get("analyte_names") or [])]
+            target = analytes[0] if analytes else ""
+            if target == "calcium":
+                return [
+                    {
+                        "doc_id": "report_10",
+                        "analyte": "CALCIUM",
+                        "analyte_norm": "calcium",
+                        "reference_raw": "Homme>60 ans: 88 - 100 mg/l",
+                        "source_pdf": "report (10).pdf",
+                        "page": 1,
+                        "row": 1,
+                    }
+                ]
+            if target == "tshus":
+                return [
+                    {
+                        "doc_id": "report_1",
+                        "analyte": "TSHus",
+                        "analyte_norm": "tshus",
+                        "reference_raw": "0,35 à 4,94 mUI/l",
+                        "source_pdf": "report (1).pdf",
+                        "page": 1,
+                        "row": 13,
+                    }
+                ]
+            return []
+
+        with patch("scripts.generation.generate_answer._is_feature_enabled", return_value=True), patch(
+            "scripts.generation.generate_answer.find_reference_range_candidate_rows",
+            side_effect=_fake_find_rows,
+        ):
+            second = run_generation(
+                query="et pour TSHus ?",
+                index_dir="data/indexes",
+                previous_context_intent="reference_range_lookup",
+                previous_data_context_intent="reference_range_lookup",
+                previous_data_context_type="biological_numeric_results",
+                previous_displayed_context={
+                    "reference_intent": "reference_range_lookup",
+                    "subject": "Calcium",
+                    "reference_profile": {"sex": "male", "age_operator": ">", "age_value": 60, "age_unit": "years"},
+                    "last_reference_range_context": {
+                        "intent": "reference_range_lookup",
+                        "analyte": "Calcium",
+                        "requested_reference_profile": {"sex": "male", "age_operator": ">", "age_value": 60, "age_unit": "years"},
+                    },
+                },
+            )
+        answer = str(second.get("answer") or "")
+        self.assertTrue("0,35–4,94 mUI/l" in answer or "0.35–4.94 mUI/l" in answer or "0,35 à 4,94 mUI/l" in answer)
+        self.assertNotIn("2,00 mUI/L", answer)
+        self.assertEqual(second.get("generation_mode"), "deterministic_reference_range_lookup")
+
+    def test_reference_followup_age_update_same_analyte(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible: {exc}")
+
+        fake_rows = [
+            {
+                "doc_id": "report_1",
+                "analyte": "AMH",
+                "analyte_norm": "amh",
+                "reference_raw": "Homme: 4.35-5.35 ng/ml Femme cyclée J2-J4: -age(20-24 ans) : 3.55-4.33 ng/ml -age(25-29 ans) : 3.03-3.87 ng/ml -age(30-34 ans) : 2.34-3.55 ng/ml",
+                "source_pdf": "report (1).pdf",
+                "page": 1,
+                "row": 4,
+            }
+        ]
+        prev_ctx = {
+            "reference_intent": "reference_range_lookup",
+            "subject": "AMH",
+            "reference_profile": {"sex": "female", "population": "cycled_female_j2_j4", "age_min": 30, "age_max": 34, "age_unit": "years"},
+            "last_reference_range_context": {
+                "intent": "reference_range_lookup",
+                "analyte": "AMH",
+                "requested_reference_profile": {"sex": "female", "population": "cycled_female_j2_j4", "age_min": 30, "age_max": 34, "age_unit": "years"},
+            },
+        }
+        with patch("scripts.generation.generate_answer._is_feature_enabled", return_value=True), patch(
+            "scripts.generation.generate_answer.find_reference_range_candidate_rows",
+            return_value=fake_rows,
+        ):
+            second = run_generation(
+                query="et pour 25–29 ans ?",
+                index_dir="data/indexes",
+                previous_context_intent="reference_range_lookup",
+                previous_data_context_intent="reference_range_lookup",
+                previous_data_context_type="biological_numeric_results",
+                previous_displayed_context=prev_ctx,
+            )
+        answer = str(second.get("answer") or "")
+        self.assertTrue("3,03–3,87 ng/ml" in answer or "3.03–3.87 ng/ml" in answer)
+        self.assertNotIn("8 ng/ml", answer.lower())
+        self.assertEqual(second.get("generation_mode"), "deterministic_reference_range_lookup")
+
+    def test_validator_pass_amh_female_30_34(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible: {exc}")
+        fake_rows = [
+            {
+                "doc_id": "report_1",
+                "analyte": "AMH",
+                "analyte_norm": "amh",
+                "reference_raw": "Homme: 4.35-5.35 ng/ml Femme cyclée J2-J4: -age(30-34 ans) : 2.34-3.55 ng/ml",
+                "source_pdf": "report (1).pdf",
+                "page": 1,
+                "row": 4,
+                "viewer_url": "/viewer/pdf?doc_id=report_1&page=1",
+            }
+        ]
+        with patch("scripts.generation.generate_answer._is_feature_enabled", return_value=True), patch(
+            "scripts.generation.generate_answer.find_reference_range_candidate_rows",
+            return_value=fake_rows,
+        ):
+            result = run_generation(
+                query="Quelle est la plage normale AMH pour une femme de 30–34 ans ?",
+                index_dir="data/indexes",
+            )
+        answer = str(result.get("answer") or "")
+        validation = dict(result.get("validation") or {})
+        quality = dict(result.get("quality_report") or {})
+        self.assertTrue("2,34–3,55 ng/ml" in answer or "2.34–3.55 ng/ml" in answer)
+        self.assertTrue(bool(result.get("sources")))
+        self.assertEqual(validation.get("validation_status"), "pass")
+        self.assertEqual(quality.get("final_status"), "pass")
+        self.assertNotEqual(float(quality.get("faithfulness_score") or 0.0), 0.0)
+
+    def test_validator_pass_amh_followup_25_29(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible: {exc}")
+        fake_rows = [
+            {
+                "doc_id": "report_1",
+                "analyte": "AMH",
+                "analyte_norm": "amh",
+                "reference_raw": "Femme cyclée J2-J4: -age(25-29 ans) : 3.03-3.87 ng/ml -age(30-34 ans) : 2.34-3.55 ng/ml",
+                "source_pdf": "report (1).pdf",
+                "page": 1,
+                "row": 4,
+            }
+        ]
+        prev_ctx = {
+            "reference_intent": "reference_range_lookup",
+            "subject": "AMH",
+            "reference_profile": {"sex": "female", "population": "cycled_female_j2_j4", "age_min": 30, "age_max": 34, "age_unit": "years"},
+            "last_reference_range_context": {
+                "intent": "reference_range_lookup",
+                "analyte": "AMH",
+                "requested_reference_profile": {"sex": "female", "population": "cycled_female_j2_j4", "age_min": 30, "age_max": 34, "age_unit": "years"},
+            },
+        }
+        with patch("scripts.generation.generate_answer._is_feature_enabled", return_value=True), patch(
+            "scripts.generation.generate_answer.find_reference_range_candidate_rows",
+            return_value=fake_rows,
+        ):
+            result = run_generation(
+                query="et pour 25–29 ans ?",
+                index_dir="data/indexes",
+                previous_context_intent="reference_range_lookup",
+                previous_data_context_intent="reference_range_lookup",
+                previous_data_context_type="biological_numeric_results",
+                previous_displayed_context=prev_ctx,
+            )
+        answer = str(result.get("answer") or "")
+        validation = dict(result.get("validation") or {})
+        self.assertTrue("3,03–3,87 ng/ml" in answer or "3.03–3.87 ng/ml" in answer)
+        self.assertEqual(validation.get("validation_status"), "pass")
+
+    def test_validator_not_fail_multi_doc_same_range(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible: {exc}")
+        fake_rows = [
+            {
+                "doc_id": "report_10",
+                "analyte": "CALCIUM",
+                "analyte_norm": "calcium",
+                "reference_raw": "Homme>60 ans: 88 - 100 mg/l",
+                "source_pdf": "report (10).pdf",
+                "page": 1,
+                "row": 1,
+            },
+            {
+                "doc_id": "report_11",
+                "analyte": "CALCIUM",
+                "analyte_norm": "calcium",
+                "reference_raw": "Homme>60 ans: 88 - 100 mg/l",
+                "source_pdf": "report (11).pdf",
+                "page": 1,
+                "row": 1,
+            },
+        ]
+        with patch("scripts.generation.generate_answer._is_feature_enabled", return_value=True), patch(
+            "scripts.generation.generate_answer.find_reference_range_candidate_rows",
+            return_value=fake_rows,
+        ):
+            result = run_generation(query="plage calcium pour homme > 60 ans", index_dir="data/indexes")
+        answer = str(result.get("answer") or "")
+        validation = dict(result.get("validation") or {})
+        self.assertIn("88", answer)
+        self.assertTrue(bool(result.get("sources")))
+        self.assertIn(validation.get("validation_status"), {"pass", "warning"})
+        self.assertNotEqual(validation.get("validation_status"), "fail")
+
+    def test_validator_pass_pth_multi_unit(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible: {exc}")
+        fake_rows = [
+            {
+                "doc_id": "report_1",
+                "analyte": "PTH INTACT",
+                "analyte_norm": "pth_intact",
+                "reference_raw": "(15,00 - 65,00) pg/ml(1.6-6.9 pmol/l)",
+                "source_pdf": "report (1).pdf",
+                "page": 1,
+                "row": 3,
+            }
+        ]
+        with patch("scripts.generation.generate_answer._is_feature_enabled", return_value=True), patch(
+            "scripts.generation.generate_answer.find_reference_range_candidate_rows",
+            return_value=fake_rows,
+        ):
+            result = run_generation(query="plage normale pth intacte", index_dir="data/indexes")
+        answer = str(result.get("answer") or "")
+        validation = dict(result.get("validation") or {})
+        self.assertTrue("15–65 pg/ml" in answer.replace(",0", ""))
+        self.assertTrue("1,6–6,9 pmol/l" in answer or "1.6–6.9 pmol/l" in answer)
+        self.assertEqual(validation.get("validation_status"), "pass")
+
+    def test_validator_fails_bulk_listing_for_reference_intent(self) -> None:
+        from scripts.generation.answer_validator import validate_answer
+
+        validation = validate_answer(
+            query="Quelle est la norme AMH ?",
+            answer_text="55 résultats correspondants ont été retrouvés.\n| Analyte | Valeur actuelle |",
+            evidence_pack=[],
+            displayed_evidences=[],
+            source_citations=[],
+            generation_mode="deterministic_reference_range_lookup",
+            retrieval_status="answerable",
+            query_intents={"reference_range_lookup": True},
+        )
+        self.assertEqual(validation.get("validation_status"), "fail")
 
 
 if __name__ == "__main__":

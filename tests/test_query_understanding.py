@@ -11,6 +11,7 @@ if str(GENERATION_SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(GENERATION_SCRIPT_ROOT))
 
 from query_understanding import (
+    build_intent_arbitration_debug,
     detect_exact_analytes,
     detect_query_intents,
     detect_requested_doc_ids,
@@ -193,6 +194,12 @@ class TestQueryUnderstanding(unittest.TestCase):
         qu = parse_query_understanding("ok donne moi le résultat en JSON strict")
         self.assertEqual(qu.intent, "response_transform")
         self.assertEqual(qu.response_strategy, "transform_previous_response")
+
+    def test_direct_analyte_result_request_is_not_transform(self) -> None:
+        qu = parse_query_understanding("donne moi le resultat de AMH")
+        self.assertEqual(qu.intent, "doc_scoped_results")
+        self.assertIn("amh", qu.requested_analytes)
+        self.assertFalse(qu.is_response_transform)
 
     def test_excluded_analytes_detection(self) -> None:
         qu = parse_query_understanding(
@@ -392,6 +399,55 @@ class TestQueryUnderstanding(unittest.TestCase):
         self.assertEqual(profile.get("age_min"), 12.0)
         self.assertEqual(profile.get("age_max"), 15.0)
         self.assertEqual(profile.get("age_unit"), "years")
+
+    def test_multi_doc_comparison_glycemie_glucose_detected(self) -> None:
+        qu = parse_query_understanding("Compare les résultats de la Glycémie (Glucose) entre le report 10 et le report 12.")
+        self.assertEqual(qu.intent, "doc_pair_comparison")
+        self.assertIn("report_10", qu.requested_doc_ids)
+        self.assertIn("report_12", qu.requested_doc_ids)
+        self.assertIn("glucose", qu.requested_analytes)
+
+    def test_doc_scoped_out_of_range_not_misrouted_to_comment(self) -> None:
+        qu = parse_query_understanding(
+            "Dans report (19), quels résultats sont hors référence ? Donne paramètre, valeur, référence, statut technique above_reference/below_reference. Ne donne aucune interprétation médicale."
+        )
+        self.assertEqual(qu.requested_doc_ids, ["report_19"])
+        self.assertEqual(qu.technical_condition, "out_of_reference")
+        self.assertNotEqual(qu.intent, "comment_without_measured_value")
+        self.assertEqual(qu.intent, "doc_scoped_abnormal_results")
+
+    def test_doc_scoped_summary_keeps_primary_intent_with_safety_constraint(self) -> None:
+        qu = parse_query_understanding(
+            "Résume uniquement les anomalies biologiques du report (16), sans poser de diagnostic."
+        )
+        self.assertEqual(qu.requested_doc_ids, ["report_16"])
+        self.assertEqual(qu.intent, "doc_scoped_abnormal_results")
+        self.assertEqual(qu.safety_intent, "diagnostic_safety_question")
+
+    def test_pure_diagnostic_question_without_data_scope(self) -> None:
+        qu = parse_query_understanding("Peut-on conclure à un cancer avec ces marqueurs ?")
+        self.assertEqual(qu.intent, "diagnostic_safety_question")
+
+    def test_intent_arbitration_debug_for_doc_summary_with_safety(self) -> None:
+        qu = parse_query_understanding("Résume uniquement les anomalies biologiques du report (16), sans poser de diagnostic.")
+        arb = build_intent_arbitration_debug(qu)
+        self.assertEqual(arb.get("winner"), "doc_scoped_abnormal_results")
+        self.assertIn("doc_scoped_abnormal_results", list(arb.get("candidate_intents") or []))
+        self.assertEqual(arb.get("safety_intent"), "diagnostic_safety_question")
+        self.assertTrue(str(arb.get("reason") or "").strip())
+
+    def test_global_analyte_abnormal_search_priority(self) -> None:
+        qu = parse_query_understanding(
+            "Dans tous les rapports disponibles, quels documents contiennent une insuline hors référence ? Donne le document, la valeur, la référence et le statut."
+        )
+        self.assertEqual(qu.intent, "global_analyte_abnormal_search")
+        self.assertIn("insuline", qu.requested_analytes)
+        self.assertEqual(qu.technical_condition, "out_of_reference")
+
+    def test_doc_scoped_medical_interpretation_guarded(self) -> None:
+        qu = parse_query_understanding("Est-ce que le report (16) permet de conclure à une hyperthyroïdie ?")
+        self.assertEqual(qu.intent, "doc_scoped_medical_interpretation_guarded")
+        self.assertEqual(qu.requested_doc_ids, ["report_16"])
 
 
 if __name__ == "__main__":

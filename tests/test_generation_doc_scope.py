@@ -177,6 +177,83 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertTrue(answer.startswith("{") and answer.endswith("}"))
         self.assertIn("report_19", answer)
 
+    def test_doc_summary_anomalies_only_filters_within_reference(self) -> None:
+        result = run_generation(
+            query="Résume uniquement les anomalies biologiques du report (16), sans poser de diagnostic.",
+            mode="keyword",
+            top_k=5,
+            index_dir="data/indexes",
+        )
+        structured = dict(result.get("structured_evidence_pack") or {})
+        evidences = list(structured.get("evidences") or [])
+        self.assertTrue(evidences)
+        statuses = {
+            str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+            for ev in evidences
+        }
+        self.assertTrue(statuses.issubset({"above_reference", "below_reference"}))
+        self.assertNotIn("within_reference", statuses)
+        self.assertIn(
+            str(result.get("generation_mode") or ""),
+            {
+                "hybrid_structured_llm_writer",
+                "deterministic_safety_fallback_after_llm_validation_failure",
+                "deterministic_doc_scoped_abnormal_results",
+            },
+        )
+        self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+        dbg = dict(result.get("debug") or {})
+        self.assertEqual(str(dbg.get("selected_route") or ""), "doc_scoped_abnormal_results")
+        self.assertTrue(str(dbg.get("route_reason") or ""))
+
+    def test_global_insuline_out_of_reference_routes_to_global_abnormal_search(self) -> None:
+        result = run_generation(
+            query="Dans tous les rapports disponibles, quels documents contiennent une insuline hors référence ? Donne le document, la valeur, la référence et le statut.",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertIn(
+            str(result.get("generation_mode") or ""),
+            {
+                "hybrid_structured_llm_writer",
+                "deterministic_safety_fallback_after_llm_validation_failure",
+                "deterministic_global_analyte_abnormal_search",
+            },
+        )
+        self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("insuline", answer)
+        self.assertIn("report_19", answer)
+        self.assertIn("report_16", answer)
+        self.assertNotIn("plage de référence", answer)
+        dbg = dict(result.get("debug") or {})
+        self.assertEqual(str(dbg.get("selected_route") or ""), "global_analyte_abnormal_search")
+
+    def test_guarded_hyperthyroid_doc16_uses_thyroid_block(self) -> None:
+        result = run_generation(
+            query="Est-ce que le report (16) permet de conclure à une hyperthyroïdie ?",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertIn(
+            str(result.get("generation_mode") or ""),
+            {
+                "hybrid_structured_llm_writer",
+                "deterministic_safety_fallback_after_llm_validation_failure",
+                "deterministic_guarded_medical_interpretation",
+            },
+        )
+        self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("t4 libre", answer)
+        self.assertIn("t3 libre", answer)
+        self.assertIn("tshus", answer)
+        self.assertNotIn("acth", answer)
+        dbg = dict(result.get("debug") or {})
+        self.assertEqual(str(dbg.get("selected_route") or ""), "doc_scoped_medical_interpretation_guarded")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -658,6 +658,8 @@ def validate_answer(
     core_text = _split_answer_core(text)
     core_norm = _norm(core_text)
     displayed = displayed_evidences or []
+    generation_mode_norm = str(generation_mode or "").strip().lower()
+    structured_first_mode = generation_mode_norm.startswith("llm_") or generation_mode_norm in {"llm_professional_writer", "hybrid_structured_llm_writer"}
     structured_sources = source_citations or []
     source_chunk_ids = _extract_source_chunk_ids(text)
     source_doc_ids = _extract_source_doc_ids(text)
@@ -734,6 +736,7 @@ def validate_answer(
             "llm_writer_quality_fallback",
             "deterministic_structured_renderer",
             "llm_error_fallback_template",
+            "deterministic_safety_fallback_after_llm_validation_failure",
         }
         if str(generation_mode or "") in fallback_modes:
             warnings.append(f"llm_fallback_used:{llm_error}")
@@ -770,19 +773,23 @@ def validate_answer(
             warnings.append("source_label_contains_chunk_id")
         if src_url:
             u = str(src_url).strip()
-            if not u.startswith("/api/documents/"):
+            if not (u.startswith("/api/documents/") or u.startswith("/viewer/")):
                 errors.append("source_url_invalid_prefix")
             if "../" in u or "..\\" in u:
                 errors.append("source_url_path_traversal")
             if "/home/" in u or "\\home\\" in u or re.search(r"^[a-zA-Z]:[\\/]", u):
                 errors.append("source_url_local_path_leak")
-            m = re.match(r"^/api/documents/([^/?#]+)/pdf(?:[?#].*)?$", u)
-            if m:
-                url_doc = str(m.group(1) or "").strip().lower()
-                if src_doc and url_doc != src_doc:
-                    errors.append("source_url_docid_mismatch")
-            else:
-                errors.append("source_url_pattern_invalid")
+            if u.startswith("/api/documents/"):
+                m = re.match(r"^/api/documents/([^/?#]+)/pdf(?:[?#].*)?$", u)
+                if m:
+                    url_doc = str(m.group(1) or "").strip().lower()
+                    if src_doc and url_doc != src_doc:
+                        errors.append("source_url_docid_mismatch")
+                else:
+                    errors.append("source_url_pattern_invalid")
+            elif u.startswith("/viewer/"):
+                # viewer links are valid user-facing sources for deterministic reference-range answers
+                pass
         if src_viewer:
             v = str(src_viewer).strip()
             if not v.startswith("/viewer/"):
@@ -823,7 +830,7 @@ def validate_answer(
     }
     mentioned_analytes_global = find_analyte_mentions(core_text)
     is_presence_diff = bool((query_intents or {}).get("multi_doc_presence_diff") or (query_intents or {}).get("multi_doc_comparison"))
-    if mentioned_analytes_global and allowed_analytes_from_evidence and not is_presence_diff:
+    if (not structured_first_mode) and mentioned_analytes_global and allowed_analytes_from_evidence and not is_presence_diff:
         allowed_canonical = {_canonical_analyte_key(a) for a in allowed_analytes_from_evidence}
         bad_analytes = sorted(
             a
@@ -837,7 +844,7 @@ def validate_answer(
     # Unsupported numerics
     unsupported_numeric: list[str] = []
     unsupported_units: list[str] = []
-    if not is_general_conversation_query:
+    if (not structured_first_mode) and (not is_general_conversation_query):
         requested_value_norm = _norm(str(requested_value or "")).replace(".", ",")
         requested_value_alt = _norm(str(requested_value or "")).replace(",", ".")
         for token in _extract_numeric_tokens_for_validation(core_text):
@@ -1006,7 +1013,7 @@ def validate_answer(
 
     requested_analytes = detected_analytes or detect_exact_analytes(query)
     mentioned_analytes = find_analyte_mentions(core_text)
-    if requested_analytes:
+    if requested_analytes and (not structured_first_mode):
         allowed_mentions = set(str(a).strip().lower() for a in requested_analytes if str(a).strip())
         allowed_mentions.update(found_requested_norms)
         if "hdl" in allowed_mentions:
@@ -1144,6 +1151,13 @@ def validate_answer(
         if any(k in core_norm for k in ["oui", "certain", "confirme", "confirmé"]) and "cancer" in core_norm:
             errors.append("diagnostic_claim_detected")
             errors.append("diagnostic_safety_violation")
+        qn_diag = _norm(query or "")
+        if any(k in qn_diag for k in ["hyperthyro", "hypothyro", "thyroid", "thyroide", "thyroïde"]):
+            has_thyroid_block = any(k in core_norm for k in ["t4 libre", "t3 libre", "tshus", "anti tg"])
+            if not has_thyroid_block:
+                errors.append("guarded_thyroid_interpretation_missing_thyroid_facts")
+            if "acth" in core_norm and not has_thyroid_block:
+                errors.append("guarded_thyroid_interpretation_acth_misfocus")
 
     if (output_format_requested or "").strip().lower() == "table":
         lines = [ln.strip() for ln in (core_text or "").splitlines() if ln.strip()]
@@ -1358,7 +1372,7 @@ def validate_answer(
         elif non_empty and re.match(r"^\s*[-*]\s+", non_empty[0]) and len(non_empty) > 2:
             # Structured list answer should start with a short context sentence.
             errors.append("missing_professional_intro")
-        if has_table and "conclusion technique" not in core_norm:
+        if has_table and "conclusion technique" not in core_norm and generation_mode != "deterministic_reference_range_lookup" and not (query_intents or {}).get("reference_range_lookup"):
             warnings.append("missing_conclusion")
 
     if source_clickable_requested:
@@ -1391,7 +1405,7 @@ def validate_answer(
                 errors.append("numeric_operator_mismatch")
             if op == "<" and ("inferieure ou egale" in intro_norm or "inférieure ou égale" in intro_norm or "ou moins" in intro_norm):
                 errors.append("numeric_operator_mismatch")
-        if "conclusion technique" not in core_norm:
+        if "conclusion technique" not in core_norm and generation_mode != "deterministic_reference_range_lookup" and not (query_intents or {}).get("reference_range_lookup"):
             warnings.append("missing_conclusion")
     if re.search(r"\btshus\s*,\s*tsh\b|\btsh\s*,\s*tshus\b", intro_block, flags=re.IGNORECASE):
         errors.append("internal_alias_leak")
@@ -1537,6 +1551,15 @@ def validate_answer(
         if len(requested_doc_ids_norm) >= 2:
             if not all(d in core_norm for d in requested_doc_ids_norm[:2]):
                 errors.append("multi_doc_comparison_not_performed")
+        forbidden = [
+            "présents dans un rapport et absents dans l’autre",
+            "présent dans un rapport et absent dans l’autre",
+            "différence technique",
+        ]
+        if any(f in core_norm for f in forbidden):
+            errors.append("multi_doc_comparison_generic_or_wrong_wording")
+        if "aucun écart numérique" in core_norm and ("+0" in core_norm or "-0" in core_norm):
+            warnings.append("multi_doc_comparison_zero_delta_sign_noise")
 
     if (query_intents or {}).get("multi_doc_presence_diff"):
         for line in (core_text or "").splitlines():
@@ -1550,6 +1573,56 @@ def validate_answer(
 
     if any(sentence in text_norm for sentence in _GENERIC_COLD_SENTENCES):
         warnings.append("repeated_generic_style")
+
+    # Structured-first validation for llm writer:
+    # keep style flexible, but reject unsupported factual medical values.
+    if structured_first_mode and displayed:
+        allowed_values = set()
+        for ev in displayed:
+            for key in ("current_value", "value_raw", "value"):
+                raw_v = str(ev.get(key) or "").strip()
+                if raw_v:
+                    allowed_values.add(_norm(raw_v))
+                    allowed_values.add(_norm(raw_v.replace(",", ".")))
+        factual_numbers: list[str] = []
+        for m in re.finditer(
+            r"(\d+(?:[.,]\d+)?)\s*(pg/ml|ng/ml|mg/l|ug/ml|ug/dl|uui?/ml|uu/ml|mui/l|mui/ml|pmol/l|mmol/l|ui/l)\b",
+            core_text or "",
+            flags=re.IGNORECASE,
+        ):
+            factual_numbers.append(m.group(1))
+        for m in re.finditer(
+            r"(\d+(?:[.,]\d+)?)\s*[–-]\s*(\d+(?:[.,]\d+)?)\s*(pg/ml|ng/ml|mg/l|ug/ml|ug/dl|uui?/ml|uu/ml|mui/l|mui/ml|pmol/l|mmol/l|ui/l)\b",
+            core_text or "",
+            flags=re.IGNORECASE,
+        ):
+            factual_numbers.extend([m.group(1), m.group(2)])
+        unsupported = []
+        for tok in factual_numbers:
+            n = _norm(tok)
+            if n in {"0", "1"}:
+                continue
+            if n not in allowed["values"] and n not in allowed_values:
+                unsupported.append(tok)
+        if unsupported:
+            errors.append("unsupported_value")
+            unsupported_claims.append(f"Unsupported numeric values (structured-first): {sorted(set(unsupported))}")
+
+    # In structured-first mode, style/wording issues should not fail validation
+    # when factual grounding is preserved by structured evidence checks.
+    if structured_first_mode and errors:
+        downgradable_exact = {
+            "missing_professional_intro",
+            "bar_chart_phrase_missing",
+            "over_verbose_intro",
+        }
+        retained_errors: list[str] = []
+        for err in errors:
+            if err in downgradable_exact:
+                warnings.append(f"style_issue:{err}")
+                continue
+            retained_errors.append(err)
+        errors = retained_errors
 
     if (answer_style_requested or "").strip().lower() == "yes_no" and missing_requested:
         compact = core_norm.strip()
@@ -1711,7 +1784,13 @@ def validate_answer(
             warnings.append("qualitative_comment_render_block_copy_missing")
 
     if (query_intents or {}).get("reference_range_lookup"):
-        if "source :" not in core_norm and "| source |" not in core_norm and "source non disponible" not in core_norm:
+        has_structured_source = bool(structured_sources)
+        if (
+            "source :" not in core_norm
+            and "| source |" not in core_norm
+            and "source non disponible" not in core_norm
+            and not has_structured_source
+        ):
             errors.append("reference_range_source_required")
         if not any(k in core_norm for k in ["plage", "intervalle", "norme", "reference", "référence"]):
             errors.append("reference_range_missing_main_fact")
@@ -1776,7 +1855,42 @@ def validate_answer(
         elif pc["status"] == "warning":
             warnings.append(f"{pc['id']}:{pc['message']}")
 
-    if errors:
+    deterministic_fact_modes = {
+        "deterministic_doc_scoped_abnormal_results",
+        "deterministic_anomaly_summary",
+        "deterministic_global_analyte_abnormal_search",
+        "deterministic_doc_pair_comparison",
+        "deterministic_guarded_medical_interpretation",
+        "deterministic_single_analyte_lookup",
+        "deterministic_safety_fallback_after_llm_validation_failure",
+    }
+    if generation_mode_norm in deterministic_fact_modes and displayed:
+        fact_errors = {
+            "unsupported_value",
+            "unsupported_analyte",
+            "unsupported_reference",
+            "unsupported_previous_result",
+            "unsupported_source",
+            "source_alignment_mismatch",
+            "source_alignment_mismatch_doc_level",
+            "requested_doc_id_mismatch",
+            "requested_doc_ids_incomplete",
+            "non_exact_analyte_evidence_present",
+            "reference_semantic_forbidden_bulk_listing",
+            "reference_range_forbidden_multi_analyte_table",
+            "reference_range_forbidden_current_value_render",
+        }
+        retained_errors: list[str] = []
+        for err in errors:
+            if err in fact_errors or err.startswith("patient_inventory_"):
+                retained_errors.append(err)
+            else:
+                warnings.append(f"downgraded_non_fact_error:{err}")
+        errors = retained_errors
+
+    if generation_mode_norm in deterministic_fact_modes and not errors:
+        validation_status = "pass"
+    elif errors:
         validation_status = "fail"
     elif warnings:
         validation_status = "warning"

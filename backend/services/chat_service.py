@@ -11,6 +11,14 @@ from backend.models import ChatRequest, ChatResponse, SourceItem
 from backend.services import conversation_service, message_service
 from backend.services.conversation_state_store import ConversationStateService, transformable_context
 from scripts.generation.source_normalization import dedup_normalized_sources
+from scripts.generation.model_settings import (
+    DEFAULT_LLM_MAX_TOKENS,
+    DEFAULT_LLM_MODEL,
+    DEFAULT_LLM_NUM_CTX,
+    DEFAULT_LLM_PROVIDER,
+    DEFAULT_LLM_TEMPERATURE,
+    DEFAULT_LLM_TIMEOUT,
+)
 
 
 def to_source_items(result: dict[str, Any]) -> list[SourceItem]:
@@ -142,12 +150,12 @@ def process_chat(
             query=query,
             top_k=5,
             mode="hybrid",
-            provider="ollama",
-            model="qwen3:4b",
-            temperature=0.0,
-            num_ctx=4096,
-            max_tokens=600,
-            timeout=120,
+            provider=DEFAULT_LLM_PROVIDER,
+            model=DEFAULT_LLM_MODEL,
+            temperature=DEFAULT_LLM_TEMPERATURE,
+            num_ctx=DEFAULT_LLM_NUM_CTX,
+            max_tokens=max(600, DEFAULT_LLM_MAX_TOKENS),
+            timeout=DEFAULT_LLM_TIMEOUT,
             index_dir="data/indexes",
             collection="medical_chunks",
             previous_structured_evidence_pack=transformable,
@@ -248,6 +256,31 @@ def process_chat(
 
         sources = to_source_items(generation)
         document_ids = sorted({item.documentId for item in sources if item.documentId})
+        validation = generation.get("validation") if isinstance(generation.get("validation"), dict) else {}
+        qu = generation.get("query_understanding") if isinstance(generation.get("query_understanding"), dict) else {}
+        response_debug = {
+            "intent": str(qu.get("intent") or "") or None,
+            "safety_intent": str(qu.get("safety_intent") or "") or None,
+            "intent_arbitration": (qu.get("intent_arbitration") if isinstance(qu.get("intent_arbitration"), dict) else None),
+            "technical_condition": str(qu.get("technical_condition") or "") or None,
+            "requested_doc_ids": list(qu.get("requested_doc_ids") or []),
+            "requested_analytes": list(qu.get("requested_analytes") or []),
+            "query_understanding": qu if qu else None,
+            "selected_route": str(((generation.get("debug") or {}).get("selected_route") or "")) or None,
+            "route_reason": str(((generation.get("debug") or {}).get("route_reason") or "")) or None,
+            "evidence_rows_preview": list(((generation.get("debug") or {}).get("evidence_rows_preview") or [])),
+            "included_rows": list(((generation.get("debug") or {}).get("included_rows") or [])),
+            "excluded_rows": list(((generation.get("debug") or {}).get("excluded_rows") or [])),
+            "fallback_reason": str(((generation.get("debug") or {}).get("fallback_reason") or "")) or None,
+            "generation_mode_before_fallback": str(((generation.get("debug") or {}).get("generation_mode_before_fallback") or "")) or None,
+            "validation": {
+                "status": str(validation.get("validation_status") or "") or None,
+                "errors": list(validation.get("errors") or []),
+                "warnings": list(validation.get("warnings") or []),
+                "unsupported_claims": list(validation.get("unsupported_claims") or []),
+            },
+            "raw_debug": (generation.get("debug") if isinstance(generation.get("debug"), dict) else None),
+        }
 
         return ChatResponse(
             conversation_id=conversation_id,
@@ -264,6 +297,7 @@ def process_chat(
             chart_data=(generation.get("chart_data") if isinstance(generation.get("chart_data"), dict) else None),
             patients=generation.get("patients"),
             inventory_view=(generation.get("inventory_view") if isinstance(generation.get("inventory_view"), dict) else None),
+            debug=response_debug,
         )
 
     except HTTPException:
@@ -296,4 +330,13 @@ def process_chat(
             chart_data=None,
             patients=None,
             inventory_view=None,
+            debug={
+                "intent": None,
+                "validation": {
+                    "status": "warning",
+                    "errors": ["controlled_error_fallback"],
+                    "warnings": [],
+                    "unsupported_claims": [],
+                },
+            },
         )

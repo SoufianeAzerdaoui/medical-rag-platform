@@ -116,6 +116,7 @@ class ChatResponse(BaseModel):
     chart_data: dict[str, Any] | None = None
     patients: list[dict[str, Any]] | None = None
     inventory_view: dict[str, Any] | None = None
+    debug: dict[str, Any] | None = None
 
 
 class DocumentItem(BaseModel):

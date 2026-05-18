@@ -16,6 +16,7 @@ for root in (SCRIPTS_ROOT, GENERATION_ROOT):
 from answer_validator import validate_answer
 from llm_client import LLMClientError
 from professional_answer_composer import (
+    PROFESSIONAL_WRITER_SYSTEM_PROMPT,
     build_writer_evidence_pack,
     choose_presentation_format,
     compose_professional_answer,
@@ -100,15 +101,14 @@ class TestProfessionalAnswerComposer(unittest.TestCase):
         self.assertIn("TSHus", answer)
         self.assertNotIn("tshus, tsh", answer.lower())
         self.assertNotIn("TRAK", answer)
-        self.assertIn("Un seul résultat correspondant a été retrouvé.", answer)
-        self.assertIn("Conclusion technique :", answer)
+        self.assertNotIn("Un seul résultat correspondant a été retrouvé.", answer)
 
     def test_02_singular_result_count(self) -> None:
-        self.assertEqual(format_result_count(1), "Un seul résultat correspondant a été retrouvé.")
+        self.assertEqual(format_result_count(1), "Une valeur exploitable a été retrouvée.")
         self.assertNotIn("résultat(s)", format_result_count(1))
 
     def test_03_plural_result_count(self) -> None:
-        self.assertEqual(format_result_count(3), "3 résultats correspondants ont été retrouvés.")
+        self.assertEqual(format_result_count(3), "3 valeurs exploitables ont été retrouvées.")
         self.assertNotIn("résultat(s)", format_result_count(3))
 
     def test_04_source_label_is_clean(self) -> None:
@@ -449,6 +449,16 @@ class TestProfessionalAnswerComposer(unittest.TestCase):
         self.assertNotIn("correspondant(s)", answer)
         self.assertNotIn("tshus, tsh", answer.lower())
 
+    def test_14b_prompt_has_no_mechanical_contradiction(self) -> None:
+        self.assertNotIn("N’écris jamais résultat", PROFESSIONAL_WRITER_SYSTEM_PROMPT)
+        self.assertNotIn("Un seul résultat correspondant a été retrouvé.", PROFESSIONAL_WRITER_SYSTEM_PROMPT)
+        self.assertIn("Évite les formulations mécaniques", PROFESSIONAL_WRITER_SYSTEM_PROMPT)
+
+    def test_14c_prompt_enforces_no_selection_or_recalculation(self) -> None:
+        self.assertIn("Tu ne sélectionnes jamais des lignes toi-même", PROFESSIONAL_WRITER_SYSTEM_PROMPT)
+        self.assertIn("tu ne recalcules jamais une valeur", PROFESSIONAL_WRITER_SYSTEM_PROMPT.lower())
+        self.assertIn("Tu reformules uniquement les lignes déjà fournies", PROFESSIONAL_WRITER_SYSTEM_PROMPT)
+
     def test_15_llm_writer_path_and_fallback(self) -> None:
         qu = parse_query_understanding("Dans report 16, liste les résultats ACTH sous forme de tableau avec source cliquable.")
         pack = {
@@ -502,6 +512,54 @@ class TestProfessionalAnswerComposer(unittest.TestCase):
         self.assertEqual(str(llm_fail.get("mode") or ""), "llm_writer_error_fallback")
         self.assertIn("Conclusion technique :", str(llm_fail.get("answer") or ""))
 
+    def test_15b_clickable_requested_without_url_shows_text_notice(self) -> None:
+        qu = parse_query_understanding(
+            "Quelle est la norme AMH pour une femme de 30-34 ans ? avec source cliquable"
+        )
+        pack = {
+            "question": "Q",
+            "intent": "reference_range_lookup",
+            "requested_doc_ids": ["report_1"],
+            "requested_analytes": ["amh"],
+            "output_format": "list",
+            "answer_style": "standard",
+            "evidences": [
+                {
+                    "doc_id": "report_1",
+                    "filename": "report (1).pdf",
+                    "page": 1,
+                    "row": 4,
+                    "analyte": "AMH",
+                    "analyte_norm": "amh",
+                    "current_value": "8",
+                    "unit": "ng/ml",
+                    "reference": "3,03-3,87 ng/ml",
+                    "technical_status_code": "above_reference",
+                    "technical_status": "au-dessus de la référence",
+                    "source_label": "report (1).pdf — page 1, ligne 4",
+                }
+            ],
+            "missing_items": [],
+        }
+        composed = render_professional_fallback(
+            evidence_pack=pack,
+            query_understanding=qu,
+            user_question=pack["question"],
+            source_citations=[
+                {
+                    "doc_id": "report_1",
+                    "filename": "report (1).pdf",
+                    "page": 1,
+                    "row": 4,
+                    "label": "report (1).pdf — page 1, ligne 4",
+                }
+            ],
+        )
+        answer = str(composed.get("answer") or "")
+        self.assertIn("Sources :", answer)
+        self.assertIn("report (1).pdf — page 1, ligne 4", answer)
+        self.assertIn("Source disponible uniquement en texte", answer)
+
     def test_16_safety_no_diagnosis(self) -> None:
         qu = parse_query_understanding(
             "Avec ACE, PSA TOTALE et CA 15-3, peut-on conclure à un cancer ?"
@@ -554,6 +612,43 @@ class TestProfessionalAnswerComposer(unittest.TestCase):
             query_intents={"is_structured_query": True},
         )
         self.assertIn("strict_json_violation", validation.get("errors") or [])
+
+    def test_17b_validator_structured_first_tolerates_summary_count_style(self) -> None:
+        answer = (
+            "Les anomalies techniques ci-dessous sont organisées par section du rapport.\n\n"
+            "6 valeurs exploitables ont été retrouvées.\n\n"
+            "| Analyte | Valeur actuelle | Référence | Statut | Document |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| INSULINE | 2,00 uU/mL | 4 à 20 µIU/mL | en dessous de la référence | report_16 |\n"
+        )
+        displayed = [
+            {
+                "doc_id": "report_16",
+                "chunk_id": "test_chunk_insuline",
+                "analyte_norm": "insuline",
+                "analyte": "INSULINE",
+                "value_raw": "2,00",
+                "current_value": "2,00",
+                "reference_range": "4 à 20 µIU/mL",
+                "unit": "uU/mL",
+                "interpretation_status": "below_reference",
+                "page_number": 1,
+                "row_index": 2,
+                "text_excerpt": "INSULINE 2,00 uU/mL 4 à 20 µIU/mL",
+            }
+        ]
+        validation = validate_answer(
+            query="Résume uniquement les anomalies biologiques du report (16), sans poser de diagnostic.",
+            answer_text=answer,
+            evidence_pack=displayed,
+            displayed_evidences=displayed,
+            source_citations=self._sources([2]),
+            generation_mode="llm_professional_writer",
+            output_format_requested="table",
+            answer_style_requested="standard",
+            query_intents={"is_structured_query": True, "doc_scoped_summary": True},
+        )
+        self.assertNotIn("unsupported_value", validation.get("errors") or [])
 
     def test_18_chart_request_not_silent_table(self) -> None:
         qu = parse_query_understanding("Dans report 16, liste les résultats hors référence sous forme Arithmetic Line-Graph.")
@@ -720,6 +815,335 @@ class TestProfessionalAnswerComposer(unittest.TestCase):
         self.assertEqual(facts.get("requested_type"), "radar")
         self.assertEqual(facts.get("rendered_type"), "bar")
         self.assertTrue(facts.get("fallback_used"))
+
+    def test_21b_writer_pack_results_are_locked_fact_rows(self) -> None:
+        qu = parse_query_understanding("Dans report 16, donne la valeur ACTH.")
+        pack = {
+            "question": "Q",
+            "intent": "doc_scoped_results",
+            "requested_doc_ids": ["report_16"],
+            "requested_analytes": ["acth"],
+            "output_format": "table",
+            "answer_style": "standard",
+            "evidences": [
+                {
+                    "doc_id": "report_16",
+                    "analyte": "ACTH",
+                    "analyte_norm": "acth",
+                    "current_value": "23,00",
+                    "unit": "pg/ml",
+                    "reference": "<b>4,70 - 48,80 pg/ml</b>",
+                    "technical_status": "dans la référence",
+                    "source_label": "<ul><li>report (16).pdf — page 1, ligne 1</li></ul>",
+                }
+            ],
+        }
+        writer_pack = build_writer_evidence_pack(
+            user_question="Dans report 16, donne la valeur ACTH.",
+            query_understanding=qu,
+            evidence_pack=pack,
+            source_citations=[],
+        )
+        results = list(writer_pack.get("results") or [])
+        self.assertEqual(len(results), 1)
+        row = dict(results[0])
+        self.assertEqual(
+            sorted(row.keys()),
+            ["analyte", "reference", "source_label", "status", "unit", "value"],
+        )
+        self.assertEqual(row["analyte"], "ACTH")
+        self.assertEqual(row["value"], "23,00")
+        self.assertEqual(row["unit"], "pg/ml")
+        self.assertEqual(row["reference"], "4,70 - 48,80 pg/ml")
+        self.assertEqual(row["source_label"], "report (16).pdf — page 1, ligne 1")
+        self.assertNotIn("<", "".join(str(v) for v in row.values()))
+
+    def test_22_multi_doc_comparison_identical_is_specific(self) -> None:
+        qu = parse_query_understanding("Compare le glucose entre report 10 et report 12.")
+        pack = {
+            "question": "Compare le glucose entre report 10 et report 12.",
+            "intent": "multi_doc_comparison",
+            "requested_doc_ids": ["report_10", "report_12"],
+            "requested_analytes": ["glucose"],
+            "output_format": "list",
+            "answer_style": "standard",
+            "evidences": [
+                {
+                    "doc_id": "comparison_report_10_report_12",
+                    "analyte": "Glucose",
+                    "analyte_norm": "glucose",
+                    "current_value": "report_10 = 1 | report_12 = 1",
+                    "unit": "g/L",
+                    "technical_status": "comparaison effectuée",
+                    "comparison_status": "identical",
+                    "doc_a": "report 10",
+                    "doc_b": "report 12",
+                    "value_a": "1",
+                    "value_b": "1",
+                }
+            ],
+            "missing_items": [],
+        }
+        composed = render_professional_fallback(
+            evidence_pack=pack,
+            query_understanding=qu,
+            user_question=pack["question"],
+            source_citations=[
+                {"doc_id": "report_10", "filename": "report (10).pdf", "page": 2, "row": 18},
+                {"doc_id": "report_12", "filename": "report (12).pdf", "page": 1, "row": 9},
+            ],
+        )
+        answer = str(composed.get("answer") or "").lower()
+        self.assertIn("aucun écart numérique", answer)
+        self.assertNotIn("présents dans un rapport et absents", answer)
+
+    def test_23_multi_doc_presence_diff_keeps_presence_wording(self) -> None:
+        qu = parse_query_understanding(
+            "Compare report 12 et report 11 et indique quels analytes sont présents dans un rapport mais absents dans l’autre."
+        )
+        pack = {
+            "question": "Q",
+            "intent": "multi_doc_presence_diff",
+            "requested_doc_ids": ["report_11", "report_12"],
+            "requested_analytes": [],
+            "output_format": "table",
+            "answer_style": "standard",
+            "evidences": [
+                {
+                    "analyte": "AMH",
+                    "analyte_norm": "amh",
+                    "present_in": "report_12",
+                    "absent_in": "report_11",
+                }
+            ],
+            "missing_items": [],
+        }
+        composed = render_professional_fallback(
+            evidence_pack=pack,
+            query_understanding=qu,
+            user_question=pack["question"],
+            source_citations=[],
+        )
+        answer = str(composed.get("answer") or "").lower()
+        self.assertIn("présence/absence", answer)
+
+    def test_24_no_naive_hardcoded_phrases(self) -> None:
+        qu = parse_query_understanding("Compare le glucose entre report 10 et report 12.")
+        pack = {
+            "question": "Q",
+            "intent": "multi_doc_comparison",
+            "requested_doc_ids": ["report_10", "report_12"],
+            "requested_analytes": ["glucose"],
+            "output_format": "list",
+            "answer_style": "standard",
+            "evidences": [
+                {
+                    "analyte": "Glucose",
+                    "analyte_norm": "glucose",
+                    "current_value": "report_10 = 1 | report_12 = 1",
+                    "unit": "g/L",
+                }
+            ],
+            "missing_items": [],
+        }
+        answer = str(
+            render_professional_fallback(
+                evidence_pack=pack,
+                query_understanding=qu,
+                user_question=pack["question"],
+                source_citations=[],
+            ).get("answer")
+            or ""
+        )
+        self.assertNotIn("J’ai vérifié les données retrouvées", answer)
+        self.assertNotIn("correspond strictement aux données extraites", answer)
+
+    def test_25_llm_modified_value_falls_back(self) -> None:
+        qu = parse_query_understanding("Compare le glucose entre report 10 et report 12.")
+        pack = {
+            "question": "Q",
+            "intent": "multi_doc_comparison",
+            "requested_doc_ids": ["report_10", "report_12"],
+            "requested_analytes": ["glucose"],
+            "output_format": "list",
+            "answer_style": "standard",
+            "evidences": [
+                {
+                    "doc_id": "comparison_report_10_report_12",
+                    "filename": "report (10).pdf",
+                    "page": 2,
+                    "row": 18,
+                    "analyte": "Glucose",
+                    "analyte_norm": "glucose",
+                    "current_value": "report_10 = 1 | report_12 = 1",
+                    "unit": "g/L",
+                    "source_label": "report (10).pdf — page 2, ligne 18",
+                }
+            ],
+            "missing_items": [],
+        }
+        out = compose_professional_answer(
+            user_question=pack["question"],
+            query_understanding=qu,
+            evidence_pack=pack,
+            mode="auto",
+            source_citations=[{"doc_id": "report_10", "filename": "report (10).pdf", "page": 2, "row": 18}],
+            llm_client=_FakeLLMClient(
+                "Le glucose est plus élevé dans report 12 : 2 g/L contre 1 g/L.\n\nSources : report (10).pdf — page 2, ligne 18"
+            ),
+        )
+        self.assertEqual(str(out.get("mode") or ""), "llm_writer_quality_fallback")
+
+    def test_26_multi_doc_comparison_increased_delta(self) -> None:
+        qu = parse_query_understanding("Compare le glucose entre report 10 et report 12.")
+        pack = {
+            "question": "Q",
+            "intent": "multi_doc_comparison",
+            "requested_doc_ids": ["report_10", "report_12"],
+            "requested_analytes": ["glucose"],
+            "output_format": "list",
+            "answer_style": "standard",
+            "evidences": [
+                {
+                    "analyte": "Glucose",
+                    "analyte_norm": "glucose",
+                    "doc_a": "report 10",
+                    "doc_b": "report 12",
+                    "value_a_raw": "0,8",
+                    "value_b_raw": "1,0",
+                    "unit_a": "g/L",
+                    "unit_b": "g/L",
+                    "delta_abs": 0.2,
+                    "delta_unit": "g/L",
+                    "comparison_status": "increased",
+                    "reference_summary": "Plusieurs plages selon l’âge/profil",
+                }
+            ],
+            "missing_items": [],
+        }
+        ans = str(
+            render_professional_fallback(
+                evidence_pack=pack,
+                query_understanding=qu,
+                user_question=pack["question"],
+                source_citations=[],
+            ).get("answer")
+            or ""
+        ).lower()
+        self.assertIn("augmentation", ans)
+        self.assertIn("+0.2 g/l", ans)
+
+    def test_27_multi_doc_comparison_decreased_delta(self) -> None:
+        qu = parse_query_understanding("Compare le glucose entre report 10 et report 12.")
+        pack = {
+            "question": "Q",
+            "intent": "multi_doc_comparison",
+            "requested_doc_ids": ["report_10", "report_12"],
+            "requested_analytes": ["glucose"],
+            "output_format": "list",
+            "answer_style": "standard",
+            "evidences": [
+                {
+                    "analyte": "Glucose",
+                    "analyte_norm": "glucose",
+                    "doc_a": "report 10",
+                    "doc_b": "report 12",
+                    "value_a_raw": "1,2",
+                    "value_b_raw": "1,0",
+                    "unit_a": "g/L",
+                    "unit_b": "g/L",
+                    "delta_abs": -0.2,
+                    "delta_unit": "g/L",
+                    "comparison_status": "decreased",
+                    "reference_summary": "Plusieurs plages selon l’âge/profil",
+                }
+            ],
+            "missing_items": [],
+        }
+        ans = str(
+            render_professional_fallback(
+                evidence_pack=pack,
+                query_understanding=qu,
+                user_question=pack["question"],
+                source_citations=[],
+            ).get("answer")
+            or ""
+        ).lower()
+        self.assertIn("diminution", ans)
+        self.assertIn("-0.2 g/l", ans)
+
+    def test_28_multi_doc_comparison_non_comparable_units(self) -> None:
+        qu = parse_query_understanding("Compare le glucose entre report 10 et report 12.")
+        pack = {
+            "question": "Q",
+            "intent": "multi_doc_comparison",
+            "requested_doc_ids": ["report_10", "report_12"],
+            "requested_analytes": ["glucose"],
+            "output_format": "list",
+            "answer_style": "standard",
+            "evidences": [
+                {
+                    "analyte": "Glucose",
+                    "analyte_norm": "glucose",
+                    "doc_a": "report 10",
+                    "doc_b": "report 12",
+                    "value_a_raw": "90",
+                    "value_b_raw": "1",
+                    "unit_a": "mg/dL",
+                    "unit_b": "g/L",
+                    "comparison_status": "non_comparable",
+                    "reference_summary": "Plusieurs plages selon l’âge/profil",
+                }
+            ],
+            "missing_items": [],
+        }
+        ans = str(
+            render_professional_fallback(
+                evidence_pack=pack,
+                query_understanding=qu,
+                user_question=pack["question"],
+                source_citations=[],
+            ).get("answer")
+            or ""
+        ).lower()
+        self.assertIn("non comparable", ans)
+
+    def test_29_hybrid_mode_uses_llm_writer_with_locked_facts(self) -> None:
+        qu = parse_query_understanding("Dans report 19, quels résultats sont hors référence ?")
+        pack = {
+            "question": "Dans report 19, quels résultats sont hors référence ?",
+            "intent": "doc_scoped_abnormal_results",
+            "requested_doc_ids": ["report_19"],
+            "requested_analytes": [],
+            "output_format": "list",
+            "answer_style": "standard",
+            "evidences": [
+                {
+                    "doc_id": "report_19",
+                    "analyte": "INSULINE",
+                    "analyte_norm": "insuline",
+                    "current_value": "23,00",
+                    "unit": "uU/mL",
+                    "reference": "4 à 20 µIU/mL",
+                    "technical_status_code": "above_reference",
+                    "technical_status": "au-dessus de la référence",
+                    "page": 1,
+                    "row": 1,
+                }
+            ],
+            "missing_items": [],
+        }
+        llm_answer = "Pour l’insuline, la valeur mesurée est 23,00 uU/mL (référence : 4 à 20 µIU/mL), statut : au-dessus de la référence. Source : report (16).pdf — page 1, ligne 1."
+        composed = compose_professional_answer(
+            user_question=pack["question"],
+            query_understanding=qu,
+            evidence_pack=pack,
+            mode="hybrid_structured_llm_writer",
+            source_citations=self._sources([1]),
+            llm_client=_FakeLLMClient(llm_answer),
+        )
+        self.assertEqual(str(composed.get("mode") or ""), "hybrid_structured_llm_writer")
+        self.assertIn("23,00", str(composed.get("answer") or ""))
 
 
 if __name__ == "__main__":

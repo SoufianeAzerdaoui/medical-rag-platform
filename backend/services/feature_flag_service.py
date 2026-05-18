@@ -11,6 +11,21 @@ DEFAULT_FLAGS: tuple[tuple[str, int, str], ...] = (
         1,
         "Enable strict deterministic reference range lookup flow",
     ),
+    (
+        "LLM_REWRITE_ENABLED",
+        1,
+        "Enable LLM rewrite on backend-selected grounded facts",
+    ),
+    (
+        "LLM_FALLBACK_NON_CRITICAL_ONLY",
+        1,
+        "Allow LLM-primary fallback only for non-critical intents",
+    ),
+    (
+        "LLM_QUERY_UNDERSTANDING_ENABLED",
+        0,
+        "Enable LLM-assisted query understanding before deterministic backend processing",
+    ),
 )
 
 
