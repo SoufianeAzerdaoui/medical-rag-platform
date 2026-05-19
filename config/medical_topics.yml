@@ -1,0 +1,14 @@
+{
+  "topics": {
+    "thyroid": {
+      "triggers": ["hyperthyro", "hypothyro", "thyroide", "thyroid", "tsh", "t3", "t4"],
+      "analytes": ["tsh", "tshus", "t4_libre", "t4libre", "t3_libre", "t3libre", "anti_tg", "anti tg", "anti_tpo", "anti tpo", "trak"],
+      "excluded_unless_explicit": ["acth", "insuline", "pth", "gh"]
+    },
+    "tumor_markers": {
+      "triggers": ["marqueur tumoral", "cancer", "tumeur", "oncologie"],
+      "analytes": ["ace", "psa_totale", "ca_15_3"],
+      "excluded_unless_explicit": []
+    }
+  }
+}

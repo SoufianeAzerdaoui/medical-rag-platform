@@ -906,6 +906,12 @@ def _build_content_table(
             return _table(columns, normalized_rows)
 
     if intent in {"multi_doc_comparison", "doc_pair_comparison"}:
+        def _render_comparison_value(raw_value: str, unit: str) -> str:
+            value_norm = _safe_str(raw_value).strip().lower()
+            if value_norm in {"non présent", "non present", "non disponible", "non retrouvé", "non retrouve"}:
+                return "non présent" if "présent" in value_norm or "present" in value_norm else "non disponible"
+            return (raw_value + (f" {unit}" if unit else "")).strip()
+
         rows = []
         for ev in evidences:
             analyte = _display_analyte(ev)
@@ -945,8 +951,8 @@ def _build_content_table(
             rows.append(
                 {
                     "Analyte": analyte,
-                    doc_a: (value_a + (f" {unit_a}" if unit_a else "")).strip(),
-                    doc_b: (value_b + (f" {unit_b}" if unit_b else "")).strip(),
+                    doc_a: _render_comparison_value(value_a, unit_a),
+                    doc_b: _render_comparison_value(value_b, unit_b),
                     "Écart": delta_label,
                     "Référence": _safe_str(ev.get("reference_summary") or ev.get("reference") or "non disponible"),
                     "Conclusion": conclusion,

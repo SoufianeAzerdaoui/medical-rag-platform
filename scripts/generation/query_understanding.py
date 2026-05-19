@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 try:
@@ -278,6 +278,23 @@ def detect_requested_doc_ids(query: str) -> list[str]:
             continue
         seen.add(low)
         found.append(doc_id)
+    # Handle compact plural forms: "reports 16, 19 et 31"
+    for m in re.finditer(
+        r"\b(?:reports?|rapports?|documents?)\s+((?:\d{1,6}\s*(?:,|et|ou)\s*)+\d{1,6}|\d{1,6})",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        block = str(m.group(1) or "")
+        for num in re.findall(r"\d{1,6}", block):
+            try:
+                doc_id = f"report_{int(num)}"
+            except Exception:
+                continue
+            low = doc_id.lower()
+            if low in seen:
+                continue
+            seen.add(low)
+            found.append(doc_id)
     return found
 
 
@@ -309,6 +326,7 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         "bonne journée",
     }
     identity_markers = {
+        "tes qui",
         "t es qui",
         "t'es qui",
         "tu es qui",
@@ -448,8 +466,17 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
             "tous les rapports",
             "tous les documents",
             "quels documents",
+            "quels rapports",
+            "y a t il des rapports",
+            "y a-t-il des rapports",
             "patients qui ont",
             "rapports disponibles",
+            "rapports indexes",
+            "rapports indexés",
+            "sur l ensemble des rapports",
+            "sur l’ensemble des rapports",
+            "retrouve tous les cas",
+            "dans les documents",
             "dans tous les rapports",
             "dans les rapports disponibles",
         ]
@@ -459,10 +486,26 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         for k in [
             "hors reference",
             "hors de la reference",
+            "hors normes",
+            "hors norme",
+            "hors intervalle",
             "anomalie",
             "anomalies",
             "anormal",
             "anormaux",
+            "basse",
+            "bas",
+            "diminuee",
+            "diminuée",
+            "inferieure",
+            "supérieure",
+            "superieure",
+            "elevee",
+            "élevée",
+            "elevation",
+            "élévation",
+            "au dessus",
+            "au-dessus",
             "above_reference",
             "below_reference",
             "above reference",
@@ -500,7 +543,16 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
             or "toutes les plages" in qn
         )
     )
-    has_diagnostic_safety = ("cancer" in qn) or any(
+    has_no_diagnostic_constraint = any(
+        k in qn
+        for k in [
+            "ne donne pas de diagnostic",
+            "sans diagnostic",
+            "pas de diagnostic",
+            "sans poser de diagnostic",
+        ]
+    )
+    has_diagnostic_safety = (not has_no_diagnostic_constraint) and (("cancer" in qn) or any(
         k in qn
         for k in [
             "peut on conclure",
@@ -518,14 +570,14 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
             "hypothyroid",
             "hypothyro",
         ]
-    )
+    ))
     has_doc_scope = len(doc_ids) >= 1
     # Guardrail: avoid misrouting structured status queries to qualitative-comment intent
     # when the user says "sans interprétation médicale" or similar phrasing.
     if has_qualitative_comment_query and has_doc_scope and has_structured_status_request:
         has_qualitative_comment_query = False
     has_multi_doc = len(doc_ids) >= 2
-    has_doc_pair_comparison = has_multi_doc and has_compare
+    has_doc_pair_comparison = len(doc_ids) == 2 and has_compare
     has_global_analyte_abnormal_search = (
         len(doc_ids) == 0
         and len(analyte_list) >= 1
@@ -538,14 +590,46 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         and any(k in qn for k in ["uniquement", "anomal", "hors reference", "quels resultats", "quels résultats", "donne", "sans interpretation", "sans interprétation", "résume", "resume"])
         and not any(k in qn for k in ["oui non", "oui/non", "oui ou non", "yes/no", "yes or no", "est ce que", "est-ce que"])
     )
+    has_biological_summary_wording = (
+        any(k in qn for k in ["resume", "résume", "synthese", "synthèse", "bilan", "medico-biologique", "médico-biologique"])
+        and any(
+            k in qn
+            for k in [
+                "separ",
+                "sépar",
+                "normaux",
+                "anormaux",
+                "anomalies et",
+                "partie anomalies",
+                "partie resultats normaux",
+                "partie résultats normaux",
+                "lignes maximum",
+                "lignes max",
+                "quelques lignes",
+                "lignes",
+            ]
+        )
+    )
+    has_doc_scoped_biological_summary = (
+        len(doc_ids) >= 1
+        and has_biological_summary_wording
+    )
     has_priority_request = any(
         k in qn
         for k in [
+            "hierarchise",
+            "hiérarchise",
+            "hierarchiser",
+            "hiérarchiser",
             "anomalies importantes",
             "priorite technique",
             "priorité technique",
+            "importance technique",
+            "ordre d importance",
+            "ordre d’importance",
             "ordre de priorite",
             "ordre de priorité",
+            "classement technique",
             "resultats significatifs",
             "résultats significatifs",
             "attention technique",
@@ -763,7 +847,6 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
     is_small_talk = (
         len(doc_ids) == 0
         and len(analyte_list) == 0
-        and not any(ch.isdigit() for ch in qn)
         and any(m in qn for m in small_talk_markers)
         and not has_response_transform
     )
@@ -831,6 +914,7 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         "global_analyte_abnormal_search": has_global_analyte_abnormal_search,
         "doc_pair_comparison": has_doc_pair_comparison,
         "doc_scoped_medical_interpretation_guarded": has_doc_scoped_medical_interpretation_guarded,
+        "doc_scoped_biological_summary": has_doc_scoped_biological_summary,
         "doc_scoped_priority_anomalies": has_doc_scoped_priority_anomalies,
         "doc_scoped_abnormal_results": has_doc_scoped_abnormal_results,
         "single_analyte_lookup": has_single_analyte_lookup,
@@ -1233,6 +1317,10 @@ def detect_technical_condition(query: str) -> str | None:
     below_markers = [
         "basse",
         "bas",
+        "diminuee",
+        "diminuée",
+        "diminue",
+        "diminué",
         "inferieure",
         "inferieur",
         "en dessous",
@@ -1246,6 +1334,8 @@ def detect_technical_condition(query: str) -> str | None:
         "superieur",
         "elevee",
         "eleve",
+        "elevation",
+        "élévation",
         "au dessus",
         "au-dessus",
         "above",
@@ -1513,6 +1603,15 @@ def detect_requested_summary_points(query: str) -> int | None:
     m_word = re.search(r"\ben\s+(un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix)\s+points?\b", qn)
     if m_word:
         return max(1, min(10, int(word_to_number.get(m_word.group(1), 3))))
+    m_lines_digit = re.search(r"\ben\s*(\d{1,2})\s*lignes?\b", qn)
+    if m_lines_digit:
+        try:
+            return max(1, min(20, int(m_lines_digit.group(1))))
+        except Exception:
+            return None
+    m_lines_word = re.search(r"\ben\s+(un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix)\s+lignes?\b", qn)
+    if m_lines_word:
+        return max(1, min(20, int(word_to_number.get(m_lines_word.group(1), 3))))
     return None
 
 
@@ -1671,8 +1770,12 @@ def _resolve_primary_intent(intents: dict[str, bool], *, requested_doc_ids: list
         return "global_analyte_abnormal_search"
     if intents.get("doc_pair_comparison"):
         return "doc_pair_comparison"
+    if intents.get("multi_doc_comparison"):
+        return "multi_doc_comparison"
     if intents.get("doc_scoped_medical_interpretation_guarded"):
         return "doc_scoped_medical_interpretation_guarded"
+    if intents.get("doc_scoped_biological_summary"):
+        return "doc_scoped_biological_summary"
     if intents.get("doc_scoped_priority_anomalies"):
         return "doc_scoped_priority_anomalies"
     if intents.get("doc_scoped_abnormal_results"):
@@ -1687,8 +1790,6 @@ def _resolve_primary_intent(intents: dict[str, bool], *, requested_doc_ids: list
         return "cohort_search"
     if intents.get("comment_without_measured_value"):
         return "comment_without_measured_value"
-    if intents.get("multi_doc_comparison"):
-        return "multi_doc_comparison"
     if intents.get("toxicology_summary"):
         return "toxicology_summary"
     if intents.get("immunoanalysis_summary"):
@@ -1735,6 +1836,8 @@ def build_intent_arbitration_debug(qu: QueryUnderstanding) -> dict[str, Any]:
         reason = "Arbitrage: comparaison de deux rapports détectée."
     elif winner == "doc_scoped_medical_interpretation_guarded":
         reason = "Arbitrage: interprétation médicale prudente document-scopée."
+    elif winner == "doc_scoped_biological_summary":
+        reason = "Arbitrage: résumé médico-biologique court document-scopé."
     elif winner == "doc_scoped_abnormal_results":
         reason = "Arbitrage: résultats anormaux document-scopés."
     elif winner == "doc_scoped_priority_anomalies":
@@ -1765,7 +1868,19 @@ def parse_query_understanding(query: str) -> QueryUnderstanding:
     requested_doc_ids = detect_requested_doc_ids(query or "")
     requested_analytes = detect_exact_analytes(query or "")
     qn = norm_text(query or "")
-    if "hormones thyroid" in qn or "hormones thyro" in qn or "thyroidiennes" in qn or "thyroidiennes" in qn:
+    if (
+        "hormones thyroid" in qn
+        or "hormones thyro" in qn
+        or "thyroidiennes" in qn
+        or "thyroidiennes" in qn
+        or "parametres thyroid" in qn
+        or "paramètres thyro" in qn
+        or "profil tsh/t3/t4" in qn
+        or "profil tsh t3 t4" in qn
+        or "bilan thyroid" in qn
+        or "bilan thyro" in qn
+        or "bilan thyroïd" in qn
+    ):
         for k in ["t4_libre", "t3_libre", "tshus", "anti_tg", "trak", "anti_tpo"]:
             if k not in requested_analytes:
                 requested_analytes.append(k)
@@ -1782,7 +1897,20 @@ def parse_query_understanding(query: str) -> QueryUnderstanding:
     comparison_operator = detect_comparison_operator(query or "")
     source_clickable_requested = bool(presentation.wants_clickable_sources)
     language = detect_language(query or "")
-    safety_intent = "diagnostic_safety_question" if intents.get("diagnostic_safety_question") else None
+    no_diagnosis_constraint = any(
+        k in qn
+        for k in [
+            "ne donne pas de diagnostic",
+            "sans diagnostic",
+            "pas de diagnostic",
+            "sans poser de diagnostic",
+        ]
+    )
+    safety_intent = (
+        "no_diagnosis_constraint"
+        if no_diagnosis_constraint
+        else ("diagnostic_safety_question" if intents.get("diagnostic_safety_question") else None)
+    )
     requested_table_columns = list(presentation.strict_columns or [])
     technical_condition = detect_technical_condition(query or "")
     inventory_view_type = detect_inventory_view_type(query or "")
@@ -1865,49 +1993,10 @@ def parse_query_understanding(query: str) -> QueryUnderstanding:
     )
     strategy = decide_response_strategy(preview_qu, evidence_pack=None)
 
-    return QueryUnderstanding(
-        requested_doc_ids=requested_doc_ids,
-        requested_analytes=requested_analytes,
-        excluded_analytes=excluded_analytes,
-        requested_value=requested_value,
-        requested_unit=requested_unit,
-        comparison_operator=comparison_operator,
-        source_clickable_requested=source_clickable_requested,
-        patient_query=bool("patient" in qn or "patients" in qn),
-        intent=preliminary_intent,
-        output_format=presentation.requested_output,
-        requested_table_columns=requested_table_columns,
-        answer_style=answer_style,
-        requires_global_search=bool(intents.get("global_patient_lookup")),
-        technical_condition=technical_condition,
-        safety_intent=safety_intent,
-        requires_previous_results=requires_previous_results,
-        requires_comparison=requires_comparison,
-        requires_section_summary=requires_section_summary,
-        is_small_talk=bool(intents.get("small_talk")),
-        is_response_transform=bool(intents.get("response_transform")),
-        language=language,
-        intents=intents,
-        presentation_intent=presentation,
+    return replace(
+        preview_qu,
         response_strategy=strategy.name,
         response_strategy_reason=strategy.reason,
-        original_user_question=str(query or ""),
-        raw_user_request=presentation.raw_user_request,
-        raw_format_phrase=presentation.raw_format_phrase,
-        unhandled_instructions=list(presentation.unhandled_instructions or []),
-        presentation_confidence=float(presentation.presentation_confidence),
-        unsupported_presentation_reason=presentation.unsupported_presentation_reason,
-        recommended_alternative_format=presentation.recommended_alternative_format,
-        inventory_view_type=inventory_view_type,
-        requested_date_iso=requested_date_iso,
-        requested_report_type=requested_report_type,
-        latest_report=latest_report,
-        requested_context_type=requested_context_type,
-        qualitative_view_type=qualitative_view_type,
-        requested_reference_profile=requested_reference_profile,
-        use_patient_profile=use_patient_profile,
-        request_all_reference_ranges=request_all_reference_ranges,
-        requested_summary_points=requested_summary_points,
     )
 
 

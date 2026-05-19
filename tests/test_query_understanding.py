@@ -422,7 +422,7 @@ class TestQueryUnderstanding(unittest.TestCase):
         )
         self.assertEqual(qu.requested_doc_ids, ["report_16"])
         self.assertEqual(qu.intent, "doc_scoped_abnormal_results")
-        self.assertEqual(qu.safety_intent, "diagnostic_safety_question")
+        self.assertEqual(qu.safety_intent, "no_diagnosis_constraint")
 
     def test_pure_diagnostic_question_without_data_scope(self) -> None:
         qu = parse_query_understanding("Peut-on conclure à un cancer avec ces marqueurs ?")
@@ -433,7 +433,7 @@ class TestQueryUnderstanding(unittest.TestCase):
         arb = build_intent_arbitration_debug(qu)
         self.assertEqual(arb.get("winner"), "doc_scoped_abnormal_results")
         self.assertIn("doc_scoped_abnormal_results", list(arb.get("candidate_intents") or []))
-        self.assertEqual(arb.get("safety_intent"), "diagnostic_safety_question")
+        self.assertEqual(arb.get("safety_intent"), "no_diagnosis_constraint")
         self.assertTrue(str(arb.get("reason") or "").strip())
 
     def test_global_analyte_abnormal_search_priority(self) -> None:
@@ -448,6 +448,13 @@ class TestQueryUnderstanding(unittest.TestCase):
         qu = parse_query_understanding("Est-ce que le report (16) permet de conclure à une hyperthyroïdie ?")
         self.assertEqual(qu.intent, "doc_scoped_medical_interpretation_guarded")
         self.assertEqual(qu.requested_doc_ids, ["report_16"])
+
+    def test_multi_doc_comparison_three_docs_not_doc_pair(self) -> None:
+        qu = parse_query_understanding(
+            "Compare les reports 16, 19 et 31 sur l’insuline et le bilan thyroïdien, en précisant les données manquantes."
+        )
+        self.assertEqual(qu.intent, "multi_doc_comparison")
+        self.assertEqual(qu.requested_doc_ids, ["report_16", "report_19", "report_31"])
 
     def test_doc_scoped_priority_anomalies_intent(self) -> None:
         qu = parse_query_understanding("Dans report (10), liste les anomalies importantes par ordre de priorité technique.")

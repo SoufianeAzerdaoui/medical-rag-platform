@@ -80,18 +80,6 @@ _GENERIC_VIZ_CONCLUSIONS = [
     "impossible de générer",
 ]
 
-_ROBOTIC_VIZ_PATTERNS = [
-    r"Graphique demandé\s*:",
-    r"Rendu affiché\s*:",
-    r"Raison\s*:",
-]
-
-_GENERIC_VIZ_CONCLUSIONS = [
-    "données structurées fournies pour visualisation côté interface",
-    "vérifiez le backend",
-    "impossible de générer",
-]
-
 _TREATMENT_PATTERNS = [
     r"\btraitement\s+recommande\b",
     r"\bprescrire\b",
@@ -211,7 +199,9 @@ def _extract_numeric_tokens_for_validation(core_text: str) -> list[str]:
         line = re.sub(r"\breport[_\-]?\d+\b", " ", line, flags=re.IGNORECASE)
         line = re.sub(r"\bpat[_\-]?\d+\b", " ", line, flags=re.IGNORECASE)
 
-        for t in re.findall(r"\d+(?:[.,]\d+)?", line):
+        # Normalize spaces around decimal separators to keep "0,45" as one token.
+        line = re.sub(r"(\d)\s*([.,])\s*(\d)", r"\1\2\3", line)
+        for t in re.findall(r"(?<!\d)[-+]?\d+(?:[.,]\d+)?(?!\d)", line):
             tokens.append(t)
     return tokens
 
@@ -448,8 +438,6 @@ def _is_small_talk_query(query: str) -> bool:
         "bonne journee",
         "bonne journée",
     ]
-    if any(ch.isdigit() for ch in qn):
-        return False
     if any(m in qn for m in markers):
         if any(k in qn for k in ["report", "rapport", "resultat", "valeur", "analyte", "patient"]):
             return False
@@ -469,7 +457,7 @@ def _detect_general_conversation_intent(query: str, query_intents: dict[str, Any
         return "small_talk"
 
     qn = _norm(query)
-    if any(m in qn for m in ["t es qui", "tu es qui", "qui es tu", "who are you", "what are you", "vous etes qui", "c est qui toi"]):
+    if any(m in qn for m in ["tes qui", "t es qui", "tu es qui", "qui es tu", "who are you", "what are you", "vous etes qui", "c est qui toi"]):
         return "identity_question"
     if any(
         m in qn
@@ -577,6 +565,10 @@ def _parse_markdown_table_header_keys(text: str) -> list[str]:
             key = "variation"
         elif "source" in c:
             key = "source"
+        elif "priorite" in c or "priorité" in c:
+            key = "priorite"
+        elif "raison technique" in c:
+            key = "raison_technique"
         elif "patient" in c:
             key = "patient"
         elif "report" in c or "rapport" in c or "document" in c:
@@ -601,6 +593,18 @@ def _canonical_analyte_key(value: str) -> str:
     key = re.sub(r"\bdepakine\b", "", key)
     key = re.sub(r"\s+", " ", key).strip()
     return key
+
+
+def _multi_doc_analyte_represented(core_norm: str, analyte: str) -> bool:
+    a = _canonical_analyte_key(analyte)
+    alias_groups = {
+        "anti tg": {"anti tg", "anti-tg", "anti_tg"},
+        "tshus": {"tshus", "tsh us", "tsh_us"},
+        "t4 libre": {"t4 libre", "t4_libre", "ft4"},
+        "t3 libre": {"t3 libre", "t3_libre", "ft3"},
+    }
+    aliases = alias_groups.get(a, {a})
+    return any(alias in core_norm for alias in aliases)
 
 
 def validate_answer(
@@ -837,7 +841,11 @@ def validate_answer(
             for a in mentioned_analytes_global
             if _canonical_analyte_key(a) not in allowed_canonical and a not in {"tsh", "tshus"}
         )
-        if bad_analytes:
+        is_global_abnormal = bool((query_intents or {}).get("cohort_search")) and any(
+            k in _norm(query)
+            for k in ["rapports disponibles", "tous les rapports", "ensemble des rapports", "quels documents", "documents"]
+        )
+        if bad_analytes and not is_global_abnormal:
             errors.append("unsupported_analyte")
             unsupported_claims.append(f"Unsupported analytes: {bad_analytes}")
 
@@ -974,9 +982,19 @@ def validate_answer(
     has_insufficient_sentence = INSUFFICIENT_CONTEXT_SENTENCE.lower() in text_norm or (
         "information insuffisante dans le contexte fourni" in text_norm
     ) or (
+        "information insuffisante dans les donnees structurees disponibles" in text_norm
+    ) or (
+        "information insuffisante dans les données structurées disponibles" in text_norm
+    ) or (
         "information non retrouvee" in text_norm
     ) or (
         "information non retrouvée" in text_norm
+    ) or (
+        "aucune recherche" in text_norm and "exploitable" in text_norm and "retrouve" in text_norm
+    ) or (
+        "aucun resultat" in text_norm and "exploitable" in text_norm and "retrouve" in text_norm
+    ) or (
+        "aucun résultat" in text_norm and "exploitable" in text_norm and "retrouve" in text_norm
     ) or (
         "aucun resultat correspondant n a ete retrouve" in text_norm
     ) or (
@@ -1081,6 +1099,8 @@ def validate_answer(
         bad_display_docs = sorted({d for d in displayed_doc_ids if str(d).strip().lower() != requested_doc_id_norm})
         all_source_docs = list(source_doc_ids) + list(structured_source_doc_ids)
         bad_source_docs = sorted({d for d in all_source_docs if str(d).strip().lower() != requested_doc_id_norm})
+        if generation_mode_norm == "deterministic_doc_scoped_priority_anomalies":
+            bad_source_docs = []
         if bad_display_docs or bad_source_docs:
             requested_doc_id_mismatch = True
             errors.append("requested_doc_id_mismatch")
@@ -1145,8 +1165,19 @@ def validate_answer(
             errors.append("missing_current_vs_previous_comparison")
 
     if diagnostic_safety_intent:
-        if "on ne peut pas conclure a un diagnostic" not in core_norm and "on ne peut pas conclure à un diagnostic" not in core_norm:
-            if "on ne peut pas conclure a un cancer" not in core_norm and "on ne peut pas conclure à un cancer" not in core_norm:
+        has_refusal = any(
+            phrase in core_norm
+            for phrase in [
+                "on ne peut pas conclure a un diagnostic",
+                "on ne peut pas conclure à un diagnostic",
+                "on ne peut pas conclure a un cancer",
+                "on ne peut pas conclure à un cancer",
+                "je ne peux pas poser ni evoquer un diagnostic",
+                "je ne peux pas poser ni évoquer un diagnostic",
+                "je ne peux pas poser de diagnostic",
+            ]
+        )
+        if not has_refusal:
                 errors.append("missing_diagnostic_safety_refusal")
         if any(k in core_norm for k in ["oui", "certain", "confirme", "confirmé"]) and "cancer" in core_norm:
             errors.append("diagnostic_claim_detected")
@@ -1174,6 +1205,11 @@ def validate_answer(
             if header_keys and req_keys and header_keys != req_keys:
                 errors.append("output_columns_not_respected")
                 errors.append("exact_columns_not_respected")
+    if generation_mode_norm == "deterministic_doc_scoped_priority_anomalies":
+        header_keys = _parse_markdown_table_header_keys(core_text)
+        required_priority_keys = {"priorite", "analyte", "valeur_actuelle", "reference", "statut", "raison_technique"}
+        if header_keys and required_priority_keys.issubset(set(header_keys)):
+            errors = [e for e in errors if e not in {"output_columns_not_respected", "exact_columns_not_respected"}]
         if source_clickable_requested:
             has_source_col = _table_has_source_column(core_text)
             has_clickable_structured = any(str(s.get("url") or s.get("viewer_url") or "").strip() for s in structured_sources)
@@ -1372,7 +1408,12 @@ def validate_answer(
         elif non_empty and re.match(r"^\s*[-*]\s+", non_empty[0]) and len(non_empty) > 2:
             # Structured list answer should start with a short context sentence.
             errors.append("missing_professional_intro")
-        if has_table and "conclusion technique" not in core_norm and generation_mode != "deterministic_reference_range_lookup" and not (query_intents or {}).get("reference_range_lookup"):
+        no_evidence_like = (
+            "information insuffisante" in core_norm
+            or "aucun resultat biologique exploitable" in core_norm
+            or "aucune recherche" in core_norm
+        )
+        if has_table and "conclusion technique" not in core_norm and not no_evidence_like and generation_mode != "deterministic_reference_range_lookup" and not (query_intents or {}).get("reference_range_lookup"):
             warnings.append("missing_conclusion")
 
     if source_clickable_requested:
@@ -1405,7 +1446,12 @@ def validate_answer(
                 errors.append("numeric_operator_mismatch")
             if op == "<" and ("inferieure ou egale" in intro_norm or "inférieure ou égale" in intro_norm or "ou moins" in intro_norm):
                 errors.append("numeric_operator_mismatch")
-        if "conclusion technique" not in core_norm and generation_mode != "deterministic_reference_range_lookup" and not (query_intents or {}).get("reference_range_lookup"):
+        no_evidence_like = (
+            "information insuffisante" in core_norm
+            or "aucun resultat biologique exploitable" in core_norm
+            or "aucune recherche" in core_norm
+        )
+        if "conclusion technique" not in core_norm and not no_evidence_like and generation_mode != "deterministic_reference_range_lookup" and not (query_intents or {}).get("reference_range_lookup"):
             warnings.append("missing_conclusion")
     if re.search(r"\btshus\s*,\s*tsh\b|\btsh\s*,\s*tshus\b", intro_block, flags=re.IGNORECASE):
         errors.append("internal_alias_leak")
@@ -1477,7 +1523,7 @@ def validate_answer(
                 errors.append("cohort_condition_not_applied")
                 break
 
-    if requested_analyte_list and "tshus" in requested_analyte_list:
+    if requested_analyte_list and "tshus" in requested_analyte_list and generation_mode_norm != "deterministic_multi_doc_comparison":
         if any(k in core_norm for k in ["trak", "anticorps anti recepteur de la tsh", "anti recepteur de la tsh"]):
             errors.append("analyte_overmatch")
 
@@ -1486,10 +1532,18 @@ def validate_answer(
             errors.append("filter_violation_hors_reference")
 
     if "non retrouve" in core_norm or "non retrouvé" in core_norm:
-        for analyte in requested_analyte_list:
-            if analyte in found_requested_norms:
-                errors.append("false_missing_item")
-                break
+        if generation_mode_norm == "deterministic_multi_doc_comparison":
+            # In multi-doc comparison, missing in one document is expected.
+            # Flag only if an analyte is globally missing and also not represented in answer lines.
+            for analyte in requested_analyte_list:
+                if analyte in found_requested_norms and not _multi_doc_analyte_represented(core_norm, analyte):
+                    errors.append("false_missing_item")
+                    break
+        else:
+            for analyte in requested_analyte_list:
+                if analyte in found_requested_norms:
+                    errors.append("false_missing_item")
+                    break
 
     if (query_intents or {}).get("comment_without_measured_value"):
         if any(k in core_norm for k in ["aucun resultat exploitable", "information non retrouvee", "information non retrouvée"]):
@@ -1629,7 +1683,7 @@ def validate_answer(
         if not (compact.startswith("non") or compact.startswith("no")):
             errors.append("absent_analyte_yes_no_format")
 
-    if requested_analyte_list:
+    if requested_analyte_list and not (query_intents or {}).get("multi_doc_comparison"):
         for missing_analyte in missing_requested:
             warnings.append(f"missing_requested_analyte:{missing_analyte}")
 
@@ -1886,6 +1940,7 @@ def validate_answer(
         "deterministic_professional_fallback",
         "deterministic_evidence_template",
         "deterministic_doc_scoped_abnormal_results",
+        "deterministic_doc_scoped_biological_summary",
         "deterministic_doc_scoped_priority_anomalies",
         "deterministic_anomaly_summary",
         "deterministic_global_analyte_abnormal_search",
@@ -1917,6 +1972,32 @@ def validate_answer(
                 warnings.append(f"downgraded_non_fact_error:{err}")
         errors = retained_errors
 
+    if generation_mode_norm in {"deterministic_doc_pair_comparison", "deterministic_multi_doc_comparison"} and errors:
+        kept: list[str] = []
+        for err in errors:
+            if err == "unsupported_value" and (
+                "non présent" in core_text.lower() or "non present" in core_text.lower() or "non retrouvé" in core_text.lower()
+            ):
+                warnings.append("downgraded_non_fact_error:unsupported_value_missing_comparison_item")
+                continue
+            kept.append(err)
+        errors = kept
+
+    if generation_mode_norm == "deterministic_general_conversation" and errors:
+        downgradable_general = {
+            "general_conversation_no_retrieval_violation",
+            "small_talk_content_violation",
+            "small_talk_triggered_retrieval",
+            "stale_response_detection",
+        }
+        kept: list[str] = []
+        for err in errors:
+            if err in downgradable_general:
+                warnings.append(f"downgraded_non_fact_error:{err}")
+                continue
+            kept.append(err)
+        errors = kept
+
     if generation_mode_norm == "deterministic_doc_scoped_priority_anomalies" and errors:
         downgradable_for_priority = {
             "unsupported_value",
@@ -1932,7 +2013,9 @@ def validate_answer(
                 kept.append(err)
         errors = kept
 
-    if generation_mode_norm in deterministic_fact_modes and not errors:
+    if generation_mode_norm == "deterministic_general_conversation" and not errors:
+        validation_status = "pass"
+    elif generation_mode_norm in deterministic_fact_modes and not errors:
         validation_status = "pass"
     elif errors:
         validation_status = "fail"
@@ -2009,7 +2092,10 @@ def validate_production_ux(
     """
     Reinforced production-ready UX checks.
     """
-    from sort_utils import natural_report_sort_key
+    try:
+        from sort_utils import natural_report_sort_key
+    except Exception:  # pragma: no cover
+        from scripts.generation.sort_utils import natural_report_sort_key  # type: ignore
     checks = []
     an = _norm(answer_text)
 

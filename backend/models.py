@@ -111,6 +111,7 @@ class ChatResponse(BaseModel):
         "deterministic_metadata_query",
         "deterministic_response_transform_json",
         "deterministic_context_summary",
+        "deterministic_general_conversation",
     ] | None = None
     visualization: dict[str, Any] | None = None
     chart_data: dict[str, Any] | None = None

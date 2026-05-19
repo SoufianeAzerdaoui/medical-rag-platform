@@ -1,0 +1,9 @@
+{
+  "general_conversation": {
+    "small_talk": "Bonjour. Je peux vous aider à analyser les rapports médicaux indexés : anomalies biologiques, comparaisons entre rapports, valeurs hors référence ou synthèses descriptives sans diagnostic.",
+    "identity_question": "Je suis un assistant RAG médical. Mon rôle est d’aider à interroger les rapports médicaux indexés en restant fidèle aux données extraites, avec sources, sans poser de diagnostic ni recommander de traitement.",
+    "capabilities": "Vous pouvez me demander de lister les anomalies d’un rapport, comparer deux rapports, rechercher des valeurs hors référence dans tous les documents, ou produire une synthèse descriptive sans diagnostic.",
+    "help_question": "Vous pouvez me demander de lister les anomalies d’un rapport, comparer deux rapports, rechercher des valeurs hors référence dans tous les documents, ou produire une synthèse descriptive sans diagnostic.",
+    "fallback": "Je peux vous aider à interroger les rapports médicaux indexés."
+  }
+}

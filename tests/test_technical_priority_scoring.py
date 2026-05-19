@@ -87,14 +87,28 @@ class TestTechnicalPriorityScoring(unittest.TestCase):
             _ev(
                 analyte="Triglycérides",
                 analyte_norm="triglycerides",
-                value="20",
-                reference="0 - 5 g/l",
+                value="8",
+                reference="Normale: < 1,50 g/l limite haute: 1,50 - 1,99 g/l Haute: 2 - 4,99 g/l Très haute: > 5 g/l",
                 status="above_reference",
                 technical_status="très élevée",
             )
         )
         self.assertEqual(out["priority_level"], "high")
         self.assertIn("sévérité", str(out["priority_reason"]).lower())
+
+    def test_phosphatase_at_inclusive_bound_is_not_above(self) -> None:
+        out = _compute_priority_fields(
+            _ev(
+                analyte="PHOSPHATASE ALCALINE",
+                analyte_norm="phosphatase_alcaline",
+                value="40",
+                reference="Femme : 1 à 12 ans: < 500 UI/L > 15 ans: 40 - 150 UI/L Homme : >20 ans: 40 - 150 UI/L",
+                status="above_reference",
+            )
+        )
+        self.assertEqual(out["priority_level"], "unknown")
+        self.assertEqual(float(out["priority_score"]), 0.0)
+        self.assertIn("plage de référence explicite", str(out["priority_reason"]).lower())
 
     def test_family_bonus_is_light_and_does_not_create_anomaly(self) -> None:
         crp = _compute_priority_fields(
@@ -122,4 +136,3 @@ class TestTechnicalPriorityScoring(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

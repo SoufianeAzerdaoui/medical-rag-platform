@@ -1,0 +1,9 @@
+{
+  "priority_scoring": {
+    "ratio_weight": 1.2,
+    "textual_severity_bonus": 0.6,
+    "family_bonus": 0.15,
+    "thresholds": {"high": 2.4, "moderate": 0.9, "low": 0.2},
+    "textual_severity_terms": ["tres haute", "très haute", "tres bas", "très bas", "critique", "severe", "sévère", "majeur", "pathologique"]
+  }
+}

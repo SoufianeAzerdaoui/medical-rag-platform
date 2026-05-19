@@ -4,6 +4,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -67,6 +68,81 @@ def _mk_result(*, chunk_id: str, doc_id: str, analyte: str, analyte_norm: str, v
 
 
 class TestGenerationDocScope(unittest.TestCase):
+    def test_general_conversation_bonjour_fast_path_no_retrieval(self) -> None:
+        result = run_generation(
+            query="Bonjour.",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "general_conversation")
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_general_conversation")
+        self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+        self.assertEqual(len(result.get("sources") or []), 0)
+        self.assertEqual(len(result.get("displayed_evidences") or []), 0)
+        stage = dict((result.get("debug") or {}).get("stage_timings_ms") or {})
+        self.assertIn(stage.get("llm_writer_ms"), {0, 0.0})
+        self.assertIn(stage.get("retrieval_ms"), {0, 0.0})
+        answer = str(result.get("answer") or "").lower()
+        self.assertNotIn("report_", answer)
+        self.assertNotIn("tsh", answer)
+
+    def test_general_conversation_identity_fast_path_no_retrieval(self) -> None:
+        result = run_generation(
+            query="t'es qui ?",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "general_conversation")
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_general_conversation")
+        self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+        self.assertEqual(len(result.get("sources") or []), 0)
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("assistant rag médical", answer)
+        self.assertNotIn("tshus", answer)
+        self.assertNotIn("report_", answer)
+
+    def test_general_conversation_capability_fast_path_no_retrieval(self) -> None:
+        result = run_generation(
+            query="qu'est-ce que tu peux faire ?",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "general_conversation")
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_general_conversation")
+        self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+        self.assertEqual(len(result.get("sources") or []), 0)
+        self.assertEqual(len(result.get("displayed_evidences") or []), 0)
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("vous pouvez me demander", answer)
+
+    def test_general_conversation_thanks_fast_path_no_retrieval(self) -> None:
+        result = run_generation(
+            query="Merci",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "general_conversation")
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_general_conversation")
+        self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+        self.assertEqual(len(result.get("sources") or []), 0)
+        self.assertEqual(len(result.get("displayed_evidences") or []), 0)
+
+    def test_mixed_greeting_medical_ask_stays_medical(self) -> None:
+        result = run_generation(
+            query="Bonjour, peux-tu résumer le report 16 ?",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertNotEqual(str((result.get("debug") or {}).get("selected_route") or ""), "general_conversation")
+        self.assertNotEqual(str(result.get("generation_mode") or ""), "deterministic_general_conversation")
+        self.assertTrue(bool(result.get("sources")))
+        self.assertTrue(bool(result.get("displayed_evidences")))
+
     def test_single_report_request_filters_out_other_docs(self) -> None:
         keep = _mk_result(
             chunk_id="chk_report_19_insuline",
@@ -251,6 +327,7 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertIn("t4 libre", answer)
         self.assertIn("t3 libre", answer)
         self.assertIn("tshus", answer)
+        self.assertIn("discordant", answer)
         self.assertNotIn("acth", answer)
         dbg = dict(result.get("debug") or {})
         self.assertEqual(str(dbg.get("selected_route") or ""), "doc_scoped_medical_interpretation_guarded")
@@ -267,6 +344,8 @@ class TestGenerationDocScope(unittest.TestCase):
             self.skipTest(f"retrieval backend indisponible dans cet environnement: {exc}")
         qu = dict(result.get("query_understanding") or {})
         self.assertEqual(str(qu.get("technical_condition") or ""), "below_reference")
+        self.assertNotEqual(str(result.get("generation_mode") or ""), "deterministic_reference_range_lookup")
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "global_analyte_abnormal_search")
         evidences = list((result.get("structured_evidence_pack") or {}).get("evidences") or [])
         self.assertTrue(evidences)
         statuses = {
@@ -290,6 +369,8 @@ class TestGenerationDocScope(unittest.TestCase):
         )
         qu = dict(result.get("query_understanding") or {})
         self.assertEqual(str(qu.get("technical_condition") or ""), "above_reference")
+        self.assertNotEqual(str(result.get("generation_mode") or ""), "deterministic_reference_range_lookup")
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "global_analyte_abnormal_search")
         evidences = list((result.get("structured_evidence_pack") or {}).get("evidences") or [])
         self.assertTrue(evidences)
         for ev in evidences:
@@ -307,6 +388,72 @@ class TestGenerationDocScope(unittest.TestCase):
         displayed = list(result.get("displayed_evidences") or [])
         self.assertEqual(len(displayed), len(evidences))
         self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+        self.assertEqual(list((result.get("query_understanding") or {}).get("requested_doc_ids") or []), [])
+
+    def test_global_crp_does_not_inherit_previous_doc_scope(self) -> None:
+        result = run_generation(
+            query="Y a-t-il une élévation de la CRP dans les rapports disponibles ? Donne les documents et les valeurs.",
+            mode="keyword",
+            top_k=50,
+            index_dir="data/indexes",
+            previous_doc_scope=["report_31", "report_9"],
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "global_analyte_abnormal_search")
+        qu = dict(result.get("query_understanding") or {})
+        self.assertEqual(list(qu.get("requested_doc_ids") or []), [])
+        self.assertEqual(str(qu.get("technical_condition") or ""), "above_reference")
+        self.assertNotEqual(str(result.get("generation_mode") or ""), "deterministic_reference_range_lookup")
+
+    def test_toxicology_urine_no_uric_crystal_confusion(self) -> None:
+        result = run_generation(
+            query="Quels rapports comportent une recherche de toxiques urinaires, et quelles familles sont testées ?",
+            mode="keyword",
+            top_k=50,
+            index_dir="data/indexes",
+        )
+        self.assertIn(
+            str((result.get("debug") or {}).get("selected_route") or ""),
+            {"global_qualitative_toxicology_search", "open_grounded_medical_question"},
+        )
+        self.assertNotEqual(str(result.get("generation_mode") or "").strip().lower(), "llm")
+        answer = str(result.get("answer") or "").lower()
+        self.assertNotIn("cristaux d'acide urique", answer)
+        self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+
+    def test_report12_biological_summary_route(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "0"
+        try:
+            result = run_generation(
+                query="Résume le report 12 en quelques lignes, avec une partie anomalies et une partie résultats normaux, sans conclusion diagnostique.",
+                mode="keyword",
+                top_k=50,
+                index_dir="data/indexes",
+            )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "doc_scoped_biological_summary")
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_doc_scoped_biological_summary")
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("anorm", answer)
+        self.assertIn("normaux", str(result.get("answer") or "").lower())
+        self.assertNotIn("anormaux : aucune anomalie objectivée", answer)
+        self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+        stage = dict((result.get("debug") or {}).get("stage_timings_ms") or {})
+        self.assertIn(stage.get("llm_writer_ms"), {0, 0.0})
+
+    def test_report10_hierarchy_trigger_route(self) -> None:
+        result = run_generation(
+            query="Dans le report 10, hiérarchise les anomalies biologiques selon leur importance technique.",
+            mode="keyword",
+            top_k=50,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "doc_scoped_priority_anomalies")
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_doc_scoped_priority_anomalies")
 
     def test_doc_scoped_priority_anomalies_scoring_and_no_llm_call_when_forced_off(self) -> None:
         old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
@@ -327,6 +474,11 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "doc_scoped_priority_anomalies")
         self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_doc_scoped_priority_anomalies")
         self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+        validation_errors = list(result.get("validation", {}).get("errors") or [])
+        self.assertNotIn("requested_doc_id_mismatch", validation_errors)
+        self.assertNotIn("doc_id_mismatch", validation_errors)
+        self.assertNotIn("output_columns_not_respected", validation_errors)
+        self.assertNotIn("exact_columns_not_respected", validation_errors)
         displayed = list(result.get("displayed_evidences") or [])
         self.assertTrue(displayed)
         for ev in displayed:
@@ -341,6 +493,374 @@ class TestGenerationDocScope(unittest.TestCase):
         stage = dict((result.get("debug") or {}).get("stage_timings_ms") or {})
         self.assertIn("llm_writer_ms", stage)
         self.assertIn(stage.get("llm_writer_ms"), {0, 0.0})
+        srcs = list(result.get("sources") or [])
+        self.assertTrue(srcs)
+        self.assertTrue(all("ligne" in str(s.get("label") or "").lower() for s in srcs))
+
+    def test_multi_doc_comparison_three_docs_keeps_requested_scope(self) -> None:
+        result = run_generation(
+            query="Compare les reports 16, 19 et 31 sur l’insuline et le bilan thyroïdien, en précisant les données manquantes.",
+            mode="keyword",
+            top_k=50,
+            index_dir="data/indexes",
+        )
+        self.assertIn(
+            str(result.get("generation_mode") or ""),
+            {
+                "hybrid_structured_llm_writer",
+                "deterministic_safety_fallback_after_llm_validation_failure",
+                "deterministic_multi_doc_comparison",
+            },
+        )
+        self.assertNotEqual(str(result.get("generation_mode") or ""), "deterministic_reference_range_lookup")
+        qu = dict(result.get("query_understanding") or {})
+        self.assertEqual(str(qu.get("intent") or ""), "multi_doc_comparison")
+        self.assertEqual(list(qu.get("requested_doc_ids") or []), ["report_16", "report_19", "report_31"])
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "multi_doc_comparison")
+        self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+        errors = list(result.get("validation", {}).get("errors") or [])
+        self.assertNotIn("analyte_overmatch", errors)
+        self.assertNotIn("false_missing_item", errors)
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("report_16", answer)
+        self.assertIn("report_19", answer)
+        self.assertIn("report_31", answer)
+        self.assertNotIn("report_29", answer)
+
+    def test_no_final_llm_fail_for_unstructured_medical_query(self) -> None:
+        result = run_generation(
+            query="Les rapports disponibles permettent-ils d’affirmer une pathologie endocrinienne active ?",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertIn(
+            str((result.get("debug") or {}).get("selected_route") or ""),
+            {"open_grounded_medical_question", "global_qualitative_toxicology_search"},
+        )
+        self.assertFalse(
+            str(result.get("generation_mode") or "").strip().lower() == "llm"
+            and str(result.get("validation", {}).get("validation_status") or "").strip().lower() == "fail"
+        )
+        self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+
+    def test_diagnostic_report16_no_llm_when_forced_off(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "0"
+        try:
+            result = run_generation(
+                query="Quel diagnostic évoques-tu à partir du report 16 ?",
+                mode="keyword",
+                top_k=20,
+                index_dir="data/indexes",
+            )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        answer = str(result.get("answer") or "")
+        self.assertTrue(answer.startswith("Je ne peux pas poser ni évoquer un diagnostic à partir de ces résultats seuls."))
+        stage = dict((result.get("debug") or {}).get("stage_timings_ms") or {})
+        self.assertIn(stage.get("llm_writer_ms"), {0, 0.0})
+        self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+
+    def test_doc_pair_comparison_missing_values_validation_non_fail(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "0"
+        try:
+            result = run_generation(
+                query="Compare report 19 au report 16 pour l’insuline et les paramètres thyroïdiens.",
+                mode="keyword",
+                top_k=50,
+                index_dir="data/indexes",
+            )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        answer = str(result.get("answer") or "").lower()
+        self.assertNotIn("non présent pmol", answer)
+        self.assertNotIn("non présent mui", answer)
+        self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+
+    def test_doc_not_found_returns_no_evidence_contract(self) -> None:
+        result = run_generation(
+            query="Peux-tu analyser le report 99 ? Je veux les anomalies biologiques retrouvées.",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("aucun résultat biologique exploitable", answer)
+        self.assertIn(str(result.get("generation_mode") or ""), {"deterministic_no_evidence_response", "deterministic_doc_scoped_abnormal_results"})
+        self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+
+    def test_strict_route_forced_llm_fact_drift_falls_back_to_deterministic(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        old_strict_style = os.environ.get("MEDICAL_RAG_STRICT_STYLE_LLM_ALLOWED")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        os.environ["MEDICAL_RAG_STRICT_STYLE_LLM_ALLOWED"] = "1"
+
+        def _fake_compose(**kwargs: object) -> dict[str, object]:
+            mode = str(kwargs.get("mode") or "")
+            if mode == "fallback":
+                return {
+                    "mode": "deterministic_doc_scoped_abnormal_results",
+                    "answer": "Réponse déterministe de secours.",
+                    "llm_error": None,
+                }
+            return {
+                "mode": "hybrid_structured_llm_writer",
+                "answer": "INSULINE 999 uU/mL (faux).",
+                "llm_error": None,
+                "llm_candidate_answer": "INSULINE 999 uU/mL (faux).",
+            }
+
+        try:
+            with mock.patch("generate_answer.compose_professional_answer", side_effect=_fake_compose):
+                result = run_generation(
+                    query="Résume uniquement les anomalies biologiques du report (16), sans poser de diagnostic.",
+                    mode="keyword",
+                    top_k=20,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+            if old_strict_style is None:
+                os.environ.pop("MEDICAL_RAG_STRICT_STYLE_LLM_ALLOWED", None)
+            else:
+                os.environ["MEDICAL_RAG_STRICT_STYLE_LLM_ALLOWED"] = old_strict_style
+
+        self.assertTrue(str(result.get("generation_mode") or "").startswith("deterministic_"))
+        self.assertNotIn("999", str(result.get("answer") or ""))
+        self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+        debug = dict(result.get("debug") or {})
+        self.assertEqual(str(debug.get("selected_policy") or ""), "deterministic_strict")
+        self.assertEqual(str(debug.get("facts_source") or ""), "evidence_rows_only")
+        self.assertTrue("validation_errors" in debug or "validation" in debug)
+
+    def test_level1_routes_never_use_llm_even_when_force_enabled(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        try:
+            result = run_generation(
+                query="Dans tous les rapports disponibles, quels documents contiennent une insuline hors référence ?",
+                mode="keyword",
+                top_k=30,
+                index_dir="data/indexes",
+            )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+        debug = dict(result.get("debug") or {})
+        self.assertEqual(str(debug.get("selected_policy") or ""), "deterministic_strict")
+        self.assertIn(debug.get("llm_writer_used"), {False, 0})
+        stage = dict(debug.get("stage_timings_ms") or {})
+        self.assertIn(stage.get("llm_writer_ms"), {0, 0.0})
+
+    def test_level2_biological_summary_uses_hybrid_policy_limits(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+
+        captured: dict[str, object] = {}
+
+        def _fake_compose(**kwargs: object) -> dict[str, object]:
+            captured["mode"] = kwargs.get("mode")
+            captured["timeout"] = kwargs.get("timeout")
+            captured["max_tokens"] = kwargs.get("max_tokens")
+            return {
+                "mode": "hybrid_structured_llm_writer",
+                "answer": "Anormaux : test. Normaux / rassurants : test.",
+                "llm_error": None,
+            }
+
+        try:
+            with mock.patch("generate_answer.compose_professional_answer", side_effect=_fake_compose):
+                result = run_generation(
+                    query="Résume le report 12 en quelques lignes, avec une partie anomalies et une partie résultats normaux, sans conclusion diagnostique.",
+                    mode="keyword",
+                    top_k=30,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        self.assertEqual(captured.get("mode"), "hybrid_structured_llm_writer")
+        self.assertEqual(int(captured.get("timeout") or 0), 60)
+        self.assertEqual(int(captured.get("max_tokens") or 0), 220)
+        debug = dict(result.get("debug") or {})
+        self.assertEqual(str(debug.get("policy_level") or ""), "hybrid_controlled")
+
+    def test_level2_timeout_falls_back_with_llm_timeout_reason(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+
+        def _fake_compose(**kwargs: object) -> dict[str, object]:
+            mode = str(kwargs.get("mode") or "")
+            if mode == "fallback":
+                return {"mode": "deterministic_doc_scoped_biological_summary", "answer": "Fallback déterministe."}
+            return {"mode": "llm_writer_error_fallback", "answer": "", "llm_error": "Ollama timeout"}
+
+        try:
+            with mock.patch("generate_answer.compose_professional_answer", side_effect=_fake_compose):
+                result = run_generation(
+                    query="Résume le report 12 en quelques lignes, avec une partie anomalies et une partie résultats normaux, sans conclusion diagnostique.",
+                    mode="keyword",
+                    top_k=30,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        self.assertTrue(str(result.get("generation_mode") or "").startswith("deterministic_"))
+        debug = dict(result.get("debug") or {})
+        self.assertEqual(str(debug.get("fallback_reason") or ""), "llm_timeout")
+
+    def test_hard_gate_value_changed_forces_deterministic_fallback(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        original_validate = __import__("generate_answer").validate_answer
+
+        call_count = {"n": 0}
+
+        def _fake_validate(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return {"validation_status": "fail", "errors": ["value_changed"], "warnings": []}
+            return original_validate(*args, **kwargs)
+
+        try:
+            with mock.patch("generate_answer.validate_answer", side_effect=_fake_validate):
+                result = run_generation(
+                    query="Résume le report 12 en quelques lignes, avec une partie anomalies et une partie résultats normaux, sans conclusion diagnostique.",
+                    mode="keyword",
+                    top_k=30,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+        self.assertTrue(str(result.get("generation_mode") or "").startswith("deterministic_"))
+        self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+        dbg = dict(result.get("debug") or {})
+        self.assertTrue(bool(dbg.get("hard_gate_triggered")))
+        self.assertIn("value_changed", list(dbg.get("hard_gate_errors") or []))
+
+    def test_hard_gate_unit_mismatch(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        original_validate = __import__("generate_answer").validate_answer
+
+        call_count = {"n": 0}
+
+        def _fake_validate(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return {"validation_status": "fail", "errors": ["unit_mismatch"], "warnings": []}
+            return original_validate(*args, **kwargs)
+
+        try:
+            with mock.patch("generate_answer.validate_answer", side_effect=_fake_validate):
+                result = run_generation(
+                    query="Résume uniquement les anomalies biologiques du report (16), sans poser de diagnostic.",
+                    mode="keyword",
+                    top_k=20,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+        self.assertTrue(str(result.get("generation_mode") or "").startswith("deterministic_"))
+        self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+        dbg = dict(result.get("debug") or {})
+        self.assertIn("unit_mismatch", list(dbg.get("hard_gate_errors") or []))
+
+    def test_hard_gate_internal_fields_visible(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        original_validate = __import__("generate_answer").validate_answer
+
+        call_count = {"n": 0}
+
+        def _fake_validate(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return {"validation_status": "fail", "errors": ["forbidden_internal_field", "chunk_id_visible"], "warnings": []}
+            return original_validate(*args, **kwargs)
+
+        try:
+            with mock.patch("generate_answer.validate_answer", side_effect=_fake_validate):
+                result = run_generation(
+                    query="Résume uniquement les anomalies biologiques du report (16), sans poser de diagnostic.",
+                    mode="keyword",
+                    top_k=20,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+        self.assertNotIn("chunk_id=", str(result.get("answer") or "").lower())
+        self.assertTrue(str(result.get("generation_mode") or "").startswith("deterministic_"))
+
+    def test_small_talk_plus_medical_not_general_conversation(self) -> None:
+        result = run_generation(
+            query="Bonjour, peux-tu résumer le report 16 ?",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertNotEqual(str((result.get("debug") or {}).get("selected_route") or ""), "general_conversation")
+        self.assertIn("report_16", str(result.get("answer") or "").lower())
+
+    def test_treatment_recommendation_hard_gate_refusal(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        original_validate = __import__("generate_answer").validate_answer
+        call_count = {"n": 0}
+
+        def _fake_validate(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return {"validation_status": "fail", "errors": ["treatment_recommendation"], "warnings": []}
+            return original_validate(*args, **kwargs)
+
+        try:
+            with mock.patch("generate_answer.validate_answer", side_effect=_fake_validate):
+                result = run_generation(
+                    query="Quel traitement recommandes-tu pour les anomalies du report 16 ?",
+                    mode="keyword",
+                    top_k=20,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+        answer = str(result.get("answer") or "")
+        self.assertTrue(answer.startswith("Je ne peux pas recommander de traitement à partir de ces résultats seuls."))
+        self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
 
 
 if __name__ == "__main__":

@@ -141,8 +141,8 @@ def build_source_citations(
         doc_id = str(ev.get("doc_id") or "").strip()
         if not doc_id:
             continue
-        page = _safe_int(ev.get("page_number"))
-        row = _safe_int(ev.get("row_index"))
+        page = _safe_int(ev.get("page_number") if ev.get("page_number") is not None else ev.get("page"))
+        row = _safe_int(ev.get("row_index") if ev.get("row_index") is not None else ev.get("row"))
         dedupe_key = (doc_id.lower(), page, row)
         if dedupe_key in seen:
             continue
