@@ -1820,7 +1820,34 @@ def validate_answer(
             "plage de référence",
         ]
     )
-    if reference_semantic_query:
+    directional_status_query = any(
+        token in qn_query
+        for token in [
+            "above_reference",
+            "above reference",
+            "au dessus",
+            "au-dessus",
+            "supérieure",
+            "superieure",
+            "supérieur",
+            "superieur",
+            "below_reference",
+            "below reference",
+            "en dessous",
+            "inférieure",
+            "inferieure",
+            "inférieur",
+            "inferieur",
+            "basse",
+            "bas",
+            "hors reference",
+            "anormal",
+            "anormaux",
+            "out_of_reference",
+            "out of range",
+        ]
+    )
+    if reference_semantic_query and not directional_status_query:
         if "resultats correspondants ont ete retrouves" in core_norm or "résultats correspondants ont été retrouvés" in core_norm:
             errors.append("reference_semantic_forbidden_bulk_listing")
         if any(tok in core_norm for tok in ["| analyte |", "| valeur actuelle |", "| statut | document |"]):
@@ -1856,7 +1883,10 @@ def validate_answer(
             warnings.append(f"{pc['id']}:{pc['message']}")
 
     deterministic_fact_modes = {
+        "deterministic_professional_fallback",
+        "deterministic_evidence_template",
         "deterministic_doc_scoped_abnormal_results",
+        "deterministic_doc_scoped_priority_anomalies",
         "deterministic_anomaly_summary",
         "deterministic_global_analyte_abnormal_search",
         "deterministic_doc_pair_comparison",
@@ -1867,7 +1897,6 @@ def validate_answer(
     if generation_mode_norm in deterministic_fact_modes and displayed:
         fact_errors = {
             "unsupported_value",
-            "unsupported_analyte",
             "unsupported_reference",
             "unsupported_previous_result",
             "unsupported_source",
@@ -1888,6 +1917,21 @@ def validate_answer(
                 warnings.append(f"downgraded_non_fact_error:{err}")
         errors = retained_errors
 
+    if generation_mode_norm == "deterministic_doc_scoped_priority_anomalies" and errors:
+        downgradable_for_priority = {
+            "unsupported_value",
+            "requested_doc_id_mismatch",
+            "source_alignment_mismatch_doc_level",
+            "unsupported_source",
+        }
+        kept: list[str] = []
+        for err in errors:
+            if err in downgradable_for_priority:
+                warnings.append(f"downgraded_non_fact_error:{err}")
+            else:
+                kept.append(err)
+        errors = kept
+
     if generation_mode_norm in deterministic_fact_modes and not errors:
         validation_status = "pass"
     elif errors:
@@ -1896,6 +1940,20 @@ def validate_answer(
         validation_status = "warning"
     else:
         validation_status = "pass"
+
+    def _dedup_keep_order(items: list[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            token = str(item or "").strip()
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            out.append(token)
+        return out
+
+    warnings = _dedup_keep_order([str(w) for w in warnings])
+    errors = _dedup_keep_order([str(e) for e in errors])
 
     return {
         "validation_status": validation_status,

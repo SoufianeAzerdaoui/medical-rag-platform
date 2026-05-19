@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import sqlite3
 import sys
@@ -21,10 +22,12 @@ GENERATION_DIR = Path(__file__).resolve().parent
 if str(GENERATION_DIR) not in sys.path:
     sys.path.insert(0, str(GENERATION_DIR))
 
+_RETRIEVAL_IMPORT_ERROR: Exception | None = None
 try:
     from retrieval.models import RetrievalFilters
     from retrieval.search import SearchEngine
 except Exception as _retrieval_import_error:  # pragma: no cover - import guard for lightweight test environments
+    _RETRIEVAL_IMPORT_ERROR = _retrieval_import_error
     try:
         from scripts.retrieval.models import RetrievalFilters  # type: ignore[no-redef]
         from scripts.retrieval.search import SearchEngine  # type: ignore[no-redef]
@@ -38,7 +41,7 @@ except Exception as _retrieval_import_error:  # pragma: no cover - import guard 
                 raise RuntimeError(
                     "Retrieval backend dependencies are unavailable. "
                     "Install retrieval dependencies (e.g. numpy) to enable search."
-                ) from _retrieval_import_error
+                ) from _RETRIEVAL_IMPORT_ERROR
 
 from answer_validator import validate_answer
 from citation_builder import append_source_citations, build_citations, build_source_citations
@@ -85,6 +88,7 @@ from query_understanding import (
 from followup_scope_utils import resolve_followup_doc_scope
 from context_resolver import resolve_context_for_turn, resolve_deictic_request
 from conversation_state_utils import evidence_pack_is_transformable
+from medical_query_planner import understand_medical_query, plan_to_payload
 from qualitative_comment_utils import (
     build_qualitative_comment_answer,
     build_sourced_comment_block,
@@ -136,6 +140,7 @@ def _is_hybrid_structured_writer_intent(query_understanding: QueryUnderstanding)
     technical_condition = str(getattr(query_understanding, "technical_condition", "") or "").strip().lower()
     if intent in {
         "doc_scoped_abnormal_results",
+        "doc_scoped_priority_anomalies",
         "global_analyte_abnormal_search",
         "doc_pair_comparison",
         "multi_doc_comparison",
@@ -149,6 +154,18 @@ def _is_hybrid_structured_writer_intent(query_understanding: QueryUnderstanding)
 
 
 def _hybrid_writer_mode(query_understanding: QueryUnderstanding) -> str:
+    force_llm_writer = str(os.getenv("MEDICAL_RAG_FORCE_LLM_WRITER", "1")).strip().lower() in {"1", "true", "yes", "on"}
+    deterministic_routes = {
+        "doc_scoped_abnormal_results",
+        "doc_scoped_priority_anomalies",
+        "global_analyte_abnormal_search",
+        "doc_pair_comparison",
+        "single_analyte_lookup",
+        "doc_scoped_medical_interpretation_guarded",
+        "reference_range_lookup",
+    }
+    if not force_llm_writer and str(getattr(query_understanding, "intent", "") or "").strip().lower() in deterministic_routes:
+        return "fallback"
     llm_rewrite_enabled = _is_feature_enabled("LLM_REWRITE_ENABLED", default=True)
     llm_fallback_non_critical_only = _is_feature_enabled("LLM_FALLBACK_NON_CRITICAL_ONLY", default=True)
     if not llm_rewrite_enabled:
@@ -2117,6 +2134,11 @@ def _is_above_reference_query(qn: str) -> bool:
             "above_reference",
             "superieur",
             "supérieure",
+            "superieure",
+            "eleve",
+            "elevee",
+            "élevé",
+            "élevée",
         ]
     )
 
@@ -2136,6 +2158,10 @@ def _is_below_reference_query(qn: str) -> bool:
             "below_reference",
             "inferieur",
             "inférieure",
+            "inferieure",
+            "bas",
+            "basse",
+            "sous la reference",
         ]
     )
 
@@ -3298,11 +3324,19 @@ def _select_deterministic_candidates(
             candidates = []
 
     if _is_above_reference_query(query_norm) and not _is_normal_or_above_query(query_norm):
-        above = [ev for ev in candidates if str(ev.get("interpretation_status") or "").lower() == "above_reference"]
+        above = [
+            ev
+            for ev in candidates
+            if str(ev.get("interpretation_status") or ev.get("technical_status_code") or "").lower() == "above_reference"
+        ]
         if above:
             candidates = above
     elif _is_below_reference_query(query_norm):
-        below = [ev for ev in candidates if str(ev.get("interpretation_status") or "").lower() == "below_reference"]
+        below = [
+            ev
+            for ev in candidates
+            if str(ev.get("interpretation_status") or ev.get("technical_status_code") or "").lower() == "below_reference"
+        ]
         if below:
             candidates = below
 
@@ -3678,8 +3712,61 @@ def _clean_analyte_label(value: str | None) -> str:
         raw,
         flags=re.IGNORECASE,
     )
+    # Strip embedded reference patterns in analyte labels, e.g. "CRP (0.00mg/l - 5.00mg/l)".
+    cleaned = re.sub(r"\(\s*\d+(?:[.,]\d+)?\s*(?:mg|ng|pg|g|ui|iu|uu|mui|mmol|pmol)?\s*/?\s*[a-zA-Z]*\s*-\s*\d+(?:[.,]\d+)?[^)]*\)", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" -;,:")
     return cleaned or raw
+
+
+def _extract_reference_from_text(text: str | None) -> str | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    m = re.search(r"\(([^()]*\d[^()]*)\)", raw)
+    if not m:
+        return None
+    ref = str(m.group(1) or "").strip()
+    if not ref:
+        return None
+    ref = re.sub(r"\s+", " ", ref)
+    # normalize compact units around bounds (e.g. 0.00mg/l - 5.00mg/l)
+    ref = re.sub(r"(\d)\s*(mg|ng|pg|g|ui|iu|uu|mui|mmol|pmol)\s*/\s*([a-zA-Z]+)", r"\1 \2/\3", ref, flags=re.IGNORECASE)
+    ref = re.sub(r"\s*-\s*", " - ", ref)
+    ref = re.sub(r"\s+", " ", ref).strip()
+    nums = re.findall(r"\d+(?:[.,]\d+)?", ref)
+    if len(nums) < 2:
+        return None
+    # normalize "(0.00 - 5.00) mg/l" shape if present
+    post = re.search(r"\)\s*([a-zA-Zµ/%]+(?:/[a-zA-Zµ%]+)?)$", raw)
+    if post and re.search(r"\(\s*\d+(?:[.,]\d+)?\s*-\s*\d+(?:[.,]\d+)?\s*\)", raw):
+        return f"{nums[0]} - {nums[1]} {post.group(1)}".strip()
+    return ref
+
+
+def _canonical_technical_condition(value: str | None) -> str | None:
+    tc = str(value or "").strip().lower()
+    if tc in {"above_reference_only", "above_reference"}:
+        return "above_reference"
+    if tc in {"below_reference_only", "below_reference"}:
+        return "below_reference"
+    if tc == "out_of_reference":
+        return "out_of_reference"
+    if tc == "within_reference":
+        return "within_reference"
+    if tc in {"any_result", "not_applicable", ""}:
+        return None
+    return tc
+
+
+def _apply_technical_condition_filter(rows: list[dict[str, Any]], technical_condition: str | None) -> list[dict[str, Any]]:
+    tc = _canonical_technical_condition(technical_condition)
+    if not tc:
+        return list(rows)
+    if tc == "out_of_reference":
+        return [r for r in rows if _status_code(r) in {"above_reference", "below_reference"}]
+    if tc in {"above_reference", "below_reference", "within_reference", "not_interpretable"}:
+        return [r for r in rows if _status_code(r) == tc]
+    return list(rows)
 
 
 def _canonical_display_name(analyte_norm: str) -> str:
@@ -4905,6 +4992,8 @@ def _status_code(row: dict[str, Any]) -> str:
     if status in {"above_reference", "below_reference", "within_reference"}:
         return status
     ref = str(row.get("reference_range") or "").strip()
+    if not ref:
+        ref = str(_extract_reference_from_text(str(row.get("analyte") or "")) or "").strip()
     val = str(row.get("value_raw") or "").strip()
     if not ref:
         return "missing_reference"
@@ -4947,6 +5036,185 @@ def _status_fr(status_code: str) -> str:
     return mapping.get(status_code, "non interprétable")
 
 
+_PRIORITY_TEXT_MARKERS = [
+    "tres haute",
+    "très haute",
+    "tres bas",
+    "très bas",
+    "critique",
+    "severe",
+    "sévère",
+    "majeur",
+    "urgent",
+    "pathologique",
+    "tres eleve",
+    "très élevé",
+    "tres basse",
+    "très basse",
+]
+
+_PRIORITY_FAMILY_TERMS = {
+    "inflammation": {"crp", "procalcitonine", "pct"},
+    "cardio_muscle": {"troponine", "ckmb", "ck", "ldh", "cpk"},
+    "proteines_nutrition": {"albumine", "proteines_totales", "protéines_totales"},
+    "lipides": {"triglycerides", "triglycérides", "ldl", "hdl", "apo b", "apo a1", "apob", "apoa1"},
+    "renal": {"creatinine", "créatinine", "uree", "urée", "clairance_creatinine", "microalbuminurie"},
+    "hepatic": {"asat", "alat", "ggt", "bilirubine", "bilirubine_totale", "bilirubine_directe"},
+    "endocrino": {"tsh", "tshus", "t3", "t4", "t3_libre", "t4_libre", "insuline", "peptide c", "peptide_c"},
+    "vitamines": {"vitamine d", "vitamine b12", "b12", "ferritine"},
+}
+
+
+def _is_complex_reference_text(ref: str) -> bool:
+    rn = norm_text(ref or "")
+    if not rn:
+        return True
+    complex_markers = [
+        "homme",
+        "femme",
+        "age",
+        "ans",
+        "enfant",
+        "nourrisson",
+        "adulte",
+        "nouveau",
+        "risque",
+        "souhaitable",
+        "modere",
+        "modéré",
+        "eleve",
+        "élevé",
+        "tres",
+        "très",
+        ":",
+    ]
+    nums = re.findall(r"\d+(?:[.,]\d+)?", ref or "")
+    if len(nums) != 2:
+        return True
+    if any(m in rn for m in complex_markers):
+        return True
+    return False
+
+
+def _recompute_simple_status(value_raw: str, reference_raw: str) -> str | None:
+    val = _to_float(value_raw)
+    if val is None:
+        return None
+    ref = str(reference_raw or "").strip()
+    if not ref:
+        return None
+    if _is_complex_reference_text(ref):
+        return None
+    nums = re.findall(r"\d+(?:[.,]\d+)?", ref)
+    if len(nums) < 2:
+        return None
+    try:
+        lo = float(nums[0].replace(",", "."))
+        hi = float(nums[1].replace(",", "."))
+    except Exception:
+        return None
+    if val < lo:
+        return "below_reference"
+    if val > hi:
+        return "above_reference"
+    return "within_reference"
+
+
+def _priority_family_weight(analyte: str, analyte_norm: str) -> float:
+    probe = f"{norm_text(analyte)} {norm_text(analyte_norm)}".strip()
+    for terms in _PRIORITY_FAMILY_TERMS.values():
+        for t in terms:
+            if t in probe:
+                return 0.15
+    return 0.0
+
+
+def _compute_priority_fields(ev: dict[str, Any]) -> dict[str, Any]:
+    status_code = str(ev.get("technical_status_code") or "").strip().lower()
+    if status_code not in {"above_reference", "below_reference"}:
+        return {"priority_score": 0.0, "priority_level": "unknown", "priority_reason": "statut non priorisable."}
+
+    analyte = str(ev.get("analyte") or "")
+    analyte_norm = str(ev.get("analyte_norm") or "")
+    ref = str(ev.get("reference") or ev.get("reference_raw") or "").strip()
+    value_raw = str(ev.get("current_value") or "").strip()
+    if not ref:
+        return {
+            "priority_score": 0.0,
+            "priority_level": "unknown",
+            "priority_reason": "référence indisponible, priorité non déterminable.",
+        }
+    score = 0.0
+    reasons: list[str] = []
+
+    simple_status = _recompute_simple_status(value_raw, ref)
+    if simple_status is None:
+        score += 0.35
+        reasons.append("référence complexe, priorité à confirmer selon profil patient.")
+    else:
+        if simple_status != status_code:
+            return {"priority_score": 0.0, "priority_level": "unknown", "priority_reason": "direction de référence non confirmée par intervalle simple."}
+        v = _to_float(value_raw)
+        nums = re.findall(r"\d+(?:[.,]\d+)?", ref)
+        lo = float(nums[0].replace(",", "."))
+        hi = float(nums[1].replace(",", "."))
+        ratio = 1.0
+        if status_code == "above_reference" and hi > 0 and v is not None:
+            ratio = max(1.0, float(v) / hi)
+        elif status_code == "below_reference" and v is not None and v > 0:
+            ratio = max(1.0, lo / float(v))
+        score += (ratio - 1.0) * 1.2
+        reasons.append(f"écart relatif ≈ x{ratio:.2f} vs borne.")
+
+    txt = norm_text(f"{ref} {ev.get('technical_status') or ''}")
+    if any(m in txt for m in _PRIORITY_TEXT_MARKERS):
+        score += 0.6
+        reasons.append("termes de sévérité détectés dans la référence/interprétation.")
+
+    fam_weight = _priority_family_weight(analyte, analyte_norm)
+    if fam_weight > 0:
+        score += fam_weight
+        reasons.append("poids famille biologique technique.")
+
+    ratio_proxy = score
+    if ratio_proxy >= 2.4:
+        level = "high"
+    elif ratio_proxy >= 0.9:
+        level = "moderate"
+    elif ratio_proxy >= 0.2:
+        level = "low"
+    else:
+        level = "unknown"
+    return {
+        "priority_score": round(max(0.0, score), 4),
+        "priority_level": level,
+        "priority_reason": " ".join(reasons).strip() or "priorité technique calculée.",
+    }
+
+
+def _apply_priority_scoring(evidences: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    for ev in evidences:
+        row = dict(ev)
+        row.update(_compute_priority_fields(row))
+        # Exclude obvious false positives / non-priorisable directions.
+        if str(row.get("technical_status_code") or "").strip().lower() not in {"above_reference", "below_reference"}:
+            continue
+        if str(row.get("priority_level") or "unknown") == "unknown":
+            continue
+        enriched.append(row)
+
+    level_rank = {"high": 0, "moderate": 1, "low": 2, "unknown": 3}
+    enriched.sort(
+        key=lambda r: (
+            level_rank.get(str(r.get("priority_level") or "unknown"), 9),
+            -float(r.get("priority_score") or 0.0),
+            str(r.get("analyte") or ""),
+        )
+    )
+    return enriched
+
+
 def _structured_record_from_row(row: dict[str, Any], *, requested_doc_id: str | None = None) -> dict[str, Any]:
     value_raw = str(row.get("value_raw") or "").strip()
     unit = str(row.get("unit") or "").strip()
@@ -4959,8 +5227,13 @@ def _structured_record_from_row(row: dict[str, Any], *, requested_doc_id: str | 
     analyte_raw = _clean_analyte_label(str(row.get("analyte") or row.get("parameter") or "non précisé"))
     analyte_human = analyte_display_name(analyte_raw, analyte_norm or None) or analyte_raw
     reference_raw = str(row.get("reference_range") or "").strip()
+    if not reference_raw:
+        reference_raw = str(_extract_reference_from_text(str(row.get("analyte") or "")) or "").strip()
     return {
         "doc_id": str(row.get("doc_id") or requested_doc_id or ""),
+        "document_name": str(row.get("source_pdf") or "").split("/")[-1] if str(row.get("source_pdf") or "").strip() else str(row.get("doc_id") or requested_doc_id or ""),
+        "patient_id": str(row.get("patient_token") or "").strip() or None,
+        "date": str(row.get("report_date") or row.get("request_date") or "").strip() or None,
         "patient_token": str(row.get("patient_token") or "").strip(),
         "page": row.get("page_number"),
         "row": row.get("row_index"),
@@ -4977,6 +5250,17 @@ def _structured_record_from_row(row: dict[str, Any], *, requested_doc_id: str | 
         "technical_status": _status_fr(status_code),
         "variation": variation,
         "source": _source_label(row),
+        "source_label": _source_label(row),
+        "source_excerpt": " ".join(
+            x
+            for x in [
+                str(analyte_human or "").strip(),
+                str(value_raw or "").strip(),
+                str(unit or "").strip(),
+                str(reference_raw or "").strip(),
+            ]
+            if x
+        ),
     }
 
 
@@ -5623,11 +5907,7 @@ def build_structured_evidence_pack(
             for r in rows
             if _row_matches_value_criterion(r, target_values, query_understanding.comparison_operator)
         ]
-        technical_condition = str(query_understanding.technical_condition or "").strip().lower()
-        if technical_condition == "out_of_reference":
-            rows = [r for r in rows if _status_code(r) in {"above_reference", "below_reference"}]
-        if technical_condition in {"above_reference", "below_reference", "within_reference", "not_interpretable"}:
-            rows = [r for r in rows if _status_code(r) == technical_condition]
+        rows = _apply_technical_condition_filter(rows, query_understanding.technical_condition)
         if excluded_analytes:
             rows = [r for r in rows if not _row_matches_excluded(r, excluded_analytes)]
         evidences = [_structured_record_from_row(r) for r in rows]
@@ -5659,6 +5939,7 @@ def build_structured_evidence_pack(
             analyte_norms=requested_analytes,
             limit=600,
         )
+        rows = _apply_technical_condition_filter(rows, query_understanding.technical_condition)
         left, right = requested_doc_ids[0], requested_doc_ids[1]
         left_rows = [r for r in rows if str(r.get("doc_id") or "").strip().lower() == left.lower()]
         right_rows = [r for r in rows if str(r.get("doc_id") or "").strip().lower() == right.lower()]
@@ -6127,6 +6408,7 @@ def build_structured_evidence_pack(
                 for r in rows
                 if _row_matches_value_criterion(r, target_values, query_understanding.comparison_operator)
             ]
+        rows = _apply_technical_condition_filter(rows, query_understanding.technical_condition)
         if intent == "toxicology_summary":
             urine_mode = any(k in qn for k in ["urinaire", "urinaires", "urine"])
             tox_terms = ["ethanol", "acide_valproique", "carbamazepine", "lithium"]
@@ -6172,11 +6454,14 @@ def build_structured_evidence_pack(
         rows_for_pack: list[dict[str, Any]] = []
         missing: list[str] = []
         out_of_reference_only = _query_requests_out_of_reference_only(qn)
+        if "priority_level" in {str(c).strip().lower() for c in list(getattr(query_understanding, "requested_table_columns", []) or [])}:
+            out_of_reference_only = False
+        effective_tc = _canonical_technical_condition(query_understanding.technical_condition)
         yes_no_mode = str(query_understanding.answer_style or "").strip().lower() == "yes_no" or str(query_understanding.output_format or "").strip().lower() == "yes_no"
         if requested_analytes:
             full_rows = list(rows)
             filtered_rows = list(rows)
-            if out_of_reference_only:
+            if effective_tc == "out_of_reference" or out_of_reference_only:
                 filtered_rows = [r for r in rows if _status_code(r) in {"above_reference", "below_reference"}]
             for analyte in requested_analytes:
                 row = _best_row_for_analyte(filtered_rows, analyte)
@@ -6195,7 +6480,7 @@ def build_structured_evidence_pack(
         else:
             for row in rows:
                 status = _status_code(row)
-                if out_of_reference_only and status not in {
+                if (effective_tc == "out_of_reference" or out_of_reference_only) and status not in {
                     "above_reference",
                     "below_reference",
                 }:
@@ -6588,6 +6873,17 @@ def run_generation(
     recent_style_history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
+    stage_times_ms: dict[str, float] = {
+        "query_understanding_ms": 0.0,
+        "routing_ms": 0.0,
+        "retrieval_ms": 0.0,
+        "evidence_build_ms": 0.0,
+        "llm_writer_ms": 0.0,
+        "validation_ms": 0.0,
+        "repair_ms": 0.0,
+        "fallback_ms": 0.0,
+        "total_ms": 0.0,
+    }
     request_id = str(uuid4())
 
     query_received = query
@@ -6600,6 +6896,7 @@ def run_generation(
     source_citations_for_response: list[dict[str, Any]] = []
     idx = Path(index_dir)
     sqlite_path = idx / "medical_rag.sqlite"
+    t_qu0 = time.perf_counter()
     query_understanding = parse_query_understanding(q)
     query_understanding, llm_qu_debug = _llm_assisted_query_understanding(
         query=q,
@@ -6609,6 +6906,56 @@ def run_generation(
         model=model,
         timeout=timeout,
     )
+    query_plan = understand_medical_query(
+        q,
+        llm_client=llm_client,
+        model=model,
+        timeout=timeout,
+    )
+    planner_intent_to_qu_intent = {
+        "single_analyte_lookup": "single_analyte_lookup",
+        "doc_scoped_abnormal_results": "doc_scoped_abnormal_results",
+        "doc_scoped_summary": "doc_scoped_summary",
+        "doc_pair_comparison": "doc_pair_comparison",
+        "global_result_search": "cohort_search",
+        "global_abnormal_search": "global_analyte_abnormal_search",
+        "guarded_medical_interpretation": "doc_scoped_medical_interpretation_guarded",
+        "open_grounded_medical_question": "unstructured",
+        "reference_range_lookup": "reference_range_lookup",
+        "unsupported_or_insufficient_context": "unstructured",
+    }
+    planned_intent = planner_intent_to_qu_intent.get(str(getattr(query_plan, "intent", "") or "").strip().lower())
+    planned_docs = [str(d).strip() for d in list(getattr(query_plan, "requested_doc_ids", []) or []) if str(d).strip()]
+    planned_analytes = [str(a).strip().lower() for a in list(getattr(query_plan, "requested_analytes", []) or []) if str(a).strip()]
+    planner_condition_to_qu = {
+        "above_reference_only": "above_reference",
+        "below_reference_only": "below_reference",
+        "out_of_reference": "out_of_reference",
+        "within_reference": "within_reference",
+        "any_result": None,
+        "not_applicable": None,
+    }
+    planned_condition = planner_condition_to_qu.get(str(getattr(query_plan, "technical_condition", "") or "").strip().lower())
+    planner_protected_intents = {
+        "response_transform",
+        "context_summary_render",
+        "inventory_visualization_render",
+        "visualization_recommendation",
+        "source_followup",
+        "comment_without_measured_value",
+        "qualitative_comment_render",
+        "patient_inventory",
+        "patient_inventory_count",
+    }
+    if planned_intent and str(query_understanding.intent or "").strip().lower() not in planner_protected_intents:
+        query_understanding = replace(
+            query_understanding,
+            intent=planned_intent,
+            requested_doc_ids=planned_docs or list(query_understanding.requested_doc_ids or []),
+            requested_analytes=planned_analytes or list(query_understanding.requested_analytes or []),
+            technical_condition=planned_condition or query_understanding.technical_condition,
+        )
+    stage_times_ms["query_understanding_ms"] = round((time.perf_counter() - t_qu0) * 1000.0, 3)
     preferred_previous_transformable_pack = (
         previous_displayed_evidence_pack
         if isinstance(previous_displayed_evidence_pack, dict)
@@ -7065,6 +7412,23 @@ def run_generation(
         )
         selected_route = "doc_scoped_abnormal_results"
         route_reason = "doc_scope+abnormal_summary_request"
+    elif selected_route == "doc_scoped_priority_anomalies":
+        query_understanding = replace(
+            query_understanding,
+            intent="doc_scoped_summary",
+            technical_condition="any_result",
+            output_format="table",
+            requested_table_columns=[
+                "priority_level",
+                "analyte",
+                "valeur_actuelle",
+                "reference",
+                "statut",
+                "priority_reason",
+            ],
+        )
+        selected_route = "doc_scoped_priority_anomalies"
+        route_reason = "doc_scope+priority_anomalies_request"
     elif selected_route == "single_analyte_lookup":
         query_understanding = replace(query_understanding, intent="doc_scoped_results")
         selected_route = "single_analyte_lookup"
@@ -7869,11 +8233,14 @@ def run_generation(
         requested_doc_ids
         or query_understanding.intent in {"global_patient_lookup", "cohort_search", "comment_without_measured_value"}
     ):
+        t_route0 = time.perf_counter()
         structured_pack = build_structured_evidence_pack(
             query=q,
             query_understanding=query_understanding,
             sqlite_path=sqlite_path,
         )
+        stage_times_ms["routing_ms"] = round((time.perf_counter() - t_route0) * 1000.0, 3)
+        stage_times_ms["evidence_build_ms"] = stage_times_ms["routing_ms"]
         if str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
             resolved_scope = [
                 str(d).strip()
@@ -7883,13 +8250,21 @@ def run_generation(
             if resolved_scope:
                 requested_doc_ids = resolved_scope
         structured_rows = list(structured_pack.get("rows") or [])
-        if str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
+        structured_evidences = list(structured_pack.get("evidences") or [])
+        if selected_route == "doc_scoped_priority_anomalies" and structured_evidences:
+            evidence_pack = list(structured_evidences)
+        elif str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
             evidence_pack = list(structured_pack.get("evidences") or [])
         else:
             evidence_pack = _rows_to_evidence(structured_rows)
         if requested_doc_ids:
             allowed_docs = {d.lower() for d in requested_doc_ids}
             evidence_pack = [ev for ev in evidence_pack if str(ev.get("doc_id") or "").strip().lower() in allowed_docs]
+        if selected_route == "doc_scoped_priority_anomalies":
+            evidence_pack = _apply_priority_scoring(list(evidence_pack))
+            structured_pack["evidences"] = list(evidence_pack)
+            structured_pack["results"] = list(evidence_pack)
+            structured_pack["rows"] = list(structured_pack.get("rows") or [])
         displayed_evidences = list(evidence_pack)
         citations = build_citations(displayed_evidences)
         source_citations = build_source_citations(displayed_evidences, resolver=source_resolver)
@@ -7912,6 +8287,17 @@ def run_generation(
         )
         query_understanding = _with_resolved_strategy(query_understanding, structured_pack)
         compose_mode = _hybrid_writer_mode(query_understanding)
+        force_llm_writer = str(os.getenv("MEDICAL_RAG_FORCE_LLM_WRITER", "1")).strip().lower() in {"1", "true", "yes", "on"}
+        if not force_llm_writer and selected_route in {
+            "doc_scoped_abnormal_results",
+            "doc_scoped_priority_anomalies",
+            "global_analyte_abnormal_search",
+            "doc_pair_comparison",
+            "single_analyte_lookup",
+            "doc_scoped_medical_interpretation_guarded",
+        }:
+            compose_mode = "fallback"
+        t_llm0 = time.perf_counter()
         composed = compose_professional_answer(
             user_question=q,
             query_understanding=query_understanding,
@@ -7926,6 +8312,10 @@ def run_generation(
             max_tokens=max_tokens,
             timeout=timeout,
         )
+        if compose_mode == "fallback":
+            stage_times_ms["llm_writer_ms"] = 0.0
+        else:
+            stage_times_ms["llm_writer_ms"] = round((time.perf_counter() - t_llm0) * 1000.0, 3)
         composed_data = composed
         final_answer = str(composed.get("answer") or "").strip() or _missing_doc_answer()
         llm_prompt_preview = str(composed.get("llm_prompt_preview") or "")[:1200]
@@ -7958,6 +8348,16 @@ def run_generation(
                     source_label=source_label or "source non disponible",
                 )
         generation_mode = str(composed.get("mode") or "deterministic_professional_fallback")
+        if compose_mode == "fallback":
+            pre_validation_mode_overrides = {
+                "doc_scoped_abnormal_results": "deterministic_doc_scoped_abnormal_results",
+                "doc_scoped_priority_anomalies": "deterministic_doc_scoped_priority_anomalies",
+                "global_analyte_abnormal_search": "deterministic_global_analyte_abnormal_search",
+                "doc_pair_comparison": "deterministic_doc_pair_comparison",
+                "doc_scoped_medical_interpretation_guarded": "deterministic_guarded_medical_interpretation",
+                "single_analyte_lookup": "deterministic_single_analyte_lookup",
+            }
+            generation_mode = pre_validation_mode_overrides.get(selected_route, generation_mode)
         if str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
             qdbg = structured_pack.get("qualitative_debug") if isinstance(structured_pack.get("qualitative_debug"), dict) else {}
             LOGGER.info(
@@ -8046,6 +8446,7 @@ def run_generation(
         if exact_analytes and not missing_requested_analytes:
             missing_requested_analytes = [a for a in exact_analytes if a not in set(found_requested_analytes)]
 
+        t_val0 = time.perf_counter()
         validation = validate_answer(
             query=q,
             answer_text=final_answer,
@@ -8088,6 +8489,7 @@ def run_generation(
             requested_value=query_understanding.requested_value,
             comparison_operator=query_understanding.comparison_operator,
         )
+        stage_times_ms["validation_ms"] = round((time.perf_counter() - t_val0) * 1000.0, 3)
         quality = _quality_report(
             answer=final_answer,
             validation=validation,
@@ -8096,6 +8498,7 @@ def run_generation(
         )
 
         if _should_retry_with_validator(validation, generation_mode):
+            t_rep0 = time.perf_counter()
             retry_used = True
             retry_feedback = _build_validator_retry_feedback(validation)
             retry_composed = compose_professional_answer(
@@ -8227,18 +8630,91 @@ def run_generation(
                         source_clickable_requested=bool(query_understanding.source_clickable_requested),
                         recent_style_history=style_history,
                     )
+            stage_times_ms["repair_ms"] = round((time.perf_counter() - t_rep0) * 1000.0, 3)
+
+        # Hard gate: never return an invalid LLM/hybrid answer to end-users.
+        llm_like_mode = str(generation_mode or "").startswith("llm_") or str(generation_mode or "") == "hybrid_structured_llm_writer"
+        if llm_like_mode and str((validation or {}).get("validation_status") or "fail") == "fail":
+            t_fb0 = time.perf_counter()
+            fallback_composed = compose_professional_answer(
+                user_question=q,
+                query_understanding=query_understanding,
+                evidence_pack=structured_pack,
+                mode="fallback",
+                source_citations=source_citations,
+            )
+            final_answer = str(fallback_composed.get("answer") or final_answer).strip()
+            generation_mode = "deterministic_safety_fallback_after_llm_validation_failure"
+            writer_error = None
+            validation = validate_answer(
+                query=q,
+                answer_text=final_answer,
+                evidence_pack=evidence_pack,
+                displayed_evidences=displayed_evidences,
+                source_citations=source_citations,
+                exact_analyte=exact_analyte,
+                llm_error=None,
+                generation_mode=generation_mode,
+                retrieval_status="answerable" if displayed_evidences else "insufficient_context",
+                show_low_quality=show_low_quality,
+                max_display_results=max_display_results,
+                show_all_results=show_all_results,
+                query_received=query_received,
+                query_used_for_retrieval=query_used_for_retrieval,
+                query_used_for_prompt=query_used_for_prompt,
+                query_stored=q,
+                detected_analytes=exact_analytes,
+                requested_doc_id=requested_doc_ids[0] if len(requested_doc_ids) == 1 else None,
+                requested_doc_ids=requested_doc_ids,
+                missing_requested_doc_ids=missing_requested_doc_ids,
+                requested_analytes=exact_analytes,
+                found_requested_analytes=found_requested_analytes,
+                found_requested_analyte_norms=found_requested_analyte_norms,
+                missing_requested_analytes=missing_requested_analytes,
+                current_vs_previous_requested=query_understanding.requires_previous_results,
+                diagnostic_safety_intent=bool(intents.get("diagnostic_safety_question")),
+                query_intents=intents,
+                output_format_requested=query_understanding.output_format,
+                answer_style_requested=query_understanding.answer_style,
+                requested_table_columns=query_understanding.requested_table_columns,
+                requested_technical_condition=query_understanding.technical_condition,
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                requested_value=query_understanding.requested_value,
+                comparison_operator=query_understanding.comparison_operator,
+                raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+                user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+                requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+                visualization_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[0],
+                chart_data_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[1],
+            )
+            quality = _quality_report(
+                answer=final_answer,
+                validation=validation,
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                recent_style_history=style_history,
+            )
+            stage_times_ms["fallback_ms"] = round((time.perf_counter() - t_fb0) * 1000.0, 3)
 
         route_mode_overrides = {
             "doc_scoped_abnormal_results": "deterministic_doc_scoped_abnormal_results",
+            "doc_scoped_priority_anomalies": "deterministic_doc_scoped_priority_anomalies",
             "global_analyte_abnormal_search": "deterministic_global_analyte_abnormal_search",
             "doc_pair_comparison": "deterministic_doc_pair_comparison",
             "doc_scoped_medical_interpretation_guarded": "deterministic_guarded_medical_interpretation",
             "single_analyte_lookup": "deterministic_single_analyte_lookup",
         }
+        if selected_route == "cohort_search" and _canonical_technical_condition(query_understanding.technical_condition) in {
+            "above_reference",
+            "below_reference",
+            "out_of_reference",
+        }:
+            route_mode_overrides["cohort_search"] = "deterministic_global_analyte_abnormal_search"
         if str(generation_mode or "").startswith("deterministic_") and selected_route in route_mode_overrides:
             generation_mode = route_mode_overrides[selected_route]
 
         elapsed = time.perf_counter() - started
+        stage_times_ms["total_ms"] = round(elapsed * 1000.0, 3)
         intro_text, conclusion_text = _extract_intro_conclusion(final_answer)
         retrieval_sources = [
             {
@@ -8322,6 +8798,7 @@ def run_generation(
                 "intents": intents,
                 "analyte_resolution_debug": structured_pack.get("analyte_resolution_debug"),
                 "query_understanding": _query_understanding_payload(query_understanding),
+                "query_plan": plan_to_payload(query_plan),
                 "evidence_rows_preview": list((structured_pack.get("rows") or [])[:8]),
                 "included_rows": list((structured_pack.get("evidences") or [])[:20]),
                 "excluded_rows": list(structured_pack.get("excluded_rows") or []),
@@ -8329,6 +8806,7 @@ def run_generation(
                     "errors": list((validation or {}).get("errors") or []),
                     "warnings": list((validation or {}).get("warnings") or []),
                 },
+                "stage_timings_ms": dict(stage_times_ms),
             },
             "exact_analyte_coverage": {
                 "detected_exact_analyte": exact_analyte,

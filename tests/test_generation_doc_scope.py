@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -253,6 +254,93 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertNotIn("acth", answer)
         dbg = dict(result.get("debug") or {})
         self.assertEqual(str(dbg.get("selected_route") or ""), "doc_scoped_medical_interpretation_guarded")
+
+    def test_global_vitamin_low_directional_filter(self) -> None:
+        try:
+            result = run_generation(
+                query="Quels rapports montrent une vitamine D ou vitamine B12 basse ? Donne uniquement les résultats réellement présents dans les documents.",
+                mode="keyword",
+                top_k=50,
+                index_dir="data/indexes",
+            )
+        except RuntimeError as exc:
+            self.skipTest(f"retrieval backend indisponible dans cet environnement: {exc}")
+        qu = dict(result.get("query_understanding") or {})
+        self.assertEqual(str(qu.get("technical_condition") or ""), "below_reference")
+        evidences = list((result.get("structured_evidence_pack") or {}).get("evidences") or [])
+        self.assertTrue(evidences)
+        statuses = {
+            str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+            for ev in evidences
+        }
+        self.assertTrue(statuses.issubset({"below_reference"}))
+        for ev in evidences:
+            analyte = str(ev.get("analyte") or "").upper()
+            value = str(ev.get("current_value") or ev.get("value_raw") or "")
+            if "VITAMINE D" in analyte:
+                self.assertNotIn("55", value)
+        self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+
+    def test_global_crp_above_directional_filter_and_embedded_reference(self) -> None:
+        result = run_generation(
+            query="Y a-t-il des rapports avec CRP supérieure à la référence ?",
+            mode="keyword",
+            top_k=50,
+            index_dir="data/indexes",
+        )
+        qu = dict(result.get("query_understanding") or {})
+        self.assertEqual(str(qu.get("technical_condition") or ""), "above_reference")
+        evidences = list((result.get("structured_evidence_pack") or {}).get("evidences") or [])
+        self.assertTrue(evidences)
+        for ev in evidences:
+            status = str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+            self.assertEqual(status, "above_reference")
+            analyte = str(ev.get("analyte") or "")
+            self.assertEqual(analyte.strip().upper(), "CRP")
+            reference = str(ev.get("reference") or "")
+            self.assertNotIn("non disponible", reference.lower())
+            doc_id = str(ev.get("doc_id") or "").strip().lower()
+            value = str(ev.get("current_value") or ev.get("value_raw") or "").strip()
+            if doc_id == "report_12":
+                self.assertNotEqual(value, "1.2")
+                self.assertNotEqual(value, "1,2")
+        displayed = list(result.get("displayed_evidences") or [])
+        self.assertEqual(len(displayed), len(evidences))
+        self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+
+    def test_doc_scoped_priority_anomalies_scoring_and_no_llm_call_when_forced_off(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "0"
+        try:
+            result = run_generation(
+                query="Dans report (10), liste les anomalies importantes par ordre de priorité technique.",
+                mode="keyword",
+                top_k=50,
+                index_dir="data/indexes",
+            )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "doc_scoped_priority_anomalies")
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_doc_scoped_priority_anomalies")
+        self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+        displayed = list(result.get("displayed_evidences") or [])
+        self.assertTrue(displayed)
+        for ev in displayed:
+            self.assertIn("priority_score", ev)
+            self.assertIn("priority_level", ev)
+            self.assertIn("priority_reason", ev)
+            self.assertIn(str(ev.get("priority_level")), {"high", "moderate", "low"})
+            self.assertIn(str(ev.get("technical_status_code") or ""), {"above_reference", "below_reference"})
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("priorité", answer)
+        self.assertNotIn("non présent pmol", answer)
+        stage = dict((result.get("debug") or {}).get("stage_timings_ms") or {})
+        self.assertIn("llm_writer_ms", stage)
+        self.assertIn(stage.get("llm_writer_ms"), {0, 0.0})
 
 
 if __name__ == "__main__":

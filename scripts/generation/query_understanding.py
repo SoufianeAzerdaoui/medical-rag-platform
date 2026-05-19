@@ -538,6 +538,26 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         and any(k in qn for k in ["uniquement", "anomal", "hors reference", "quels resultats", "quels résultats", "donne", "sans interpretation", "sans interprétation", "résume", "resume"])
         and not any(k in qn for k in ["oui non", "oui/non", "oui ou non", "yes/no", "yes or no", "est ce que", "est-ce que"])
     )
+    has_priority_request = any(
+        k in qn
+        for k in [
+            "anomalies importantes",
+            "priorite technique",
+            "priorité technique",
+            "ordre de priorite",
+            "ordre de priorité",
+            "resultats significatifs",
+            "résultats significatifs",
+            "attention technique",
+            "classer par gravite",
+            "classer par gravité",
+        ]
+    )
+    has_doc_scoped_priority_anomalies = (
+        len(doc_ids) >= 1
+        and has_priority_request
+        and (has_abnormal_wording or "anomal" in qn or "important" in qn)
+    )
     has_doc_scoped_medical_interpretation_guarded = (
         len(doc_ids) >= 1
         and any(k in qn for k in ["peut on conclure", "peut-on conclure", "conclure a", "conclure à", "hyperthyro", "hypothyro"])
@@ -811,6 +831,7 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         "global_analyte_abnormal_search": has_global_analyte_abnormal_search,
         "doc_pair_comparison": has_doc_pair_comparison,
         "doc_scoped_medical_interpretation_guarded": has_doc_scoped_medical_interpretation_guarded,
+        "doc_scoped_priority_anomalies": has_doc_scoped_priority_anomalies,
         "doc_scoped_abnormal_results": has_doc_scoped_abnormal_results,
         "single_analyte_lookup": has_single_analyte_lookup,
         "doc_scoped_results": has_doc_scope and (len(analyte_list) >= 1 or not has_summary),
@@ -1209,19 +1230,49 @@ def detect_answer_style(query: str) -> str:
 
 def detect_technical_condition(query: str) -> str | None:
     qn = norm_text(query or "")
+    below_markers = [
+        "basse",
+        "bas",
+        "inferieure",
+        "inferieur",
+        "en dessous",
+        "sous la reference",
+        "below",
+        "below reference",
+        "below_reference",
+    ]
+    above_markers = [
+        "superieure",
+        "superieur",
+        "elevee",
+        "eleve",
+        "au dessus",
+        "au-dessus",
+        "above",
+        "above reference",
+        "above_reference",
+    ]
+    out_markers = [
+        "hors reference",
+        "hors norme",
+        "anormal",
+        "anormaux",
+        "anormales",
+        "out of range",
+        "out_of_reference",
+    ]
     if (
-        "hors reference" in qn
+        any(k in qn for k in out_markers)
         or "hors de la reference" in qn
         or "resultats anormaux" in qn
         or "résultats anormaux" in qn
         or "anomalies biologiques" in qn
-        or ("above_reference" in qn and "below_reference" in qn)
-        or ("above reference" in qn and "below reference" in qn)
+        or (any(k in qn for k in above_markers) and any(k in qn for k in below_markers))
     ):
         return "out_of_reference"
-    if any(k in qn for k in ["au dessus de la reference", "au-dessus de la reference", "above reference"]):
+    if any(k in qn for k in above_markers + ["au dessus de la reference", "au-dessus de la reference"]):
         return "above_reference"
-    if any(k in qn for k in ["en dessous de la reference", "below reference"]):
+    if any(k in qn for k in below_markers + ["en dessous de la reference"]):
         return "below_reference"
     if any(k in qn for k in ["dans la reference", "within reference"]):
         return "within_reference"
@@ -1622,6 +1673,8 @@ def _resolve_primary_intent(intents: dict[str, bool], *, requested_doc_ids: list
         return "doc_pair_comparison"
     if intents.get("doc_scoped_medical_interpretation_guarded"):
         return "doc_scoped_medical_interpretation_guarded"
+    if intents.get("doc_scoped_priority_anomalies"):
+        return "doc_scoped_priority_anomalies"
     if intents.get("doc_scoped_abnormal_results"):
         return "doc_scoped_abnormal_results"
     if intents.get("single_analyte_lookup"):
@@ -1684,6 +1737,8 @@ def build_intent_arbitration_debug(qu: QueryUnderstanding) -> dict[str, Any]:
         reason = "Arbitrage: interprétation médicale prudente document-scopée."
     elif winner == "doc_scoped_abnormal_results":
         reason = "Arbitrage: résultats anormaux document-scopés."
+    elif winner == "doc_scoped_priority_anomalies":
+        reason = "Arbitrage: anomalies document-scopées classées par priorité technique."
     elif winner == "single_analyte_lookup":
         reason = "Arbitrage: lookup ciblé d’un analyte dans un rapport."
     elif winner == "multi_doc_comparison":

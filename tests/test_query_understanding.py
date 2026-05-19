@@ -449,6 +449,11 @@ class TestQueryUnderstanding(unittest.TestCase):
         self.assertEqual(qu.intent, "doc_scoped_medical_interpretation_guarded")
         self.assertEqual(qu.requested_doc_ids, ["report_16"])
 
+    def test_doc_scoped_priority_anomalies_intent(self) -> None:
+        qu = parse_query_understanding("Dans report (10), liste les anomalies importantes par ordre de priorité technique.")
+        self.assertEqual(qu.intent, "doc_scoped_priority_anomalies")
+        self.assertEqual(qu.requested_doc_ids, ["report_10"])
+
 
 if __name__ == "__main__":
     unittest.main()

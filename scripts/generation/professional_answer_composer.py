@@ -864,6 +864,10 @@ def _build_content_table(
             "patient": "Patient",
             "report": "Report",
             "document": "Document",
+            "priorite": "Priorité",
+            "priority_level": "Priorité",
+            "priority_score": "Score priorité",
+            "priority_reason": "Raison technique",
             "analyte": "Analyte",
             "valeur_actuelle": "Valeur actuelle",
             "valeur": "Valeur actuelle",
@@ -883,6 +887,9 @@ def _build_content_table(
                         "Patient": _safe_str(ev.get("patient_token"), "non disponible"),
                         "Report": _safe_str(ev.get("doc_id")),
                         "Document": _safe_str(ev.get("comparison_side") or ev.get("doc_id")),
+                        "Priorité": _safe_str(ev.get("priority_level"), "unknown"),
+                        "Score priorité": _safe_str(ev.get("priority_score"), "0"),
+                        "Raison technique": _safe_str(ev.get("priority_reason"), "non disponible"),
                         "Analyte": _display_analyte(ev),
                         "Valeur actuelle": (
                             _safe_str(ev.get("current_value"), "non disponible")
@@ -1485,7 +1492,7 @@ def render_professional_fallback(
     else:
         content = _build_paragraph(evidences[:1], user_question)
 
-    if missing_items and presentation != "yes_no":
+    if missing_items and presentation != "yes_no" and intent not in {"multi_doc_comparison", "doc_pair_comparison"}:
         doc_scope = ", ".join(query_understanding.requested_doc_ids or ["le document demandé"])
         miss = "\n".join(f"- {_canonical_analyte_display(str(m))}: non retrouvé dans {doc_scope}." for m in missing_items)
         content = content.rstrip() + "\n\nÉléments non retrouvés :\n" + miss
