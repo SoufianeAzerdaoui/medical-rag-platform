@@ -413,7 +413,7 @@ class TestGenerationDocScope(unittest.TestCase):
         )
         self.assertIn(
             str((result.get("debug") or {}).get("selected_route") or ""),
-            {"global_qualitative_toxicology_search", "open_grounded_medical_question"},
+            {"global_toxicology_search", "global_qualitative_toxicology_search", "open_grounded_medical_question"},
         )
         self.assertNotEqual(str(result.get("generation_mode") or "").strip().lower(), "llm")
         answer = str(result.get("answer") or "").lower()
@@ -597,6 +597,80 @@ class TestGenerationDocScope(unittest.TestCase):
         answer = str(result.get("answer") or "").lower()
         self.assertIn("aucun résultat biologique exploitable", answer)
         self.assertIn(str(result.get("generation_mode") or ""), {"deterministic_no_evidence_response", "deterministic_doc_scoped_abnormal_results"})
+        self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+
+    def test_reference_range_acide_urique_homme_deterministic(self) -> None:
+        result = run_generation(
+            query="Quelle est la plage physiologique de l’acide urique chez l’homme ?",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_reference_range_lookup")
+        self.assertIn("acide_urique", list((result.get("query_understanding") or {}).get("requested_analytes") or []))
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("35", answer)
+        self.assertIn("72", answer)
+        self.assertNotIn("chunk_id", answer)
+        self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+
+    def test_reference_range_acide_urique_femme_deterministic(self) -> None:
+        result = run_generation(
+            query="Quelle est la plage normale de l’acide urique chez la femme ?",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_reference_range_lookup")
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("26", answer)
+        self.assertIn("60", answer)
+        self.assertNotIn("chunk_id", answer)
+        self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+
+    def test_doc_scoped_single_analyte_status_route(self) -> None:
+        result = run_generation(
+            query="Dans le report 24, quelle est la valeur d’acide urique et est-elle dans la référence pour une femme ?",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "doc_scoped_single_analyte_status")
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_single_analyte_lookup")
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("acide urique", answer)
+        self.assertNotIn("insuline", answer)
+        self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+
+    def test_global_acide_urique_below_reference(self) -> None:
+        result = run_generation(
+            query="Dans tous les rapports disponibles, quels documents montrent un acide urique en dessous de la référence ?",
+            mode="keyword",
+            top_k=50,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "global_analyte_abnormal_search")
+        self.assertEqual(str((result.get("query_understanding") or {}).get("technical_condition") or ""), "below_reference")
+        self.assertIn("acide_urique", list((result.get("query_understanding") or {}).get("requested_analytes") or []))
+        evs = list((result.get("structured_evidence_pack") or {}).get("evidences") or [])
+        self.assertTrue(evs)
+        statuses = {str(ev.get("technical_status_code") or "").strip().lower() for ev in evs}
+        self.assertTrue(statuses.issubset({"below_reference"}))
+
+    def test_global_toxicology_search_route(self) -> None:
+        result = run_generation(
+            query="Quels rapports comportent une recherche de toxiques urinaires ?",
+            mode="keyword",
+            top_k=50,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "global_toxicology_search")
+        self.assertIn(
+            str(result.get("generation_mode") or ""),
+            {"deterministic_global_toxicology_search", "deterministic_safe_error_response"},
+        )
+        answer = str(result.get("answer") or "").lower()
+        self.assertNotIn("cristaux d'acide urique", answer)
         self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
 
     def test_strict_route_forced_llm_fact_drift_falls_back_to_deterministic(self) -> None:

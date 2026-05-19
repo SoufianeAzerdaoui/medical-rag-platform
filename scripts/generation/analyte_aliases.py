@@ -10,6 +10,7 @@ ANALYTE_ALIAS_GROUPS: dict[str, list[str]] = {
     "c3": ["c3", "complement c3", "complément c3"],
     "c4": ["c4", "complement c4", "complément c4"],
     "cholesterol_hdl": ["hdl", "cholesterol hdl", "cholestérol hdl", "cholesterol_hdl"],
+    "acide_urique": ["acide urique", "acide_urique", "uric acid", "urate", "uricemie", "uricémie"],
     "crp": ["crp"],
     "peptide_c": ["peptide c", "peptide_c", "peptide-c"],
     "insuline": ["insuline"],
@@ -49,8 +50,13 @@ ANALYTE_ALIAS_GROUPS: dict[str, list[str]] = {
     "trichuris": ["trichuris", "trichuris trichiura"],
     "ankylostoma": ["ankylostoma"],
     "haptoglobine": ["haptoglobine"],
-    "phosphatase_alcaline": ["phosphatase alcaline", "pal", "alkaline phosphatase"],
+    "phosphatase_alcaline": ["phosphatase alcaline", "phosphatases alcalines", "pal", "alkaline phosphatase"],
+    "amphetamine": ["amphétamine", "amphetamine", "amphetamines", "amphétamines"],
+    "benzodiazepine": ["benzodiazépine", "benzodiazepine", "benzodiazépines", "benzodiazepines"],
+    "cocaine": ["cocaine", "cocaïne"],
+    "ecstasy": ["ecstasy", "mdma"],
+    "opiaces": ["opiaces", "opiacés", "opiacé", "opiace"],
+    "phencyclidine": ["phencyclidine", "pcp"],
     "gh_ou_sth": ["gh", "sth", "gh ou sth"],
     "glucose": ["glucose", "glycemie", "glycémie", "glycemie a jeun", "glycémie à jeun", "glucose sanguin"],
 }
-

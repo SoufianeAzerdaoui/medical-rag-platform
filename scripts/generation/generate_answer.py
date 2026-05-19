@@ -477,6 +477,8 @@ def _should_force_reference_range_lookup(query_norm: str, query_understanding: Q
         return False
 
     measurement_terms = (
+        "quelle est la valeur",
+        "valeur de",
         "resultat",
         "résultat",
         "valeur mesuree",
@@ -879,6 +881,7 @@ def _select_hard_gate_fallback_mode(
         "doc_pair_comparison": "deterministic_doc_pair_comparison",
         "multi_doc_comparison": "deterministic_multi_doc_comparison",
         "single_analyte_lookup": "deterministic_single_analyte_lookup",
+        "doc_scoped_single_analyte_status": "deterministic_single_analyte_lookup",
         "reference_range_lookup": "deterministic_reference_range_lookup",
     }
     return per_route.get(str(selected_route or "").strip().lower(), "deterministic_safety_fallback_after_llm_validation_failure")
@@ -2394,6 +2397,38 @@ def _query_requests_out_of_reference_only(qn: str) -> bool:
             "attention technique",
         ]
     ) or (_is_above_reference_query(qn) and "reference" in qn) or (_is_below_reference_query(qn) and "reference" in qn)
+
+
+def _is_toxicology_global_query(qn: str) -> bool:
+    has_global_scope = any(
+        t in qn
+        for t in [
+            "tous les rapports",
+            "rapports disponibles",
+            "rapports indexes",
+            "rapports indexés",
+            "dans tous les rapports",
+            "quels rapports",
+            "quels documents",
+            "retrouve",
+            "tous les cas",
+        ]
+    )
+    has_toxicology_terms = any(
+        t in qn
+        for t in [
+            "pharmacotoxicologie",
+            "pharmaco toxicologie",
+            "toxicologie",
+            "toxiques urinaires",
+            "toxiques sanguins",
+            "toxicologie urinaire",
+            "toxicologie sanguine",
+            "screening urinaire",
+            "recherche de toxiques",
+        ]
+    )
+    return has_global_scope and has_toxicology_terms
 
 
 def is_valid_analyte_name(analyte: str) -> bool:
@@ -3962,7 +3997,15 @@ def _interpretation_fr(status: str | None) -> str:
     return "non interprétable"
 
 
-def _is_structured_question_with_fast_path(intents: dict[str, bool], requested_doc_ids: list[str], requested_analytes: list[str]) -> bool:
+def _is_structured_question_with_fast_path(
+    intents: dict[str, bool],
+    requested_doc_ids: list[str],
+    requested_analytes: list[str],
+    intent: str | None = None,
+) -> bool:
+    intent_norm = str(intent or "").strip().lower()
+    if intent_norm in {"global_toxicology_search", "global_analyte_abnormal_search", "cohort_search"}:
+        return True
     if intents.get("is_structured_query"):
         return True
     if requested_doc_ids:
@@ -4404,6 +4447,69 @@ def _fetch_global_comment_rows(
         conn.close()
 
 
+def _fetch_global_toxicology_rows(
+    *,
+    sqlite_path: Path,
+    limit: int = 2400,
+) -> list[dict[str, Any]]:
+    if not sqlite_path.exists():
+        return []
+    conn = sqlite3.connect(str(sqlite_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+              c.chunk_id,
+              c.doc_id,
+              c.chunk_type,
+              c.text_for_embedding,
+              c.text_for_keyword,
+              m.patient_token,
+              m.sample_token,
+              m.analyte,
+              m.analyte_norm,
+              m.value_raw,
+              m.value_numeric,
+              m.unit,
+              m.reference_range,
+              m.interpretation_status,
+              m.section,
+              m.section_norm,
+              m.row_index,
+              COALESCE(m.source_pdf, o.source_pdf) AS source_pdf,
+              COALESCE(m.page_number, o.page_number) AS page_number
+            FROM chunks c
+            LEFT JOIN metadata_chunks m ON m.chunk_id = c.chunk_id
+            LEFT JOIN object_references o ON o.chunk_id = c.chunk_id
+            WHERE c.chunk_type = 'lab_result'
+              AND (
+                instr(lower(coalesce(m.section_norm,'')), 'toxico') > 0
+                OR instr(lower(coalesce(m.section_norm,'')), 'pharmaco') > 0
+                OR instr(lower(coalesce(m.section,'')), 'toxico') > 0
+                OR instr(lower(coalesce(m.section,'')), 'pharmaco') > 0
+                OR instr(lower(coalesce(m.analyte_norm,'')), 'ethanol') > 0
+                OR instr(lower(coalesce(m.analyte_norm,'')), 'valpro') > 0
+                OR instr(lower(coalesce(m.analyte_norm,'')), 'carbamazep') > 0
+                OR instr(lower(coalesce(m.analyte_norm,'')), 'lithium') > 0
+                OR instr(lower(coalesce(m.analyte_norm,'')), 'amphetamine') > 0
+                OR instr(lower(coalesce(m.analyte_norm,'')), 'benzodiazep') > 0
+                OR instr(lower(coalesce(m.analyte_norm,'')), 'cocaine') > 0
+                OR instr(lower(coalesce(m.analyte_norm,'')), 'ecstasy') > 0
+                OR instr(lower(coalesce(m.analyte_norm,'')), 'opiace') > 0
+                OR instr(lower(coalesce(m.analyte_norm,'')), 'phencyclidine') > 0
+              )
+            ORDER BY lower(c.doc_id) ASC, COALESCE(m.page_number, o.page_number, 999999) ASC, COALESCE(m.row_index, 999999) ASC
+            LIMIT ?
+            """,
+            [int(limit)],
+        )
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
 def _extract_query_numeric_targets(query: str) -> list[str]:
     q = str(query or "")
     return [m.group(0) for m in re.finditer(r"\b\d+(?:[.,]\d+)?\b", q)]
@@ -4837,6 +4943,7 @@ def _build_reference_range_lookup_response(
             "prompt": "",
             "debug": {
                 "request_id": request_id,
+                "selected_route": "reference_range_lookup",
                 "selection_status": "disabled",
                 "feature_flags": {"REFERENCE_RANGE_STRICT_MODE": False},
                 "reference_range_debug": {
@@ -5127,6 +5234,7 @@ def _build_reference_range_lookup_response(
         "prompt": "",
         "debug": {
             "request_id": request_id,
+            "selected_route": "reference_range_lookup",
             "selection_status": status,
             "selected_policy": "deterministic_strict",
             "policy_level": "deterministic_strict",
@@ -6143,6 +6251,41 @@ def build_structured_evidence_pack(
         evidences = [_structured_record_from_row(r) for r in rows]
         pack["rows"] = rows
         pack["evidences"] = evidences
+        return _finalize_structured_pack(pack, query_understanding)
+
+    if normalized_intent == "global_toxicology_search":
+        tox_terms_urine = {
+            "amphetamine",
+            "benzodiazepine",
+            "cocaine",
+            "ecstasy",
+            "opiaces",
+            "phencyclidine",
+        }
+        tox_terms_blood = {"ethanol", "acide_valproique", "carbamazepine", "lithium"}
+        qn_local = norm_text(query)
+        urine_mode = any(t in qn_local for t in ["urinaire", "urinaires", "urine", "screening urinaire"])
+        blood_mode = any(t in qn_local for t in ["sanguin", "sanguine", "sang", "ethanol", "lithium", "carbamazepine", "valpro"])
+        rows = _fetch_global_toxicology_rows(sqlite_path=sqlite_path, limit=2400)
+        filtered: list[dict[str, Any]] = []
+        for r in rows:
+            analyte_probe = norm_text(f"{r.get('analyte_norm') or ''} {r.get('analyte') or ''}")
+            section_probe = norm_text(f"{r.get('section_norm') or ''} {r.get('section') or ''}")
+            if any(k in analyte_probe for k in ["cristaux d acide urique", "cristaux acide urique", "ecbu", "cytologie"]):
+                continue
+            has_tox_section = any(k in section_probe for k in ["toxico", "toxicologie", "pharmaco"])
+            has_urine_analyte = any(t in analyte_probe for t in tox_terms_urine)
+            has_blood_analyte = any(t in analyte_probe for t in tox_terms_blood)
+            if urine_mode and not (has_tox_section or has_urine_analyte):
+                continue
+            if blood_mode and not (has_tox_section or has_blood_analyte):
+                continue
+            if (not urine_mode and not blood_mode) and not (has_tox_section or has_urine_analyte or has_blood_analyte):
+                continue
+            filtered.append(r)
+        filtered = _apply_technical_condition_filter(filtered, query_understanding.technical_condition)
+        pack["rows"] = filtered
+        pack["evidences"] = [_structured_record_from_row(r) for r in filtered]
         return _finalize_structured_pack(pack, query_understanding)
 
     rows: list[dict[str, Any]] = []
@@ -7725,6 +7868,10 @@ def run_generation(
                 "diminuée",
                 "basse",
                 "inferieure",
+                "en dessous",
+                "en-dessous",
+                "below reference",
+                "below_reference",
             ]
         )
     )
@@ -7744,6 +7891,15 @@ def run_generation(
             ]
         )
     )
+    has_doc_scoped_single_analyte_shape = (
+        bool(list(query_understanding.requested_doc_ids or []))
+        and len(list(query_understanding.requested_analytes or [])) == 1
+        and any(t in qn for t in ["quelle est la valeur", "valeur de", "donne", "est il", "est-il", "hors reference", "dans la reference"])
+    )
+    if selected_route == "reference_range_lookup" and has_doc_scoped_single_analyte_shape:
+        query_understanding = replace(query_understanding, intent="doc_scoped_results")
+        selected_route = "doc_scoped_single_analyte_status"
+        route_reason = "doc_scope+single_analyte_value_status"
     if selected_route == "unstructured" and has_short_bio_summary_shape:
         selected_route = "doc_scoped_biological_summary"
         route_reason = "heuristic_doc_scoped_biological_summary"
@@ -7818,8 +7974,12 @@ def run_generation(
         route_reason = "doc_scope+priority_anomalies_request"
     elif selected_route == "single_analyte_lookup":
         query_understanding = replace(query_understanding, intent="doc_scoped_results")
-        selected_route = "single_analyte_lookup"
-        route_reason = "single_analyte+doc_scope_lookup"
+        if list(query_understanding.requested_doc_ids or []) and list(query_understanding.requested_analytes or []):
+            selected_route = "doc_scoped_single_analyte_status"
+            route_reason = "single_analyte+doc_scope_status"
+        else:
+            selected_route = "single_analyte_lookup"
+            route_reason = "single_analyte+doc_scope_lookup"
     elif selected_route == "doc_scoped_medical_interpretation_guarded":
         query_understanding = replace(
             query_understanding,
@@ -7829,18 +7989,31 @@ def run_generation(
         )
         selected_route = "doc_scoped_medical_interpretation_guarded"
         route_reason = "guarded_medical_interpretation_with_doc_scope"
-    elif selected_route == "unstructured" and has_explicit_global_scope and any(
-        t in qn for t in ["toxique urinaire", "toxiques urinaires", "pharmacotoxicologie", "drogues urinaires"]
-    ):
-        selected_route = "global_qualitative_toxicology_search"
-        route_reason = "global_toxicology_qualitative_search"
+    elif selected_route == "toxicology_summary" and not list(query_understanding.requested_doc_ids or []):
+        query_understanding = replace(
+            query_understanding,
+            intent="global_toxicology_search",
+            requires_global_search=True,
+            requested_doc_ids=[],
+        )
+        selected_route = "global_toxicology_search"
+        route_reason = "global_toxicology_from_toxicology_summary_without_doc_scope"
+    elif selected_route == "unstructured" and _is_toxicology_global_query(qn):
+        query_understanding = replace(
+            query_understanding,
+            intent="global_toxicology_search",
+            requires_global_search=True,
+            requested_doc_ids=[],
+        )
+        selected_route = "global_toxicology_search"
+        route_reason = "global_toxicology_search"
     elif selected_route == "unstructured" and has_explicit_global_scope and any(
         t in qn for t in ["pathologie endocrinienne active", "endocrinienne active", "affirmer une pathologie endocrinienne"]
     ):
         selected_route = "open_grounded_medical_question"
         route_reason = "global_endocrine_open_grounded_guarded"
 
-    if selected_route in {"global_analyte_abnormal_search", "global_qualitative_toxicology_search", "open_grounded_medical_question"} or has_explicit_global_scope:
+    if selected_route in {"global_analyte_abnormal_search", "global_toxicology_search", "global_qualitative_toxicology_search", "open_grounded_medical_question"} or has_explicit_global_scope:
         query_understanding = replace(query_understanding, requested_doc_ids=[])
         requested_doc_ids = []
     else:
@@ -7851,7 +8024,7 @@ def run_generation(
             previous_doc_scope=previous_doc_scope,
         )
     if not requested_doc_ids:
-        if not (selected_route in {"global_analyte_abnormal_search", "global_qualitative_toxicology_search", "open_grounded_medical_question"} or has_explicit_global_scope):
+        if not (selected_route in {"global_analyte_abnormal_search", "global_toxicology_search", "global_qualitative_toxicology_search", "open_grounded_medical_question"} or has_explicit_global_scope):
             effective_scope = context_resolution.get("effective_doc_scope") if isinstance(context_resolution, dict) else None
             if isinstance(effective_scope, dict):
                 requested_doc_ids = [str(d).strip() for d in (effective_scope.get("doc_ids") or []) if str(d).strip()]
@@ -8126,6 +8299,9 @@ def run_generation(
     exact_analyte = exact_analytes[0] if len(exact_analytes) == 1 else None
     if exact_analyte is None and not exact_analytes:
         exact_analyte = detect_exact_analyte(q)
+        if exact_analyte:
+            exact_analytes = [exact_analyte]
+            query_understanding = replace(query_understanding, requested_analytes=exact_analytes)
     is_above_reference_query = _is_above_reference_query(qn)
     is_normal_or_above = _is_normal_or_above_query(qn)
     is_below_reference_query = _is_below_reference_query(qn)
@@ -8865,13 +9041,14 @@ def run_generation(
             displayed_evidences=displayed_evidences,
         )
 
-    if _is_structured_question_with_fast_path(intents, requested_doc_ids, exact_analytes) and (
+    if _is_structured_question_with_fast_path(intents, requested_doc_ids, exact_analytes, query_understanding.intent) and (
         requested_doc_ids
         or query_understanding.intent
         in {
             "global_patient_lookup",
             "cohort_search",
             "global_analyte_abnormal_search",
+            "global_toxicology_search",
             "multi_doc_comparison",
             "comment_without_measured_value",
         }
@@ -9143,10 +9320,12 @@ def run_generation(
                 "doc_scoped_abnormal_results": "deterministic_doc_scoped_abnormal_results",
                 "doc_scoped_priority_anomalies": "deterministic_doc_scoped_priority_anomalies",
                 "global_analyte_abnormal_search": "deterministic_global_analyte_abnormal_search",
+                "global_toxicology_search": "deterministic_global_toxicology_search",
                 "doc_pair_comparison": "deterministic_doc_pair_comparison",
                 "multi_doc_comparison": "deterministic_multi_doc_comparison",
                 "doc_scoped_medical_interpretation_guarded": "deterministic_guarded_medical_interpretation",
                 "single_analyte_lookup": "deterministic_single_analyte_lookup",
+                "doc_scoped_single_analyte_status": "deterministic_single_analyte_lookup",
             }
             generation_mode = pre_validation_mode_overrides.get(selected_route, generation_mode)
         if str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
@@ -9531,10 +9710,12 @@ def run_generation(
             "doc_scoped_biological_summary": "deterministic_doc_scoped_biological_summary",
             "doc_scoped_priority_anomalies": "deterministic_doc_scoped_priority_anomalies",
             "global_analyte_abnormal_search": "deterministic_global_analyte_abnormal_search",
+            "global_toxicology_search": "deterministic_global_toxicology_search",
             "doc_pair_comparison": "deterministic_doc_pair_comparison",
             "multi_doc_comparison": "deterministic_multi_doc_comparison",
             "doc_scoped_medical_interpretation_guarded": "deterministic_guarded_medical_interpretation",
             "single_analyte_lookup": "deterministic_single_analyte_lookup",
+            "doc_scoped_single_analyte_status": "deterministic_single_analyte_lookup",
         }
         if selected_route == "cohort_search" and _canonical_technical_condition(query_understanding.technical_condition) in {
             "above_reference",

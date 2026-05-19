@@ -4,8 +4,10 @@ from typing import Any
 
 STRICT_DETERMINISTIC_ROUTES = {
     "single_analyte_lookup",
+    "doc_scoped_single_analyte_status",
     "doc_scoped_abnormal_results",
     "global_analyte_abnormal_search",
+    "global_toxicology_search",
     "doc_pair_comparison",
     "multi_doc_comparison",
     "reference_range_lookup",

@@ -63,6 +63,13 @@ ANALYTE_DISPLAY_NAMES: dict[str, str] = {
     "pth_intact": "PTH INTACT",
     "haptoglobine": "HAPTOGLOBINE",
     "phosphatase_alcaline": "PHOSPHATASE ALCALINE",
+    "acide_urique": "ACIDE URIQUE",
+    "cholesterol_hdl": "CHOLESTÉROL HDL",
+    "benzodiazepine": "BENZODIAZÉPINE",
+    "amphetamine": "AMPHÉTAMINE",
+    "cocaine": "COCAÏNE",
+    "opiaces": "OPIACÉS",
+    "phencyclidine": "PHENCYCLIDINE",
 }
 
 

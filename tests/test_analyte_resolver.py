@@ -65,7 +65,16 @@ class TestAnalyteResolver(unittest.TestCase):
         r = self._resolve_one("compare TEST X beta", available=available)
         self.assertEqual(r.get("analyte_norm"), "test_x_beta")
 
+    def test_acide_urique_aliases(self) -> None:
+        for q in ["acide urique", "uric acid", "urate", "uricémie"]:
+            r = self._resolve_one(q)
+            self.assertEqual(r.get("analyte_norm"), "acide_urique")
+
+    def test_hdl_aliases(self) -> None:
+        for q in ["cholestérol hdl", "hdl cholesterol", "chol hdl"]:
+            r = self._resolve_one(q)
+            self.assertEqual(r.get("analyte_norm"), "cholesterol_hdl")
+
 
 if __name__ == "__main__":
     unittest.main()
-

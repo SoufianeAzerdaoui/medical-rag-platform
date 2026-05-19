@@ -1856,6 +1856,8 @@ def validate_answer(
             errors.append("reference_range_forbidden_current_value_render")
         if "fallback" in core_norm and not any(k in core_norm for k in ["fallback", "pas trouve de plage specifique", "pas trouvé de plage spécifique"]):
             errors.append("reference_range_fallback_not_explicit")
+        if "chunk_id" in core_norm or "doc_id=" in core_norm or "sqlite_deterministic" in core_norm:
+            errors.append("reference_range_internal_source_leak")
     # Semantic guardrail: even if intent classification drifts, reference-range wording in query
     # must never return a global multi-analyte bulk listing.
     reference_semantic_query = any(
@@ -1906,6 +1908,33 @@ def validate_answer(
             errors.append("reference_semantic_forbidden_bulk_listing")
         if any(tok in core_norm for tok in ["| analyte |", "| valeur actuelle |", "| statut | document |"]):
             errors.append("reference_semantic_forbidden_multi_analyte_table")
+
+    if len(requested_analyte_list) == 1 and len(requested_doc_ids_norm) == 1 and displayed:
+        requested_norm = str(requested_analyte_list[0] or "").strip().lower()
+        displayed_norms = {
+            str(ev.get("analyte_norm") or "").strip().lower()
+            for ev in displayed
+            if str(ev.get("analyte_norm") or "").strip()
+        }
+        extra = sorted([a for a in displayed_norms if a and a != requested_norm])
+        if extra:
+            errors.append("single_analyte_over_display")
+            unsupported_claims.append(f"Single-analyte query displayed extra analytes: {extra}")
+
+    toxicology_global_query = any(
+        token in qn_query
+        for token in [
+            "toxiques urinaires",
+            "toxicologie urinaire",
+            "pharmacotoxicologie",
+            "toxiques sanguins",
+            "toxicologie sanguine",
+            "recherche de toxiques",
+        ]
+    ) and any(token in qn_query for token in ["quels rapports", "quels documents", "tous les rapports", "rapports disponibles"])
+    if toxicology_global_query and any(k in core_norm for k in ["aucune recherche", "aucun resultat", "aucun résultat"]):
+        if displayed_evidences:
+            errors.append("toxicology_false_no_evidence")
 
     # Global business-flow guard: no greeting small-talk leak in deterministic business intents.
     business_intent_keys = {
