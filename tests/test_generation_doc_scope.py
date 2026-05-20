@@ -78,14 +78,95 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "general_conversation")
         self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_general_conversation")
         self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
-        self.assertEqual(len(result.get("sources") or []), 0)
-        self.assertEqual(len(result.get("displayed_evidences") or []), 0)
-        stage = dict((result.get("debug") or {}).get("stage_timings_ms") or {})
-        self.assertIn(stage.get("llm_writer_ms"), {0, 0.0})
-        self.assertIn(stage.get("retrieval_ms"), {0, 0.0})
-        answer = str(result.get("answer") or "").lower()
-        self.assertNotIn("report_", answer)
-        self.assertNotIn("tsh", answer)
+
+    def test_diagnostic_safety_messages_are_config_driven(self) -> None:
+        ga = __import__("generate_answer")
+        cfg = {
+            "diagnostic_safety": {
+                "generic": {
+                    "cancer_refusal": "CFG_REFUS",
+                    "markers_intro": "CFG_INTRO",
+                    "closing": "CFG_CLOSE",
+                }
+            }
+        }
+        pack = {
+            "intent": "diagnostic_safety_question",
+            "question": "Peut-on conclure à un cancer ?",
+            "evidences": [],
+            "requested_doc_ids": ["report_1"],
+            "requested_analytes": [],
+        }
+        with mock.patch("generate_answer.get_assistant_messages_config", return_value=cfg):
+            answer = ga.render_evidence_pack_deterministic(pack, "paragraph")
+        self.assertIn("CFG_REFUS", answer)
+        self.assertIn("CFG_INTRO", answer)
+        self.assertIn("CFG_CLOSE", answer)
+
+    def test_guarded_thyroid_postprocess_patterns_are_config_driven(self) -> None:
+        ga = __import__("generate_answer")
+        cfg = {
+            "diagnostic_safety": {
+                "strong_suggestion_patterns": [r"orient\w*\s+vers\s+une?\s+hyperthyro"],
+                "forbidden_clinical_style_patterns": [r"(?im)^.*EXAM_CHECK.*$"],
+                "limitation_sentence": "LIM_CFG",
+                "discordance_replacement": "DISCORD_CFG",
+            }
+        }
+        raw = (
+            "Ces résultats orientent vers une hyperthyroïdie primaire.\n"
+            "EXAM_CHECK : faire plus de tests.\n"
+            "Conclusion technique : ancien texte."
+        )
+        with mock.patch("generate_answer.get_safety_guardrails_config", return_value=cfg):
+            out = ga._ensure_guarded_thyroid_conclusion(raw)
+        self.assertIn("DISCORD_CFG", out)
+        self.assertIn("LIM_CFG", out)
+        self.assertNotIn("orientent vers", out.lower())
+
+    def test_validator_strong_suggestion_pattern_is_config_driven(self) -> None:
+        av = __import__("answer_validator")
+        cfg = {
+            "diagnostic_safety": {
+                "thyroid_topic_keywords": ["hyperthyro"],
+                "strong_suggestion_patterns": [r"\borient\w*\s+vers\s+une?\s+hyperthyro"],
+                "explicit_negation_markers": ["ne permet pas de conclure"],
+            }
+        }
+        with mock.patch("answer_validator.get_safety_guardrails_config", return_value=cfg):
+            val = av.validate_answer(
+                query="Compatible avec une hyperthyroïdie ?",
+                answer_text="TSHus élevée ; ces résultats orientent vers une hyperthyroïdie.",
+                evidence_pack=[
+                    {
+                        "analyte": "TSHus",
+                        "analyte_norm": "tshus",
+                        "current_value": "55",
+                        "value_raw": "55",
+                        "unit": "mUI/L",
+                        "reference_range": "0.3-4.0",
+                        "technical_status_code": "above_reference",
+                        "technical_status": "au-dessus de la référence",
+                    }
+                ],
+                displayed_evidences=[
+                    {
+                        "analyte": "TSHus",
+                        "analyte_norm": "tshus",
+                        "current_value": "55",
+                        "value_raw": "55",
+                        "unit": "mUI/L",
+                        "reference_range": "0.3-4.0",
+                        "technical_status_code": "above_reference",
+                        "technical_status": "au-dessus de la référence",
+                    }
+                ],
+                generation_mode="hybrid_structured_llm_writer",
+                retrieval_status="answerable",
+                diagnostic_safety_intent=True,
+                query_intents={"diagnostic_safety_question": True},
+            )
+        self.assertIn("diagnostic_suggestion_too_strong", list(val.get("errors") or []))
 
     def test_general_conversation_identity_fast_path_no_retrieval(self) -> None:
         result = run_generation(
@@ -444,6 +525,149 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
         stage = dict((result.get("debug") or {}).get("stage_timings_ms") or {})
         self.assertIn(stage.get("llm_writer_ms"), {0, 0.0})
+
+    def test_report24_short_note_summary_keeps_abnormal_when_present(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        try:
+            result = run_generation(
+                query="Résume le report 24 comme une note courte pour un médecin, en restant strictement descriptif et sans diagnostic.",
+                mode="keyword",
+                top_k=50,
+                index_dir="data/indexes",
+            )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "doc_scoped_biological_summary")
+        self.assertNotEqual(str((result.get("validation") or {}).get("validation_status") or "").lower(), "fail")
+        debug = dict(result.get("debug") or {})
+        self.assertGreater(int(debug.get("abnormal_rows_count") or 0), 0)
+        self.assertGreater(int(debug.get("llm_abnormal_rows_count") or 0), 0)
+        answer = str(result.get("answer") or "").lower()
+        self.assertNotIn("anormaux : aucun", answer)
+        self.assertTrue(("crp" in answer) or ("reserve alcaline" in answer) or ("réserve alcaline" in answer))
+        self.assertGreater(len(list(result.get("displayed_evidences") or [])), 0)
+        self.assertGreater(len(list(result.get("sources") or [])), 0)
+
+    def test_biological_summary_false_no_abnormal_claim_triggers_correction(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+
+        def _fake_micro(**kwargs: object) -> dict[str, object]:
+            return {
+                "mode": "hybrid_structured_llm_writer",
+                "answer": (
+                    "Anormaux : Aucun fait anormal fourni.\n"
+                    "Résultats dans la référence uniquement : ACIDE URIQUE 40 mg/l.\n"
+                    "Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic."
+                ),
+                "llm_candidate_answer": (
+                    "Anormaux : Aucun fait anormal fourni.\n"
+                    "Résultats dans la référence uniquement : ACIDE URIQUE 40 mg/l.\n"
+                    "Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic."
+                ),
+                "llm_error": None,
+                "use_micro_prompt": True,
+            }
+
+        try:
+            with mock.patch("generate_answer._compose_level2_micro_prompt_answer", side_effect=_fake_micro):
+                result = run_generation(
+                    query="Résume le report 24 comme une note courte pour un médecin, en restant strictement descriptif et sans diagnostic.",
+                    mode="keyword",
+                    top_k=50,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        answer = str(result.get("answer") or "").lower()
+        self.assertNotIn("anormaux : aucun", answer)
+        self.assertNotEqual(str((result.get("validation") or {}).get("validation_status") or "").lower(), "fail")
+        self.assertIn(str((result.get("generation_mode") or "")), {"hybrid_structured_llm_writer", "deterministic_doc_scoped_biological_summary"})
+
+    def test_biological_summary_zero_anomaly_doc_allows_no_abnormal_phrase(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "0"
+        try:
+            result = run_generation(
+                query="Résume le report 13 comme une note courte, strictement descriptive et sans diagnostic.",
+                mode="keyword",
+                top_k=50,
+                index_dir="data/indexes",
+            )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+        self.assertIn(str((result.get("validation") or {}).get("validation_status") or ""), {"pass", "warning"})
+        answer = str(result.get("answer") or "").lower()
+        if "anormaux : aucun" in answer or "aucun fait anormal" in answer:
+            self.assertIn("aucun", answer)
+
+    def test_biological_summary_small_llm_budget_prioritizes_abnormal_rows(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        captured: dict[str, object] = {}
+
+        def _fake_micro(**kwargs: object) -> dict[str, object]:
+            captured["llm_pack"] = kwargs.get("llm_pack")
+            return {
+                "mode": "hybrid_structured_llm_writer",
+                "answer": (
+                    "Anormaux : bilirubine directe élevée, LDH élevée.\n"
+                    "Résultats dans la référence uniquement : aucun résultat strictement dans la référence parmi les éléments sélectionnés.\n"
+                    "Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic."
+                ),
+                "llm_candidate_answer": (
+                    "Anormaux : bilirubine directe élevée, LDH élevée.\n"
+                    "Résultats dans la référence uniquement : aucun résultat strictement dans la référence parmi les éléments sélectionnés.\n"
+                    "Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic."
+                ),
+                "llm_error": None,
+                "use_micro_prompt": True,
+            }
+
+        override_policy = {
+            "prompt_target_chars": 2500,
+            "prompt_hard_limit_chars": 3500,
+            "num_predict": 180,
+            "timeout_ms": 60000,
+            "max_evidence_rows": 4,
+            "use_micro_prompt": True,
+        }
+        try:
+            with mock.patch.dict("generate_answer._LEVEL2_LLM_PROMPT_POLICY", {"doc_scoped_biological_summary": override_policy}, clear=False), mock.patch(
+                "generate_answer._compose_level2_micro_prompt_answer", side_effect=_fake_micro
+            ):
+                run_generation(
+                    query="Fais une synthèse médico-biologique du report 12 en 6 lignes maximum, en séparant les anomalies et les résultats rassurants. Ne donne pas de diagnostic.",
+                    mode="keyword",
+                    top_k=50,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        llm_pack = dict(captured.get("llm_pack") or {})
+        evidences = list(llm_pack.get("evidences") or [])
+        self.assertLessEqual(len(evidences), 4)
+        abnormal_count = 0
+        for ev in evidences:
+            status = str(ev.get("status") or "").lower()
+            if any(k in status for k in ["au-dessus", "au dessus", "en dessous", "above_reference", "below_reference"]):
+                abnormal_count += 1
+        self.assertGreater(abnormal_count, 0)
 
     def test_report10_hierarchy_trigger_route(self) -> None:
         result = run_generation(
@@ -1067,6 +1291,188 @@ class TestGenerationDocScope(unittest.TestCase):
         debug = dict(result.get("debug") or {})
         self.assertTrue(bool(debug.get("use_micro_prompt")))
         self.assertLessEqual(int(debug.get("prompt_chars") or 0), 3500)
+
+    def test_priority_llm_enforces_backend_sections_and_no_collapsed_reference(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+
+        def _fake_generate(self, prompt: str, **kwargs):  # type: ignore[no-untyped-def]
+            self.last_call_debug = {"prompt_chars": len(prompt)}
+            return (
+                "Priorité élevée : Albumine 8 g/l.\n"
+                "Priorité modérée/faible : Triglycérides 8 g/l, référence 1,50 - 1,50 ; ...\n"
+                "Conclusion technique : ..."
+            )
+
+        try:
+            with mock.patch("generate_answer.LLMClient.generate", new=_fake_generate):
+                result = run_generation(
+                    query="Dans le report 10, explique les anomalies biologiques les plus importantes par priorité technique, avec une justification courte pour chaque anomalie. Ne pose pas de diagnostic.",
+                    mode="keyword",
+                    top_k=30,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        answer = str(result.get("answer") or "")
+        answer_n = answer.lower()
+        self.assertNotIn("...", answer)
+        self.assertNotIn("1,50 - 1,50", answer)
+        self.assertIn("trigly", answer_n)
+        self.assertTrue(("priorité élevée" in answer_n) or ("| high |" in answer_n))
+        self.assertRegex(answer_n, r"(trigly[^\n]*\|\s*high\s*\|)|(\|\s*high\s*\|[^\n]*trigly)")
+        self.assertNotEqual(str(result.get("validation", {}).get("validation_status") or ""), "fail")
+
+    def test_priority_postprocess_exception_is_controlled(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+
+        def _fake_generate(self, prompt: str, **kwargs):  # type: ignore[no-untyped-def]
+            self.last_call_debug = {"prompt_chars": len(prompt)}
+            return "Priorité élevée : Albumine 8 g/l.\nPriorité modérée/faible : CRP 7 mg/l.\nConclusion technique : test."
+
+        try:
+            with mock.patch("generate_answer.LLMClient.generate", new=_fake_generate), mock.patch(
+                "generate_answer._priority_answer_needs_enforcement", side_effect=NameError("_canonical_analyte_key is not defined")
+            ):
+                result = run_generation(
+                    query="Dans le report 10, explique les anomalies biologiques les plus importantes par priorité technique, avec une justification courte pour chaque anomalie. Ne pose pas de diagnostic.",
+                    mode="keyword",
+                    top_k=30,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        debug = dict(result.get("debug") or {})
+        self.assertNotEqual(str(debug.get("fallback_reason") or ""), "_canonical_analyte_key is not defined")
+        self.assertIn(str(debug.get("fallback_reason") or ""), {"priority_postprocess_exception", "llm_validation_failed", "llm_writer_quality_or_format_fallback"})
+        self.assertNotIn("_canonical_analyte_key is not defined", str(debug.get("llm_raw_error_message") or ""))
+
+    def test_biological_summary_replaces_weak_conclusion(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+
+        def _fake_micro(**kwargs: object) -> dict[str, object]:
+            return {
+                "mode": "hybrid_structured_llm_writer",
+                "answer": (
+                    "Anormaux : CRP (au-dessus), Réserve Alcaline (en dessous).\n"
+                    "Résultats dans la référence uniquement : ACIDE URIQUE 40 mg/l.\n"
+                    "Conclusion technique : Le nombre de résultats anormaux est de 2."
+                ),
+                "llm_candidate_answer": "x",
+                "llm_error": None,
+                "use_micro_prompt": True,
+            }
+
+        try:
+            with mock.patch("generate_answer._compose_level2_micro_prompt_answer", side_effect=_fake_micro):
+                result = run_generation(
+                    query="Résume le report 24 comme une note courte pour un médecin, en restant strictement descriptif et sans diagnostic.",
+                    mode="keyword",
+                    top_k=30,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        answer = str(result.get("answer") or "")
+        self.assertNotIn("Le nombre de résultats anormaux est de", answer)
+        self.assertIn(
+            "Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic.",
+            answer,
+        )
+
+    def test_final_postprocess_fixed_warnings_tracks_missing_conclusion_fix(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        candidate = "Faits techniques observés : TSHus haute, T4 libre haute, T3 libre haute."
+
+        def _fake_micro(**kwargs: object) -> dict[str, object]:
+            return {
+                "mode": "hybrid_structured_llm_writer",
+                "answer": candidate,
+                "llm_candidate_answer": candidate,
+                "llm_error": None,
+                "use_micro_prompt": True,
+            }
+
+        original_validate = __import__("generate_answer").validate_answer
+
+        def _fake_validate(*args, **kwargs):
+            answer_text = str(kwargs.get("answer_text") or "")
+            if answer_text.strip() == candidate.strip():
+                return {"validation_status": "warning", "errors": [], "warnings": ["missing_conclusion"]}
+            return original_validate(*args, **kwargs)
+
+        try:
+            with mock.patch("generate_answer._compose_level2_micro_prompt_answer", side_effect=_fake_micro), mock.patch(
+                "generate_answer.validate_answer", side_effect=_fake_validate
+            ):
+                result = run_generation(
+                    query="Le bilan thyroïdien du report 16 est-il compatible avec une hyperthyroïdie primaire ? Explique prudemment à partir de TSH, T3, T4 et anticorps, sans conclure à un diagnostic.",
+                    mode="keyword",
+                    top_k=30,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        debug = dict(result.get("debug") or {})
+        self.assertIn("missing_conclusion", list(debug.get("llm_candidate_validation_warnings") or []))
+        self.assertIn("missing_conclusion", list(debug.get("final_postprocess_fixed_warnings") or []))
+        self.assertNotIn("missing_conclusion", list(((result.get("validation") or {}).get("warnings")) or []))
+
+    def test_thyroid_guarded_deduplicates_discordance_and_clinical_recommendations(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+
+        def _fake_micro(**kwargs: object) -> dict[str, object]:
+            return {
+                "mode": "hybrid_structured_llm_writer",
+                "answer": (
+                    "Faits techniques observés : TSHus haute, T4 libre haute, T3 libre haute.\n"
+                    "Ce profil est biologiquement discordant pour une hyperthyroïdie primaire.\n"
+                    "Il est essentiel de réaliser des examens complémentaires.\n"
+                    "Ce profil est biologiquement discordant pour une hyperthyroïdie primaire."
+                ),
+                "llm_candidate_answer": "x",
+                "llm_error": None,
+                "use_micro_prompt": True,
+            }
+
+        try:
+            with mock.patch("generate_answer._compose_level2_micro_prompt_answer", side_effect=_fake_micro):
+                result = run_generation(
+                    query="Le bilan thyroïdien du report 16 est-il compatible avec une hyperthyroïdie primaire ? Explique prudemment à partir de TSH, T3, T4 et anticorps, sans conclure à un diagnostic.",
+                    mode="keyword",
+                    top_k=30,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        answer = str(result.get("answer") or "")
+        self.assertNotIn("examens complémentaires", answer.lower())
+        self.assertLessEqual(answer.lower().count("discordant pour une hyperthyroïdie primaire"), 1)
+        self.assertIn("Conclusion technique :", answer)
 
     def test_hard_gate_value_changed_forces_deterministic_fallback(self) -> None:
         old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")

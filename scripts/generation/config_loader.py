@@ -35,6 +35,12 @@ _DEFAULT_MEDICAL_TOPICS: dict[str, Any] = {
                 "trak",
             ],
             "excluded_unless_explicit": ["acth", "insuline", "pth", "gh"],
+            "rules": {
+                "high_groups": {
+                    "tsh": ["tsh", "tshus"],
+                    "t3_t4": ["t3_libre", "t3libre", "t4_libre", "t4libre"],
+                }
+            },
         },
         "tumor_markers": {
             "triggers": ["marqueur tumoral", "cancer", "tumeur", "oncologie"],
@@ -89,6 +95,50 @@ _DEFAULT_ASSISTANT_MESSAGES: dict[str, Any] = {
         "capabilities": "Vous pouvez me demander de lister les anomalies d’un rapport, comparer deux rapports, rechercher des valeurs hors référence dans tous les documents, ou produire une synthèse descriptive sans diagnostic.",
         "help_question": "Vous pouvez me demander de lister les anomalies d’un rapport, comparer deux rapports, rechercher des valeurs hors référence dans tous les documents, ou produire une synthèse descriptive sans diagnostic.",
         "fallback": "Je peux vous aider à interroger les rapports médicaux indexés.",
+    },
+    "diagnostic_safety": {
+        "generic": {
+            "cancer_refusal": "Non, on ne peut pas conclure à un cancer uniquement à partir de ces marqueurs.",
+            "markers_intro": "Constat technique sur les marqueurs retrouvés :",
+            "closing": "Ces marqueurs biologiques ne suffisent pas à poser un diagnostic ; une interprétation médicale spécialisée est nécessaire.",
+        },
+        "thyroid": {
+            "detail_fallback": "anomalies thyroïdiennes",
+            "discordance_sentence": "Ce profil est biologiquement discordant pour une hyperthyroïdie primaire.",
+            "no_diagnostic_sentence": "Cependant, on ne peut pas conclure seul à un diagnostic thyroïdien à partir de ce document.",
+            "correlation_sentence": "Il faut corréler avec le contexte clinique, les traitements, les interférences analytiques et, si besoin, répéter/compléter le bilan.",
+            "summary_template": "Le document montre des anomalies thyroïdiennes importantes : {details_txt}. {no_diagnostic_sentence} {discordance} {correlation_sentence}",
+        },
+    },
+}
+
+_DEFAULT_SAFETY_GUARDRAILS: dict[str, Any] = {
+    "diagnostic_safety": {
+        "thyroid_topic_keywords": ["hyperthyro", "hypothyro", "thyroid", "thyroide", "thyroïde"],
+        "strong_suggestion_patterns": [
+            r"\bsugg[eè]re\s+une?\s+hyperthyro",
+            r"\bcompatible\s+avec\s+une?\s+hyperthyro",
+            r"\b[eé]voque\s+une?\s+hyperthyro",
+            r"\bindique\s+une?\s+hyperthyro",
+            r"\ben\s+faveur\s+d['’]une?\s+hyperthyro",
+        ],
+        "explicit_negation_markers": [
+            "ne permet pas de conclure",
+            "n est pas suffisant pour conclure",
+            "n'est pas suffisant pour conclure",
+            "on ne peut pas conclure",
+        ],
+        "forbidden_clinical_style_patterns": [
+            r"(?im)^.*il est essentiel de.*$",
+            r"(?im)^.*examens compl[eé]mentaires.*$",
+            r"(?im)^.*[eé]valuation compl[eè]te.*$",
+            r"(?im)^.*cause sous[-\\s]jacente.*$",
+            r"(?im)^.*prendre en compte les autres facteurs cliniques.*$",
+            r"(?im)^.*confirmer ou [eé]liminer le diagnostic.*$",
+            r"(?im)^.*\\bconsulter\\b.*$",
+        ],
+        "limitation_sentence": "L’interprétation reste limitée aux données biologiques fournies.",
+        "discordance_replacement": "profil biologique discordant pour une hyperthyroïdie primaire",
     }
 }
 
@@ -156,10 +206,16 @@ def get_assistant_messages_config() -> dict[str, Any]:
     return load_yaml_config(CONFIG_DIR / "assistant_messages.yml", _DEFAULT_ASSISTANT_MESSAGES)
 
 
+@lru_cache(maxsize=1)
+def get_safety_guardrails_config() -> dict[str, Any]:
+    return load_yaml_config(CONFIG_DIR / "safety_guardrails.yml", _DEFAULT_SAFETY_GUARDRAILS)
+
+
 __all__ = [
     "load_yaml_config",
     "get_medical_topics_config",
     "get_analyte_families_config",
     "get_priority_scoring_config",
     "get_assistant_messages_config",
+    "get_safety_guardrails_config",
 ]

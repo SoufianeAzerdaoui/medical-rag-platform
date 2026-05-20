@@ -78,6 +78,8 @@ HARD_GATE_ERRORS = {
     "evidence_id_visible",
     "forbidden_internal_field",
     "source_format_bad",
+    "false_no_abnormal_summary",
+    "summary_missing_abnormal_coverage",
     "general_conversation_no_retrieval_violation",
     "small_talk_triggered_retrieval",
 }

@@ -4,6 +4,7 @@ import re
 import unicodedata
 from typing import Any
 
+from config_loader import get_safety_guardrails_config
 from prompt_builder import INSUFFICIENT_CONTEXT_SENTENCE
 from query_understanding import contains_exact_term, detect_exact_analyte, detect_exact_analytes, find_analyte_mentions
 
@@ -94,14 +95,6 @@ _DIAGNOSIS_PATTERNS = [
     r"\bdiagnostic\s+confirm\w+\b",
 ]
 
-_DIAGNOSTIC_STRONG_SUGGESTION_PATTERNS = [
-    r"\bsugg[eè]re\s+une?\s+hyperthyro",
-    r"\bcompatible\s+avec\s+une?\s+hyperthyro",
-    r"\b[eé]voque\s+une?\s+hyperthyro",
-    r"\bindique\s+une?\s+hyperthyro",
-    r"\ben\s+faveur\s+d['’]une?\s+hyperthyro",
-]
-
 _UNIT_REGEX = re.compile(
     r"\b(?:g/l|mg/l|ug/dl|ui/l|mui/l|mmol/l|ng/ml|pg/ml|uui?/ml|uu/ml|pmol/l|mui/ml|iu/l)\b",
     re.IGNORECASE,
@@ -114,6 +107,41 @@ def _norm(value: str) -> str:
     s = "".join(ch for ch in s if not unicodedata.combining(ch))
     s = re.sub(r"\s+", " ", s)
     return s
+
+
+def _diagnostic_guardrails() -> dict[str, Any]:
+    cfg = dict(get_safety_guardrails_config() or {})
+    diag = cfg.get("diagnostic_safety") or {}
+    return dict(diag) if isinstance(diag, dict) else {}
+
+
+def _thyroid_topic_keywords() -> list[str]:
+    diag = _diagnostic_guardrails()
+    vals = [str(v).strip().lower() for v in list(diag.get("thyroid_topic_keywords") or []) if str(v).strip()]
+    return vals or ["hyperthyro", "hypothyro", "thyroid", "thyroide", "thyroïde"]
+
+
+def _diagnostic_strong_suggestion_patterns() -> list[str]:
+    diag = _diagnostic_guardrails()
+    vals = [str(v).strip() for v in list(diag.get("strong_suggestion_patterns") or []) if str(v).strip()]
+    return vals or [
+        r"\bsugg[eè]re\s+une?\s+hyperthyro",
+        r"\bcompatible\s+avec\s+une?\s+hyperthyro",
+        r"\b[eé]voque\s+une?\s+hyperthyro",
+        r"\bindique\s+une?\s+hyperthyro",
+        r"\ben\s+faveur\s+d['’]une?\s+hyperthyro",
+    ]
+
+
+def _diagnostic_explicit_negation_markers() -> list[str]:
+    diag = _diagnostic_guardrails()
+    vals = [str(v).strip().lower() for v in list(diag.get("explicit_negation_markers") or []) if str(v).strip()]
+    return vals or [
+        "ne permet pas de conclure",
+        "n est pas suffisant pour conclure",
+        "n'est pas suffisant pour conclure",
+        "on ne peut pas conclure",
+    ]
 
 
 def _reason_present_in_answer(reason: str, answer_norm: str) -> bool:
@@ -995,7 +1023,7 @@ def validate_answer(
     if requested_analyte_list:
         requested_set = set(requested_analyte_list)
         # Guarded thyroid asks should only require analytes that are actually present in evidence rows.
-        if diagnostic_safety_intent and any(k in qn_query for k in ["thyroid", "thyroide", "thyroïde", "hyperthyro", "hypothyro"]):
+        if diagnostic_safety_intent and any(k in qn_query for k in _thyroid_topic_keywords()):
             evidence_norms = {
                 _canonical_analyte_key(str(ev.get("analyte_norm") or ev.get("analyte") or ""))
                 for ev in (displayed if displayed else evidence_pack)
@@ -1099,6 +1127,39 @@ def validate_answer(
         }
         if abnormal_analytes and any(a and a in ref_only_norm for a in abnormal_analytes):
             errors.append("abnormal_in_reassuring_section")
+
+    # Guardrail for biological summaries: do not claim "no abnormalities" when evidence contains abnormalities.
+    summary_modes = {"hybrid_structured_llm_writer", "deterministic_doc_scoped_biological_summary"}
+    if generation_mode_norm in summary_modes and (
+        (query_intents or {}).get("doc_scoped_summary")
+        or (query_intents or {}).get("doc_scoped_biological_summary")
+    ):
+        summary_evidences = list(evidence_pack if evidence_pack else displayed)
+        abnormal_rows = [
+            ev
+            for ev in summary_evidences
+            if _norm(str(ev.get("technical_status_code") or ev.get("interpretation_status") or "")) in {"above_reference", "below_reference", "out_of_reference"}
+        ]
+        if abnormal_rows:
+            no_abnormal_markers = [
+                "anormaux : aucun",
+                "anormaux: aucun",
+                "aucun fait anormal",
+                "aucune anomalie",
+                "aucun resultat anormal",
+                "aucun résultat anormal",
+            ]
+            if any(m in core_norm for m in no_abnormal_markers):
+                errors.append("false_no_abnormal_summary")
+            abnormal_analytes = {
+                _norm(str(ev.get("analyte") or ev.get("parameter") or ""))
+                for ev in abnormal_rows
+                if str(ev.get("analyte") or ev.get("parameter") or "").strip()
+            }
+            if abnormal_analytes:
+                mentioned = any(a and a in core_norm for a in abnormal_analytes)
+                if not mentioned:
+                    errors.append("summary_missing_abnormal_coverage")
 
     # Insufficient context handling
     insufficient_context_handled = False
@@ -1311,7 +1372,7 @@ def validate_answer(
             errors.append("diagnostic_claim_detected")
             errors.append("diagnostic_safety_violation")
         qn_diag = _norm(query or "")
-        if any(k in qn_diag for k in ["hyperthyro", "hypothyro", "thyroid", "thyroide", "thyroïde"]):
+        if any(k in qn_diag for k in _thyroid_topic_keywords()):
             has_thyroid_block = any(k in core_norm for k in ["t4 libre", "t3 libre", "tshus", "anti tg"])
             if not has_thyroid_block:
                 errors.append("guarded_thyroid_interpretation_missing_thyroid_facts")
@@ -1319,15 +1380,10 @@ def validate_answer(
                 errors.append("guarded_thyroid_interpretation_acth_misfocus")
             has_explicit_negation = any(
                 k in core_norm
-                for k in [
-                    "ne permet pas de conclure",
-                    "n est pas suffisant pour conclure",
-                    "n'est pas suffisant pour conclure",
-                    "on ne peut pas conclure",
-                ]
+                for k in _diagnostic_explicit_negation_markers()
             )
             if not has_explicit_negation:
-                for patt in _DIAGNOSTIC_STRONG_SUGGESTION_PATTERNS:
+                for patt in _diagnostic_strong_suggestion_patterns():
                     if re.search(patt, core_norm, flags=re.IGNORECASE):
                         errors.append("diagnostic_suggestion_too_strong")
                         break
@@ -1405,6 +1461,21 @@ def validate_answer(
                             break
                 if mismatch:
                     errors.append("priority_level_mismatch")
+                # Ensure priority sections cover all provided backend facts.
+                coverage_missing = False
+                for analyte in high_analytes:
+                    if analyte and analyte not in high_block:
+                        coverage_missing = True
+                        break
+                if not coverage_missing:
+                    for analyte in moderate_low_analytes:
+                        if analyte and analyte not in moderate_block:
+                            coverage_missing = True
+                            break
+                if coverage_missing:
+                    errors.append("section_coverage_missing")
+                if re.search(r"\b(\d+(?:[.,]\d+)?)\s*-\s*\1\b", core_text or ""):
+                    errors.append("suspicious_reference_collapse")
         if source_clickable_requested:
             has_source_col = _table_has_source_column(core_text)
             has_clickable_structured = any(str(s.get("url") or s.get("viewer_url") or "").strip() for s in structured_sources)
@@ -1435,6 +1506,20 @@ def validate_answer(
                     break
         if mismatch:
             errors.append("priority_level_mismatch")
+        coverage_missing = False
+        for analyte in high_analytes:
+            if analyte and analyte not in high_block:
+                coverage_missing = True
+                break
+        if not coverage_missing:
+            for analyte in moderate_low_analytes:
+                if analyte and analyte not in moderate_block:
+                    coverage_missing = True
+                    break
+        if coverage_missing:
+            errors.append("section_coverage_missing")
+        if re.search(r"\b(\d+(?:[.,]\d+)?)\s*-\s*\1\b", core_text or ""):
+            errors.append("suspicious_reference_collapse")
     if (output_format_requested or "").strip().lower() == "yes_no":
         compact = core_norm.strip()
         if not (
@@ -1930,7 +2015,7 @@ def validate_answer(
     if requested_analyte_list and not (query_intents or {}).get("multi_doc_comparison"):
         suppress_missing_requested_warning = bool(
             diagnostic_safety_intent
-            and any(k in qn_query for k in ["thyroid", "thyroide", "thyroïde", "hyperthyro", "hypothyro"])
+            and any(k in qn_query for k in _thyroid_topic_keywords())
         )
         for missing_analyte in missing_requested:
             if suppress_missing_requested_warning:
@@ -2262,6 +2347,8 @@ def validate_answer(
             "non_exact_analyte_evidence_present",
             "abnormal_in_reassuring_section",
             "section_status_mismatch",
+            "false_no_abnormal_summary",
+            "summary_missing_abnormal_coverage",
             "reference_semantic_forbidden_bulk_listing",
             "reference_range_forbidden_multi_analyte_table",
             "reference_range_forbidden_current_value_render",

@@ -37,15 +37,15 @@
     "conversation_history_included": false,
     "system_prompt_chars": 0,
     "user_prompt_chars": 1229,
-    "llm_elapsed_ms": 51489.404,
+    "llm_elapsed_ms": 45930.359,
     "llm_raw_error_type": null,
     "llm_raw_error_message": null,
-    "total_duration": 51485687331,
-    "load_duration": 204959942,
+    "total_duration": 45877503518,
+    "load_duration": 372108504,
     "prompt_eval_count": 398,
-    "prompt_eval_duration": 26869662413,
+    "prompt_eval_duration": 24808072043,
     "eval_count": 169,
-    "eval_duration": 23926166339,
-    "tokens_per_second_estimate": 7.063
+    "eval_duration": 20272780819,
+    "tokens_per_second_estimate": 8.336
   }
 }

@@ -28,6 +28,26 @@ class TestMultiDocComparison(unittest.TestCase):
         self.assertNotIn("différence technique", answer)
         self.assertTrue(("aucun écart numérique" in answer) or ("valeurs identiques" in answer))
 
+    def test_compare_out_of_reference_between_two_reports_without_explicit_analyte(self) -> None:
+        result = run_generation(
+            query="Compare les anomalies biologiques entre le report 10 et le report 12. Quels résultats sont hors référence dans chaque rapport ?",
+            index_dir="data/indexes",
+        )
+        debug = dict(result.get("debug") or {})
+        qu = dict(result.get("query_understanding") or {})
+        self.assertEqual(str(debug.get("selected_route") or ""), "doc_pair_comparison")
+        self.assertEqual(list(qu.get("requested_doc_ids") or []), ["report_10", "report_12"])
+        self.assertEqual(str(qu.get("technical_condition") or ""), "out_of_reference")
+        self.assertGreater(len(list(result.get("displayed_evidences") or [])), 0)
+        self.assertGreater(len(list(result.get("sources") or [])), 0)
+        self.assertNotEqual(str(result.get("generation_mode") or ""), "deterministic_safe_error_response")
+        self.assertNotEqual(str((result.get("validation") or {}).get("validation_status") or "").lower(), "fail")
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("report_10", answer)
+        self.assertIn("report_12", answer)
+        self.assertTrue(any(k in answer for k in ["albumine", "triglycerides", "triglycérides"]))
+        self.assertTrue(any(k in answer for k in ["bilirubine directe", "ldh", "ckmb"]))
+
 
 if __name__ == "__main__":
     unittest.main()

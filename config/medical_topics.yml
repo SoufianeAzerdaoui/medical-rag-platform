@@ -3,7 +3,13 @@
     "thyroid": {
       "triggers": ["hyperthyro", "hypothyro", "thyroide", "thyroid", "tsh", "t3", "t4"],
       "analytes": ["tsh", "tshus", "t4_libre", "t4libre", "t3_libre", "t3libre", "anti_tg", "anti tg", "anti_tpo", "anti tpo", "trak"],
-      "excluded_unless_explicit": ["acth", "insuline", "pth", "gh"]
+      "excluded_unless_explicit": ["acth", "insuline", "pth", "gh"],
+      "rules": {
+        "high_groups": {
+          "tsh": ["tsh", "tshus"],
+          "t3_t4": ["t3_libre", "t3libre", "t4_libre", "t4libre"]
+        }
+      }
     },
     "tumor_markers": {
       "triggers": ["marqueur tumoral", "cancer", "tumeur", "oncologie"],

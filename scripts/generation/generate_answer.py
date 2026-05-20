@@ -102,14 +102,19 @@ from qualitative_comment_utils import (
 )
 from analyte_aliases import ANALYTE_ALIAS_GROUPS
 from analyte_resolver import resolve_requested_analytes, load_available_analytes, normalize_analyte_text
-from config_loader import get_analyte_families_config, get_priority_scoring_config
+from config_loader import (
+    get_analyte_families_config,
+    get_assistant_messages_config,
+    get_priority_scoring_config,
+    get_safety_guardrails_config,
+)
 from general_conversation import (
     detect_general_conversation,
     get_general_conversation_response,
     is_pure_general_conversation,
     render_general_conversation_response,
 )
-from medical_topics import detect_medical_topic, get_topic_analytes, get_topic_exclusions
+from medical_topics import detect_medical_topic, get_topic_analytes, get_topic_exclusions, get_topic_rules
 from policy_matrix import (
     HARD_GATE_ERRORS,
     LEVEL2_HYBRID_INTENT_POLICY,
@@ -5911,9 +5916,14 @@ def _build_doc_scoped_biological_summary_answer(
         f"Normaux / rassurants : {normal_items}.",
     ]
     if no_diagnosis:
-        lines.append("Conclusion technique : synthèse limitée aux résultats disponibles, sans conclusion diagnostique.")
+        if abnormal_sorted:
+            lines.append("Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic.")
+        else:
+            lines.append(
+                "Conclusion technique : les résultats listés sont dans la référence parmi les éléments sélectionnés, sans conclusion diagnostique."
+            )
     else:
-        lines.append("Conclusion technique : synthèse limitée aux résultats disponibles.")
+        lines.append("Conclusion technique : synthèse descriptive limitée aux données disponibles.")
     return "\n".join(lines[:max_l]).strip()
 
 
@@ -6125,6 +6135,117 @@ def _table_cell_value(ev: dict[str, Any], col_key: str) -> str:
     return str(ev.get(key) or "")
 
 
+def _assistant_message(path: list[str], default: str) -> str:
+    cfg: Any = get_assistant_messages_config() or {}
+    node: Any = cfg
+    for key in path:
+        if not isinstance(node, dict):
+            return default
+        node = node.get(key)
+    value = str(node or "").strip()
+    return value or default
+
+
+def _safety_guardrail(path: list[str], default: Any) -> Any:
+    cfg: Any = get_safety_guardrails_config() or {}
+    node: Any = cfg
+    for key in path:
+        if not isinstance(node, dict):
+            return default
+        node = node.get(key)
+    if node is None or node == "":
+        return default
+    return node
+
+
+def _safety_guardrail_list(path: list[str], default: list[str]) -> list[str]:
+    raw = _safety_guardrail(path, default)
+    vals = [str(v).strip() for v in list(raw or []) if str(v).strip()]
+    return vals or list(default)
+
+
+def _thyroid_high_groups() -> tuple[set[str], set[str]]:
+    rules = dict(get_topic_rules("thyroid") or {})
+    groups = dict(rules.get("high_groups") or {})
+    tsh_group = {
+        str(a).strip().lower()
+        for a in list(groups.get("tsh") or ["tsh", "tshus"])
+        if str(a).strip()
+    }
+    t3_t4_group = {
+        str(a).strip().lower()
+        for a in list(groups.get("t3_t4") or ["t3_libre", "t3libre", "t4_libre", "t4libre"])
+        if str(a).strip()
+    }
+    return tsh_group, t3_t4_group
+
+
+def _thyroid_diagnostic_safety_answer(thyroid_rows: list[dict[str, Any]]) -> str:
+    if not thyroid_rows:
+        return ""
+    detail_fallback = _assistant_message(
+        ["diagnostic_safety", "thyroid", "detail_fallback"],
+        "anomalies thyroïdiennes",
+    )
+    discordance_sentence = _assistant_message(
+        ["diagnostic_safety", "thyroid", "discordance_sentence"],
+        "Ce profil est biologiquement discordant pour une hyperthyroïdie primaire.",
+    )
+    no_diagnostic_sentence = _assistant_message(
+        ["diagnostic_safety", "thyroid", "no_diagnostic_sentence"],
+        "Cependant, on ne peut pas conclure seul à un diagnostic thyroïdien à partir de ce document.",
+    )
+    correlation_sentence = _assistant_message(
+        ["diagnostic_safety", "thyroid", "correlation_sentence"],
+        "Il faut corréler avec le contexte clinique, les traitements, les interférences analytiques et, si besoin, répéter/compléter le bilan.",
+    )
+    summary_template = _assistant_message(
+        ["diagnostic_safety", "thyroid", "summary_template"],
+        "Le document montre des anomalies thyroïdiennes importantes : {details_txt}. {no_diagnostic_sentence} {discordance} {correlation_sentence}",
+    )
+    tsh_group, t3_t4_group = _thyroid_high_groups()
+    details: list[str] = []
+    has_tsh_high = False
+    has_t3_t4_high = False
+    for ev in thyroid_rows:
+        status = str(ev.get("technical_status_code") or "").strip().lower()
+        analyte = str(ev.get("analyte") or "").strip()
+        analyte_norm = str(ev.get("analyte_norm") or "").strip().lower()
+        if status == "above_reference":
+            details.append(f"{analyte} élevée")
+            if analyte_norm in tsh_group:
+                has_tsh_high = True
+            if analyte_norm in t3_t4_group:
+                has_t3_t4_high = True
+        elif status == "below_reference":
+            details.append(f"{analyte} basse")
+    details_txt = ", ".join(details) if details else detail_fallback
+    discordance = discordance_sentence if (has_tsh_high and has_t3_t4_high) else ""
+    return summary_template.format(
+        details_txt=details_txt,
+        no_diagnostic_sentence=no_diagnostic_sentence,
+        discordance=discordance,
+        correlation_sentence=correlation_sentence,
+    ).strip()
+
+
+def _diagnostic_safety_generic_lines() -> tuple[str, str, str]:
+    return (
+        _assistant_message(
+            ["diagnostic_safety", "generic", "cancer_refusal"],
+            "Non, on ne peut pas conclure à un cancer uniquement à partir de ces marqueurs.",
+        ),
+        _assistant_message(
+            ["diagnostic_safety", "generic", "markers_intro"],
+            "Constat technique sur les marqueurs retrouvés :",
+        ),
+        _assistant_message(
+            ["diagnostic_safety", "generic", "closing"],
+            "Ces marqueurs biologiques ne suffisent pas à poser un diagnostic ; une interprétation médicale spécialisée est nécessaire.",
+        ),
+    )
+
+
 def render_evidence_pack_deterministic(evidence_pack: dict[str, Any], output_format: str) -> str:
     evidences = list(evidence_pack.get("evidences") or [])
     missing_items = list(evidence_pack.get("missing_items") or [])
@@ -6142,34 +6263,9 @@ def render_evidence_pack_deterministic(evidence_pack: dict[str, Any], output_for
                 if str(ev.get("analyte_norm") or "").strip().lower() in thyroid_norms
             ]
             if thyroid_rows:
-                details: list[str] = []
-                has_tsh_high = False
-                has_t3_t4_high = False
-                for ev in thyroid_rows:
-                    status = str(ev.get("technical_status_code") or "").strip().lower()
-                    analyte = str(ev.get("analyte") or "").strip()
-                    analyte_norm = str(ev.get("analyte_norm") or "").strip().lower()
-                    if status == "above_reference":
-                        details.append(f"{analyte} élevée")
-                        if analyte_norm in {"tshus", "tsh"}:
-                            has_tsh_high = True
-                        if analyte_norm in {"t3_libre", "t3libre", "t4_libre", "t4libre"}:
-                            has_t3_t4_high = True
-                    elif status == "below_reference":
-                        details.append(f"{analyte} basse")
-                details_txt = ", ".join(details) if details else "anomalies thyroïdiennes"
-                discordance = ""
-                if has_tsh_high and has_t3_t4_high:
-                    discordance = " Ce profil est biologiquement discordant pour une hyperthyroïdie primaire."
-                return (
-                    f"Le document montre des anomalies thyroïdiennes importantes : {details_txt}. "
-                    "Cependant, on ne peut pas conclure seul à un diagnostic thyroïdien à partir de ce document. "
-                    f"{discordance} Il faut corréler avec le contexte clinique, les traitements, les interférences analytiques et, si besoin, répéter/compléter le bilan."
-                )
-        lines = [
-            "Non, on ne peut pas conclure à un cancer uniquement à partir de ces marqueurs.",
-            "Constat technique sur les marqueurs retrouvés :",
-        ]
+                return _thyroid_diagnostic_safety_answer(thyroid_rows)
+        cancer_refusal, markers_intro, closing = _diagnostic_safety_generic_lines()
+        lines = [cancer_refusal, markers_intro]
         if evidences:
             for ev in evidences:
                 value = ev.get("current_value") or "non disponible"
@@ -6182,7 +6278,7 @@ def render_evidence_pack_deterministic(evidence_pack: dict[str, Any], output_for
             lines.append("- Aucun marqueur demandé retrouvé.")
         for analyte in missing_items:
             lines.append(f"- {_canonical_display_name(str(analyte))}: non retrouvé dans {requested_doc}.")
-        lines.append("Ces marqueurs biologiques ne suffisent pas à poser un diagnostic ; une interprétation médicale spécialisée est nécessaire.")
+        lines.append(closing)
         return "\n".join(lines).strip()
 
     if intent == "comment_without_measured_value":
@@ -6371,12 +6467,14 @@ def _build_route_specific_short_fallback_answer(
     selected_route: str,
     query_understanding: QueryUnderstanding,
     displayed_evidences: list[dict[str, Any]],
+    evidence_all_summary: list[dict[str, Any]] | None = None,
     default_answer: str,
 ) -> str:
     if str(selected_route or "").strip().lower() == "doc_scoped_biological_summary":
         no_diag = str(getattr(query_understanding, "safety_intent", "") or "").strip().lower() == "no_diagnosis_constraint"
+        rows = list(evidence_all_summary or []) if list(evidence_all_summary or []) else displayed_evidences
         return _build_doc_scoped_biological_summary_answer(
-            displayed_evidences,
+            rows,
             max_lines=getattr(query_understanding, "requested_summary_points", None),
             no_diagnosis=no_diag,
         )
@@ -6388,6 +6486,20 @@ def _reference_short(reference_raw: Any) -> str:
     if not ref:
         return "non disponible"
     ref = re.sub(r"\s+", " ", ref)
+    ref_norm = norm_text(ref)
+    if any(
+        t in ref_norm
+        for t in [
+            "taux souhaitable",
+            "taux modere",
+            "taux eleve",
+            "haute",
+            "tres haute",
+            "très haute",
+            "risque",
+        ]
+    ):
+        return "référence textuelle disponible"
     # Keep a very short factual reference for Level-2 micro-prompts to avoid truncation/timeouts.
     nums = re.findall(r"\d+(?:[.,]\d+)?", ref)
     if re.match(r"^\s*(?:<|<=|≤)\s*\d", ref):
@@ -6395,6 +6507,8 @@ def _reference_short(reference_raw: Any) -> str:
     if re.match(r"^\s*(?:>|>=|≥)\s*\d", ref):
         return f"> {nums[0]}" if nums else "réf. disponible"
     if len(nums) >= 2:
+        if nums[0].replace(",", ".") == nums[1].replace(",", "."):
+            return "référence textuelle disponible"
         return f"{nums[0]} - {nums[1]}"
     return "réf. disponible"
 
@@ -6415,8 +6529,31 @@ def _ensure_biological_summary_conclusion(answer: str, *, has_abnormal: bool = T
             "",
             text,
         )
+    weak_conclusion_patterns = [
+        r"(?im)^conclusion technique\s*:\s*le nombre de resultats anormaux est de \d+\.?\s*$",
+        r"(?im)^conclusion technique\s*$\s*^le nombre de resultats anormaux est de \d+\.?\s*$",
+        r"(?im)^conclusion technique\s*:\s*aucun\.?\s*$",
+        r"(?im)^conclusion technique\s*:\s*ras\.?\s*$",
+    ]
+    for patt in weak_conclusion_patterns:
+        text = re.sub(patt, "", text).strip()
+    original_lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if any(re.search(r"(?im)^le nombre de r[eé]sultats anormaux est de \d+\.?\s*$", ln) for ln in original_lines):
+        filtered = [
+            ln for ln in original_lines
+            if not re.search(r"(?im)^le nombre de r[eé]sultats anormaux est de \d+\.?\s*$", ln)
+            and norm_text(ln) != "conclusion technique"
+        ]
+        text = "\n".join(filtered).strip()
     if "conclusion technique" in norm_text(text):
         if not has_abnormal and has_within:
+            text = re.sub(r"(?im)^conclusion technique\s*:.*$", "", text).strip()
+            return f"{text}\n{conclusion}".strip()
+        current_conclusion = ""
+        for ln in [x.strip() for x in text.splitlines() if x.strip()]:
+            if norm_text(ln).startswith("conclusion technique"):
+                current_conclusion = ln
+        if current_conclusion and any(t in norm_text(current_conclusion) for t in ["le nombre de resultats anormaux", ": aucun", ": ras"]):
             text = re.sub(r"(?im)^conclusion technique\s*:.*$", "", text).strip()
             return f"{text}\n{conclusion}".strip()
         return text
@@ -6465,45 +6602,80 @@ def _ensure_guarded_thyroid_conclusion(answer: str) -> str:
     text = str(answer or "").strip()
     if not text:
         return text
+    strong_patterns = _safety_guardrail_list(
+        ["diagnostic_safety", "strong_suggestion_patterns"],
+        [
+            r"\bsugg[eè]re\s+une?\s+hyperthyro",
+            r"\bcompatible\s+avec\s+une?\s+hyperthyro",
+            r"\b[eé]voque\s+une?\s+hyperthyro",
+            r"\bindique\s+une?\s+hyperthyro",
+            r"\ben\s+faveur\s+d['’]une?\s+hyperthyro",
+        ],
+    )
+    limitation_sentence = str(
+        _safety_guardrail(
+            ["diagnostic_safety", "limitation_sentence"],
+            "L’interprétation reste limitée aux données biologiques fournies.",
+        )
+    ).strip()
+    discordance_replacement = str(
+        _safety_guardrail(
+            ["diagnostic_safety", "discordance_replacement"],
+            "profil biologique discordant pour une hyperthyroïdie primaire",
+        )
+    ).strip()
+    clinical_style_patterns = _safety_guardrail_list(
+        ["diagnostic_safety", "forbidden_clinical_style_patterns"],
+        [
+            r"(?im)^.*il est essentiel de.*$",
+            r"(?im)^.*examens compl[eé]mentaires.*$",
+            r"(?im)^.*[eé]valuation compl[eè]te.*$",
+            r"(?im)^.*cause sous[-\s]jacente.*$",
+            r"(?im)^.*prendre en compte les autres facteurs cliniques.*$",
+            r"(?im)^.*confirmer ou [eé]liminer le diagnostic.*$",
+            r"(?im)^.*\bconsulter\b.*$",
+        ],
+    )
     # Normalize over-strong diagnostic wording in guarded thyroid responses.
-    strong_patterns = [
-        r"\bsugg[eè]re\s+une?\s+hyperthyro",
-        r"\bcompatible\s+avec\s+une?\s+hyperthyro",
-        r"\b[eé]voque\s+une?\s+hyperthyro",
-        r"\bindique\s+une?\s+hyperthyro",
-        r"\ben\s+faveur\s+d['’]une?\s+hyperthyro",
-    ]
     for patt in strong_patterns:
         text = re.sub(
             patt,
-            "profil biologique discordant pour une hyperthyroïdie primaire",
+            discordance_replacement,
             text,
             flags=re.IGNORECASE,
         )
-    clinical_style_patterns = [
-        r"(?im)^.*il est essentiel de.*$",
-        r"(?im)^.*examens compl[eé]mentaires.*$",
-        r"(?im)^.*[eé]valuation compl[eè]te.*$",
-        r"(?im)^.*cause sous[-\s]jacente.*$",
-        r"(?im)^.*prendre en compte les autres facteurs cliniques.*$",
-        r"(?im)^.*confirmer ou [eé]liminer le diagnostic.*$",
-        r"(?im)^.*\bconsulter\b.*$",
-    ]
     for patt in clinical_style_patterns:
-        text = re.sub(patt, "L’interprétation reste limitée aux données biologiques fournies.", text)
-    text = re.sub(r"(?im)^(L’interprétation reste limitée aux données biologiques fournies\.\s*){2,}$", "L’interprétation reste limitée aux données biologiques fournies.", text)
+        text = re.sub(patt, limitation_sentence, text)
+    lim_esc = re.escape(limitation_sentence)
+    text = re.sub(rf"(?im)^({lim_esc}\s*){{2,}}$", limitation_sentence, text)
     # Deduplicate repeated limitation lines.
     dedup_lines: list[str] = []
     seen_limitation = False
+    seen_discordance = False
+    discordance_key = "discordant pour une hyperthyroidie primaire"
     for ln in [x.strip() for x in text.splitlines() if x.strip()]:
-        if norm_text(ln) == norm_text("L’interprétation reste limitée aux données biologiques fournies."):
+        if norm_text(ln) == norm_text(limitation_sentence):
             if seen_limitation:
                 continue
             seen_limitation = True
+        if (norm_text(discordance_replacement) in norm_text(ln)) or (discordance_key in norm_text(ln)):
+            if seen_discordance:
+                continue
+            seen_discordance = True
         dedup_lines.append(ln)
+    # Keep discordance statement only in the final conclusion block to avoid repetition.
+    dedup_lines = [
+        ln
+        for ln in dedup_lines
+        if (
+            norm_text(discordance_replacement) not in norm_text(ln)
+            and discordance_key not in norm_text(ln)
+        )
+        or norm_text(ln).startswith("conclusion technique")
+    ]
     text = "\n".join(dedup_lines).strip()
     required = (
-        "Conclusion technique : profil biologique discordant pour une hyperthyroïdie primaire ; "
+        f"Conclusion technique : {discordance_replacement} ; "
         "aucune conclusion diagnostique ne peut être posée à partir de ces seuls éléments."
     )
     if "conclusion technique" in norm_text(text):
@@ -6553,6 +6725,117 @@ def _enforce_biological_summary_template(
     ).strip()
 
 
+def _canonical_analyte_key(value: str) -> str:
+    key = norm_text(value or "").replace("_", " ")
+    key = key.replace("valporoique", "valproique")
+    key = key.replace("ck mb", "ckmb").replace("ck-mb", "ckmb").replace("cpk mb", "cpkmb").replace("cpk-mb", "cpkmb")
+    key = key.replace("apolipoproteine a1", "apo a1").replace("apolipoprotéine a1", "apo a1").replace("apoa1", "apo a1")
+    key = key.replace("ckmb (cpkmb)", "ckmb").replace("cpkmb (ckmb)", "ckmb")
+    key = key.replace("cpkmb", "ckmb")
+    key = re.sub(r"\bdepakine\b", "", key)
+    key = re.sub(r"\s+", " ", key).strip()
+    return key
+
+
+def _priority_section_candidates(section_text: str) -> set[str]:
+    return {
+        _canonical_analyte_key(tok)
+        for tok in re.findall(r"[A-Za-zÀ-ÿ0-9_()/-]{3,}", str(section_text or ""))
+        if _canonical_analyte_key(tok)
+    }
+
+
+def _status_label_for_priority(status_text: str) -> str:
+    s = norm_text(status_text or "")
+    if any(t in s for t in ["above_reference", "au dessus", "au-dessus"]):
+        return "au-dessus de la référence"
+    if any(t in s for t in ["below_reference", "en dessous", "sous"]):
+        return "en dessous de la référence"
+    if any(t in s for t in ["within_reference", "dans la reference", "dans la référence"]):
+        return "dans la référence"
+    return "statut non interprétable"
+
+
+def _extract_priority_block(answer: str, marker: str) -> str:
+    text = str(answer or "")
+    markers = {
+        "high": r"(?:priorit[eé]\s+[eé]lev[ée]e)",
+        "moderate": r"(?:priorit[eé]\s+mod[eé]r[ée]e(?:\s*/\s*faible)?)",
+        "conclusion": r"(?:conclusion\s+technique)",
+    }
+    marker_pat = markers.get(marker, marker)
+    if not marker_pat:
+        return ""
+    start = re.search(rf"(?is){marker_pat}\s*:\s*", text, flags=re.IGNORECASE)
+    if not start:
+        return ""
+    rest = text[start.end() :]
+    end = re.search(
+        r"(?is)(?:priorit[eé]\s+[eé]lev[ée]e|priorit[eé]\s+mod[eé]r[ée]e(?:\s*/\s*faible)?|conclusion\s+technique)\s*:\s*",
+        rest,
+        flags=re.IGNORECASE,
+    )
+    return rest[: end.start()] if end else rest
+
+
+def _priority_answer_needs_enforcement(answer: str, llm_evidences: list[dict[str, Any]]) -> bool:
+    text = str(answer or "").strip()
+    if not text:
+        return True
+    n = norm_text(text)
+    if "..." in text:
+        return True
+    if re.search(r"\b(\d+(?:[.,]\d+)?)\s*-\s*\1\b", text):
+        return True
+    if "priorite elevee" not in n or "priorite moderee" not in n or "conclusion technique" not in n:
+        return True
+    high_block = _priority_section_candidates(_extract_priority_block(text, "high"))
+    mod_block = _priority_section_candidates(_extract_priority_block(text, "moderate"))
+    high_expected = {
+        _canonical_analyte_key(str(ev.get("analyte") or ""))
+        for ev in llm_evidences
+        if str(ev.get("priority_level") or "").strip().lower() == "high"
+    }
+    mod_expected = {
+        _canonical_analyte_key(str(ev.get("analyte") or ""))
+        for ev in llm_evidences
+        if str(ev.get("priority_level") or "").strip().lower() in {"moderate", "low"}
+    }
+    if any(a and a in mod_block for a in high_expected):
+        return True
+    if any(a and a in high_block for a in mod_expected):
+        return True
+    if any(a and a not in high_block for a in high_expected):
+        return True
+    if any(a and a not in mod_block for a in mod_expected):
+        return True
+    return False
+
+
+def _enforce_priority_summary_template(answer: str, llm_evidences: list[dict[str, Any]]) -> str:
+    rows = list(llm_evidences or [])
+    high_rows = [ev for ev in rows if str(ev.get("priority_level") or "").strip().lower() == "high"]
+    mod_rows = [ev for ev in rows if str(ev.get("priority_level") or "").strip().lower() in {"moderate", "low"}]
+
+    def _fmt(ev: dict[str, Any]) -> str:
+        analyte = str(ev.get("analyte") or "analyte").strip()
+        value = str(ev.get("value_with_unit") or "non disponible").strip()
+        status = _status_label_for_priority(str(ev.get("status") or ""))
+        reason = str(ev.get("priority_reason") or "").strip() or "écart technique hors référence"
+        ref = str(ev.get("reference_short") or "").strip()
+        ref_text = "référence textuelle disponible" if re.search(r"\b(\d+(?:[.,]\d+)?)\s*-\s*\1\b", ref) else (ref or "référence textuelle disponible")
+        return f"{analyte} ({value}, {status}, réf. {ref_text}) : {reason}"
+
+    high_txt = "; ".join(_fmt(ev) for ev in high_rows) if high_rows else "aucun fait classé high dans les éléments fournis"
+    mod_txt = "; ".join(_fmt(ev) for ev in mod_rows) if mod_rows else "aucun fait classé moderate/low dans les éléments fournis"
+    conclusion = "Conclusion technique : hiérarchisation technique uniquement, sans diagnostic."
+    return (
+        f"Priorité élevée : {high_txt}.\n"
+        f"Priorité modérée/faible : {mod_txt}.\n"
+        f"{conclusion}"
+    ).strip()
+
+
 def _value_with_unit(value_raw: Any, unit: Any) -> str:
     value = str(value_raw or "").strip() or "non disponible"
     u = str(unit or "").strip()
@@ -6569,6 +6852,30 @@ def _llm_row_priority(row: dict[str, Any]) -> tuple[int, float]:
     return (2, -score)
 
 
+def _summary_status_bucket(ev: dict[str, Any]) -> str:
+    status = str(ev.get("technical_status_code") or ev.get("interpretation_status") or ev.get("status") or "").strip().lower()
+    if status in {"above_reference", "below_reference", "out_of_reference"}:
+        return "abnormal"
+    if status == "within_reference":
+        return "within"
+    return "ambiguous"
+
+
+def _answer_claims_no_abnormal(answer: str) -> bool:
+    n = norm_text(answer or "")
+    if not n:
+        return False
+    markers = [
+        "anormaux : aucun",
+        "anormaux: aucun",
+        "aucun fait anormal",
+        "aucune anomalie",
+        "aucun resultat anormal",
+        "aucun résultat anormal",
+    ]
+    return any(m in n for m in markers)
+
+
 def _build_llm_evidence_pack(
     *,
     query_understanding: QueryUnderstanding,
@@ -6578,8 +6885,42 @@ def _build_llm_evidence_pack(
     pack = dict(structured_pack or {})
     evidences = list(pack.get("evidences") or [])
     route = str(selected_route or "").strip().lower()
-    max_rows = 6 if route == "doc_scoped_biological_summary" else 10
-    selected = sorted(evidences, key=_llm_row_priority)[:max_rows]
+    policy = _level2_prompt_policy(route)
+    if route == "doc_scoped_biological_summary":
+        max_rows = int(policy.get("max_evidence_rows") or 6)
+    else:
+        max_rows = int(policy.get("max_evidence_rows") or 10)
+    summary_selection_debug: dict[str, Any] = {}
+    if route == "doc_scoped_biological_summary":
+        evidence_all = list(pack.get("evidence_all_summary") or evidences)
+        abnormal_rows = sorted([ev for ev in evidence_all if _summary_status_bucket(ev) == "abnormal"], key=_llm_row_priority)
+        within_rows = sorted([ev for ev in evidence_all if _summary_status_bucket(ev) == "within"], key=_llm_row_priority)
+        ambiguous_rows = sorted([ev for ev in evidence_all if _summary_status_bucket(ev) == "ambiguous"], key=_llm_row_priority)
+        max_abnormal_rows = min(6, max_rows)
+        max_within_rows = min(4, max_rows)
+        max_ambiguous_rows = min(2, max_rows)
+        selected: list[dict[str, Any]] = []
+        selected.extend(abnormal_rows[:max_abnormal_rows])
+        remaining = max(0, max_rows - len(selected))
+        selected.extend(within_rows[: min(max_within_rows, remaining)])
+        remaining = max(0, max_rows - len(selected))
+        selected.extend(ambiguous_rows[: min(max_ambiguous_rows, remaining)])
+        if not selected:
+            selected = sorted(evidence_all, key=_llm_row_priority)[:max_rows]
+        summary_selection_debug = {
+            "total_results_count": len(evidence_all),
+            "abnormal_rows_count": len(abnormal_rows),
+            "within_reference_rows_count": len(within_rows),
+            "ambiguous_rows_count": len(ambiguous_rows),
+            "llm_abnormal_rows_count": len([ev for ev in selected if _summary_status_bucket(ev) == "abnormal"]),
+            "llm_within_rows_count": len([ev for ev in selected if _summary_status_bucket(ev) == "within"]),
+            "llm_ambiguous_rows_count": len([ev for ev in selected if _summary_status_bucket(ev) == "ambiguous"]),
+            "summary_selection_strategy": "abnormal_first_then_within_then_ambiguous",
+            "summary_truncated_abnormal_count": max(0, len(abnormal_rows) - len([ev for ev in selected if _summary_status_bucket(ev) == "abnormal"])),
+            "summary_truncated_within_count": max(0, len(within_rows) - len([ev for ev in selected if _summary_status_bucket(ev) == "within"])),
+        }
+    else:
+        selected = sorted(evidences, key=_llm_row_priority)[:max_rows]
     compact_evidences: list[dict[str, Any]] = []
     for ev in selected:
         compact_evidences.append(
@@ -6606,6 +6947,9 @@ def _build_llm_evidence_pack(
         "visualization_facts": pack.get("visualization_facts"),
         "missing_items": list(pack.get("missing_items") or []),
     }
+    if summary_selection_debug:
+        llm_pack.update(summary_selection_debug)
+        llm_pack["summary_selection_debug"] = dict(summary_selection_debug)
     return llm_pack, len(compact_evidences)
 
 
@@ -6781,12 +7125,19 @@ def _compose_level2_micro_prompt_answer(
     abnormal_block = "\n".join(abnormal_lines) if abnormal_lines else "- Aucun fait anormal fourni."
     within_is_empty = len(within_lines) == 0
     within_block = "\n".join(within_lines) if within_lines else "Aucun fait dans la référence fourni."
+    total_results_count = int(llm_pack.get("total_results_count") or len(llm_evidences))
+    abnormal_rows_count = int(llm_pack.get("abnormal_rows_count") or len(compact_abnormal_lines))
+    within_reference_rows_count = int(llm_pack.get("within_reference_rows_count") or len(compact_within_lines))
+    ambiguous_rows_count = int(
+        llm_pack.get("ambiguous_rows_count")
+        or max(0, len(llm_evidences) - len(compact_abnormal_lines) - len(compact_within_lines))
+    )
     route = str(selected_route or "").strip().lower()
     if route == "doc_scoped_priority_anomalies":
         prompt = (
             "Tu es un rédacteur médical technique.\n"
             "Réponds uniquement avec les faits fournis.\n"
-            "Sortie stricte en 3 lignes maximum.\n"
+            f"Sortie stricte en {max(3, min(max_lines, 8))} lignes maximum.\n"
             "Format obligatoire :\n"
             "- Priorité élevée : ...\n"
             "- Priorité modérée/faible : ...\n"
@@ -6794,18 +7145,48 @@ def _compose_level2_micro_prompt_answer(
             "Règles :\n"
             "- Ne modifie aucune valeur, unité, référence, statut, priority_level ou priority_reason.\n"
             "- Ne recalcule pas la priorité.\n"
+            "- Les niveaux de priorité sont déjà calculés. Tu n'as pas le droit de déplacer un analyte.\n"
             "- Ne donne pas de diagnostic.\n"
             "- Ne propose pas de traitement.\n\n"
             "- N'ajoute aucun nombre qui n'est pas présent dans les faits.\n"
             "- N'utilise pas de tableau Markdown.\n"
             "- N'utilise jamais '...'. Écris des phrases complètes.\n"
             "- Respecte strictement le mapping backend: high -> Priorité élevée ; moderate/low -> Priorité modérée/faible.\n"
+            "- Ne transforme jamais une référence textuelle complexe en borne numérique simplifiée (ex: 1,50 - 1,50).\n"
             "Faits anormaux :\n"
             f"{abnormal_block}\n\n"
             "Faits dans la référence :\n"
             f"{within_block}\n"
         )
     elif route == "doc_scoped_medical_interpretation_guarded":
+        forbidden_style_patterns = _safety_guardrail_list(
+            ["diagnostic_safety", "forbidden_clinical_style_patterns"],
+            [
+                "cause sous-jacente",
+                "évaluation clinique",
+                "diverses conditions médicales",
+            ],
+        )
+        forbidden_style_hint = ", ".join(
+            sorted(
+                {
+                    re.sub(r"^\(\?im\)\^\.\*|\.\*\$$", "", p).replace("\\", "")
+                    for p in forbidden_style_patterns[:4]
+                    if str(p).strip()
+                }
+            )
+        )
+        discordance_replacement = str(
+            _safety_guardrail(
+                ["diagnostic_safety", "discordance_replacement"],
+                "profil biologique discordant pour une hyperthyroïdie primaire",
+            )
+        ).strip()
+        strong_patterns = _safety_guardrail_list(
+            ["diagnostic_safety", "strong_suggestion_patterns"],
+            [r"sugg[eè]re\s+une?\s+hyperthyro", r"compatible\s+avec\s+une?\s+hyperthyro", r"[eé]voque\s+une?\s+hyperthyro"],
+        )
+        strong_hint = ", ".join([re.sub(r"\\b|\\s\+|\(\?:|\)|\?","",p) for p in strong_patterns[:3]])
         prompt = (
             "Tu es un rédacteur médical technique prudent.\n"
             "Réponds uniquement avec les faits fournis.\n"
@@ -6819,10 +7200,10 @@ def _compose_level2_micro_prompt_answer(
             "- N’affirme aucun diagnostic.\n"
             "- Écris explicitement : « On ne peut pas conclure à un diagnostic à partir de ces seuls éléments. »\n"
             "- Ne propose aucun traitement.\n\n"
-            "- Évite les formulations cliniques générales (cause sous-jacente, évaluation clinique, diverses conditions médicales).\n"
+            f"- Évite les formulations cliniques générales ({forbidden_style_hint or 'cause sous-jacente, évaluation clinique'}).\n"
             "- Utilise un vocabulaire technique factuel: profil biologique discordant, interprétation limitée aux données disponibles.\n\n"
-            "- N'écris jamais que les résultats suggèrent, évoquent ou sont compatibles avec une hyperthyroïdie.\n"
-            "- Écris seulement: profil biologique discordant pour une hyperthyroïdie primaire.\n\n"
+            f"- N'écris jamais de formulation de type: {strong_hint or 'suggère/évoque/compatible avec hyperthyroïdie'}.\n"
+            f"- Écris seulement: {discordance_replacement}.\n\n"
             "Faits anormaux :\n"
             f"{abnormal_block}\n\n"
             "Faits dans la référence :\n"
@@ -6833,6 +7214,11 @@ def _compose_level2_micro_prompt_answer(
             "Tu es un rédacteur médical technique.\n"
             "Réponds uniquement avec les faits fournis.\n"
             f"Maximum {max(3, min(max_lines, 8))} lignes.\n"
+            "Compteurs documentaires :\n"
+            f"- total_results_count: {total_results_count}\n"
+            f"- abnormal_rows_count: {abnormal_rows_count}\n"
+            f"- within_reference_rows_count: {within_reference_rows_count}\n"
+            f"- ambiguous_rows_count: {ambiguous_rows_count}\n"
             "Sections obligatoires :\n"
             "- Anormaux\n"
             "- Résultats dans la référence uniquement\n"
@@ -6847,6 +7233,7 @@ def _compose_level2_micro_prompt_answer(
             "- N’invente aucun résultat normal ou rassurant.\n"
             "- Ne déplace jamais un résultat above_reference/below_reference dans la section “Résultats dans la référence uniquement”.\n"
             "- Ne mets jamais un résultat above_reference ou below_reference dans “Résultats dans la référence uniquement”.\n\n"
+            "- Si abnormal_rows_count > 0, n’écris jamais « Aucun fait anormal » ni « Anormaux : Aucun ».\n\n"
             "Faits anormaux :\n"
             f"{(chr(10).join(compact_abnormal_lines) if compact_abnormal_lines else '- Aucun fait anormal fourni.')}\n\n"
             "Faits dans la référence :\n"
@@ -6918,6 +7305,23 @@ def _compose_level2_micro_prompt_answer(
                 abnormal_fact_lines=compact_abnormal_lines,
                 within_is_empty=True,
             )
+        if route == "doc_scoped_biological_summary" and abnormal_rows_count > 0 and _answer_claims_no_abnormal(answer):
+            answer = _enforce_biological_summary_template(
+                answer=answer,
+                abnormal_fact_lines=compact_abnormal_lines,
+                within_is_empty=within_is_empty,
+            )
+        if route == "doc_scoped_priority_anomalies":
+            try:
+                if _priority_answer_needs_enforcement(answer, llm_evidences):
+                    answer = _enforce_priority_summary_template(answer, llm_evidences)
+            except Exception as exc:
+                out["mode"] = "llm_writer_error_fallback"
+                out["llm_error"] = "priority_postprocess_exception"
+                if str(os.getenv("CHAT_DEBUG_ERRORS", "0")).strip() == "1":
+                    out["llm_postprocess_error_type"] = type(exc).__name__
+                    out["llm_postprocess_error_message"] = str(exc)
+                return out
         out["answer"] = answer
         out["llm_candidate_answer"] = answer
         out["llm_error"] = None
@@ -7031,7 +7435,12 @@ _STYLE_RETRY_KEYS = {
     "no_silent_default_table",
     "forbidden_none_literal",
     "output_contains_placeholder_ellipsis",
+    "priority_level_mismatch",
+    "section_coverage_missing",
+    "suspicious_reference_collapse",
     "diagnostic_suggestion_too_strong",
+    "false_no_abnormal_summary",
+    "summary_missing_abnormal_coverage",
 }
 
 
@@ -7057,6 +7466,11 @@ def _build_validator_retry_feedback(validation: dict[str, Any]) -> str:
             "Tu as place un resultat anormal dans la section des resultats dans la reference. "
             "Corrige la reponse en deplacant tous les resultats above_reference/below_reference vers 'Anormaux'. "
             "Si aucun resultat within_reference n'est fourni, ecris que la section est vide avec la phrase imposee."
+        )
+    if "false_no_abnormal_summary" in errors:
+        return (
+            "Tu as affirme qu'il n'y a pas d'anomalie alors que des anomalies sont fournies. "
+            "Supprime toute mention 'Aucun fait anormal' et liste les anomalies fournies dans la section 'Anormaux'."
         )
     if "missing_conclusion" in items:
         return (
@@ -7298,9 +7712,31 @@ def build_structured_evidence_pack(
         if analyte_resolution_debug:
             pack["analyte_resolution_debug"] = analyte_resolution_debug
         if not requested_analytes:
-            pack["rows"] = []
-            pack["evidences"] = []
-            pack["missing_items"] = ["analyte_not_identified_for_multi_doc_comparison"]
+            tc = _canonical_technical_condition(query_understanding.technical_condition)
+            if tc in {"out_of_reference", "above_reference", "below_reference"}:
+                rows = _fetch_doc_lab_rows(
+                    sqlite_path=sqlite_path,
+                    requested_doc_ids=requested_doc_ids,
+                    analyte_norms=None,
+                    limit=2400,
+                )
+                rows = _apply_technical_condition_filter(rows, query_understanding.technical_condition)
+                if excluded_analytes:
+                    rows = [r for r in rows if not _row_matches_excluded(r, excluded_analytes)]
+                rows = [
+                    r
+                    for r in rows
+                    if str(r.get("interpretation_status") or "").strip().lower() in {"above_reference", "below_reference"}
+                ]
+                pack["rows"] = rows
+                pack["evidences"] = [_structured_record_from_row(r) for r in rows]
+                pack["comparison_mode"] = "doc_pair_out_of_reference_by_doc"
+                if not rows:
+                    pack["missing_items"] = ["comparison_no_evidence"]
+            else:
+                pack["rows"] = []
+                pack["evidences"] = []
+                pack["missing_items"] = ["analyte_not_identified_for_multi_doc_comparison"]
             return _finalize_structured_pack(pack, query_understanding)
         rows = _fetch_doc_lab_rows(
             sqlite_path=sqlite_path,
@@ -8121,6 +8557,58 @@ def _format_multi_doc_comparison_answer(
     return "\n".join(lines).strip(), missing
 
 
+def _format_multi_doc_out_of_reference_by_doc_answer(
+    *,
+    rows: list[dict[str, Any]],
+    doc_ids: list[str],
+    technical_condition: str | None,
+    max_items_per_doc: int = 12,
+) -> str:
+    if len(doc_ids) < 2:
+        return _missing_doc_answer()
+    cond = _canonical_technical_condition(technical_condition)
+    status_title = {
+        "above_reference": "au-dessus de la référence",
+        "below_reference": "en dessous de la référence",
+        "out_of_reference": "hors référence",
+    }.get(cond or "out_of_reference", "hors référence")
+
+    lines: list[str] = []
+    for doc_id in doc_ids:
+        lines.append(f"{doc_id} — résultats {status_title} :")
+        doc_rows = [
+            r
+            for r in rows
+            if str(r.get("doc_id") or "").strip().lower() == str(doc_id).strip().lower()
+        ]
+        seen: set[tuple[str, str, str]] = set()
+        kept = 0
+        for row in doc_rows:
+            status = str(row.get("technical_status_code") or row.get("interpretation_status") or "").strip().lower()
+            if status not in {"above_reference", "below_reference"}:
+                continue
+            analyte = _clean_analyte_label(row.get("analyte") or row.get("parameter") or row.get("analyte_norm") or "Analyte")
+            value = str(row.get("current_value") or row.get("value_raw") or "non disponible").strip()
+            unit = str(row.get("unit") or "").strip()
+            ref = str(row.get("reference") or row.get("reference_range") or "non disponible").strip()
+            key = (norm_text(analyte), value, status)
+            if key in seen:
+                continue
+            seen.add(key)
+            status_fr = _interpretation_fr(status)
+            value_part = f"{value}{(' ' + unit) if unit else ''}".strip()
+            lines.append(f"- {analyte} : {value_part} ; référence : {ref} ; statut : {status_fr}.")
+            kept += 1
+            if kept >= max(1, int(max_items_per_doc)):
+                break
+        if kept == 0:
+            lines.append(f"- Aucun résultat {status_title} retrouvé dans ce rapport.")
+        lines.append("")
+
+    lines.append("Conclusion technique : comparaison descriptive des anomalies retrouvées, sans diagnostic.")
+    return "\n".join(lines).strip()
+
+
 def _format_qualitative_comment_answer(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return _missing_doc_answer()
@@ -8175,10 +8663,8 @@ def _format_diagnostic_safety_answer(rows: list[dict[str, Any]], requested_analy
                 filtered.append(best)
         marker_rows = filtered
 
-    lines = [
-        "Non, on ne peut pas conclure à un cancer uniquement à partir de ces marqueurs.",
-        "Constat technique sur les marqueurs retrouvés :",
-    ]
+    cancer_refusal, markers_intro, closing = _diagnostic_safety_generic_lines()
+    lines = [cancer_refusal, markers_intro]
     missing: list[str] = []
     if requested_analytes:
         for analyte in requested_analytes:
@@ -8202,7 +8688,7 @@ def _format_diagnostic_safety_answer(rows: list[dict[str, Any]], requested_analy
                 f"référence: {row.get('reference_range') or 'non disponible'} | "
                 f"statut technique: {_interpretation_fr(row.get('interpretation_status'))}"
             )
-    lines.append("Ces marqueurs biologiques ne suffisent pas à poser un diagnostic ; une interprétation médicale spécialisée est nécessaire.")
+    lines.append(closing)
     return "\n".join(lines).strip(), missing
 
 
@@ -10365,6 +10851,28 @@ def run_generation(
         found_requested_analyte_norms: list[str] = []
         missing_requested_analytes: list[str] = []
         selected_policy = _strict_policy_for_route(selected_route)
+        summary_all_evidences: list[dict[str, Any]] = []
+        summary_all_abnormal_rows_count = 0
+        summary_all_within_rows_count = 0
+        summary_all_ambiguous_rows_count = 0
+        summary_selection_strategy: str | None = None
+        summary_truncated_abnormal_count = 0
+        summary_truncated_within_count = 0
+        llm_abnormal_rows_count = 0
+        llm_within_rows_count = 0
+        false_no_abnormal_summary_detected = False
+        if str(selected_route or "").strip().lower() == "doc_scoped_biological_summary":
+            summary_all_evidences = list(structured_pack.get("evidences") or [])
+            structured_pack["evidence_all_summary"] = list(summary_all_evidences)
+            summary_all_abnormal_rows_count = sum(
+                1 for ev in summary_all_evidences if _summary_status_bucket(ev) == "abnormal"
+            )
+            summary_all_within_rows_count = sum(
+                1 for ev in summary_all_evidences if _summary_status_bucket(ev) == "within"
+            )
+            summary_all_ambiguous_rows_count = sum(
+                1 for ev in summary_all_evidences if _summary_status_bucket(ev) == "ambiguous"
+            )
         if selected_route in {"global_biological_summary", "global_priority_anomalies_summary"}:
             visible_global_evidences = list(displayed_evidences)
             if selected_route == "global_priority_anomalies_summary":
@@ -10716,6 +11224,13 @@ def run_generation(
                 structured_pack=structured_pack,
                 selected_route=selected_route,
             )
+            summary_debug = dict(llm_evidence_pack.get("summary_selection_debug") or {})
+            if summary_debug:
+                summary_selection_strategy = str(summary_debug.get("summary_selection_strategy") or summary_selection_strategy or "")
+                summary_truncated_abnormal_count = int(summary_debug.get("summary_truncated_abnormal_count") or 0)
+                summary_truncated_within_count = int(summary_debug.get("summary_truncated_within_count") or 0)
+                llm_abnormal_rows_count = int(summary_debug.get("llm_abnormal_rows_count") or 0)
+                llm_within_rows_count = int(summary_debug.get("llm_within_rows_count") or 0)
             llm_prompt_prefix = _llm_summary_prompt_prefix(query_understanding, selected_route)
         llm_question_for_estimate = f"{llm_prompt_prefix}\n\nQuestion utilisateur:\n{q}".strip() if llm_prompt_prefix else q
         llm_prompt_tokens_estimate = _estimate_prompt_tokens_from_pack(llm_question_for_estimate, llm_evidence_pack)
@@ -10837,6 +11352,16 @@ def run_generation(
                     "llm_used": False,
                     "llm_prompt_tokens_estimate": llm_prompt_tokens_estimate,
                     "llm_evidence_rows_count": llm_evidence_rows_count,
+                    "evidence_all_rows_count": len(summary_all_evidences) if summary_all_evidences else len(list(structured_pack.get("evidences") or [])),
+                    "abnormal_rows_count": summary_all_abnormal_rows_count,
+                    "within_reference_rows_count": summary_all_within_rows_count,
+                    "ambiguous_rows_count": summary_all_ambiguous_rows_count,
+                    "llm_abnormal_rows_count": llm_abnormal_rows_count,
+                    "llm_within_rows_count": llm_within_rows_count,
+                    "summary_selection_strategy": summary_selection_strategy,
+                    "summary_truncated_abnormal_count": summary_truncated_abnormal_count,
+                    "summary_truncated_within_count": summary_truncated_within_count,
+                    "false_no_abnormal_summary_detected": false_no_abnormal_summary_detected,
                     "timeout_ms": policy_timeout_s * 1000,
                     "max_tokens": policy_max_tokens,
                     "query_understanding": _query_understanding_payload(query_understanding),
@@ -10882,6 +11407,17 @@ def run_generation(
             llm_writer_used = True
             stage_times_ms["llm_writer_ms"] = round((time.perf_counter() - t_llm0) * 1000.0, 3)
         composed_data = composed
+        composed_llm_postprocess_error_type: str | None = None
+        composed_llm_postprocess_error_message: str | None = None
+        final_postprocess_fixed_warnings: list[str] = []
+        if isinstance(composed, dict):
+            if str(composed.get("llm_postprocess_error_type") or "").strip():
+                composed_llm_postprocess_error_type = str(composed.get("llm_postprocess_error_type") or "").strip()
+            if (
+                str(os.getenv("CHAT_DEBUG_ERRORS", "0")).strip() == "1"
+                and str(composed.get("llm_postprocess_error_message") or "").strip()
+            ):
+                composed_llm_postprocess_error_message = str(composed.get("llm_postprocess_error_message") or "").strip()
         if composed.get("llm_prompt_tokens_estimate") is not None:
             llm_prompt_tokens_estimate = int(composed.get("llm_prompt_tokens_estimate") or llm_prompt_tokens_estimate)
         final_answer = str(composed.get("answer") or "").strip() or _missing_doc_answer()
@@ -10913,6 +11449,10 @@ def run_generation(
         llm_repair_error_message: str | None = None
         llm_postprocess_error_type: str | None = None
         llm_postprocess_error_message: str | None = None
+        if composed_llm_postprocess_error_type:
+            llm_postprocess_error_type = composed_llm_postprocess_error_type
+        if composed_llm_postprocess_error_message:
+            llm_postprocess_error_message = composed_llm_postprocess_error_message
         if str(query_understanding.intent or "").strip().lower() == "multi_doc_comparison" and len(requested_doc_ids) > 2:
             cmp_text, _ = _format_multi_doc_comparison_answer(
                 rows=structured_rows,
@@ -10927,6 +11467,22 @@ def run_generation(
             and not (structured_pack.get("evidences") or [])
         ):
             final_answer = "L’analyte demandé n’a pas été identifié pour la comparaison entre les documents demandés."
+        if (
+            str(query_understanding.intent or "").strip().lower() == "multi_doc_comparison"
+            and str(structured_pack.get("comparison_mode") or "").strip().lower() == "doc_pair_out_of_reference_by_doc"
+            and requested_doc_ids
+        ):
+            final_answer = _format_multi_doc_out_of_reference_by_doc_answer(
+                rows=structured_rows,
+                doc_ids=requested_doc_ids,
+                technical_condition=query_understanding.technical_condition,
+                max_items_per_doc=10,
+            )
+            generation_mode = (
+                "deterministic_doc_pair_comparison"
+                if len(requested_doc_ids) == 2
+                else "deterministic_multi_doc_comparison"
+            )
         if str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
             evidences = list(structured_pack.get("evidences") or [])
             if bool(structured_pack.get("comment_list_mode")) and evidences:
@@ -11024,9 +11580,10 @@ def run_generation(
             )
             if bool(intents.get("diagnostic_safety_question")) and detect_medical_topic(norm_text(q)) == "thyroid":
                 evidence_analytes = set(pre_found_requested_analyte_norms)
+                tsh_group, _ = _thyroid_high_groups()
                 filtered_missing: list[str] = []
                 for analyte in pre_missing_requested_analytes:
-                    if analyte in {"tsh", "tshus"} and {"tsh", "tshus"} & evidence_analytes:
+                    if analyte in tsh_group and tsh_group & evidence_analytes:
                         continue
                     if analyte in evidence_analytes:
                         filtered_missing.append(analyte)
@@ -11076,6 +11633,10 @@ def run_generation(
             llm_candidate_validation_status = str(candidate_validation.get("validation_status") or "")
             llm_candidate_validation_errors = list(candidate_validation.get("errors") or [])
             llm_candidate_validation_warnings = list(candidate_validation.get("warnings") or [])
+            false_no_abnormal_summary_detected = (
+                false_no_abnormal_summary_detected
+                or ("false_no_abnormal_summary" in set(llm_candidate_validation_errors or []))
+            )
         if compose_mode == "hybrid_structured_llm_writer" and generation_mode in {
             "llm_writer_error_fallback",
             "llm_writer_format_fallback",
@@ -11095,6 +11656,7 @@ def run_generation(
                 selected_route=selected_route,
                 query_understanding=query_understanding,
                 displayed_evidences=displayed_evidences,
+                evidence_all_summary=summary_all_evidences,
                 default_answer=final_answer,
             )
             generation_mode = "deterministic_safety_fallback_after_llm_validation_failure"
@@ -11138,6 +11700,7 @@ def run_generation(
                 selected_route=selected_route,
                 query_understanding=query_understanding,
                 displayed_evidences=displayed_evidences,
+                evidence_all_summary=summary_all_evidences,
                 default_answer=_missing_doc_answer(),
             )
             generation_mode = "deterministic_doc_scoped_biological_summary" if selected_route == "doc_scoped_biological_summary" else "deterministic_safety_fallback_after_llm_validation_failure"
@@ -11156,16 +11719,26 @@ def run_generation(
         if safety_intent_norm == "diagnostic_safety_question" and detect_medical_topic(qn_local) == "thyroid":
             tsh_high = False
             t3t4_high = False
+            tsh_group, t3_t4_group = _thyroid_high_groups()
+            discordance_sentence = _assistant_message(
+                ["diagnostic_safety", "thyroid", "discordance_sentence"],
+                "Ce profil est biologiquement discordant pour une hyperthyroïdie primaire.",
+            )
             for ev in displayed_evidences:
                 an = str(ev.get("analyte_norm") or "").strip().lower()
                 st = str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
-                if an in {"tshus", "tsh"} and st == "above_reference":
+                if an in tsh_group and st == "above_reference":
                     tsh_high = True
-                if an in {"t3_libre", "t3libre", "t4_libre", "t4libre"} and st == "above_reference":
+                if an in t3_t4_group and st == "above_reference":
                     t3t4_high = True
-            discordant_sentence = "Ce profil est biologiquement discordant pour une hyperthyroïdie primaire."
-            if tsh_high and t3t4_high and discordant_sentence.lower() not in str(final_answer or "").lower():
-                final_answer = f"{final_answer.rstrip()}\n\n{discordant_sentence}"
+            final_norm = norm_text(str(final_answer or ""))
+            if (
+                tsh_high
+                and t3t4_high
+                and norm_text(discordance_sentence) not in final_norm
+                and norm_text(str(_safety_guardrail(["diagnostic_safety", "discordance_replacement"], "profil biologique discordant pour une hyperthyroïdie primaire"))) not in final_norm
+            ):
+                final_answer = f"{final_answer.rstrip()}\n\n{discordance_sentence}"
 
         missing_requested_doc_ids = _resolve_missing_requested_doc_ids(sqlite_path, requested_doc_ids)
         if not displayed_evidences and requested_doc_ids:
@@ -11210,10 +11783,11 @@ def run_generation(
                 for ev in displayed_evidences
                 if str(ev.get("analyte_norm") or "").strip()
             }
+            tsh_group, _ = _thyroid_high_groups()
             filtered_missing: list[str] = []
             for analyte in missing_requested_analytes:
-                if analyte in {"tsh", "tshus"}:
-                    if {"tsh", "tshus"} & evidence_analytes:
+                if analyte in tsh_group:
+                    if tsh_group & evidence_analytes:
                         continue
                 if analyte in evidence_analytes:
                     filtered_missing.append(analyte)
@@ -11263,6 +11837,10 @@ def run_generation(
             comparison_operator=query_understanding.comparison_operator,
         )
         stage_times_ms["validation_ms"] = round((time.perf_counter() - t_val0) * 1000.0, 3)
+        if llm_candidate_validation_warnings:
+            final_warning_set = {str(w) for w in (validation or {}).get("warnings") or []}
+            if "missing_conclusion" in set(llm_candidate_validation_warnings) and "missing_conclusion" not in final_warning_set:
+                final_postprocess_fixed_warnings.append("missing_conclusion")
         quality = _quality_report(
             answer=final_answer,
             validation=validation,
@@ -11395,6 +11973,7 @@ def run_generation(
                         selected_route=selected_route,
                         query_understanding=query_understanding,
                         displayed_evidences=displayed_evidences,
+                        evidence_all_summary=summary_all_evidences,
                         default_answer=final_answer,
                     )
                     generation_mode = "deterministic_safety_fallback_after_llm_validation_failure"
@@ -11472,6 +12051,7 @@ def run_generation(
                 selected_route=selected_route,
                 query_understanding=query_understanding,
                 displayed_evidences=displayed_evidences,
+                evidence_all_summary=summary_all_evidences,
                 default_answer=final_answer,
             )
             generation_mode = "deterministic_safety_fallback_after_llm_validation_failure"
@@ -11721,12 +12301,23 @@ def run_generation(
                 )
                 fallback_stage = fallback_stage or "final_safety_check"
                 fallback_reason_debug = fallback_reason_debug or "llm_validation_failed"
+                if not llm_writer_used:
+                    missing_items = set(structured_pack.get("missing_items") or [])
+                    if "comparison_no_evidence" in missing_items:
+                        fallback_reason_debug = "comparison_no_evidence"
+                    elif str(query_understanding.intent or "").strip().lower() == "multi_doc_comparison":
+                        fallback_reason_debug = "comparison_builder_empty"
                 stage_times_ms["llm_writer_ms"] = 0.0
                 stage_times_ms["repair_ms"] = 0.0
 
         if llm_writer_used and str(generation_mode or "").startswith("deterministic_") and not fallback_reason_debug:
             fallback_reason_debug = "llm_validation_failed"
             fallback_stage = fallback_stage or "post_llm_transition"
+
+        false_no_abnormal_summary_detected = (
+            false_no_abnormal_summary_detected
+            or ("false_no_abnormal_summary" in set((validation or {}).get("errors") or []))
+        )
 
         elapsed = time.perf_counter() - started
         stage_times_ms["total_ms"] = round(elapsed * 1000.0, 3)
@@ -11823,6 +12414,16 @@ def run_generation(
                 "llm_used": llm_writer_used,
                 "llm_prompt_tokens_estimate": llm_prompt_tokens_estimate,
                 "llm_evidence_rows_count": llm_evidence_rows_count,
+                "evidence_all_rows_count": len(summary_all_evidences) if summary_all_evidences else len(list(structured_pack.get("evidences") or [])),
+                "abnormal_rows_count": summary_all_abnormal_rows_count,
+                "within_reference_rows_count": summary_all_within_rows_count,
+                "ambiguous_rows_count": summary_all_ambiguous_rows_count,
+                "llm_abnormal_rows_count": llm_abnormal_rows_count,
+                "llm_within_rows_count": llm_within_rows_count,
+                "summary_selection_strategy": summary_selection_strategy,
+                "summary_truncated_abnormal_count": summary_truncated_abnormal_count,
+                "summary_truncated_within_count": summary_truncated_within_count,
+                "false_no_abnormal_summary_detected": false_no_abnormal_summary_detected,
                 "llm_prompt_policy_intent": str(selected_route or ""),
                 "llm_prompt_intent": composed.get("llm_prompt_intent") if isinstance(composed, dict) else str(selected_route or ""),
                 "use_micro_prompt": use_micro_prompt,
@@ -11877,6 +12478,7 @@ def run_generation(
                 "llm_candidate_validation_status": llm_candidate_validation_status,
                 "llm_candidate_validation_errors": llm_candidate_validation_errors,
                 "llm_candidate_validation_warnings": llm_candidate_validation_warnings,
+                "final_postprocess_fixed_warnings": final_postprocess_fixed_warnings,
                 "llm_candidate_repair_used": llm_candidate_repair_used,
                 "llm_repaired_answer": llm_repaired_answer,
                 "llm_repaired_validation_status": llm_repaired_validation_status,

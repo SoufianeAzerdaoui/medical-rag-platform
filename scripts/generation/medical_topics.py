@@ -41,4 +41,13 @@ def get_topic_exclusions(topic: str | None) -> list[str]:
     return [str(a).strip().lower() for a in list(spec.get("excluded_unless_explicit") or []) if str(a).strip()]
 
 
-__all__ = ["detect_medical_topic", "get_topic_analytes", "get_topic_exclusions"]
+def get_topic_rules(topic: str | None) -> dict[str, Any]:
+    if not topic:
+        return {}
+    topics = dict((get_medical_topics_config() or {}).get("topics") or {})
+    spec = dict(topics.get(str(topic), {}) or {})
+    rules = spec.get("rules") or {}
+    return dict(rules) if isinstance(rules, dict) else {}
+
+
+__all__ = ["detect_medical_topic", "get_topic_analytes", "get_topic_exclusions", "get_topic_rules"]
