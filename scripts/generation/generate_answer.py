@@ -5318,6 +5318,8 @@ def _build_reference_range_lookup_response(
         sources=flow_sources,
         max_items=3,
     )
+    if not visible_rr_sources and flow_sources:
+        visible_rr_sources = list(flow_sources[:1])
     LOGGER.info(
         "reference_range_debug request_id=%s debug=%s",
         request_id,
@@ -6294,6 +6296,523 @@ def render_evidence_pack_deterministic(evidence_pack: dict[str, Any], output_for
     return "\n".join(lines).strip()
 
 
+def _build_route_specific_short_fallback_answer(
+    *,
+    selected_route: str,
+    query_understanding: QueryUnderstanding,
+    displayed_evidences: list[dict[str, Any]],
+    default_answer: str,
+) -> str:
+    if str(selected_route or "").strip().lower() == "doc_scoped_biological_summary":
+        no_diag = str(getattr(query_understanding, "safety_intent", "") or "").strip().lower() == "no_diagnosis_constraint"
+        return _build_doc_scoped_biological_summary_answer(
+            displayed_evidences,
+            max_lines=getattr(query_understanding, "requested_summary_points", None),
+            no_diagnosis=no_diag,
+        )
+    return default_answer
+
+
+def _reference_short(reference_raw: Any) -> str:
+    ref = str(reference_raw or "").strip()
+    if not ref:
+        return "non disponible"
+    ref = re.sub(r"\s+", " ", ref)
+    # Keep a very short factual reference for Level-2 micro-prompts to avoid truncation/timeouts.
+    nums = re.findall(r"\d+(?:[.,]\d+)?", ref)
+    if re.match(r"^\s*(?:<|<=|≤)\s*\d", ref):
+        return f"< {nums[0]}" if nums else "réf. disponible"
+    if re.match(r"^\s*(?:>|>=|≥)\s*\d", ref):
+        return f"> {nums[0]}" if nums else "réf. disponible"
+    if len(nums) >= 2:
+        return f"{nums[0]} - {nums[1]}"
+    return "réf. disponible"
+
+
+def _ensure_biological_summary_conclusion(answer: str, *, has_abnormal: bool = True, has_within: bool = False) -> str:
+    text = str(answer or "").strip()
+    if not text:
+        return text
+    conclusion = (
+        "Conclusion technique : les résultats listés sont dans la référence parmi les éléments sélectionnés, sans conclusion diagnostique."
+        if (not has_abnormal and has_within)
+        else "Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic."
+    )
+    if "conclusion technique" in norm_text(text):
+        return text
+    return f"{text}\n{conclusion}".strip()
+
+
+def _is_toxicology_dual_threshold_summary_query(qn: str) -> bool:
+    has_under = any(t in qn for t in ["sous seuil", "en dessous", "sous la reference", "sous la référence", "below"])
+    has_above = any(t in qn for t in ["au dessus", "au-dessus", "depass", "dépass", "above"])
+    has_split = any(t in qn for t in ["distingu", "separ", "sépar", "deux groupes"])
+    return (has_under and has_above) or (has_split and has_above)
+
+
+def _ensure_guarded_thyroid_conclusion(answer: str) -> str:
+    text = str(answer or "").strip()
+    if not text:
+        return text
+    # Normalize over-strong diagnostic wording in guarded thyroid responses.
+    strong_patterns = [
+        r"\bsugg[eè]re\s+une?\s+hyperthyro",
+        r"\bcompatible\s+avec\s+une?\s+hyperthyro",
+        r"\b[eé]voque\s+une?\s+hyperthyro",
+        r"\bindique\s+une?\s+hyperthyro",
+        r"\ben\s+faveur\s+d['’]une?\s+hyperthyro",
+    ]
+    for patt in strong_patterns:
+        text = re.sub(
+            patt,
+            "profil biologique discordant pour une hyperthyroïdie primaire",
+            text,
+            flags=re.IGNORECASE,
+        )
+    required = (
+        "Conclusion technique : profil biologique discordant pour une hyperthyroïdie primaire ; "
+        "aucune conclusion diagnostique ne peut être posée à partir de ces seuls éléments."
+    )
+    if "conclusion technique" in norm_text(text):
+        return text
+    return f"{text}\n{required}".strip()
+
+
+def _enforce_biological_summary_template(
+    *,
+    answer: str,
+    abnormal_fact_lines: list[str],
+    within_is_empty: bool,
+) -> str:
+    raw = str(answer or "").strip()
+    abnormal_text = ""
+    if raw:
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        for ln in lines:
+            ln_norm = norm_text(ln)
+            if "anormaux" in ln_norm or "resultats dans la reference" in ln_norm or "résultats dans la référence" in ln_norm:
+                continue
+            if "conclusion technique" in ln_norm:
+                continue
+            abnormal_text = ln
+            break
+    if not abnormal_text:
+        short_items = []
+        for ln in abnormal_fact_lines[:6]:
+            txt = re.sub(r"^\s*-\s*", "", ln).strip()
+            txt = re.sub(r"\s*;\s*statut\s+", " ", txt, flags=re.IGNORECASE)
+            short_items.append(txt)
+        abnormal_text = ", ".join(short_items) if short_items else "Aucun fait anormal fourni."
+
+    within_line = (
+        "Résultats dans la référence uniquement : aucun résultat strictement dans la référence parmi les éléments sélectionnés."
+        if within_is_empty
+        else "Résultats dans la référence uniquement : voir faits within_reference fournis."
+    )
+    conclusion = "Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic."
+    return (
+        f"Anormaux : {abnormal_text}\n"
+        f"{within_line}\n"
+        f"{conclusion}"
+    ).strip()
+
+
+def _value_with_unit(value_raw: Any, unit: Any) -> str:
+    value = str(value_raw or "").strip() or "non disponible"
+    u = str(unit or "").strip()
+    return f"{value} {u}".strip()
+
+
+def _llm_row_priority(row: dict[str, Any]) -> tuple[int, float]:
+    status = _status_code(row)
+    score = float(row.get("priority_score") or 0.0)
+    if status in {"above_reference", "below_reference"}:
+        return (0, -score)
+    if status == "within_reference":
+        return (1, -score)
+    return (2, -score)
+
+
+def _build_llm_evidence_pack(
+    *,
+    query_understanding: QueryUnderstanding,
+    structured_pack: dict[str, Any],
+    selected_route: str,
+) -> tuple[dict[str, Any], int]:
+    pack = dict(structured_pack or {})
+    evidences = list(pack.get("evidences") or [])
+    route = str(selected_route or "").strip().lower()
+    max_rows = 6 if route == "doc_scoped_biological_summary" else 10
+    selected = sorted(evidences, key=_llm_row_priority)[:max_rows]
+    compact_evidences: list[dict[str, Any]] = []
+    for ev in selected:
+        compact_evidences.append(
+            {
+                "analyte": str(ev.get("analyte") or "non précisé").strip(),
+                "value_with_unit": _value_with_unit(ev.get("current_value"), ev.get("unit")),
+                "reference_short": _reference_short(ev.get("reference")),
+                "status": str(ev.get("technical_status") or "non interprétable").strip(),
+                "priority_level": (str(ev.get("priority_level") or "").strip() or None),
+                "priority_reason": (str(ev.get("priority_reason") or "").strip() or None),
+                "source_label": str(ev.get("source") or "source non disponible").strip(),
+            }
+        )
+    llm_pack = {
+        "question": pack.get("question"),
+        "intent": pack.get("intent"),
+        "requested_doc_ids": list(pack.get("requested_doc_ids") or []),
+        "requested_analytes": list(pack.get("requested_analytes") or []),
+        "output_format": pack.get("output_format"),
+        "answer_style": pack.get("answer_style"),
+        "technical_condition": pack.get("technical_condition"),
+        "evidences": compact_evidences,
+        "sources": list(pack.get("sources") or []),
+        "visualization_facts": pack.get("visualization_facts"),
+        "missing_items": list(pack.get("missing_items") or []),
+    }
+    return llm_pack, len(compact_evidences)
+
+
+def _llm_summary_prompt_prefix(query_understanding: QueryUnderstanding, selected_route: str) -> str:
+    route = str(selected_route or "").strip().lower()
+    max_lines = int(getattr(query_understanding, "requested_summary_points", 6) or 6)
+    if route == "doc_scoped_biological_summary":
+        return (
+            f"Rédige une synthèse en maximum {max(3, min(max_lines, 8))} lignes. "
+            "Sépare Anormaux et Résultats dans la référence uniquement. "
+            "Utilise uniquement les faits fournis. "
+            "Ne modifie aucune valeur, unité, référence ou statut. "
+            "Ne mets jamais un résultat above_reference ou below_reference dans la section des résultats dans la référence. "
+            "Si aucun résultat within_reference n’est fourni, écris: 'Aucun résultat strictement dans la référence parmi les éléments sélectionnés.' "
+            "Ne donne pas de diagnostic. Ne propose pas de traitement. "
+            "Ne fais pas de tableau."
+        )
+    if route == "doc_scoped_priority_anomalies":
+        return (
+            "Rédige une synthèse courte des anomalies prioritaires. "
+            "Reformule uniquement priority_level et priority_reason fournis par le backend. "
+            "Ne recalcule pas la priorité, ne diagnostique pas, ne propose pas de traitement."
+        )
+    if route == "doc_scoped_medical_interpretation_guarded":
+        return (
+            "Explique prudemment les discordances techniques fournies par le backend. "
+            "Aucun diagnostic affirmatif, aucun traitement."
+        )
+    if route == "open_grounded_medical_question":
+        return (
+            "Réponse médicale technique prudente, strictement fondée sur les faits fournis. "
+            "Pas de diagnostic ni recommandation de traitement."
+        )
+    return ""
+
+
+def _estimate_prompt_tokens_from_pack(user_question: str, llm_pack: dict[str, Any]) -> int:
+    payload = f"{user_question}\n{json.dumps(llm_pack, ensure_ascii=False)}"
+    return max(1, int(len(payload) / 4))
+
+
+def _apply_level2_intent_llm_limits(
+    *,
+    selected_route: str,
+    timeout_s: int,
+    max_tokens: int,
+) -> tuple[int, int]:
+    route = str(selected_route or "").strip().lower()
+    profile = str(os.getenv("MEDICAL_RAG_L2_TIMEOUT_PROFILE", "local")).strip().lower()
+    if profile == "prod":
+        default_timeout = min(timeout_s, 30)
+    else:
+        default_timeout = max(timeout_s, 90)
+    if route in {"doc_scoped_biological_summary", "doc_scoped_priority_anomalies"}:
+        return max(12, default_timeout), max(180, min(max_tokens, 220))
+    if route in {"doc_scoped_medical_interpretation_guarded", "open_grounded_medical_question"}:
+        return max(12, default_timeout), max(220, min(max_tokens, 280))
+    return timeout_s, max_tokens
+
+
+_LEVEL2_LLM_PROMPT_POLICY: dict[str, dict[str, Any]] = {
+    "doc_scoped_biological_summary": {
+        "prompt_target_chars": 2500,
+        "prompt_hard_limit_chars": 3500,
+        "num_predict": 200,
+        "timeout_ms": 60000,
+        "max_evidence_rows": 6,
+        "use_micro_prompt": True,
+    },
+    "doc_scoped_priority_anomalies": {
+        "prompt_target_chars": 3000,
+        "prompt_hard_limit_chars": 4500,
+        "num_predict": 180,
+        "timeout_ms": 90000,
+        "max_evidence_rows": 8,
+        "use_micro_prompt": True,
+    },
+    "doc_scoped_medical_interpretation_guarded": {
+        "prompt_target_chars": 3500,
+        "prompt_hard_limit_chars": 5000,
+        "num_predict": 240,
+        "timeout_ms": 90000,
+        "max_evidence_rows": 10,
+        "use_micro_prompt": True,
+    },
+    "open_grounded_medical_question": {
+        "prompt_target_chars": 4500,
+        "prompt_hard_limit_chars": 6000,
+        "num_predict": 260,
+        "timeout_ms": 90000,
+        "max_evidence_rows": 10,
+        "use_micro_prompt": True,
+    },
+}
+
+
+def _level2_prompt_policy(route: str) -> dict[str, Any]:
+    return dict(_LEVEL2_LLM_PROMPT_POLICY.get(str(route or "").strip().lower(), {}))
+
+
+def _build_compact_facts_lines(evidences: list[dict[str, Any]], max_rows: int) -> list[str]:
+    lines: list[str] = []
+    for ev in list(evidences or [])[: max(1, int(max_rows))]:
+        analyte = str(ev.get("analyte") or "non précisé").strip()
+        value_with_unit = str(ev.get("value_with_unit") or "").strip() or "non disponible"
+        ref = str(ev.get("reference_short") or "non disponible").strip()
+        status = str(ev.get("status") or "non interprétable").strip()
+        lines.append(f"- {analyte} : {value_with_unit} ; référence {ref} ; {status}.")
+    return lines
+
+
+def _status_micro_label(status_text: str) -> str:
+    s = norm_text(status_text or "")
+    if any(k in s for k in ["above_reference", "au dessus", "au-dessus"]):
+        return "statut haut"
+    if any(k in s for k in ["below_reference", "en dessous", "sous"]):
+        return "statut bas"
+    if any(k in s for k in ["within_reference", "dans la reference", "dans la référence"]):
+        return "dans la référence"
+    return "statut non interprétable"
+
+
+def _status_bucket_from_text(status_text: str) -> str:
+    s = norm_text(status_text or "")
+    if any(k in s for k in ["above_reference", "au dessus", "au-dessus"]):
+        return "abnormal"
+    if any(k in s for k in ["below_reference", "en dessous", "sous"]):
+        return "abnormal"
+    if any(k in s for k in ["within_reference", "dans la reference", "dans la référence"]):
+        return "within"
+    return "unknown"
+
+
+def _compose_level2_micro_prompt_answer(
+    *,
+    selected_route: str,
+    query_understanding: QueryUnderstanding,
+    llm_pack: dict[str, Any],
+    llm_client: LLMClient,
+    provider: str,
+    model: str,
+    num_ctx: int,
+    retry_feedback: str | None = None,
+) -> dict[str, Any]:
+    policy = _level2_prompt_policy(selected_route)
+    prompt_target_chars = int(policy.get("prompt_target_chars") or 3000)
+    prompt_hard_limit_chars = int(policy.get("prompt_hard_limit_chars") or 4500)
+    num_predict = int(policy.get("num_predict") or 180)
+    timeout_ms = int(policy.get("timeout_ms") or 90000)
+    max_rows = int(policy.get("max_evidence_rows") or 8)
+
+    max_lines = int(getattr(query_understanding, "requested_summary_points", 6) or 6)
+    llm_evidences = list(llm_pack.get("evidences") or [])[: max(1, int(max_rows))]
+    compact_lines = _build_compact_facts_lines(llm_evidences, max_rows=max_rows)
+    abnormal_lines: list[str] = []
+    within_lines: list[str] = []
+    for ev, line in zip(llm_evidences, compact_lines):
+        bucket = _status_bucket_from_text(str(ev.get("status") or ""))
+        if bucket == "abnormal":
+            abnormal_lines.append(line)
+        elif bucket == "within":
+            within_lines.append(line)
+    compact_abnormal_lines = [
+        f"- {str(ev.get('analyte') or 'non précisé').strip()} : {str(ev.get('value_with_unit') or 'non disponible').strip()} ; {_status_micro_label(str(ev.get('status') or ''))}."
+        for ev in llm_evidences
+        if _status_bucket_from_text(str(ev.get("status") or "")) == "abnormal"
+    ]
+    compact_within_lines = [
+        f"- {str(ev.get('analyte') or 'non précisé').strip()} : {str(ev.get('value_with_unit') or 'non disponible').strip()} ; dans la référence."
+        for ev in llm_evidences
+        if _status_bucket_from_text(str(ev.get("status") or "")) == "within"
+    ]
+    abnormal_block = "\n".join(abnormal_lines) if abnormal_lines else "- Aucun fait anormal fourni."
+    within_is_empty = len(within_lines) == 0
+    within_block = "\n".join(within_lines) if within_lines else "Aucun fait dans la référence fourni."
+    route = str(selected_route or "").strip().lower()
+    if route == "doc_scoped_priority_anomalies":
+        prompt = (
+            "Tu es un rédacteur médical technique.\n"
+            "Réponds uniquement avec les faits fournis.\n"
+            "Sortie stricte en 3 lignes maximum.\n"
+            "Format obligatoire :\n"
+            "- Priorité élevée : ...\n"
+            "- Priorité modérée/faible : ...\n"
+            "- Conclusion technique : ...\n\n"
+            "Règles :\n"
+            "- Ne modifie aucune valeur, unité, référence, statut, priority_level ou priority_reason.\n"
+            "- Ne recalcule pas la priorité.\n"
+            "- Ne donne pas de diagnostic.\n"
+            "- Ne propose pas de traitement.\n\n"
+            "- N'ajoute aucun nombre qui n'est pas présent dans les faits.\n"
+            "- N'utilise pas de tableau Markdown.\n"
+            "- N'utilise jamais '...'. Écris des phrases complètes.\n"
+            "- Respecte strictement le mapping backend: high -> Priorité élevée ; moderate/low -> Priorité modérée/faible.\n"
+            "Faits anormaux :\n"
+            f"{abnormal_block}\n\n"
+            "Faits dans la référence :\n"
+            f"{within_block}\n"
+        )
+    elif route == "doc_scoped_medical_interpretation_guarded":
+        prompt = (
+            "Tu es un rédacteur médical technique prudent.\n"
+            "Réponds uniquement avec les faits fournis.\n"
+            f"Maximum {max(3, min(max_lines, 8))} lignes.\n"
+            "Structure attendue :\n"
+            "- Faits techniques observés\n"
+            "- Limites\n"
+            "- Conclusion de prudence\n\n"
+            "Règles :\n"
+            "- Ne modifie aucune valeur, unité, référence ou statut.\n"
+            "- N’affirme aucun diagnostic.\n"
+            "- Écris explicitement : « On ne peut pas conclure à un diagnostic à partir de ces seuls éléments. »\n"
+            "- Ne propose aucun traitement.\n\n"
+            "- Évite les formulations cliniques générales (cause sous-jacente, évaluation clinique, diverses conditions médicales).\n"
+            "- Utilise un vocabulaire technique factuel: profil biologique discordant, interprétation limitée aux données disponibles.\n\n"
+            "- N'écris jamais que les résultats suggèrent, évoquent ou sont compatibles avec une hyperthyroïdie.\n"
+            "- Écris seulement: profil biologique discordant pour une hyperthyroïdie primaire.\n\n"
+            "Faits anormaux :\n"
+            f"{abnormal_block}\n\n"
+            "Faits dans la référence :\n"
+            f"{within_block}\n"
+        )
+    else:
+        prompt = (
+            "Tu es un rédacteur médical technique.\n"
+            "Réponds uniquement avec les faits fournis.\n"
+            f"Maximum {max(3, min(max_lines, 8))} lignes.\n"
+            "Sections obligatoires :\n"
+            "- Anormaux\n"
+            "- Résultats dans la référence uniquement\n"
+            "- Conclusion technique\n\n"
+            "Règles :\n"
+            "- Ne modifie aucune valeur, unité, référence ou statut.\n"
+            "- Ne donne pas de diagnostic.\n"
+            "- Ne propose pas de traitement.\n"
+            "- Tous les faits anormaux doivent apparaître uniquement dans la section “Anormaux”.\n"
+            "- La section “Résultats dans la référence uniquement” doit contenir uniquement les faits du bloc “Faits dans la référence”.\n"
+            "- Si le bloc “Faits dans la référence” est vide, écris exactement : “Résultats dans la référence uniquement : aucun résultat strictement dans la référence parmi les éléments sélectionnés.”\n"
+            "- N’invente aucun résultat normal ou rassurant.\n"
+            "- Ne déplace jamais un résultat above_reference/below_reference dans la section “Résultats dans la référence uniquement”.\n"
+            "- Ne mets jamais un résultat above_reference ou below_reference dans “Résultats dans la référence uniquement”.\n\n"
+            "Faits anormaux :\n"
+            f"{(chr(10).join(compact_abnormal_lines) if compact_abnormal_lines else '- Aucun fait anormal fourni.')}\n\n"
+            "Faits dans la référence :\n"
+            f"{(chr(10).join(compact_within_lines) if compact_within_lines else 'Aucun fait dans la référence fourni.')}\n"
+        )
+    if retry_feedback:
+        prompt += (
+            "\nCorrections obligatoires:\n"
+            f"{str(retry_feedback).strip()}\n"
+        )
+    prompt_chars = len(prompt)
+    prompt_tokens_est = int((prompt_chars + 3) / 4)
+    out: dict[str, Any] = {
+        "mode": "hybrid_structured_llm_writer",
+        "llm_prompt_preview": prompt[:1200],
+        "llm_prompt_first_500": prompt[:500],
+        "llm_prompt_last_500": prompt[-500:],
+        "prompt_chars": prompt_chars,
+        "prompt_target_chars": prompt_target_chars,
+        "prompt_hard_limit_chars": prompt_hard_limit_chars,
+        "llm_prompt_tokens_estimate": prompt_tokens_est,
+        "llm_prompt_policy_intent": str(selected_route or ""),
+        "llm_prompt_intent": str(selected_route or ""),
+        "use_micro_prompt": bool(policy.get("use_micro_prompt", False)),
+        "llm_call_skipped_due_prompt_budget": False,
+        "compact_facts_count": len(llm_evidences),
+        "abnormal_facts_count": len(compact_abnormal_lines),
+        "within_reference_facts_count": len(compact_within_lines),
+    }
+    if prompt_chars > prompt_hard_limit_chars:
+        out["mode"] = "llm_writer_error_fallback"
+        out["llm_error"] = "llm_prompt_too_large_preemptive"
+        out["llm_call_skipped_due_prompt_budget"] = True
+        if str(os.getenv("CHAT_DEBUG_ERRORS", "0")).strip() == "1":
+            reports = Path("reports")
+            reports.mkdir(parents=True, exist_ok=True)
+            (reports / "debug_last_llm_prompt.txt").write_text(prompt, encoding="utf-8")
+            (reports / "debug_last_llm_payload.json").write_text(
+                json.dumps(
+                    {
+                        "provider": provider,
+                        "model": model,
+                        "num_predict": num_predict,
+                        "num_ctx": int(num_ctx),
+                        "timeout_ms": timeout_ms,
+                        "prompt_chars": prompt_chars,
+                        "prompt_tokens_estimate": prompt_tokens_est,
+                        "policy": policy,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        return out
+    try:
+        answer = llm_client.generate(
+            prompt=prompt,
+            model=model,
+            temperature=0.0,
+            num_ctx=max(1024, int(num_ctx)),
+            max_tokens=max(64, int(num_predict)),
+            timeout=max(8, int(timeout_ms / 1000)),
+            keep_alive=str(os.getenv("MEDICAL_RAG_OLLAMA_KEEP_ALIVE", "10m")).strip() or "10m",
+        ).strip()
+        if route == "doc_scoped_biological_summary" and within_is_empty and answer:
+            answer = _enforce_biological_summary_template(
+                answer=answer,
+                abnormal_fact_lines=compact_abnormal_lines,
+                within_is_empty=True,
+            )
+        out["answer"] = answer
+        out["llm_candidate_answer"] = answer
+        out["llm_error"] = None
+    except Exception as exc:
+        out["mode"] = "llm_writer_error_fallback"
+        out["llm_error"] = str(exc)
+    if str(os.getenv("CHAT_DEBUG_ERRORS", "0")).strip() == "1":
+        reports = Path("reports")
+        reports.mkdir(parents=True, exist_ok=True)
+        (reports / "debug_last_llm_prompt.txt").write_text(prompt, encoding="utf-8")
+        (reports / "debug_last_llm_payload.json").write_text(
+            json.dumps(
+                {
+                    "provider": provider,
+                    "model": model,
+                    "num_predict": num_predict,
+                    "num_ctx": int(num_ctx),
+                    "timeout_ms": timeout_ms,
+                    "prompt_chars": prompt_chars,
+                    "prompt_tokens_estimate": prompt_tokens_est,
+                    "policy": policy,
+                    "llm_debug": dict(getattr(llm_client, "last_call_debug", {}) or {}),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    return out
+
+
 def generate_grounded_response_with_llm(
     *,
     user_question: str,
@@ -6375,6 +6894,8 @@ _STYLE_RETRY_KEYS = {
     "chart_units_warning_missing",
     "no_silent_default_table",
     "forbidden_none_literal",
+    "output_contains_placeholder_ellipsis",
+    "diagnostic_suggestion_too_strong",
 }
 
 
@@ -6394,6 +6915,18 @@ def _build_validator_retry_feedback(validation: dict[str, Any]) -> str:
     items = errors + warnings
     if not items:
         return ""
+    section_errors = {"abnormal_in_reassuring_section", "section_status_mismatch"}
+    if any(e in section_errors for e in errors):
+        return (
+            "Tu as place un resultat anormal dans la section des resultats dans la reference. "
+            "Corrige la reponse en deplacant tous les resultats above_reference/below_reference vers 'Anormaux'. "
+            "Si aucun resultat within_reference n'est fourni, ecris que la section est vide avec la phrase imposee."
+        )
+    if "missing_conclusion" in items:
+        return (
+            "Ajoute une conclusion technique finale exacte: "
+            "'Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic.'"
+        )
     bullets = "\n".join(f"- {i}" for i in items[:12])
     return (
         "Corrige ces points de style/format sans modifier aucune donnée (valeurs, analytes, sources, patients):\n"
@@ -7171,12 +7704,17 @@ def build_structured_evidence_pack(
             and len(list(requested_doc_ids or [])) == 1
             and len(list(requested_analytes or [])) == 1
         )
-        if not bypass_technical_filter_for_single_doc_analyte:
+        bypass_technical_filter_for_toxicology_summary = (
+            intent in {"toxicology_summary", "doc_scoped_toxicology_summary"}
+            and _is_toxicology_dual_threshold_summary_query(qn)
+        )
+        if not (bypass_technical_filter_for_single_doc_analyte or bypass_technical_filter_for_toxicology_summary):
             rows = _apply_technical_condition_filter(rows, query_understanding.technical_condition)
         if intent in {"toxicology_summary", "doc_scoped_toxicology_threshold_search", "doc_scoped_toxicology_summary"}:
             urine_mode = any(k in qn for k in ["urinaire", "urinaires", "urine"])
             tox_terms = ["ethanol", "acide_valproique", "carbamazepine", "lithium"]
             urine_terms = ["amphetamine", "benzodiazepine", "cocaine", "opiaces", "ecstasy", "phencyclidine"]
+            wants_dual_threshold = _is_toxicology_dual_threshold_summary_query(qn)
             if requested_analytes:
                 target_analytes = requested_analytes
                 rows = [r for r in rows if any(_row_matches_analyte(r, a) for a in target_analytes)]
@@ -7193,7 +7731,7 @@ def build_structured_evidence_pack(
             else:
                 target_analytes = tox_terms
                 rows = [r for r in rows if any(_row_matches_analyte(r, a) for a in target_analytes)]
-            if any(k in qn for k in ["depass", "dépass", "au dessus", "au-dessus"]) and "reference" in qn:
+            if (not wants_dual_threshold) and any(k in qn for k in ["depass", "dépass", "au dessus", "au-dessus"]) and "reference" in qn:
                 rows = [r for r in rows if _status_code(r) == "above_reference"]
             if compare_previous:
                 rows = [r for r in rows if str(r.get("previous_result_value_raw") or "").strip()]
@@ -7202,7 +7740,11 @@ def build_structured_evidence_pack(
         if excluded_analytes:
             rows = [r for r in rows if not _row_matches_excluded(r, excluded_analytes)]
 
-        if intent != "toxicology_summary" and query_understanding.requires_section_summary and ("urinaire" in qn or "urinaires" in qn or "urine" in qn):
+        if (
+            intent not in {"toxicology_summary", "doc_scoped_toxicology_threshold_search", "doc_scoped_toxicology_summary"}
+            and query_understanding.requires_section_summary
+            and ("urinaire" in qn or "urinaires" in qn or "urine" in qn)
+        ):
             rows = [r for r in rows if "urina" in norm_text(str(r.get("analyte_norm") or "") + " " + str(r.get("analyte") or ""))]
 
         if not rows and intent in {"doc_scoped_summary", "immunoanalysis_summary"}:
@@ -8179,8 +8721,20 @@ def run_generation(
     )
     has_short_bio_summary_shape = (
         bool(list(query_understanding.requested_doc_ids or []))
-        and any(t in qn for t in ["resume", "résume", "synthese", "synthèse"])
-        and any(t in qn for t in ["anomalies", "normaux", "quelques lignes", "partie"])
+        and (
+            any(t in qn for t in ["resume", "résume", "synthese", "synthèse"])
+            or any(
+                t in qn
+                for t in [
+                    "note courte",
+                    "note pour un medecin",
+                    "note pour un médecin",
+                    "resume descriptif court",
+                    "résumé descriptif court",
+                ]
+            )
+        )
+        and any(t in qn for t in ["anomalies", "normaux", "quelques lignes", "partie", "strictement descriptif", "descriptif"])
     )
     has_global_abnormal_shape = (
         has_explicit_global_scope
@@ -8278,11 +8832,11 @@ def run_generation(
             selected_route = "doc_scoped_toxicology_threshold_search"
             route_reason = "heuristic_doc_scoped_toxicology_threshold_search"
         elif _is_toxicology_majority_query(qn):
-            query_understanding = replace(query_understanding, intent="doc_scoped_toxicology_summary")
+            query_understanding = replace(query_understanding, intent="doc_scoped_toxicology_summary", technical_condition="any_result")
             selected_route = "doc_scoped_toxicology_summary"
             route_reason = "heuristic_doc_scoped_toxicology_summary"
         else:
-            query_understanding = replace(query_understanding, intent="toxicology_summary")
+            query_understanding = replace(query_understanding, intent="toxicology_summary", technical_condition="any_result")
             selected_route = "doc_scoped_toxicology_summary"
             route_reason = "heuristic_doc_scoped_toxicology_summary_default"
     if selected_route == "unstructured" and has_global_abnormal_shape:
@@ -8314,13 +8868,18 @@ def run_generation(
         selected_route = "multi_doc_comparison"
         route_reason = "compare+multiple_reports"
     elif selected_route == "doc_scoped_abnormal_results":
-        query_understanding = replace(
-            query_understanding,
-            intent="doc_scoped_summary",
-            technical_condition=(query_understanding.technical_condition or "out_of_reference"),
-        )
-        selected_route = "doc_scoped_abnormal_results"
-        route_reason = "doc_scope+abnormal_summary_request"
+        if bool(list(query_understanding.requested_doc_ids or [])) and _is_toxicology_query(qn):
+            query_understanding = replace(query_understanding, intent="doc_scoped_toxicology_summary", technical_condition="any_result")
+            selected_route = "doc_scoped_toxicology_summary"
+            route_reason = "doc_scoped_abnormal_results_toxicology_override"
+        else:
+            query_understanding = replace(
+                query_understanding,
+                intent="doc_scoped_summary",
+                technical_condition=(query_understanding.technical_condition or "out_of_reference"),
+            )
+            selected_route = "doc_scoped_abnormal_results"
+            route_reason = "doc_scope+abnormal_summary_request"
     elif selected_route == "doc_scoped_summary" and (not _is_toxicology_query(qn)) and _canonical_technical_condition(query_understanding.technical_condition) in {
         "out_of_reference",
         "above_reference",
@@ -8329,7 +8888,7 @@ def run_generation(
         selected_route = "doc_scoped_abnormal_results"
         route_reason = "doc_scope_summary+technical_condition_abnormal"
     elif selected_route == "doc_scoped_summary" and bool(list(query_understanding.requested_doc_ids or [])) and _is_toxicology_query(qn):
-        query_understanding = replace(query_understanding, intent="doc_scoped_toxicology_summary")
+        query_understanding = replace(query_understanding, intent="doc_scoped_toxicology_summary", technical_condition="any_result")
         selected_route = "doc_scoped_toxicology_summary"
         route_reason = "doc_scoped_summary_toxicology_override"
     elif selected_route == "doc_scoped_biological_summary":
@@ -8394,7 +8953,7 @@ def run_generation(
             selected_route = "doc_scoped_toxicology_threshold_search"
             route_reason = "doc_scoped_toxicology_threshold_search"
         elif _is_toxicology_majority_query(qn):
-            query_understanding = replace(query_understanding, intent="doc_scoped_toxicology_summary")
+            query_understanding = replace(query_understanding, intent="doc_scoped_toxicology_summary", technical_condition="any_result")
             selected_route = "doc_scoped_toxicology_summary"
             route_reason = "doc_scoped_toxicology_summary"
     elif selected_route == "unstructured" and _is_toxicology_global_query(qn):
@@ -9709,6 +10268,27 @@ def run_generation(
         llm_writer_used = False
         policy_timeout_s = int(llm_cfg.get("timeout_s") or timeout)
         policy_max_tokens = int(llm_cfg.get("max_tokens") or max_tokens)
+        prompt_policy = _level2_prompt_policy(selected_route)
+        policy_timeout_s, policy_max_tokens = _apply_level2_intent_llm_limits(
+            selected_route=selected_route,
+            timeout_s=policy_timeout_s,
+            max_tokens=policy_max_tokens,
+        )
+        if prompt_policy:
+            policy_timeout_s = max(8, int(prompt_policy.get("timeout_ms", policy_timeout_s * 1000)) // 1000)
+            policy_max_tokens = max(64, int(prompt_policy.get("num_predict", policy_max_tokens)))
+        llm_evidence_pack = dict(structured_pack)
+        llm_evidence_rows_count = len(list(structured_pack.get("evidences") or []))
+        llm_prompt_prefix = ""
+        if bool(llm_cfg.get("use_llm", False)):
+            llm_evidence_pack, llm_evidence_rows_count = _build_llm_evidence_pack(
+                query_understanding=query_understanding,
+                structured_pack=structured_pack,
+                selected_route=selected_route,
+            )
+            llm_prompt_prefix = _llm_summary_prompt_prefix(query_understanding, selected_route)
+        llm_question_for_estimate = f"{llm_prompt_prefix}\n\nQuestion utilisateur:\n{q}".strip() if llm_prompt_prefix else q
+        llm_prompt_tokens_estimate = _estimate_prompt_tokens_from_pack(llm_question_for_estimate, llm_evidence_pack)
         validator_policy = str(selected_policy.get("validator_policy") or "default")
         if selected_route == "doc_scoped_biological_summary" and not bool(llm_cfg.get("use_llm", False)):
             no_diag = str(getattr(query_understanding, "safety_intent", "") or "").strip().lower() == "no_diagnosis_constraint"
@@ -9825,6 +10405,8 @@ def run_generation(
                     "validator_policy": validator_policy,
                     "llm_allowed": llm_writer_allowed,
                     "llm_used": False,
+                    "llm_prompt_tokens_estimate": llm_prompt_tokens_estimate,
+                    "llm_evidence_rows_count": llm_evidence_rows_count,
                     "timeout_ms": policy_timeout_s * 1000,
                     "max_tokens": policy_max_tokens,
                     "query_understanding": _query_understanding_payload(query_understanding),
@@ -9836,30 +10418,71 @@ def run_generation(
         else:
             compose_mode = str(llm_cfg.get("compose_mode") or "fallback")
         t_llm0 = time.perf_counter()
-        composed = compose_professional_answer(
-            user_question=q,
-            query_understanding=query_understanding,
-            evidence_pack=structured_pack,
-            mode=compose_mode,
-            source_citations=source_citations,
-            llm_client=llm_client,
-            provider=provider,
-            model=model,
-            temperature=temperature,
-            num_ctx=num_ctx,
-            max_tokens=policy_max_tokens,
-            timeout=policy_timeout_s,
-        )
+        llm_user_question = f"{llm_prompt_prefix}\n\nQuestion utilisateur:\n{q}".strip() if llm_prompt_prefix else q
+        writer_llm_client = llm_client or LLMClient(provider=provider)
+        use_micro_prompt = bool(prompt_policy.get("use_micro_prompt", False)) and compose_mode == "hybrid_structured_llm_writer"
+        if use_micro_prompt:
+            composed = _compose_level2_micro_prompt_answer(
+                selected_route=selected_route,
+                query_understanding=query_understanding,
+                llm_pack=llm_evidence_pack,
+                llm_client=writer_llm_client,
+                provider=provider,
+                model=model,
+                num_ctx=num_ctx,
+            )
+        else:
+            composed = compose_professional_answer(
+                user_question=llm_user_question,
+                query_understanding=query_understanding,
+                evidence_pack=llm_evidence_pack if compose_mode == "hybrid_structured_llm_writer" else structured_pack,
+                mode=compose_mode,
+                source_citations=source_citations,
+                llm_client=writer_llm_client,
+                provider=provider,
+                model=model,
+                temperature=temperature,
+                num_ctx=num_ctx,
+                max_tokens=policy_max_tokens,
+                timeout=policy_timeout_s,
+            )
         if compose_mode == "fallback":
             stage_times_ms["llm_writer_ms"] = 0.0
         else:
             llm_writer_used = True
             stage_times_ms["llm_writer_ms"] = round((time.perf_counter() - t_llm0) * 1000.0, 3)
         composed_data = composed
+        if composed.get("llm_prompt_tokens_estimate") is not None:
+            llm_prompt_tokens_estimate = int(composed.get("llm_prompt_tokens_estimate") or llm_prompt_tokens_estimate)
         final_answer = str(composed.get("answer") or "").strip() or _missing_doc_answer()
+        if selected_route == "doc_scoped_biological_summary":
+            status_codes = {
+                str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+                for ev in displayed_evidences
+            }
+            final_answer = _ensure_biological_summary_conclusion(
+                final_answer,
+                has_abnormal=bool(status_codes.intersection({"above_reference", "below_reference"})),
+                has_within=bool("within_reference" in status_codes),
+            )
+        elif selected_route == "doc_scoped_medical_interpretation_guarded":
+            final_answer = _ensure_guarded_thyroid_conclusion(final_answer)
         llm_prompt_preview = str(composed.get("llm_prompt_preview") or "")[:1200]
-        llm_candidate_answer = str(composed.get("llm_candidate_answer") or final_answer)
+        llm_candidate_answer: str | None = None
         retry_used = False
+        fallback_stage: str | None = None
+        fallback_renderer_used: str | None = None
+        llm_candidate_validation_status: str | None = None
+        llm_candidate_validation_errors: list[str] | None = None
+        llm_candidate_validation_warnings: list[str] | None = None
+        llm_candidate_repair_used = False
+        llm_repaired_answer: str | None = None
+        llm_repaired_validation_status: str | None = None
+        llm_repaired_validation_errors: list[str] = []
+        llm_repair_error_type: str | None = None
+        llm_repair_error_message: str | None = None
+        llm_postprocess_error_type: str | None = None
+        llm_postprocess_error_message: str | None = None
         if str(query_understanding.intent or "").strip().lower() == "multi_doc_comparison" and len(requested_doc_ids) > 2:
             cmp_text, _ = _format_multi_doc_comparison_answer(
                 rows=structured_rows,
@@ -9926,14 +10549,110 @@ def run_generation(
             )
         writer_error = str(composed.get("llm_error") or "") or None
         fallback_reason_debug = writer_error
+        llm_call_skipped_due_prompt_budget = bool(composed.get("llm_call_skipped_due_prompt_budget"))
+        if compose_mode == "hybrid_structured_llm_writer" and not writer_error:
+            candidate_raw = str(composed.get("llm_candidate_answer") or composed.get("answer") or "").strip()
+            if candidate_raw:
+                llm_candidate_answer = candidate_raw
         if writer_error and "timeout" in writer_error.lower():
             fallback_reason_debug = "llm_timeout"
+            fallback_stage = "llm_call"
+            llm_candidate_answer = None
+            llm_candidate_validation_status = None
+            llm_candidate_validation_errors = None
+            llm_candidate_validation_warnings = None
+            llm_candidate_repair_used = False
+            if selected_route == "doc_scoped_biological_summary":
+                fallback_renderer_used = "deterministic_biological_summary_short"
+        if writer_error and "llm_prompt_too_large_preemptive" in writer_error:
+            fallback_reason_debug = "llm_prompt_too_large_preemptive"
+            fallback_stage = "prompt_budget_precheck"
+            if selected_route == "doc_scoped_biological_summary":
+                no_diag = str(getattr(query_understanding, "safety_intent", "") or "").strip().lower() == "no_diagnosis_constraint"
+                final_answer = _build_doc_scoped_biological_summary_answer(
+                    displayed_evidences,
+                    max_lines=getattr(query_understanding, "requested_summary_points", None),
+                    no_diagnosis=no_diag,
+                )
+                generation_mode = "deterministic_doc_scoped_biological_summary"
+                fallback_renderer_used = "deterministic_biological_summary_short"
+                writer_error = None
+        if llm_candidate_answer and not writer_error:
+            pre_found_requested_analytes: list[str] = []
+            for analyte in exact_analytes:
+                if any(_row_matches_analyte(row, analyte) for row in structured_rows):
+                    pre_found_requested_analytes.append(analyte)
+            pre_found_requested_analyte_norms = sorted(
+                {
+                    str(ev.get("analyte_norm") or "").strip().lower()
+                    for ev in displayed_evidences
+                    if str(ev.get("analyte_norm") or "").strip()
+                }
+            )
+            pre_missing_requested_analytes = sorted(
+                [a for a in exact_analytes if a not in set(pre_found_requested_analytes)]
+            )
+            if bool(intents.get("diagnostic_safety_question")) and detect_medical_topic(norm_text(q)) == "thyroid":
+                evidence_analytes = set(pre_found_requested_analyte_norms)
+                filtered_missing: list[str] = []
+                for analyte in pre_missing_requested_analytes:
+                    if analyte in {"tsh", "tshus"} and {"tsh", "tshus"} & evidence_analytes:
+                        continue
+                    if analyte in evidence_analytes:
+                        filtered_missing.append(analyte)
+                pre_missing_requested_analytes = sorted(set(filtered_missing))
+            candidate_validation = validate_answer(
+                query=q,
+                answer_text=llm_candidate_answer,
+                evidence_pack=evidence_pack,
+                displayed_evidences=displayed_evidences,
+                source_citations=source_citations,
+                exact_analyte=exact_analyte,
+                llm_error=None,
+                generation_mode="hybrid_structured_llm_writer",
+                retrieval_status="answerable" if displayed_evidences else "insufficient_context",
+                show_low_quality=show_low_quality,
+                max_display_results=max_display_results,
+                show_all_results=show_all_results,
+                query_received=query_received,
+                query_used_for_retrieval=query_used_for_retrieval,
+                query_used_for_prompt=query_used_for_prompt,
+                query_stored=q,
+                detected_analytes=exact_analytes,
+                requested_doc_id=requested_doc_ids[0] if len(requested_doc_ids) == 1 else None,
+                requested_doc_ids=requested_doc_ids,
+                missing_requested_doc_ids=missing_requested_doc_ids,
+                requested_analytes=exact_analytes,
+                found_requested_analytes=pre_found_requested_analytes,
+                found_requested_analyte_norms=pre_found_requested_analyte_norms,
+                missing_requested_analytes=pre_missing_requested_analytes,
+                current_vs_previous_requested=query_understanding.requires_previous_results,
+                diagnostic_safety_intent=bool(intents.get("diagnostic_safety_question")),
+                query_intents=intents,
+                output_format_requested=query_understanding.output_format,
+                answer_style_requested=query_understanding.answer_style,
+                requested_table_columns=query_understanding.requested_table_columns,
+                requested_technical_condition=query_understanding.technical_condition,
+                raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+                user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+                requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+                visualization_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[0],
+                chart_data_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[1],
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                requested_value=query_understanding.requested_value,
+                comparison_operator=query_understanding.comparison_operator,
+            )
+            llm_candidate_validation_status = str(candidate_validation.get("validation_status") or "")
+            llm_candidate_validation_errors = list(candidate_validation.get("errors") or [])
+            llm_candidate_validation_warnings = list(candidate_validation.get("warnings") or [])
         if compose_mode == "hybrid_structured_llm_writer" and generation_mode in {
             "llm_writer_error_fallback",
             "llm_writer_format_fallback",
             "llm_writer_quality_fallback",
         }:
-            retry_used = True
+            if fallback_reason_debug != "llm_timeout":
+                retry_used = True
             fallback_composed = compose_professional_answer(
                 user_question=q,
                 query_understanding=query_understanding,
@@ -9942,32 +10661,59 @@ def run_generation(
                 source_citations=source_citations,
             )
             final_answer = str(fallback_composed.get("answer") or final_answer).strip()
-            generation_mode = "deterministic_safety_fallback_after_llm_validation_failure"
-            writer_error = None
-        if _contains_internal_reasoning_leak(final_answer):
-            fallback_answer = str(
-                (
-                    render_professional_fallback(
-                        evidence_pack=structured_pack,
-                        query_understanding=query_understanding,
-                        user_question=q,
-                        source_citations=source_citations,
-                    )
-                    or {}
-                ).get("answer")
-                or _missing_doc_answer()
-            ).strip()
-            final_answer, _, sanitize_err = sanitize_final_answer_with_retry(
-                answer=final_answer,
-                user_message=q,
-                llm_client=llm_client,
-                provider=provider,
-                model=model,
-                timeout=timeout,
-                fallback_answer=fallback_answer,
+            final_answer = _build_route_specific_short_fallback_answer(
+                selected_route=selected_route,
+                query_understanding=query_understanding,
+                displayed_evidences=displayed_evidences,
+                default_answer=final_answer,
             )
-            if sanitize_err:
-                writer_error = f"{writer_error} | sanitize_retry:{sanitize_err}" if writer_error else f"sanitize_retry:{sanitize_err}"
+            generation_mode = "deterministic_safety_fallback_after_llm_validation_failure"
+            fallback_stage = fallback_stage or "writer_postprocess"
+            if selected_route == "doc_scoped_biological_summary":
+                fallback_renderer_used = "deterministic_biological_summary_short"
+            writer_error = None
+            if not fallback_reason_debug:
+                fallback_reason_debug = "llm_writer_quality_or_format_fallback"
+        try:
+            if _contains_internal_reasoning_leak(final_answer):
+                fallback_answer = str(
+                    (
+                        render_professional_fallback(
+                            evidence_pack=structured_pack,
+                            query_understanding=query_understanding,
+                            user_question=q,
+                            source_citations=source_citations,
+                        )
+                        or {}
+                    ).get("answer")
+                    or _missing_doc_answer()
+                ).strip()
+                final_answer, _, sanitize_err = sanitize_final_answer_with_retry(
+                    answer=final_answer,
+                    user_message=q,
+                    llm_client=llm_client,
+                    provider=provider,
+                    model=model,
+                    timeout=timeout,
+                    fallback_answer=fallback_answer,
+                )
+                if sanitize_err:
+                    writer_error = f"{writer_error} | sanitize_retry:{sanitize_err}" if writer_error else f"sanitize_retry:{sanitize_err}"
+        except Exception as exc:
+            llm_postprocess_error_type = type(exc).__name__
+            llm_postprocess_error_message = str(exc)
+            fallback_reason_debug = "llm_postprocess_exception"
+            fallback_stage = "writer_postprocess"
+            final_answer = _build_route_specific_short_fallback_answer(
+                selected_route=selected_route,
+                query_understanding=query_understanding,
+                displayed_evidences=displayed_evidences,
+                default_answer=_missing_doc_answer(),
+            )
+            generation_mode = "deterministic_doc_scoped_biological_summary" if selected_route == "doc_scoped_biological_summary" else "deterministic_safety_fallback_after_llm_validation_failure"
+            if selected_route == "doc_scoped_biological_summary":
+                fallback_renderer_used = "deterministic_biological_summary_short"
+            writer_error = None
 
         qn_local = norm_text(q)
         if (
@@ -10026,6 +10772,22 @@ def run_generation(
         )
         if exact_analytes and not missing_requested_analytes:
             missing_requested_analytes = [a for a in exact_analytes if a not in set(found_requested_analytes)]
+        if bool(intents.get("diagnostic_safety_question")) and detect_medical_topic(qn_local) == "thyroid":
+            # For guarded thyroid validation, do not force theoretical panel analytes
+            # that are absent from evidence rows.
+            evidence_analytes = {
+                str(ev.get("analyte_norm") or "").strip().lower()
+                for ev in displayed_evidences
+                if str(ev.get("analyte_norm") or "").strip()
+            }
+            filtered_missing: list[str] = []
+            for analyte in missing_requested_analytes:
+                if analyte in {"tsh", "tshus"}:
+                    if {"tsh", "tshus"} & evidence_analytes:
+                        continue
+                if analyte in evidence_analytes:
+                    filtered_missing.append(analyte)
+            missing_requested_analytes = sorted(set(filtered_missing))
 
         t_val0 = time.perf_counter()
         validation = validate_answer(
@@ -10083,30 +10845,61 @@ def run_generation(
             validation = dict(validation or {})
             validation["validation_status"] = "fail"
 
-        if _should_retry_with_validator(validation, generation_mode):
+        if fallback_reason_debug not in {"llm_timeout", "llm_prompt_too_large_preemptive"} and _should_retry_with_validator(validation, generation_mode):
             t_rep0 = time.perf_counter()
             retry_used = True
+            llm_candidate_repair_used = True
             retry_feedback = _build_validator_retry_feedback(validation)
-            retry_composed = compose_professional_answer(
-                user_question=q,
-                query_understanding=query_understanding,
-                evidence_pack=structured_pack,
-                mode=compose_mode,
-                source_citations=source_citations,
-                llm_client=llm_client,
-                provider=provider,
-                model=model,
-                temperature=temperature,
-                num_ctx=num_ctx,
-                max_tokens=policy_max_tokens,
-                timeout=policy_timeout_s,
-                retry_feedback=retry_feedback,
-            )
+            try:
+                if use_micro_prompt:
+                    retry_composed = _compose_level2_micro_prompt_answer(
+                        selected_route=selected_route,
+                        query_understanding=query_understanding,
+                        llm_pack=llm_evidence_pack,
+                        llm_client=writer_llm_client,
+                        provider=provider,
+                        model=model,
+                        num_ctx=num_ctx,
+                        retry_feedback=retry_feedback,
+                    )
+                else:
+                    retry_composed = compose_professional_answer(
+                        user_question=q,
+                        query_understanding=query_understanding,
+                        evidence_pack=structured_pack,
+                        mode=compose_mode,
+                        source_citations=source_citations,
+                        llm_client=writer_llm_client,
+                        provider=provider,
+                        model=model,
+                        temperature=temperature,
+                        num_ctx=num_ctx,
+                        max_tokens=policy_max_tokens,
+                        timeout=policy_timeout_s,
+                        retry_feedback=retry_feedback,
+                    )
+            except Exception as exc:
+                llm_repair_error_type = type(exc).__name__
+                llm_repair_error_message = str(exc)
+                retry_composed = {"mode": "llm_writer_error_fallback", "answer": "", "llm_error": str(exc)}
             retry_answer = str(retry_composed.get("answer") or "").strip()
+            if selected_route == "doc_scoped_biological_summary":
+                status_codes = {
+                    str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+                    for ev in displayed_evidences
+                }
+                retry_answer = _ensure_biological_summary_conclusion(
+                    retry_answer,
+                    has_abnormal=bool(status_codes.intersection({"above_reference", "below_reference"})),
+                    has_within=bool("within_reference" in status_codes),
+                )
+            elif selected_route == "doc_scoped_medical_interpretation_guarded":
+                retry_answer = _ensure_guarded_thyroid_conclusion(retry_answer)
             retry_mode = str(retry_composed.get("mode") or generation_mode)
             retry_writer_error = str(retry_composed.get("llm_error") or "") or None
             if retry_answer:
                 llm_candidate_answer = retry_answer
+                llm_repaired_answer = retry_answer
             if str(retry_composed.get("llm_prompt_preview") or "").strip():
                 llm_prompt_preview = str(retry_composed.get("llm_prompt_preview") or "")[:1200]
             if retry_answer:
@@ -10157,6 +10950,8 @@ def run_generation(
                     generation_mode = retry_mode
                     writer_error = retry_writer_error
                     validation = retry_validation
+                    llm_repaired_validation_status = str(retry_validation.get("validation_status") or "")
+                    llm_repaired_validation_errors = list(retry_validation.get("errors") or [])
                 else:
                     fallback_composed = compose_professional_answer(
                         user_question=q,
@@ -10166,8 +10961,18 @@ def run_generation(
                         source_citations=source_citations,
                     )
                     final_answer = str(fallback_composed.get("answer") or final_answer).strip()
+                    final_answer = _build_route_specific_short_fallback_answer(
+                        selected_route=selected_route,
+                        query_understanding=query_understanding,
+                        displayed_evidences=displayed_evidences,
+                        default_answer=final_answer,
+                    )
                     generation_mode = "deterministic_safety_fallback_after_llm_validation_failure"
                     writer_error = None
+                    fallback_reason_debug = fallback_reason_debug or "llm_repair_failed"
+                    fallback_stage = "post_validation_repair"
+                    if selected_route == "doc_scoped_biological_summary":
+                        fallback_renderer_used = "deterministic_biological_summary_short"
                     validation = validate_answer(
                         query=q,
                         answer_text=final_answer,
@@ -10233,8 +11038,18 @@ def run_generation(
                 source_citations=source_citations,
             )
             final_answer = str(fallback_composed.get("answer") or final_answer).strip()
+            final_answer = _build_route_specific_short_fallback_answer(
+                selected_route=selected_route,
+                query_understanding=query_understanding,
+                displayed_evidences=displayed_evidences,
+                default_answer=final_answer,
+            )
             generation_mode = "deterministic_safety_fallback_after_llm_validation_failure"
             writer_error = None
+            fallback_reason_debug = fallback_reason_debug or "llm_validation_fail_hard_gate"
+            fallback_stage = "hard_gate"
+            if selected_route == "doc_scoped_biological_summary":
+                fallback_renderer_used = "deterministic_biological_summary_short"
             validation = validate_answer(
                 query=q,
                 answer_text=final_answer,
@@ -10354,6 +11169,7 @@ def run_generation(
                     citations = []
             generation_mode = fallback_mode
             writer_error = None
+            fallback_stage = "validator_hard_gate"
             validation = validate_answer(
                 query=q,
                 answer_text=final_answer,
@@ -10392,30 +11208,104 @@ def run_generation(
             stage_times_ms["repair_ms"] = 0.0
 
         if str((validation or {}).get("validation_status") or "").strip().lower() == "fail":
-            final_safety_check_failed = True
-            final_answer = "Je ne peux pas fournir une réponse fiable à partir des données disponibles."
-            generation_mode = "deterministic_safe_error_response"
-            displayed_evidences = []
-            evidence_pack = []
-            source_citations = []
-            citations = []
-            validation = {
-                "validation_status": "warning",
-                "errors": [],
-                "warnings": ["final_safety_check_failed"],
-            }
-            quality = _quality_report(
-                answer=final_answer,
-                validation=validation,
-                source_clickable_requested=False,
-                recent_style_history=style_history,
+            selected_route_norm = str(selected_route or "").strip().lower()
+            query_is_toxicology_summary = _is_toxicology_query(norm_text(q))
+            should_force_toxicology_recovery = bool(
+                displayed_evidences
+                and (
+                    selected_route_norm in {"doc_scoped_toxicology_summary", "doc_scoped_toxicology_threshold_search"}
+                    or (selected_route_norm == "doc_scoped_abnormal_results" and query_is_toxicology_summary)
+                )
             )
-            stage_times_ms["llm_writer_ms"] = 0.0
-            stage_times_ms["repair_ms"] = 0.0
+            if should_force_toxicology_recovery:
+                recovery_route = (
+                    "doc_scoped_toxicology_summary"
+                    if selected_route_norm == "doc_scoped_abnormal_results"
+                    else selected_route_norm
+                )
+                selected_route_norm = recovery_route
+                final_answer = (
+                    _render_doc_scoped_toxicology_majority_answer(
+                        under_count=sum(
+                            1
+                            for ev in displayed_evidences
+                            if str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+                            in {"below_reference", "within_reference"}
+                        ),
+                        above_count=sum(
+                            1
+                            for ev in displayed_evidences
+                            if str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+                            == "above_reference"
+                        ),
+                        ambiguous_count=sum(
+                            1
+                            for ev in displayed_evidences
+                            if str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+                            not in {"below_reference", "within_reference", "above_reference"}
+                        ),
+                    )
+                    if selected_route_norm == "doc_scoped_toxicology_summary"
+                    else _render_doc_scoped_toxicology_threshold_answer(displayed_evidences)
+                )
+                generation_mode = (
+                    "deterministic_doc_scoped_toxicology_summary"
+                    if selected_route_norm == "doc_scoped_toxicology_summary"
+                    else "deterministic_doc_scoped_toxicology_threshold_search"
+                )
+                if selected_route_norm == "doc_scoped_toxicology_summary":
+                    selected_route = "doc_scoped_toxicology_summary"
+                fallback_reason_debug = fallback_reason_debug or "toxicology_validation_recovered_to_deterministic"
+                fallback_stage = fallback_stage or "final_safety_check_recovery"
+                validation = {
+                    "validation_status": "warning",
+                    "errors": [],
+                    "warnings": ["toxicology_validation_recovered_to_deterministic"],
+                }
+                quality = _quality_report(
+                    answer=final_answer,
+                    validation=validation,
+                    source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                    recent_style_history=style_history,
+                )
+                stage_times_ms["llm_writer_ms"] = 0.0
+                stage_times_ms["repair_ms"] = 0.0
+            else:
+                final_safety_check_failed = True
+                final_answer = "Je ne peux pas fournir une réponse fiable à partir des données disponibles."
+                generation_mode = "deterministic_safe_error_response"
+                displayed_evidences = []
+                evidence_pack = []
+                source_citations = []
+                citations = []
+                validation = {
+                    "validation_status": "warning",
+                    "errors": [],
+                    "warnings": ["final_safety_check_failed"],
+                }
+                quality = _quality_report(
+                    answer=final_answer,
+                    validation=validation,
+                    source_clickable_requested=False,
+                    recent_style_history=style_history,
+                )
+                fallback_stage = fallback_stage or "final_safety_check"
+                fallback_reason_debug = fallback_reason_debug or "llm_validation_failed"
+                stage_times_ms["llm_writer_ms"] = 0.0
+                stage_times_ms["repair_ms"] = 0.0
+
+        if llm_writer_used and str(generation_mode or "").startswith("deterministic_") and not fallback_reason_debug:
+            fallback_reason_debug = "llm_validation_failed"
+            fallback_stage = fallback_stage or "post_llm_transition"
 
         elapsed = time.perf_counter() - started
         stage_times_ms["total_ms"] = round(elapsed * 1000.0, 3)
         intro_text, conclusion_text = _extract_intro_conclusion(final_answer)
+        llm_runtime_debug = dict(getattr(writer_llm_client, "last_call_debug", {}) or {})
+        supporting_evidences = list(displayed_evidences)
+        if str(selected_route or "").strip().lower() == "doc_scoped_biological_summary":
+            max_used = max(1, int(llm_evidence_rows_count or 6))
+            displayed_evidences = list(displayed_evidences or [])[:max_used]
         retrieval_sources = [
             {
                 "doc_id": ev.get("doc_id"),
@@ -10488,8 +11378,10 @@ def run_generation(
                 "generation_mode": generation_mode,
                 "selected_route": selected_route,
                 "route_reason": route_reason,
-                "generation_mode_before_fallback": str(composed_data.get("mode") if isinstance(composed_data, dict) else "") or None,
+                "generation_mode_before_fallback": (str(composed_data.get("mode") if isinstance(composed_data, dict) else "") or None) if fallback_reason_debug else None,
                 "fallback_reason": fallback_reason_debug,
+                "fallback_stage": fallback_stage,
+                "fallback_renderer_used": fallback_renderer_used,
                 "generation_writer": "llm_writer" if str(generation_mode).startswith("llm_") or generation_mode == "hybrid_structured_llm_writer" else "professional_fallback",
                 "retry_used": retry_used,
                 "final_generation_mode": generation_mode,
@@ -10499,8 +11391,46 @@ def run_generation(
                 "validator_policy": validator_policy,
                 "llm_allowed": llm_writer_allowed,
                 "llm_used": llm_writer_used,
+                "llm_prompt_tokens_estimate": llm_prompt_tokens_estimate,
+                "llm_evidence_rows_count": llm_evidence_rows_count,
+                "llm_prompt_policy_intent": str(selected_route or ""),
+                "llm_prompt_intent": composed.get("llm_prompt_intent") if isinstance(composed, dict) else str(selected_route or ""),
+                "use_micro_prompt": use_micro_prompt,
+                "prompt_target_chars": int(prompt_policy.get("prompt_target_chars") or 0),
+                "prompt_hard_limit_chars": int(prompt_policy.get("prompt_hard_limit_chars") or 0),
+                "llm_call_skipped_due_prompt_budget": llm_call_skipped_due_prompt_budget,
+                "compact_facts_count": int(composed.get("compact_facts_count") or 0) if isinstance(composed, dict) else 0,
+                "abnormal_facts_count": int(composed.get("abnormal_facts_count") or 0) if isinstance(composed, dict) else 0,
+                "within_reference_facts_count": int(composed.get("within_reference_facts_count") or 0) if isinstance(composed, dict) else 0,
                 "timeout_ms": policy_timeout_s * 1000,
                 "max_tokens": policy_max_tokens,
+                "ollama_endpoint": llm_runtime_debug.get("ollama_endpoint"),
+                "ollama_api_kind": llm_runtime_debug.get("ollama_api_kind"),
+                "ollama_model": llm_runtime_debug.get("ollama_model"),
+                "ollama_num_predict": llm_runtime_debug.get("ollama_num_predict"),
+                "ollama_num_ctx": llm_runtime_debug.get("ollama_num_ctx"),
+                "ollama_temperature": llm_runtime_debug.get("ollama_temperature"),
+                "ollama_keep_alive": llm_runtime_debug.get("ollama_keep_alive"),
+                "stream": llm_runtime_debug.get("stream"),
+                "prompt_chars": llm_runtime_debug.get("prompt_chars"),
+                "prompt_tokens_estimate": llm_prompt_tokens_estimate,
+                "prompt_preview_first_500": composed.get("llm_prompt_first_500") or llm_runtime_debug.get("prompt_preview_first_500"),
+                "prompt_preview_last_500": composed.get("llm_prompt_last_500") or llm_runtime_debug.get("prompt_preview_last_500"),
+                "messages_count": llm_runtime_debug.get("messages_count"),
+                "system_prompt_chars": llm_runtime_debug.get("system_prompt_chars"),
+                "user_prompt_chars": llm_runtime_debug.get("user_prompt_chars"),
+                "conversation_history_included": llm_runtime_debug.get("conversation_history_included"),
+                "llm_timeout_ms": llm_runtime_debug.get("llm_timeout_ms"),
+                "llm_elapsed_ms": llm_runtime_debug.get("llm_elapsed_ms"),
+                "llm_raw_error_type": llm_runtime_debug.get("llm_raw_error_type"),
+                "llm_raw_error_message": llm_runtime_debug.get("llm_raw_error_message"),
+                "total_duration": llm_runtime_debug.get("total_duration"),
+                "load_duration": llm_runtime_debug.get("load_duration"),
+                "prompt_eval_count": llm_runtime_debug.get("prompt_eval_count"),
+                "prompt_eval_duration": llm_runtime_debug.get("prompt_eval_duration"),
+                "eval_count": llm_runtime_debug.get("eval_count"),
+                "eval_duration": llm_runtime_debug.get("eval_duration"),
+                "tokens_per_second_estimate": llm_runtime_debug.get("tokens_per_second_estimate"),
                 "llm_writer_allowed": llm_writer_allowed,
                 "llm_writer_used": llm_writer_used,
                 "evidence_rows_count": len(evidence_pack),
@@ -10514,12 +11444,26 @@ def run_generation(
                 "final_safety_check_failed": final_safety_check_failed,
                 "llm_prompt_preview": llm_prompt_preview,
                 "llm_candidate_answer": llm_candidate_answer,
+                "llm_candidate_validation_status": llm_candidate_validation_status,
+                "llm_candidate_validation_errors": llm_candidate_validation_errors,
+                "llm_candidate_validation_warnings": llm_candidate_validation_warnings,
+                "llm_candidate_repair_used": llm_candidate_repair_used,
+                "llm_repaired_answer": llm_repaired_answer,
+                "llm_repaired_validation_status": llm_repaired_validation_status,
+                "llm_repaired_validation_errors": llm_repaired_validation_errors,
+                "llm_repair_attempted": llm_candidate_repair_used,
+                "llm_repair_answer": llm_repaired_answer,
+                "llm_repair_error_type": llm_repair_error_type,
+                "llm_repair_error_message": llm_repair_error_message,
+                "llm_postprocess_error_type": llm_postprocess_error_type,
+                "llm_postprocess_error_message": llm_postprocess_error_message,
                 "intents": intents,
                 "analyte_resolution_debug": structured_pack.get("analyte_resolution_debug"),
                 "query_understanding": _query_understanding_payload(query_understanding),
                 "query_plan": plan_to_payload(query_plan),
                 "evidence_rows_preview": list((structured_pack.get("rows") or [])[:8]),
                 "included_rows": list((structured_pack.get("evidences") or [])[:20]),
+                "supporting_evidences": list((supporting_evidences or [])[:20]),
                 "excluded_rows": list(structured_pack.get("excluded_rows") or []),
                 "validation": {
                     "errors": list((validation or {}).get("errors") or []),

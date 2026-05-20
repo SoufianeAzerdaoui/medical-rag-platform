@@ -1,8 +1,8 @@
 {
   "base_url": "http://127.0.0.1:8000",
-  "conversation_id": "conv_ccf418e1-b32b-4175-ab5f-085795bb786d",
-  "started_at_epoch": 25657.827388389,
-  "elapsed_seconds": 1.245,
+  "conversation_id": "conv_d2e8991d-210d-4d23-835b-b68be40c5925",
+  "started_at_epoch": 14487.495903404,
+  "elapsed_seconds": 1.258,
   "score": "10/10",
   "passed": 10,
   "total": 10,
@@ -12,9 +12,9 @@
       "question": "Quelle est la plage physiologique de l’acide urique chez l’homme dans les rapports disponibles ?",
       "selected_route": "reference_range_lookup",
       "generation_mode": "deterministic_reference_range_lookup",
-      "validation_status": "warning",
-      "quality_final_status": "warning",
-      "response_time": 0.156,
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.093,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [
@@ -23,11 +23,9 @@
       "requested_doc_ids": [],
       "technical_condition": null,
       "displayed_count": 0,
-      "sources_count": 6,
+      "sources_count": 3,
       "validation_errors": [],
-      "validation_warnings": [
-        "max_display_results_exceeded_for_simple_query"
-      ],
+      "validation_warnings": [],
       "status": "PASS",
       "fail_reasons": [],
       "answer_preview": "Pour l’Acide urique, la valeur de référence pour un homme est 35–72 mg/l.\n\nCette plage a été retrouvée dans plusieurs rapports. Précisez une date si vous voulez une source documentaire unique."
@@ -37,9 +35,9 @@
       "question": "Quelle est la plage normale de l’acide urique chez la femme selon les rapports ?",
       "selected_route": "reference_range_lookup",
       "generation_mode": "deterministic_reference_range_lookup",
-      "validation_status": "warning",
-      "quality_final_status": "warning",
-      "response_time": 0.067,
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.06,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [
@@ -48,11 +46,9 @@
       "requested_doc_ids": [],
       "technical_condition": null,
       "displayed_count": 0,
-      "sources_count": 6,
+      "sources_count": 3,
       "validation_errors": [],
-      "validation_warnings": [
-        "max_display_results_exceeded_for_simple_query"
-      ],
+      "validation_warnings": [],
       "status": "PASS",
       "fail_reasons": [],
       "answer_preview": "Pour l’Acide urique, la plage physiologique indiquée pour une femme est 26–60 mg/l.\n\nCette plage a été retrouvée dans plusieurs rapports. Précisez une date si vous voulez une source documentaire unique."
@@ -64,7 +60,7 @@
       "generation_mode": "deterministic_single_analyte_lookup",
       "validation_status": "pass",
       "quality_final_status": "pass",
-      "response_time": 0.047,
+      "response_time": 0.054,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [
@@ -89,7 +85,7 @@
       "generation_mode": "deterministic_single_analyte_lookup",
       "validation_status": "pass",
       "quality_final_status": "pass",
-      "response_time": 0.044,
+      "response_time": 0.051,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [
@@ -114,7 +110,7 @@
       "generation_mode": "deterministic_global_analyte_abnormal_search",
       "validation_status": "pass",
       "quality_final_status": "pass",
-      "response_time": 0.07,
+      "response_time": 0.078,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [
@@ -143,13 +139,13 @@
       "requested_analytes": [],
       "requested_doc_ids": [],
       "technical_condition": null,
-      "displayed_count": 83,
-      "sources_count": 83,
+      "displayed_count": 5,
+      "sources_count": 5,
       "validation_errors": [],
       "validation_warnings": [],
       "status": "PASS",
       "fail_reasons": [],
-      "answer_preview": "Toxicologie urinaire — rapports retrouvés\n\n- report_27: familles testées = amphetamine, benzodiazepine, cocaine, ecstasy, opiaces, phencyclidine.\n- report_25: familles testées = amphetamine, benzodiazepine, cocaine, ecstasy, opiaces, phencyclidine.\n- report_14: familles testées = amphetamine, benzodiazepine, cocaine, ecstasy, opiaces, phencyclidine.\n- report_4: familles testées = amphetamine, benzodiazepine, cocaine, ecstasy, opiaces, phencyclidine.\n- report_3: familles testées = amphetamine, benzodiazepine, cocaine, ecstasy, opiaces, phencyclidine.\n\nConclusion technique : listing déterministe"
+      "answer_preview": "Toxicologie urinaire — rapports retrouvés\n\n| Document | Nature | Familles / paramètres testés | Nombre de lignes exploitées |\n| --- | --- | --- | --- |\n| report_27 | URINE | amphétamine, benzodiazépine, cocaïne, ecstasy, opiacés, phencyclidine | 18 |\n| report_25 | URINE | amphétamine, benzodiazépine, cocaïne, ecstasy, opiacés, phencyclidine | 13 |\n| report_14 | URINE | amphétamine, benzodiazépine, cocaïne, ecstasy, opiacés, phencyclidine | 16 |\n| report_4 | URINE | amphétamine, benzodiazépine, cocaïne, ecstasy, opiacés, phencyclidine | 18 |\n| report_3 | URINE | amphétamine, benzodiazépine, coc"
     },
     {
       "test_number": 7,
@@ -158,19 +154,19 @@
       "generation_mode": "deterministic_global_toxicology_search",
       "validation_status": "pass",
       "quality_final_status": "pass",
-      "response_time": 0.07,
+      "response_time": 0.084,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [],
       "requested_doc_ids": [],
       "technical_condition": null,
-      "displayed_count": 8,
-      "sources_count": 8,
+      "displayed_count": 3,
+      "sources_count": 3,
       "validation_errors": [],
       "validation_warnings": [],
       "status": "PASS",
       "fail_reasons": [],
-      "answer_preview": "Toxicologie sanguine — rapports retrouvés\n\n- report_26: familles testées = carbamazepine, ethanol, lithium.\n- report_21: familles testées = carbamazepine, ethanol, lithium.\n- report_15: familles testées = carbamazepine, lithium.\n\nConclusion technique : listing déterministe basé sur les sections et analytes toxicologiques extraits."
+      "answer_preview": "Toxicologie sanguine — rapports retrouvés\n\n| Document | Nature | Paramètres recherchés | Nombre de lignes exploitées |\n| --- | --- | --- | --- |\n| report_26 | SANG | carbamazépine, éthanol, lithium | 3 |\n| report_21 | SANG | carbamazépine, éthanol, lithium | 3 |\n| report_15 | SANG | carbamazépine, lithium | 2 |\n\nConclusion technique : synthèse groupée par document à partir des sections et analytes toxicologiques extraits."
     },
     {
       "test_number": 8,
@@ -179,7 +175,7 @@
       "generation_mode": "deterministic_doc_scoped_toxicology_threshold_search",
       "validation_status": "pass",
       "quality_final_status": "pass",
-      "response_time": 0.065,
+      "response_time": 0.079,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [],
@@ -202,14 +198,14 @@
       "generation_mode": "deterministic_doc_scoped_toxicology_summary",
       "validation_status": "pass",
       "quality_final_status": "pass",
-      "response_time": 0.097,
+      "response_time": 0.143,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [],
       "requested_doc_ids": [
         "report_25"
       ],
-      "technical_condition": null,
+      "technical_condition": "any_result",
       "displayed_count": 13,
       "sources_count": 13,
       "validation_errors": [],
@@ -224,8 +220,8 @@
       "selected_route": "doc_scoped_single_analyte_status",
       "generation_mode": "deterministic_single_analyte_lookup",
       "validation_status": "pass",
-      "quality_final_status": "warning",
-      "response_time": 0.048,
+      "quality_final_status": "pass",
+      "response_time": 0.06,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [
@@ -238,10 +234,7 @@
       "displayed_count": 1,
       "sources_count": 1,
       "validation_errors": [],
-      "validation_warnings": [
-        "missing_query_criterion_in_intro",
-        "downgraded_non_fact_error:filter_violation_hors_reference"
-      ],
+      "validation_warnings": [],
       "status": "PASS",
       "fail_reasons": [],
       "answer_preview": "Les données ci-dessous proviennent de report_12.\n\nPHOSPHATASE ALCALINE = 40 UI/L ; référence : Femme : 1 à 12 ans: < 500 UI/L > 15 ans: 40 - 150 UI/L Homme : 1 à 12 ans: < 500 UI/L 12 à 15 ans: < 750 UI/L >20 ans: 40 - 150 UI/L ; statut technique : dans la référence.\n\nConclusion technique : la valeur est dans l’intervalle de référence indiqué.\n\nSources :\n- [report (12).pdf — page 2, ligne 20](/viewer/pdf?doc_id=report_12&page=2)"

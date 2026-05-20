@@ -617,6 +617,22 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
             ]
         )
     )
+    has_short_note_wording = any(
+        k in qn
+        for k in [
+            "note courte",
+            "note medicale courte",
+            "note médicale courte",
+            "note pour un medecin",
+            "note pour un médecin",
+            "synthese descriptive",
+            "synthèse descriptive",
+            "resume descriptif court",
+            "résumé descriptif court",
+            "strictement descriptif",
+        ]
+    )
+    has_biological_summary_wording = has_biological_summary_wording or has_short_note_wording
     has_doc_scoped_biological_summary = (
         len(doc_ids) >= 1
         and has_biological_summary_wording

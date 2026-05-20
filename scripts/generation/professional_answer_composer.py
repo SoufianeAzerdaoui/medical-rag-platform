@@ -1774,7 +1774,7 @@ def compose_professional_answer(
             num_ctx=max(2048, int(num_ctx)),
             max_tokens=max(180, min(int(max_tokens), 520)),
             timeout=max(6, int(timeout)),
-            keep_alive="5m",
+            keep_alive=str(os.getenv("MEDICAL_RAG_OLLAMA_KEEP_ALIVE", "10m")).strip() or "10m",
         ).strip()
         if not llm_answer:
             out = dict(fallback)

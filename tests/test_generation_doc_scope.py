@@ -760,6 +760,22 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertIn("sous seuil", answer)
         self.assertIn("au-dessus", answer)
 
+    def test_report27_toxicology_summary_under_and_above_with_sources(self) -> None:
+        result = run_generation(
+            query="Résume les résultats de pharmacotoxicologie urinaire du report 27 en distinguant les résultats sous seuil et ceux au-dessus du seuil. Ne donne aucune interprétation clinique.",
+            mode="keyword",
+            top_k=50,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "doc_scoped_toxicology_summary")
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_doc_scoped_toxicology_summary")
+        self.assertNotEqual(str((result.get("validation") or {}).get("validation_status") or "").lower(), "fail")
+        self.assertGreater(len(list(result.get("displayed_evidences") or [])), 0)
+        self.assertGreater(len(list(result.get("sources") or [])), 0)
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("sous seuil", answer)
+        self.assertIn("au-dessus", answer)
+
     def test_strict_route_forced_llm_fact_drift_falls_back_to_deterministic(self) -> None:
         old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
         old_strict_style = os.environ.get("MEDICAL_RAG_STRICT_STYLE_LLM_ALLOWED")
@@ -834,18 +850,22 @@ class TestGenerationDocScope(unittest.TestCase):
 
         captured: dict[str, object] = {}
 
-        def _fake_compose(**kwargs: object) -> dict[str, object]:
-            captured["mode"] = kwargs.get("mode")
-            captured["timeout"] = kwargs.get("timeout")
-            captured["max_tokens"] = kwargs.get("max_tokens")
+        def _fake_micro(**kwargs: object) -> dict[str, object]:
+            captured["selected_route"] = kwargs.get("selected_route")
             return {
                 "mode": "hybrid_structured_llm_writer",
                 "answer": "Anormaux : test. Normaux / rassurants : test.",
                 "llm_error": None,
+                "prompt_chars": 1800,
+                "llm_prompt_tokens_estimate": 450,
+                "use_micro_prompt": True,
+                "llm_call_skipped_due_prompt_budget": False,
+                "llm_prompt_first_500": "x",
+                "llm_prompt_last_500": "y",
             }
 
         try:
-            with mock.patch("generate_answer.compose_professional_answer", side_effect=_fake_compose):
+            with mock.patch("generate_answer._compose_level2_micro_prompt_answer", side_effect=_fake_micro):
                 result = run_generation(
                     query="Résume le report 12 en quelques lignes, avec une partie anomalies et une partie résultats normaux, sans conclusion diagnostique.",
                     mode="keyword",
@@ -858,24 +878,23 @@ class TestGenerationDocScope(unittest.TestCase):
             else:
                 os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
 
-        self.assertEqual(captured.get("mode"), "hybrid_structured_llm_writer")
-        self.assertEqual(int(captured.get("timeout") or 0), 60)
-        self.assertEqual(int(captured.get("max_tokens") or 0), 220)
+        self.assertEqual(captured.get("selected_route"), "doc_scoped_biological_summary")
         debug = dict(result.get("debug") or {})
         self.assertEqual(str(debug.get("policy_level") or ""), "hybrid_controlled")
+        self.assertGreater(int(debug.get("llm_prompt_tokens_estimate") or 0), 0)
+        self.assertLessEqual(int(debug.get("llm_evidence_rows_count") or 0), 6)
+        self.assertTrue(bool(debug.get("use_micro_prompt")))
+        self.assertLessEqual(int(debug.get("prompt_hard_limit_chars") or 0), 3500)
 
     def test_level2_timeout_falls_back_with_llm_timeout_reason(self) -> None:
         old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
         os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
 
-        def _fake_compose(**kwargs: object) -> dict[str, object]:
-            mode = str(kwargs.get("mode") or "")
-            if mode == "fallback":
-                return {"mode": "deterministic_doc_scoped_biological_summary", "answer": "Fallback déterministe."}
-            return {"mode": "llm_writer_error_fallback", "answer": "", "llm_error": "Ollama timeout"}
+        def _fake_micro(**kwargs: object) -> dict[str, object]:
+            return {"mode": "llm_writer_error_fallback", "answer": "", "llm_error": "Ollama timeout", "use_micro_prompt": True}
 
         try:
-            with mock.patch("generate_answer.compose_professional_answer", side_effect=_fake_compose):
+            with mock.patch("generate_answer._compose_level2_micro_prompt_answer", side_effect=_fake_micro):
                 result = run_generation(
                     query="Résume le report 12 en quelques lignes, avec une partie anomalies et une partie résultats normaux, sans conclusion diagnostique.",
                     mode="keyword",
@@ -891,6 +910,124 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertTrue(str(result.get("generation_mode") or "").startswith("deterministic_"))
         debug = dict(result.get("debug") or {})
         self.assertEqual(str(debug.get("fallback_reason") or ""), "llm_timeout")
+        self.assertIn(debug.get("retry_used"), {False, 0})
+        self.assertIsNone(debug.get("llm_candidate_validation_status"))
+        self.assertTrue(debug.get("llm_candidate_validation_errors") in (None, []))
+        self.assertEqual(str(debug.get("fallback_renderer_used") or ""), "deterministic_biological_summary_short")
+
+    def test_level2_candidate_valid_kept_as_final_answer(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        candidate = (
+            "Anormaux : bilirubine directe élevée, créatinine élevée.\n"
+            "Résultats dans la référence uniquement : Aucun résultat strictement dans la référence parmi les éléments sélectionnés.\n"
+            "Conclusion technique : synthèse descriptive, sans diagnostic."
+        )
+
+        def _fake_micro(**kwargs: object) -> dict[str, object]:
+            return {
+                "mode": "hybrid_structured_llm_writer",
+                "answer": candidate,
+                "llm_candidate_answer": candidate,
+                "llm_error": None,
+                "prompt_chars": 1200,
+                "llm_prompt_tokens_estimate": 300,
+                "use_micro_prompt": True,
+                "llm_call_skipped_due_prompt_budget": False,
+            }
+
+        original_validate = __import__("generate_answer").validate_answer
+
+        def _validate_pass_candidate(*args, **kwargs):
+            if str(kwargs.get("answer_text") or "").strip() == candidate.strip():
+                return {"validation_status": "pass", "errors": [], "warnings": []}
+            return original_validate(*args, **kwargs)
+
+        try:
+            with mock.patch("generate_answer._compose_level2_micro_prompt_answer", side_effect=_fake_micro), mock.patch(
+                "generate_answer.validate_answer", side_effect=_validate_pass_candidate
+            ):
+                result = run_generation(
+                    query="Fais une synthèse médico-biologique du report 12 en 6 lignes maximum, en séparant les anomalies et les résultats dans la référence uniquement. Ne donne pas de diagnostic.",
+                    mode="keyword",
+                    top_k=30,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        self.assertEqual(str(result.get("generation_mode") or ""), "hybrid_structured_llm_writer")
+        self.assertEqual(str(result.get("answer") or "").strip(), candidate.strip())
+        debug = dict(result.get("debug") or {})
+        self.assertIsNone(debug.get("fallback_reason"))
+        self.assertIsNone(debug.get("generation_mode_before_fallback"))
+        self.assertEqual(str(debug.get("llm_candidate_validation_status") or ""), "pass")
+
+    def test_level2_postprocess_exception_sets_explicit_fallback_reason(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+
+        def _fake_micro(**kwargs: object) -> dict[str, object]:
+            return {
+                "mode": "hybrid_structured_llm_writer",
+                "answer": "Anormaux : test.\nRésultats dans la référence uniquement : aucun.\nConclusion technique : test.",
+                "llm_candidate_answer": "Anormaux : test.",
+                "llm_error": None,
+                "use_micro_prompt": True,
+            }
+
+        def _raise_postprocess(_answer: str) -> bool:
+            raise RuntimeError("forced postprocess failure")
+
+        try:
+            with mock.patch("generate_answer._compose_level2_micro_prompt_answer", side_effect=_fake_micro), mock.patch(
+                "generate_answer._contains_internal_reasoning_leak", side_effect=_raise_postprocess
+            ):
+                result = run_generation(
+                    query="Fais une synthèse médico-biologique du report 12 en 6 lignes maximum, en séparant les anomalies et les résultats dans la référence uniquement. Ne donne pas de diagnostic.",
+                    mode="keyword",
+                    top_k=30,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        debug = dict(result.get("debug") or {})
+        self.assertEqual(str(debug.get("fallback_reason") or ""), "llm_postprocess_exception")
+        self.assertEqual(str(debug.get("llm_postprocess_error_type") or ""), "RuntimeError")
+        self.assertEqual(str(debug.get("fallback_renderer_used") or ""), "deterministic_biological_summary_short")
+
+    def test_level2_biological_summary_micro_prompt_budget(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+
+        def _fake_generate(self, prompt: str, **kwargs):  # type: ignore[no-untyped-def]
+            self.last_call_debug = {"prompt_chars": len(prompt)}
+            return "Anormaux : test.\nRésultats dans la référence uniquement : aucun.\nConclusion technique : test."
+
+        try:
+            with mock.patch("generate_answer.LLMClient.generate", new=_fake_generate):
+                result = run_generation(
+                    query="Fais une synthèse médico-biologique du report 12 en 6 lignes maximum, en séparant les anomalies et les résultats dans la référence uniquement. Ne donne pas de diagnostic.",
+                    mode="keyword",
+                    top_k=30,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        debug = dict(result.get("debug") or {})
+        self.assertTrue(bool(debug.get("use_micro_prompt")))
+        self.assertLessEqual(int(debug.get("prompt_chars") or 0), 3500)
 
     def test_hard_gate_value_changed_forces_deterministic_fallback(self) -> None:
         old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")

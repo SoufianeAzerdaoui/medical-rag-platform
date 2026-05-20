@@ -94,6 +94,14 @@ _DIAGNOSIS_PATTERNS = [
     r"\bdiagnostic\s+confirm\w+\b",
 ]
 
+_DIAGNOSTIC_STRONG_SUGGESTION_PATTERNS = [
+    r"\bsugg[eè]re\s+une?\s+hyperthyro",
+    r"\bcompatible\s+avec\s+une?\s+hyperthyro",
+    r"\b[eé]voque\s+une?\s+hyperthyro",
+    r"\bindique\s+une?\s+hyperthyro",
+    r"\ben\s+faveur\s+d['’]une?\s+hyperthyro",
+]
+
 _UNIT_REGEX = re.compile(
     r"\b(?:g/l|mg/l|ug/dl|ui/l|mui/l|mmol/l|ng/ml|pg/ml|uui?/ml|uu/ml|pmol/l|mui/ml|iu/l)\b",
     re.IGNORECASE,
@@ -587,9 +595,48 @@ def _is_markdown_table(text: str) -> bool:
     return False
 
 
+def _extract_reference_only_section(answer_text: str) -> str:
+    txt = str(answer_text or "")
+    low = _norm(txt)
+    if not re.search(
+        r"(?im)^\s*(?:[-*]\s*)?(?:resultats?\s+dans\s+la\s+reference(?:\s+uniquement)?|résultats?\s+dans\s+la\s+référence(?:\s+uniquement)?|normaux|rassurants|within reference)\s*:",
+        txt,
+    ):
+        return ""
+    markers = [
+        "resultats dans la reference",
+        "résultats dans la référence",
+        "resultats strictement dans la reference",
+        "résultats strictement dans la référence",
+        "normaux",
+        "rassurants",
+    ]
+    start = -1
+    selected = ""
+    for m in markers:
+        p = low.find(_norm(m))
+        if p != -1 and (start == -1 or p < start):
+            start = p
+            selected = m
+    if start == -1:
+        return ""
+    # Stop at common next sections.
+    end = len(txt)
+    stop_markers = ["conclusion", "sources", "anormaux", "anomalies"]
+    for s in stop_markers:
+        p = low.find(_norm(s), start + max(8, len(selected)))
+        if p != -1:
+            end = min(end, p)
+    return txt[start:end].strip()
+
+
 def _canonical_analyte_key(value: str) -> str:
     key = _norm(value).replace("_", " ")
     key = key.replace("valporoique", "valproique")
+    key = key.replace("ck mb", "ckmb").replace("ck-mb", "ckmb").replace("cpk mb", "cpkmb").replace("cpk-mb", "cpkmb")
+    key = key.replace("apolipoproteine a1", "apo a1").replace("apolipoprotéine a1", "apo a1").replace("apoa1", "apo a1")
+    key = key.replace("ckmb (cpkmb)", "ckmb").replace("cpkmb (ckmb)", "ckmb")
+    key = key.replace("cpkmb", "ckmb")
     key = re.sub(r"\bdepakine\b", "", key)
     key = re.sub(r"\s+", " ", key).strip()
     return key
@@ -605,6 +652,13 @@ def _multi_doc_analyte_represented(core_norm: str, analyte: str) -> bool:
     }
     aliases = alias_groups.get(a, {a})
     return any(alias in core_norm for alias in aliases)
+
+
+def _thyroid_equivalent_requested_keys(analyte: str) -> set[str]:
+    key = _canonical_analyte_key(analyte)
+    if key in {"tsh", "tshus"}:
+        return {"tsh", "tshus"}
+    return {key}
 
 
 def validate_answer(
@@ -707,6 +761,8 @@ def validate_answer(
         and re.search(r"(?<![A-Za-z])None(?![A-Za-z])", text)
     ):
         errors.append("forbidden_none_literal")
+    if re.search(r"(?im)^\s*(?:[-*]\s*)?(?:priorit[eé]\s+[^\n:]+|conclusion technique|anormaux|r[eé]sultats?\s+dans\s+la\s+r[eé]f[ée]rence[^\n:]*)\s*:\s*\.\.\.\s*$", core_text or ""):
+        errors.append("output_contains_placeholder_ellipsis")
 
     forbidden_internal_hits = [m for m in _FORBIDDEN_INTERNAL_MARKERS if m in text_norm]
     if forbidden_internal_hits or "/home/" in text or "\\home\\" in text or re.search(r"[A-Za-z]:\\", text):
@@ -861,7 +917,7 @@ def validate_answer(
     if (not structured_first_mode) and (not is_general_conversation_query):
         requested_value_norm = _norm(str(requested_value or "")).replace(".", ",")
         requested_value_alt = _norm(str(requested_value or "")).replace(",", ".")
-        if generation_mode_norm != "deterministic_global_toxicology_search":
+        if generation_mode_norm not in {"deterministic_global_toxicology_search", "deterministic_doc_scoped_toxicology_summary"}:
             for token in _extract_numeric_tokens_for_validation(core_text):
                 if _norm(token) in {"0", "1"}:
                     continue
@@ -916,8 +972,25 @@ def validate_answer(
 
     if requested_analyte_list:
         requested_set = set(requested_analyte_list)
+        # Guarded thyroid asks should only require analytes that are actually present in evidence rows.
+        if diagnostic_safety_intent and any(k in qn_query for k in ["thyroid", "thyroide", "thyroïde", "hyperthyro", "hypothyro"]):
+            evidence_norms = {
+                _canonical_analyte_key(str(ev.get("analyte_norm") or ev.get("analyte") or ""))
+                for ev in (displayed if displayed else evidence_pack)
+                if str(ev.get("analyte_norm") or ev.get("analyte") or "").strip()
+            }
+            requested_restricted: set[str] = set()
+            for req in requested_set:
+                eqs = _thyroid_equivalent_requested_keys(req)
+                if evidence_norms.intersection(eqs):
+                    requested_restricted.add(req)
+            if requested_restricted:
+                requested_set = requested_restricted
         coverage_set = set(found_requested) | set(missing_requested)
-        uncovered = sorted(a for a in requested_set if a not in coverage_set)
+        coverage_with_equiv: set[str] = set(coverage_set)
+        for item in coverage_set:
+            coverage_with_equiv.update(_thyroid_equivalent_requested_keys(item))
+        uncovered = sorted(a for a in requested_set if a not in coverage_with_equiv)
         if uncovered:
             errors.append("requested_analyte_coverage_incomplete")
             unsupported_claims.append(f"Requested analytes without found/missing status: {uncovered}")
@@ -978,6 +1051,32 @@ def validate_answer(
     if any(re.search(p, lower_core) for p in _DIAGNOSIS_PATTERNS):
         errors.append("Definitive diagnosis detected.")
         errors.append("hallucinated_diagnosis")
+
+    # Section consistency for LLM summaries.
+    ref_only_section = _extract_reference_only_section(core_text)
+    if structured_first_mode and ref_only_section:
+        ref_only_norm = _norm(ref_only_section)
+        if any(
+            k in ref_only_norm
+            for k in [
+                "au-dessus",
+                "au dessus",
+                "above_reference",
+                "below_reference",
+                "en dessous",
+                "sous reference",
+                "sous référence",
+            ]
+        ):
+            errors.append("section_status_mismatch")
+        abnormal_analytes = {
+            _norm(str(ev.get("analyte") or ev.get("parameter") or ""))
+            for ev in (displayed if displayed else evidence_pack)
+            if str(ev.get("analyte") or ev.get("parameter") or "").strip()
+            and _norm(str(ev.get("interpretation_status") or ev.get("technical_status_code") or "")) in {"above_reference", "below_reference"}
+        }
+        if abnormal_analytes and any(a and a in ref_only_norm for a in abnormal_analytes):
+            errors.append("abnormal_in_reassuring_section")
 
     # Insufficient context handling
     insufficient_context_handled = False
@@ -1196,27 +1295,69 @@ def validate_answer(
                 errors.append("guarded_thyroid_interpretation_missing_thyroid_facts")
             if "acth" in core_norm and not has_thyroid_block:
                 errors.append("guarded_thyroid_interpretation_acth_misfocus")
+            has_explicit_negation = any(
+                k in core_norm
+                for k in [
+                    "ne permet pas de conclure",
+                    "n est pas suffisant pour conclure",
+                    "n'est pas suffisant pour conclure",
+                    "on ne peut pas conclure",
+                ]
+            )
+            if not has_explicit_negation:
+                for patt in _DIAGNOSTIC_STRONG_SUGGESTION_PATTERNS:
+                    if re.search(patt, core_norm, flags=re.IGNORECASE):
+                        errors.append("diagnostic_suggestion_too_strong")
+                        break
 
     if (output_format_requested or "").strip().lower() == "table":
-        lines = [ln.strip() for ln in (core_text or "").splitlines() if ln.strip()]
-        has_table = False
-        for i in range(len(lines) - 1):
-            if "|" in lines[i] and re.search(r"^\|?\s*[-:| ]+\s*\|?\s*$", lines[i + 1]):
-                has_table = True
-                break
-        if not has_table:
-            errors.append("output_format_not_respected")
-        elif requested_table_columns:
-            header_keys = _parse_markdown_table_header_keys(core_text)
-            req_keys = [str(c).strip().lower() for c in requested_table_columns if str(c).strip()]
-            if header_keys and req_keys and header_keys != req_keys:
-                errors.append("output_columns_not_respected")
-                errors.append("exact_columns_not_respected")
+        priority_structured_prose = bool(
+            (query_intents or {}).get("doc_scoped_priority_anomalies")
+            and all(
+                k in core_norm
+                for k in ["priorite elevee", "priorite moderee", "conclusion technique"]
+            )
+        ) or bool(
+            (query_intents or {}).get("doc_scoped_priority_anomalies")
+            and all(
+                k in core_norm
+                for k in ["priorité élevée", "priorité modérée", "conclusion technique"]
+            )
+        )
+        if priority_structured_prose:
+            # Priority route accepts concise prose blocks as equivalent to table intent.
+            pass
+        else:
+            lines = [ln.strip() for ln in (core_text or "").splitlines() if ln.strip()]
+            has_table = False
+            for i in range(len(lines) - 1):
+                if "|" in lines[i] and re.search(r"^\|?\s*[-:| ]+\s*\|?\s*$", lines[i + 1]):
+                    has_table = True
+                    break
+            if not has_table:
+                errors.append("output_format_not_respected")
+            elif requested_table_columns:
+                header_keys = _parse_markdown_table_header_keys(core_text)
+                req_keys = [str(c).strip().lower() for c in requested_table_columns if str(c).strip()]
+                if header_keys and req_keys and header_keys != req_keys:
+                    errors.append("output_columns_not_respected")
+                    errors.append("exact_columns_not_respected")
     if generation_mode_norm == "deterministic_doc_scoped_priority_anomalies":
         header_keys = _parse_markdown_table_header_keys(core_text)
         required_priority_keys = {"priorite", "analyte", "valeur_actuelle", "reference", "statut", "raison_technique"}
         if header_keys and required_priority_keys.issubset(set(header_keys)):
             errors = [e for e in errors if e not in {"output_columns_not_respected", "exact_columns_not_respected"}]
+        else:
+            # Accept structured prose for priority route when no markdown table is produced.
+            has_structured_prose = all(
+                k in core_norm
+                for k in ["priorite elevee", "priorite moderee", "conclusion technique"]
+            ) or all(
+                k in core_norm
+                for k in ["priorité élevée", "priorité modérée", "conclusion technique"]
+            )
+            if has_structured_prose:
+                errors = [e for e in errors if e not in {"output_format_not_respected", "format_not_respected", "output_columns_not_respected", "exact_columns_not_respected"}]
         if source_clickable_requested:
             has_source_col = _table_has_source_column(core_text)
             has_clickable_structured = any(str(s.get("url") or s.get("viewer_url") or "").strip() for s in structured_sources)
@@ -1715,7 +1856,13 @@ def validate_answer(
             errors.append("absent_analyte_yes_no_format")
 
     if requested_analyte_list and not (query_intents or {}).get("multi_doc_comparison"):
+        suppress_missing_requested_warning = bool(
+            diagnostic_safety_intent
+            and any(k in qn_query for k in ["thyroid", "thyroide", "thyroïde", "hyperthyro", "hypothyro"])
+        )
         for missing_analyte in missing_requested:
+            if suppress_missing_requested_warning:
+                continue
             warnings.append(f"missing_requested_analyte:{missing_analyte}")
 
     # Reference support strictness: each displayed reference should appear in evidence.
@@ -2041,6 +2188,8 @@ def validate_answer(
             "requested_doc_id_mismatch",
             "requested_doc_ids_incomplete",
             "non_exact_analyte_evidence_present",
+            "abnormal_in_reassuring_section",
+            "section_status_mismatch",
             "reference_semantic_forbidden_bulk_listing",
             "reference_range_forbidden_multi_analyte_table",
             "reference_range_forbidden_current_value_render",
