@@ -686,6 +686,11 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         "réponse précédente",
         "meme reponse",
         "même réponse",
+        "reformule cette reponse",
+        "reformule cette réponse",
+        "reformule la reponse",
+        "reformule la réponse",
+        "reformule",
         "convertis",
         "transforme",
         "sans la colonne",
@@ -919,6 +924,43 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
             or "dans la reference" in qn
         )
     )
+    has_global_biological_summary = (
+        len(doc_ids) == 0
+        and has_global_scope_markers
+        and any(
+            k in qn
+            for k in [
+                "synthese",
+                "synthèse",
+                "resume",
+                "résumé",
+                "note",
+                "medico-biologique",
+                "médico-biologique",
+                "resultats biologiques principaux",
+                "résultats biologiques principaux",
+                "anomalies biologiques principales",
+            ]
+        )
+    )
+    has_global_priority_anomalies_summary = (
+        len(doc_ids) == 0
+        and has_global_scope_markers
+        and any(
+            k in qn
+            for k in [
+                "attention technique",
+                "priorite technique",
+                "priorité technique",
+                "meritent le plus d attention",
+                "méritent le plus d’attention",
+                "anomalies les plus importantes",
+                "resultats importants",
+                "résultats importants",
+                "classer par importance",
+            ]
+        )
+    )
 
     intents = {
         "general_conversation": is_general_conversation,
@@ -953,6 +995,8 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         "reference_range_lookup": has_reference_range_lookup,
         "diagnostic_safety_question": has_diagnostic_safety,
         "global_patient_lookup": has_global_patient_lookup,
+        "global_biological_summary": has_global_biological_summary,
+        "global_priority_anomalies_summary": has_global_priority_anomalies_summary,
         "cohort_search": has_global_patient_lookup,
         "multi_doc_presence_diff": has_presence_diff,
         "yes_no_question": has_yes_no_question,
@@ -1753,6 +1797,8 @@ def _resolve_primary_intent(intents: dict[str, bool], *, requested_doc_ids: list
         for k in [
             "reference_range_lookup",
             "response_transform",
+            "global_biological_summary",
+            "global_priority_anomalies_summary",
             "global_patient_lookup",
             "comment_without_measured_value",
             "multi_doc_presence_diff",
@@ -1773,6 +1819,10 @@ def _resolve_primary_intent(intents: dict[str, bool], *, requested_doc_ids: list
         return "inventory_visualization_render"
     if intents.get("qualitative_comment_render"):
         return "qualitative_comment_render"
+    if intents.get("global_priority_anomalies_summary"):
+        return "global_priority_anomalies_summary"
+    if intents.get("global_biological_summary"):
+        return "global_biological_summary"
     if intents.get("context_summary_render"):
         return "context_summary_render"
     if intents.get("source_followup"):

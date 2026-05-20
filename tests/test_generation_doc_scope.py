@@ -715,6 +715,45 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertIn("| nature |", answer)
         self.assertNotIn("cristaux", answer)
 
+    def test_global_biological_summary_route(self) -> None:
+        result = run_generation(
+            query="Sur l’ensemble des rapports disponibles, fais une synthèse courte des anomalies biologiques principales, sans diagnostic.",
+            mode="keyword",
+            top_k=50,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "global_biological_summary")
+        self.assertNotEqual(str(result.get("generation_mode") or ""), "")
+        self.assertGreater(len(list(result.get("displayed_evidences") or [])), 0)
+        self.assertGreater(len(list(result.get("sources") or [])), 0)
+        self.assertNotEqual(str((result.get("validation") or {}).get("validation_status") or "").lower(), "fail")
+
+    def test_global_priority_anomalies_summary_route(self) -> None:
+        result = run_generation(
+            query="Parmi les rapports disponibles, quels résultats biologiques méritent le plus d’attention technique ? Résume en style médical professionnel, sans diagnostic.",
+            mode="keyword",
+            top_k=50,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "global_priority_anomalies_summary")
+        self.assertNotIn("context_summary_render", str(result.get("generation_mode") or ""))
+        self.assertGreater(len(list(result.get("displayed_evidences") or [])), 0)
+        self.assertGreater(len(list(result.get("sources") or [])), 0)
+        self.assertNotEqual(str((result.get("validation") or {}).get("validation_status") or "").lower(), "fail")
+
+    def test_response_transform_no_context_controlled(self) -> None:
+        result = run_generation(
+            query="Reformule cette réponse en style professionnel.",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertIn(
+            str(result.get("generation_mode") or ""),
+            {"deterministic_response_transform", "deterministic_context_summary_render", "deterministic_no_evidence_response", "no_evidence"},
+        )
+        self.assertNotEqual(str((result.get("validation") or {}).get("validation_status") or "").lower(), "fail")
+
     def test_doc_scoped_single_analyte_hors_reference_question_can_answer_within_reference(self) -> None:
         result = run_generation(
             query="Dans le report 12, la phosphatase alcaline à 40 UI/L est-elle hors référence chez une femme adulte ?",

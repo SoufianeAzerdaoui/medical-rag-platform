@@ -79,6 +79,20 @@ def resolve_deictic_request(message: str, query_understanding: QueryUnderstandin
     )
     asks_source = any(k in qn for k in ["d ou vient", "d'où vient", "source", "quelle page", "quel rapport", "ouvre la source"])
     asks_status = ("hors reference" in qn or "hors de la reference" in qn or "hors référence" in qn) and ("ce resultat" in qn or "ce résultat" in qn or "cette valeur" in qn)
+    has_global_scope_phrase = any(
+        k in qn
+        for k in [
+            "sur l ensemble des rapports",
+            "sur l’ensemble des rapports",
+            "parmi les rapports disponibles",
+            "dans tous les rapports",
+            "rapports disponibles",
+            "rapports indexes",
+            "rapports indexés",
+            "donnees disponibles",
+            "données disponibles",
+        ]
+    )
     has_correction_marker = any(
         k in qn
         for k in [
@@ -176,7 +190,7 @@ def resolve_deictic_request(message: str, query_understanding: QueryUnderstandin
         return out
 
     # 3) render/summary/status from last displayed context
-    if (is_deictic or asks_summary or correction_format_followup) and not explicit_scope and has_any_context:
+    if (is_deictic or correction_format_followup or (asks_summary and not has_global_scope_phrase)) and not explicit_scope and has_any_context:
         intent = out["intent"]
         render_type = None
         if asks_summary:
@@ -230,7 +244,7 @@ def resolve_deictic_request(message: str, query_understanding: QueryUnderstandin
     # 4) no-context guard
     # Only trigger no-context for genuinely deictic phrasing (or explicit summarize request),
     # and only when absolutely no reusable context exists.
-    if (is_deictic or asks_summary) and not explicit_scope and not has_any_context:
+    if (is_deictic or (asks_summary and not has_global_scope_phrase)) and not explicit_scope and not has_any_context:
         out.update(
             {
                 "resolved": True,

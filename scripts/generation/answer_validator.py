@@ -630,6 +630,28 @@ def _extract_reference_only_section(answer_text: str) -> str:
     return txt[start:end].strip()
 
 
+def _extract_section_block(answer_text: str, section_title_norm: str) -> str:
+    txt = str(answer_text or "")
+    if not txt:
+        return ""
+    lines = txt.splitlines()
+    start = -1
+    for idx, line in enumerate(lines):
+        ln = _norm(line)
+        if section_title_norm in ln and ":" in ln:
+            start = idx
+            break
+    if start < 0:
+        return ""
+    out: list[str] = []
+    for idx in range(start, len(lines)):
+        ln = lines[idx].strip()
+        if idx > start and re.search(r"(?im)^(priorit[eé]|conclusion technique)\s*:", ln):
+            break
+        out.append(ln)
+    return "\n".join(out).strip()
+
+
 def _canonical_analyte_key(value: str) -> str:
     key = _norm(value).replace("_", " ")
     key = key.replace("valporoique", "valproique")
@@ -1358,11 +1380,61 @@ def validate_answer(
             )
             if has_structured_prose:
                 errors = [e for e in errors if e not in {"output_format_not_respected", "format_not_respected", "output_columns_not_respected", "exact_columns_not_respected"}]
+                # Ensure backend priority_level is respected in prose sections.
+                high_block = _norm(_extract_section_block(core_text, "priorite elevee"))
+                moderate_block = _norm(_extract_section_block(core_text, "priorite moderee"))
+                high_analytes = {
+                    _canonical_analyte_key(str(ev.get("analyte") or ev.get("analyte_norm") or ""))
+                    for ev in (displayed if displayed else evidence_pack)
+                    if str(ev.get("priority_level") or "").strip().lower() == "high"
+                }
+                moderate_low_analytes = {
+                    _canonical_analyte_key(str(ev.get("analyte") or ev.get("analyte_norm") or ""))
+                    for ev in (displayed if displayed else evidence_pack)
+                    if str(ev.get("priority_level") or "").strip().lower() in {"moderate", "low"}
+                }
+                mismatch = False
+                for analyte in high_analytes:
+                    if analyte and analyte in moderate_block:
+                        mismatch = True
+                        break
+                if not mismatch:
+                    for analyte in moderate_low_analytes:
+                        if analyte and analyte in high_block:
+                            mismatch = True
+                            break
+                if mismatch:
+                    errors.append("priority_level_mismatch")
         if source_clickable_requested:
             has_source_col = _table_has_source_column(core_text)
             has_clickable_structured = any(str(s.get("url") or s.get("viewer_url") or "").strip() for s in structured_sources)
             if not has_source_col and not has_clickable_structured:
                 errors.append("clickable_source_missing")
+    if (query_intents or {}).get("doc_scoped_priority_anomalies") and structured_first_mode:
+        high_block = _norm(_extract_section_block(core_text, "priorite elevee"))
+        moderate_block = _norm(_extract_section_block(core_text, "priorite moderee"))
+        high_analytes = {
+            _canonical_analyte_key(str(ev.get("analyte") or ev.get("analyte_norm") or ""))
+            for ev in (displayed if displayed else evidence_pack)
+            if str(ev.get("priority_level") or "").strip().lower() == "high"
+        }
+        moderate_low_analytes = {
+            _canonical_analyte_key(str(ev.get("analyte") or ev.get("analyte_norm") or ""))
+            for ev in (displayed if displayed else evidence_pack)
+            if str(ev.get("priority_level") or "").strip().lower() in {"moderate", "low"}
+        }
+        mismatch = False
+        for analyte in high_analytes:
+            if analyte and analyte in moderate_block:
+                mismatch = True
+                break
+        if not mismatch:
+            for analyte in moderate_low_analytes:
+                if analyte and analyte in high_block:
+                    mismatch = True
+                    break
+        if mismatch:
+            errors.append("priority_level_mismatch")
     if (output_format_requested or "").strip().lower() == "yes_no":
         compact = core_norm.strip()
         if not (
