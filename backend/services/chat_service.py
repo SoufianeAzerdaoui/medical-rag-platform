@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import traceback
 from typing import Any, Callable
 from uuid import uuid4
@@ -411,6 +412,22 @@ def process_chat(
             "Une erreur interne a empêché la génération complète de la réponse. "
             "Les données indexées restent disponibles ; veuillez relancer la demande ou simplifier la formulation."
         )
+        expose_error_detail = str(os.getenv("CHAT_DEBUG_ERRORS", "")).strip().lower() in {"1", "true", "yes", "on"}
+        if not expose_error_detail:
+            app_env = str(os.getenv("APP_ENV", "")).strip().lower()
+            expose_error_detail = app_env in {"dev", "development", "test", "local"}
+        debug_payload: dict[str, Any] = {
+            "intent": None,
+            "validation": {
+                "status": "warning",
+                "errors": ["controlled_error_fallback"],
+                "warnings": [],
+                "unsupported_claims": [],
+            },
+        }
+        if expose_error_detail:
+            debug_payload["controlled_error_detail"] = str(exc)
+            debug_payload["controlled_error_traceback"] = traceback.format_exc()
         return ChatResponse(
             conversation_id=conversation_id,
             answer=safe_answer,
@@ -426,13 +443,5 @@ def process_chat(
             chart_data=None,
             patients=None,
             inventory_view=None,
-            debug={
-                "intent": None,
-                "validation": {
-                    "status": "warning",
-                    "errors": ["controlled_error_fallback"],
-                    "warnings": [],
-                    "unsupported_claims": [],
-                },
-            },
+            debug=debug_payload,
         )

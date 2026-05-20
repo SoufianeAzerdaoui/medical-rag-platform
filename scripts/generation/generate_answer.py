@@ -2431,6 +2431,41 @@ def _is_toxicology_global_query(qn: str) -> bool:
     return has_global_scope and has_toxicology_terms
 
 
+def _is_toxicology_query(qn: str) -> bool:
+    return any(
+        t in qn
+        for t in [
+            "pharmacotoxicologie",
+            "pharmaco toxicologie",
+            "toxicologie",
+            "toxiques urinaires",
+            "toxiques sanguins",
+            "toxicologie urinaire",
+            "toxicologie sanguine",
+            "screening urinaire",
+            "recherche de toxiques",
+        ]
+    )
+
+
+def _toxicology_subtype(qn: str) -> str:
+    if any(t in qn for t in ["sanguin", "sanguine", "sang", "ethanol", "lithium", "carbamazep", "valpro"]):
+        return "blood_toxicology_search"
+    return "urine_toxicology_search"
+
+
+def _is_toxicology_above_threshold_query(qn: str) -> bool:
+    return any(t in qn for t in ["depass", "dépass", "au dessus", "au-dessus", "above_reference", "above reference"]) and (
+        "seuil" in qn or "reference" in qn
+    )
+
+
+def _is_toxicology_majority_query(qn: str) -> bool:
+    return any(t in qn for t in ["majoritairement", "majorite", "majorité"]) and any(
+        t in qn for t in ["sous", "en dessous", "seuil", "reference"]
+    )
+
+
 def is_valid_analyte_name(analyte: str) -> bool:
     text = str(analyte or "").strip()
     if not text:
@@ -4510,6 +4545,240 @@ def _fetch_global_toxicology_rows(
         conn.close()
 
 
+def build_toxicology_evidence_pack(
+    *,
+    query: str,
+    scope: str,
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    qn = norm_text(query)
+    subtype = "blood_toxicology_search" if scope == "blood" else "urine_toxicology_search"
+    tox_urine = {"amphetamine", "benzodiazepine", "cocaine", "ecstasy", "opiaces", "phencyclidine"}
+    tox_blood = {"ethanol", "acide_valproique", "carbamazepine", "lithium"}
+    excluded_non_tox_urine = {"cristaux", "ecbu", "cytologie", "aspect urine", "couleur urine"}
+
+    filtered: list[dict[str, Any]] = []
+    for r in rows:
+        analyte_probe = norm_text(f"{r.get('analyte_norm') or ''} {r.get('analyte') or ''}")
+        section_probe = norm_text(f"{r.get('section_norm') or ''} {r.get('section') or ''}")
+        if any(x in analyte_probe for x in excluded_non_tox_urine):
+            continue
+        has_tox_section = any(x in section_probe for x in ["toxico", "pharmaco"])
+        if scope == "urine":
+            if not (has_tox_section or any(t in analyte_probe for t in tox_urine)):
+                continue
+            if any(t in analyte_probe for t in tox_blood) and "urine" not in section_probe and "urinaire" not in section_probe:
+                continue
+        else:
+            if not (has_tox_section or any(t in analyte_probe for t in tox_blood)):
+                continue
+            if any(t in analyte_probe for t in tox_urine) and "sang" not in section_probe and "sanguin" not in section_probe:
+                continue
+        filtered.append(r)
+
+    families_by_doc: dict[str, set[str]] = {}
+    for r in filtered:
+        doc = str(r.get("doc_id") or "").strip().lower()
+        if not doc:
+            continue
+        families_by_doc.setdefault(doc, set())
+        analyte_probe = norm_text(f"{r.get('analyte_norm') or ''} {r.get('analyte') or ''}")
+        for fam in (tox_blood if scope == "blood" else tox_urine):
+            if fam in analyte_probe:
+                families_by_doc[doc].add(fam)
+
+    return {
+        "subtype": subtype,
+        "rows": filtered,
+        "families_by_doc": {k: sorted(v) for k, v in families_by_doc.items()},
+        "query_norm": qn,
+    }
+
+
+def _limit_reference_range_display(
+    *,
+    rows: list[dict[str, Any]],
+    sources: list[dict[str, Any]],
+    max_items: int = 3,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    limited_rows: list[dict[str, Any]] = []
+    seen_row_keys: set[tuple[str, Any, Any]] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = (
+            str(row.get("doc_id") or "").strip().lower(),
+            row.get("page") if row.get("page") is not None else row.get("page_number"),
+            row.get("row") if row.get("row") is not None else row.get("row_index"),
+        )
+        if key in seen_row_keys:
+            continue
+        seen_row_keys.add(key)
+        limited_rows.append(row)
+        if len(limited_rows) >= max(1, int(max_items)):
+            break
+
+    limited_sources: list[dict[str, Any]] = []
+    seen_source_keys: set[tuple[str, Any, Any, str]] = set()
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        key = (
+            str(src.get("doc_id") or "").strip().lower(),
+            src.get("page"),
+            src.get("row"),
+            str(src.get("label") or "").strip().lower(),
+        )
+        if key in seen_source_keys:
+            continue
+        seen_source_keys.add(key)
+        limited_sources.append(src)
+        if len(limited_sources) >= max(1, int(max_items)):
+            break
+    return limited_rows, limited_sources
+
+
+def _toxicology_family_label(family: str) -> str:
+    key = norm_text(family or "")
+    labels = {
+        "amphetamine": "amphétamine",
+        "benzodiazepine": "benzodiazépine",
+        "cocaine": "cocaïne",
+        "ecstasy": "ecstasy",
+        "opiaces": "opiacés",
+        "phencyclidine": "phencyclidine",
+        "ethanol": "éthanol",
+        "acide_valproique": "acide valproïque",
+        "carbamazepine": "carbamazépine",
+        "lithium": "lithium",
+    }
+    return labels.get(key, str(family or "").strip() or "non précisé")
+
+
+def _build_global_toxicology_display_entries(
+    *,
+    subtype: str,
+    evidences: list[dict[str, Any]],
+    families_by_doc: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    by_doc: dict[str, list[dict[str, Any]]] = {}
+    for ev in evidences:
+        if not isinstance(ev, dict):
+            continue
+        doc = str(ev.get("doc_id") or "").strip().lower()
+        if not doc:
+            continue
+        by_doc.setdefault(doc, []).append(ev)
+
+    nature = "SANG" if subtype == "blood_toxicology_search" else "URINE"
+    out: list[dict[str, Any]] = []
+    for rank, doc in enumerate(sorted(by_doc.keys(), key=_doc_recency_key, reverse=True), start=1):
+        doc_rows = list(by_doc.get(doc) or [])
+        primary = doc_rows[0] if doc_rows else {}
+        families = [_toxicology_family_label(f) for f in list(families_by_doc.get(doc) or [])]
+        out.append(
+            {
+                "evidence_id": rank,
+                "rank": rank,
+                "doc_id": doc,
+                "document_name": str(primary.get("document_name") or primary.get("source_pdf") or doc).split("/")[-1],
+                "nature": nature,
+                "families": families,
+                "families_text": ", ".join(families) if families else "non précisé",
+                "line_count": len(doc_rows),
+                "source_pdf": primary.get("source_pdf"),
+                "page_number": primary.get("page_number"),
+                "row_index": primary.get("row_index"),
+                "source_label": _source_label(primary) if primary else doc,
+                "source": _source_label(primary) if primary else doc,
+            }
+        )
+    return out
+
+
+def _build_global_toxicology_source_citations(display_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for entry in display_entries:
+        if not isinstance(entry, dict):
+            continue
+        out.append(
+            normalize_source_for_response(
+                {
+                    "label": entry.get("source_label") or entry.get("source"),
+                    "source_pdf": entry.get("source_pdf"),
+                    "doc_id": entry.get("doc_id"),
+                    "page": entry.get("page_number"),
+                    "row": entry.get("row_index"),
+                }
+            )
+        )
+    return out
+
+
+def _render_global_toxicology_answer(
+    *,
+    subtype: str,
+    evidences: list[dict[str, Any]],
+    families_by_doc: dict[str, list[str]],
+) -> str:
+    if not evidences:
+        return "Aucune donnée de pharmacotoxicologie exploitable n’a été retrouvée dans les documents indexés."
+    title = "Toxicologie urinaire — rapports retrouvés" if subtype == "urine_toxicology_search" else "Toxicologie sanguine — rapports retrouvés"
+    lines = [title, ""]
+    headers = (
+        ["Document", "Nature", "Familles / paramètres testés", "Nombre de lignes exploitées"]
+        if subtype == "urine_toxicology_search"
+        else ["Document", "Nature", "Paramètres recherchés", "Nombre de lignes exploitées"]
+    )
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+    for ev in evidences:
+        document = str(ev.get("doc_id") or ev.get("document_name") or "non précisé").strip()
+        nature = str(ev.get("nature") or ("SANG" if subtype == "blood_toxicology_search" else "URINE")).strip()
+        families = str(ev.get("families_text") or "").strip() or "non précisé"
+        line_count = str(ev.get("line_count") or 0)
+        lines.append(f"| {document} | {nature} | {families} | {line_count} |")
+    lines.append("")
+    lines.append("Conclusion technique : synthèse groupée par document à partir des sections et analytes toxicologiques extraits.")
+    return "\n".join(lines).strip()
+
+
+def _render_doc_scoped_toxicology_threshold_answer(evidences: list[dict[str, Any]]) -> str:
+    if not evidences:
+        return "Aucun résultat toxicologique au-dessus du seuil de référence n’a été retrouvé dans le document demandé."
+    lines = ["Résultats toxicologiques au-dessus du seuil", ""]
+    for ev in evidences:
+        analyte = str(ev.get("analyte") or ev.get("analyte_norm") or "analyte").strip()
+        value = str(ev.get("current_value") or ev.get("value_raw") or "non disponible").strip()
+        unit = str(ev.get("unit") or "").strip()
+        ref = str(ev.get("reference") or ev.get("reference_range") or "non disponible").strip()
+        lines.append(f"- {analyte}: {value}{(' ' + unit) if unit else ''} (référence: {ref}; statut: au-dessus de la référence)")
+    lines.append("")
+    lines.append("Conclusion technique : seules les lignes au-dessus du seuil sont affichées.")
+    return "\n".join(lines).strip()
+
+
+def _render_doc_scoped_toxicology_majority_answer(
+    *,
+    under_count: int,
+    above_count: int,
+    ambiguous_count: int,
+) -> str:
+    total = under_count + above_count + ambiguous_count
+    if total <= 0:
+        return "Aucune donnée toxicologique exploitable n’a été retrouvée pour établir une synthèse technique."
+    majority_under = under_count > above_count
+    majority_text = "majoritairement sous les seuils" if majority_under else "sans majorité nette sous les seuils"
+    return (
+        "Synthèse toxicologique technique\n\n"
+        f"- Sous seuil: {under_count}\n"
+        f"- Au-dessus du seuil: {above_count}\n"
+        f"- Référence manquante/ambiguë: {ambiguous_count}\n\n"
+        f"Conclusion technique : profil {majority_text}, sous réserve des lignes ambiguës. "
+        "Aucune interprétation diagnostique n’est fournie."
+    )
+
+
 def _extract_query_numeric_targets(query: str) -> list[str]:
     q = str(query or "")
     return [m.group(0) for m in re.finditer(r"\b\d+(?:[.,]\d+)?\b", q)]
@@ -5044,6 +5313,11 @@ def _build_reference_range_lookup_response(
         }
     if "flow_sources" not in locals():
         flow_sources = []
+    visible_rr_rows, visible_rr_sources = _limit_reference_range_display(
+        rows=[r for r in filtered_rows if isinstance(r, dict)],
+        sources=flow_sources,
+        max_items=3,
+    )
     LOGGER.info(
         "reference_range_debug request_id=%s debug=%s",
         request_id,
@@ -5174,10 +5448,10 @@ def _build_reference_range_lookup_response(
                 "page_number": r.get("page") if r.get("page") is not None else r.get("page_number"),
                 "row_index": r.get("row") if r.get("row") is not None else r.get("row_index"),
             }
-            for r in filtered_rows
+            for r in visible_rr_rows
             if isinstance(r, dict)
         ],
-        source_citations=flow_sources,
+        source_citations=visible_rr_sources,
         generation_mode="deterministic_reference_range_lookup",
         retrieval_status="answerable" if status in {"selected", "fallback", "ambiguous", "grouped_options"} else "insufficient_context",
         query_received=query_received,
@@ -5219,7 +5493,7 @@ def _build_reference_range_lookup_response(
         "generation_time_seconds": round(time.perf_counter() - started, 3),
         "answer": answer,
         "citations": [],
-        "sources": flow_sources,
+        "sources": visible_rr_sources,
         "validation": validation,
         "quality_report": _quality_report(answer=answer, validation=validation, source_clickable_requested=wants_clickable, recent_style_history=[]),
         "llm_error": None,
@@ -5242,7 +5516,8 @@ def _build_reference_range_lookup_response(
             "llm_writer_allowed": False,
             "llm_writer_used": bool(ref_debug.get("llm_called", False)),
             "evidence_rows_count": len(filtered_rows),
-            "displayed_evidences_count": len(filtered_rows),
+            "displayed_evidences_count": len(visible_rr_rows),
+            "user_visible_sources_count": len(visible_rr_sources),
             "feature_flags": {
                 "REFERENCE_RANGE_STRICT_MODE": True,
                 "LLM_REWRITE_ENABLED": llm_rewrite_enabled,
@@ -5274,12 +5549,17 @@ def _source_label(row: dict[str, Any]) -> str:
 
 def _status_code(row: dict[str, Any]) -> str:
     status = str(row.get("interpretation_status") or "").strip().lower()
-    if status in {"above_reference", "below_reference", "within_reference"}:
-        return status
     ref = str(row.get("reference_range") or "").strip()
     if not ref:
         ref = str(_extract_reference_from_text(str(row.get("analyte") or "")) or "").strip()
     val = str(row.get("value_raw") or "").strip()
+    if status in {"above_reference", "below_reference", "within_reference"}:
+        # Guardrail for complex profile references:
+        # when explicit intervals are present and the value falls inside one of them,
+        # keep an inclusive within_reference classification.
+        if status in {"above_reference", "below_reference"} and ref and val and _is_within_any_inclusive_interval(val, ref):
+            return "within_reference"
+        return status
     if not ref:
         return "missing_reference"
     if not val:
@@ -5287,14 +5567,36 @@ def _status_code(row: dict[str, Any]) -> str:
     cf = _to_float(val)
     if cf is None:
         return "not_interpretable"
+    if _is_within_any_inclusive_interval(val, ref):
+        return "within_reference"
+    if _is_complex_reference_text(ref):
+        intervals = re.findall(r"(\d+(?:[.,]\d+)?)\s*(?:-|à|a)\s*(\d+(?:[.,]\d+)?)", ref, flags=re.IGNORECASE)
+        bounds: list[tuple[float, float]] = []
+        for lo_s, hi_s in intervals:
+            try:
+                lo = float(lo_s.replace(",", "."))
+                hi = float(hi_s.replace(",", "."))
+            except Exception:
+                continue
+            if lo > hi:
+                lo, hi = hi, lo
+            bounds.append((lo, hi))
+        if bounds:
+            min_lo = min(lo for lo, _ in bounds)
+            max_hi = max(hi for _, hi in bounds)
+            if cf < min_lo:
+                return "below_reference"
+            if cf > max_hi:
+                return "above_reference"
+        return "not_interpretable"
     nums = re.findall(r"\d+(?:[.,]\d+)?", ref)
     if not nums:
         return "not_interpretable"
     try:
-        if "<" in ref:
+        if re.match(r"^\s*(?:<|<=|≤)\s*\d", ref):
             hi = float(nums[0].replace(",", "."))
             return "within_reference" if cf < hi else "above_reference"
-        if ">" in ref:
+        if re.match(r"^\s*(?:>|>=|≥)\s*\d", ref):
             lo = float(nums[0].replace(",", "."))
             return "within_reference" if cf > lo else "below_reference"
         if len(nums) >= 2:
@@ -6209,6 +6511,8 @@ def build_structured_evidence_pack(
         normalized_intent = "doc_scoped_results"
     elif intent == "doc_scoped_medical_interpretation_guarded":
         normalized_intent = "diagnostic_safety_question"
+    elif intent in {"doc_scoped_toxicology_threshold_search", "doc_scoped_toxicology_summary"}:
+        normalized_intent = "toxicology_summary"
     analyte_resolution_debug: dict[str, Any] | None = None
 
     pack: dict[str, Any] = {
@@ -6251,6 +6555,17 @@ def build_structured_evidence_pack(
         evidences = [_structured_record_from_row(r) for r in rows]
         pack["rows"] = rows
         pack["evidences"] = evidences
+        return _finalize_structured_pack(pack, query_understanding)
+
+    if intent == "global_toxicology_search":
+        qn_local = norm_text(query)
+        scope = "blood" if _toxicology_subtype(qn_local) == "blood_toxicology_search" else "urine"
+        rows = _fetch_global_toxicology_rows(sqlite_path=sqlite_path, limit=2400)
+        tox_pack = build_toxicology_evidence_pack(query=query, scope=scope, rows=rows)
+        pack["rows"] = list(tox_pack.get("rows") or [])
+        pack["evidences"] = [_structured_record_from_row(r) for r in pack["rows"]]
+        pack["toxicology_subtype"] = tox_pack.get("subtype")
+        pack["toxicology_families_by_doc"] = tox_pack.get("families_by_doc")
         return _finalize_structured_pack(pack, query_understanding)
 
     if normalized_intent == "global_toxicology_search":
@@ -6827,7 +7142,16 @@ def build_structured_evidence_pack(
         pack["rows"] = rows
         return _finalize_structured_pack(pack, query_understanding)
 
-    if intent in {"toxicology_summary", "doc_scoped_summary", "immunoanalysis_summary", "doc_scoped_results", "previous_result_comparison", "unstructured"}:
+    if intent in {
+        "toxicology_summary",
+        "doc_scoped_toxicology_threshold_search",
+        "doc_scoped_toxicology_summary",
+        "doc_scoped_summary",
+        "immunoanalysis_summary",
+        "doc_scoped_results",
+        "previous_result_comparison",
+        "unstructured",
+    }:
         analytes = requested_analytes if requested_analytes else None
         rows = _fetch_doc_lab_rows(
             sqlite_path=sqlite_path,
@@ -6842,8 +7166,14 @@ def build_structured_evidence_pack(
                 for r in rows
                 if _row_matches_value_criterion(r, target_values, query_understanding.comparison_operator)
             ]
-        rows = _apply_technical_condition_filter(rows, query_understanding.technical_condition)
-        if intent == "toxicology_summary":
+        bypass_technical_filter_for_single_doc_analyte = (
+            intent == "doc_scoped_results"
+            and len(list(requested_doc_ids or [])) == 1
+            and len(list(requested_analytes or [])) == 1
+        )
+        if not bypass_technical_filter_for_single_doc_analyte:
+            rows = _apply_technical_condition_filter(rows, query_understanding.technical_condition)
+        if intent in {"toxicology_summary", "doc_scoped_toxicology_threshold_search", "doc_scoped_toxicology_summary"}:
             urine_mode = any(k in qn for k in ["urinaire", "urinaires", "urine"])
             tox_terms = ["ethanol", "acide_valproique", "carbamazepine", "lithium"]
             urine_terms = ["amphetamine", "benzodiazepine", "cocaine", "opiaces", "ecstasy", "phencyclidine"]
@@ -6895,7 +7225,12 @@ def build_structured_evidence_pack(
         if requested_analytes:
             full_rows = list(rows)
             filtered_rows = list(rows)
-            if effective_tc == "out_of_reference" or out_of_reference_only:
+            force_single_analyte_status = (
+                intent == "doc_scoped_results"
+                and len(list(requested_analytes or [])) == 1
+                and bool(list(requested_doc_ids or []))
+            )
+            if (effective_tc == "out_of_reference" or out_of_reference_only) and (not force_single_analyte_status):
                 filtered_rows = [r for r in rows if _status_code(r) in {"above_reference", "below_reference"}]
             for analyte in requested_analytes:
                 row = _best_row_for_analyte(filtered_rows, analyte)
@@ -7894,8 +8229,38 @@ def run_generation(
     has_doc_scoped_single_analyte_shape = (
         bool(list(query_understanding.requested_doc_ids or []))
         and len(list(query_understanding.requested_analytes or [])) == 1
-        and any(t in qn for t in ["quelle est la valeur", "valeur de", "donne", "est il", "est-il", "hors reference", "dans la reference"])
+        and any(
+            t in qn
+            for t in [
+                "quelle est la valeur",
+                "valeur de",
+                "donne",
+                "est il",
+                "est-il",
+                "est elle",
+                "est-elle",
+                "hors reference",
+                "dans la reference",
+                "en dessous",
+                "au dessus",
+                "au-dessus",
+                "bas",
+                "basse",
+                "haut",
+                "haute",
+            ]
+        )
     )
+    if has_doc_scoped_single_analyte_shape and selected_route in {
+        "doc_scoped_abnormal_results",
+        "doc_scoped_summary",
+        "single_analyte_lookup",
+        "doc_scoped_results",
+        "reference_range_lookup",
+    }:
+        query_understanding = replace(query_understanding, intent="doc_scoped_results")
+        selected_route = "doc_scoped_single_analyte_status"
+        route_reason = "doc_scope+single_analyte_value_status_heuristic"
     if selected_route == "reference_range_lookup" and has_doc_scoped_single_analyte_shape:
         query_understanding = replace(query_understanding, intent="doc_scoped_results")
         selected_route = "doc_scoped_single_analyte_status"
@@ -7903,6 +8268,23 @@ def run_generation(
     if selected_route == "unstructured" and has_short_bio_summary_shape:
         selected_route = "doc_scoped_biological_summary"
         route_reason = "heuristic_doc_scoped_biological_summary"
+    if selected_route == "unstructured" and bool(list(query_understanding.requested_doc_ids or [])) and _is_toxicology_query(qn):
+        if _is_toxicology_above_threshold_query(qn):
+            query_understanding = replace(
+                query_understanding,
+                intent="doc_scoped_toxicology_threshold_search",
+                technical_condition="above_reference",
+            )
+            selected_route = "doc_scoped_toxicology_threshold_search"
+            route_reason = "heuristic_doc_scoped_toxicology_threshold_search"
+        elif _is_toxicology_majority_query(qn):
+            query_understanding = replace(query_understanding, intent="doc_scoped_toxicology_summary")
+            selected_route = "doc_scoped_toxicology_summary"
+            route_reason = "heuristic_doc_scoped_toxicology_summary"
+        else:
+            query_understanding = replace(query_understanding, intent="toxicology_summary")
+            selected_route = "doc_scoped_toxicology_summary"
+            route_reason = "heuristic_doc_scoped_toxicology_summary_default"
     if selected_route == "unstructured" and has_global_abnormal_shape:
         selected_route = "global_analyte_abnormal_search"
         route_reason = "heuristic_global_analyte_abnormal_search"
@@ -7939,13 +8321,17 @@ def run_generation(
         )
         selected_route = "doc_scoped_abnormal_results"
         route_reason = "doc_scope+abnormal_summary_request"
-    elif selected_route == "doc_scoped_summary" and _canonical_technical_condition(query_understanding.technical_condition) in {
+    elif selected_route == "doc_scoped_summary" and (not _is_toxicology_query(qn)) and _canonical_technical_condition(query_understanding.technical_condition) in {
         "out_of_reference",
         "above_reference",
         "below_reference",
     }:
         selected_route = "doc_scoped_abnormal_results"
         route_reason = "doc_scope_summary+technical_condition_abnormal"
+    elif selected_route == "doc_scoped_summary" and bool(list(query_understanding.requested_doc_ids or [])) and _is_toxicology_query(qn):
+        query_understanding = replace(query_understanding, intent="doc_scoped_toxicology_summary")
+        selected_route = "doc_scoped_toxicology_summary"
+        route_reason = "doc_scoped_summary_toxicology_override"
     elif selected_route == "doc_scoped_biological_summary":
         query_understanding = replace(
             query_understanding,
@@ -7998,6 +8384,19 @@ def run_generation(
         )
         selected_route = "global_toxicology_search"
         route_reason = "global_toxicology_from_toxicology_summary_without_doc_scope"
+    elif selected_route == "toxicology_summary" and list(query_understanding.requested_doc_ids or []):
+        if _is_toxicology_above_threshold_query(qn):
+            query_understanding = replace(
+                query_understanding,
+                intent="doc_scoped_toxicology_threshold_search",
+                technical_condition="above_reference",
+            )
+            selected_route = "doc_scoped_toxicology_threshold_search"
+            route_reason = "doc_scoped_toxicology_threshold_search"
+        elif _is_toxicology_majority_query(qn):
+            query_understanding = replace(query_understanding, intent="doc_scoped_toxicology_summary")
+            selected_route = "doc_scoped_toxicology_summary"
+            route_reason = "doc_scoped_toxicology_summary"
     elif selected_route == "unstructured" and _is_toxicology_global_query(qn):
         query_understanding = replace(
             query_understanding,
@@ -9086,6 +9485,32 @@ def run_generation(
             structured_pack["results"] = list(evidence_pack)
             structured_pack["rows"] = list(structured_pack.get("rows") or [])
         displayed_evidences = list(evidence_pack)
+        if selected_route == "doc_scoped_toxicology_threshold_search":
+            def _is_above(ev: dict[str, Any]) -> bool:
+                st = str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+                if st == "above_reference":
+                    return True
+                metric = compute_reference_metric(
+                    ev.get("current_value") or ev.get("value_raw"),
+                    str(ev.get("reference") or ev.get("reference_range") or ""),
+                    st,
+                )
+                dev = metric.get("reference_deviation")
+                return isinstance(dev, (int, float)) and float(dev) > 0.0
+            displayed_evidences = [
+                ev for ev in displayed_evidences if _is_above(ev)
+            ]
+            for ev in displayed_evidences:
+                if not str(ev.get("technical_status_code") or "").strip():
+                    ev["technical_status_code"] = "above_reference"
+            evidence_pack = list(displayed_evidences)
+            structured_pack["evidences"] = list(displayed_evidences)
+            structured_pack["results"] = list(displayed_evidences)
+            structured_pack["rows"] = [
+                r
+                for r in list(structured_pack.get("rows") or [])
+                if str(r.get("interpretation_status") or "").strip().lower() == "above_reference"
+            ]
         citations = build_citations(displayed_evidences)
         source_citations = build_source_citations(displayed_evidences, resolver=source_resolver)
         if str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
@@ -9114,6 +9539,161 @@ def run_generation(
         found_requested_analyte_norms: list[str] = []
         missing_requested_analytes: list[str] = []
         selected_policy = _strict_policy_for_route(selected_route)
+        if selected_route in {"global_toxicology_search", "doc_scoped_toxicology_threshold_search", "doc_scoped_toxicology_summary"}:
+            visible_toxicology_evidences = list(displayed_evidences)
+            visible_toxicology_sources = list(source_citations)
+            if selected_route == "global_toxicology_search":
+                tox_subtype = str(structured_pack.get("toxicology_subtype") or _toxicology_subtype(norm_text(q)))
+                visible_toxicology_evidences = _build_global_toxicology_display_entries(
+                    subtype=tox_subtype,
+                    evidences=displayed_evidences,
+                    families_by_doc=dict(structured_pack.get("toxicology_families_by_doc") or {}),
+                )
+                visible_toxicology_sources = _build_global_toxicology_source_citations(visible_toxicology_evidences)
+                final_answer = _render_global_toxicology_answer(
+                    subtype=tox_subtype,
+                    evidences=visible_toxicology_evidences,
+                    families_by_doc=dict(structured_pack.get("toxicology_families_by_doc") or {}),
+                )
+                generation_mode = "deterministic_global_toxicology_search"
+            elif selected_route == "doc_scoped_toxicology_threshold_search":
+                final_answer = _render_doc_scoped_toxicology_threshold_answer(displayed_evidences)
+                generation_mode = "deterministic_doc_scoped_toxicology_threshold_search"
+            else:
+                under_count = 0
+                above_count = 0
+                ambiguous_count = 0
+                for ev in displayed_evidences:
+                    st = str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+                    if st == "below_reference":
+                        under_count += 1
+                    elif st == "above_reference":
+                        above_count += 1
+                    elif st in {"within_reference"}:
+                        under_count += 1
+                    else:
+                        ambiguous_count += 1
+                final_answer = _render_doc_scoped_toxicology_majority_answer(
+                    under_count=under_count,
+                    above_count=above_count,
+                    ambiguous_count=ambiguous_count,
+                )
+                generation_mode = "deterministic_doc_scoped_toxicology_summary"
+            validation = validate_answer(
+                query=q,
+                answer_text=final_answer,
+                evidence_pack=evidence_pack,
+                displayed_evidences=visible_toxicology_evidences,
+                source_citations=visible_toxicology_sources,
+                exact_analyte=exact_analyte,
+                llm_error=None,
+                generation_mode=generation_mode,
+                retrieval_status="answerable" if visible_toxicology_evidences else "insufficient_context",
+                show_low_quality=show_low_quality,
+                max_display_results=max_display_results,
+                show_all_results=show_all_results,
+                query_received=query_received,
+                query_used_for_retrieval=query_used_for_retrieval,
+                query_used_for_prompt=query_used_for_prompt,
+                query_stored=q,
+                detected_analytes=exact_analytes,
+                requested_doc_id=requested_doc_ids[0] if len(requested_doc_ids) == 1 else None,
+                requested_doc_ids=requested_doc_ids,
+                missing_requested_doc_ids=missing_requested_doc_ids,
+                requested_analytes=exact_analytes,
+                found_requested_analytes=[],
+                found_requested_analyte_norms=sorted(
+                    {
+                        str(ev.get("analyte_norm") or "").strip().lower()
+                        for ev in displayed_evidences
+                        if str(ev.get("analyte_norm") or "").strip()
+                    }
+                ),
+                missing_requested_analytes=[],
+                current_vs_previous_requested=query_understanding.requires_previous_results,
+                diagnostic_safety_intent=False,
+                query_intents=intents,
+                output_format_requested=query_understanding.output_format,
+                answer_style_requested=query_understanding.answer_style,
+                requested_table_columns=query_understanding.requested_table_columns,
+                requested_technical_condition=query_understanding.technical_condition,
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                requested_value=query_understanding.requested_value,
+                comparison_operator=query_understanding.comparison_operator,
+                raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+                user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+                requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+                visualization_payload=_preview_visualization_payload(query_understanding, visible_toxicology_evidences)[0],
+                chart_data_payload=_preview_visualization_payload(query_understanding, visible_toxicology_evidences)[1],
+            )
+            quality = _quality_report(
+                answer=final_answer,
+                validation=validation,
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                recent_style_history=style_history,
+            )
+            elapsed = time.perf_counter() - started
+            stage_times_ms["llm_writer_ms"] = 0.0
+            stage_times_ms["repair_ms"] = 0.0
+            stage_times_ms["fallback_ms"] = 0.0
+            stage_times_ms["validation_ms"] = 0.0
+            stage_times_ms["total_ms"] = round(elapsed * 1000.0, 3)
+            return {
+                "request_id": request_id,
+                "query": q,
+                "query_received": query_received,
+                "query_used_for_retrieval": query_used_for_retrieval,
+                "query_used_for_prompt": query_used_for_prompt,
+                "query_stored": q,
+                "normalized_query": q,
+                "mode": "sql_deterministic",
+                "provider": provider,
+                "model": model,
+                "top_k": top_k,
+                "max_display_results": int(max_display_results),
+                "show_all_results": bool(show_all_results),
+                "show_low_quality": bool(show_low_quality),
+                "timeout": timeout,
+                "generation_time_seconds": round(elapsed, 3),
+                "answer": final_answer,
+                "citations": citations,
+                "sources": visible_toxicology_sources if selected_route == "global_toxicology_search" else source_citations_for_response,
+                "validation": validation,
+                "quality_report": quality,
+                "llm_error": None,
+                "error_type": None,
+                "generation_mode": generation_mode,
+                "detected_analytes": exact_analytes,
+                "query_understanding": _query_understanding_payload(query_understanding),
+                "structured_evidence_pack": structured_pack,
+                "evidence_pack": evidence_pack,
+                "displayed_evidences": visible_toxicology_evidences,
+                "retrieval": {
+                    "answerability": {"status": "answerable" if visible_toxicology_evidences else "insufficient_context", "reason": "deterministic_toxicology_sql_fast_path"},
+                    "filters": {"doc_ids": requested_doc_ids, "analytes": exact_analytes},
+                    "top_results": [],
+                    "context_chunks": [],
+                    "sources": [],
+                },
+                "prompt": "",
+                "debug": {
+                    "request_id": request_id,
+                    "selected_route": selected_route,
+                    "route_reason": route_reason,
+                    "generation_mode": generation_mode,
+                    "generation_writer": "deterministic_toxicology_renderer",
+                    "selected_policy": selected_policy.get("selected_policy"),
+                    "policy_level": selected_policy.get("policy_level"),
+                    "query_understanding": _query_understanding_payload(query_understanding),
+                    "toxicology_subtype": structured_pack.get("toxicology_subtype"),
+                    "raw_evidence_rows_count": len(displayed_evidences),
+                    "displayed_evidences_count": len(visible_toxicology_evidences),
+                    "stage_timings_ms": dict(stage_times_ms),
+                },
+                "visualization": None,
+                "chart_data": None,
+            }
         force_llm_writer = str(os.getenv("MEDICAL_RAG_FORCE_LLM_WRITER", "1")).strip().lower() in {"1", "true", "yes", "on"}
         safety_intent_norm = str(getattr(query_understanding, "safety_intent", "") or "").strip().lower()
         llm_cfg = _level2_llm_runtime_config(

@@ -105,14 +105,7 @@ class ChatResponse(BaseModel):
     quality_report: dict[str, Any] | None = None
     validation_status: Literal["pass", "warning", "fail"] | None = None
     generation_mode: str | None = None
-    generation_writer: Literal[
-        "llm_writer",
-        "professional_fallback",
-        "deterministic_metadata_query",
-        "deterministic_response_transform_json",
-        "deterministic_context_summary",
-        "deterministic_general_conversation",
-    ] | None = None
+    generation_writer: str | None = None
     visualization: dict[str, Any] | None = None
     chart_data: dict[str, Any] | None = None
     patients: list[dict[str, Any]] | None = None

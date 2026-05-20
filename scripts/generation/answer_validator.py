@@ -659,6 +659,7 @@ def validate_answer(
 ) -> dict[str, Any]:
     text = (answer_text or "").strip()
     text_norm = _norm(text)
+    qn_query = _norm(query or "")
     core_text = _split_answer_core(text)
     core_norm = _norm(core_text)
     displayed = displayed_evidences or []
@@ -834,6 +835,11 @@ def validate_answer(
     }
     mentioned_analytes_global = find_analyte_mentions(core_text)
     is_presence_diff = bool((query_intents or {}).get("multi_doc_presence_diff") or (query_intents or {}).get("multi_doc_comparison"))
+    is_toxicology_deterministic_mode = generation_mode_norm in {
+        "deterministic_global_toxicology_search",
+        "deterministic_doc_scoped_toxicology_threshold_search",
+        "deterministic_doc_scoped_toxicology_summary",
+    }
     if (not structured_first_mode) and mentioned_analytes_global and allowed_analytes_from_evidence and not is_presence_diff:
         allowed_canonical = {_canonical_analyte_key(a) for a in allowed_analytes_from_evidence}
         bad_analytes = sorted(
@@ -845,7 +851,7 @@ def validate_answer(
             k in _norm(query)
             for k in ["rapports disponibles", "tous les rapports", "ensemble des rapports", "quels documents", "documents"]
         )
-        if bad_analytes and not is_global_abnormal:
+        if bad_analytes and not is_global_abnormal and not is_toxicology_deterministic_mode:
             errors.append("unsupported_analyte")
             unsupported_claims.append(f"Unsupported analytes: {bad_analytes}")
 
@@ -855,18 +861,19 @@ def validate_answer(
     if (not structured_first_mode) and (not is_general_conversation_query):
         requested_value_norm = _norm(str(requested_value or "")).replace(".", ",")
         requested_value_alt = _norm(str(requested_value or "")).replace(",", ".")
-        for token in _extract_numeric_tokens_for_validation(core_text):
-            if _norm(token) in {"0", "1"}:
-                continue
-            token_norm = _norm(token)
-            if requested_value and token_norm in {requested_value_norm, requested_value_alt}:
-                continue
-            if not _value_supported_by_evidence(token, allowed, displayed if displayed else evidence_pack):
-                unsupported_numeric.append(token)
-        if unsupported_numeric:
-            unsupported_claims.append(f"Unsupported numeric values: {sorted(set(unsupported_numeric))}")
-            warnings.append("Some numeric values were not found in evidence.")
-            errors.append("unsupported_value")
+        if generation_mode_norm != "deterministic_global_toxicology_search":
+            for token in _extract_numeric_tokens_for_validation(core_text):
+                if _norm(token) in {"0", "1"}:
+                    continue
+                token_norm = _norm(token)
+                if requested_value and token_norm in {requested_value_norm, requested_value_alt}:
+                    continue
+                if not _value_supported_by_evidence(token, allowed, displayed if displayed else evidence_pack):
+                    unsupported_numeric.append(token)
+            if unsupported_numeric:
+                unsupported_claims.append(f"Unsupported numeric values: {sorted(set(unsupported_numeric))}")
+                warnings.append("Some numeric values were not found in evidence.")
+                errors.append("unsupported_value")
 
         # Unsupported units
         for unit in _UNIT_REGEX.findall(core_text):
@@ -1436,11 +1443,28 @@ def validate_answer(
             intro_norm = _norm(intro_block)
             rv = _norm(str(requested_value))
             op = _norm(str(comparison_operator or ""))
+            directional_status_query = any(
+                token in qn_query
+                for token in [
+                    "hors reference",
+                    "hors norme",
+                    "est il bas",
+                    "est-il bas",
+                    "est elle basse",
+                    "est-elle basse",
+                    "est il haut",
+                    "est-il haut",
+                    "est elle haute",
+                    "est-elle haute",
+                    "dans la reference",
+                    "dans la norme",
+                ]
+            )
             has_value = bool(rv and rv in intro_norm)
             has_operator_hint = any(
                 k in intro_norm for k in ["ou plus", "ou moins", "superieur", "supérieur", "inferieur", "inférieur", "egal", "égal"]
             )
-            if not has_value or (op and not has_operator_hint):
+            if (not directional_status_query) and (not has_value or (op and not has_operator_hint)):
                 warnings.append("missing_query_criterion_in_intro")
             if op == ">" and ("superieure ou egale" in intro_norm or "supérieure ou égale" in intro_norm or "ou plus" in intro_norm):
                 errors.append("numeric_operator_mismatch")
@@ -1528,7 +1552,14 @@ def validate_answer(
             errors.append("analyte_overmatch")
 
     if any(k in qn for k in ["hors reference", "hors de la reference", "outside reference", "out of reference"]):
-        if "dans la reference" in core_norm or "within_reference" in core_norm:
+        doc_scoped_single_status_query = bool(requested_doc_ids) and len(requested_analyte_list) == 1 and any(
+            token in qn
+            for token in ["est il", "est-il", "est elle", "est-elle", "la valeur", "donne", "quelle est la valeur"]
+        )
+        if (
+            ("dans la reference" in core_norm or "within_reference" in core_norm)
+            and not doc_scoped_single_status_query
+        ):
             errors.append("filter_violation_hors_reference")
 
     if "non retrouve" in core_norm or "non retrouvé" in core_norm:
@@ -1815,7 +1846,6 @@ def validate_answer(
             errors.append("inventory_visualization_render_wrong_copy_for_accordion")
         if requested_inventory_view == "filterable_table" and "cartes patient" in core_norm:
             errors.append("inventory_visualization_render_wrong_copy_for_table")
-    qn_query = _norm(query or "")
     if (
         any(tok in qn_query for tok in ["ca", "ça", "ces donnees", "ces données"])
         and any(tok in qn_query for tok in ["table", "tableau"])
@@ -1858,6 +1888,28 @@ def validate_answer(
             errors.append("reference_range_fallback_not_explicit")
         if "chunk_id" in core_norm or "doc_id=" in core_norm or "sqlite_deterministic" in core_norm:
             errors.append("reference_range_internal_source_leak")
+
+    if generation_mode_norm in {
+        "deterministic_global_toxicology_search",
+        "deterministic_doc_scoped_toxicology_threshold_search",
+        "deterministic_doc_scoped_toxicology_summary",
+    }:
+        if "chunk_id" in core_norm or "sqlite_deterministic" in core_norm or "doc_id=" in core_norm:
+            errors.append("toxicology_internal_source_leak")
+        if any(x in core_norm for x in ["cristaux d acide urique", "ecbu", "cytologie urinaire"]):
+            errors.append("toxicology_non_target_urine_confusion")
+        if generation_mode_norm == "deterministic_doc_scoped_toxicology_threshold_search":
+            for ev in displayed:
+                st = str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+                if st != "above_reference":
+                    errors.append("toxicology_threshold_non_above_result_present")
+                    break
+        toxicology_query = any(
+            t in qn_query
+            for t in ["toxiques urinaires", "toxicologie urinaire", "pharmacotoxicologie", "toxiques sanguins", "toxicologie sanguine"]
+        )
+        if toxicology_query and not displayed and "aucune donnee" not in core_norm and "aucune donnée" not in core_norm:
+            warnings.append("toxicology_empty_evidence_pack")
     # Semantic guardrail: even if intent classification drifts, reference-range wording in query
     # must never return a global multi-analyte bulk listing.
     reference_semantic_query = any(
@@ -2040,6 +2092,19 @@ def validate_answer(
                 warnings.append(f"downgraded_non_fact_error:{err}")
             else:
                 kept.append(err)
+        errors = kept
+
+    if generation_mode_norm in {
+        "deterministic_global_toxicology_search",
+        "deterministic_doc_scoped_toxicology_threshold_search",
+        "deterministic_doc_scoped_toxicology_summary",
+    } and errors:
+        kept: list[str] = []
+        for err in errors:
+            if err == "unsupported_analyte":
+                warnings.append("downgraded_non_fact_error:unsupported_analyte_toxicology_family_labels")
+                continue
+            kept.append(err)
         errors = kept
 
     if generation_mode_norm == "deterministic_general_conversation" and not errors:

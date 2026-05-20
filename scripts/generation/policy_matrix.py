@@ -8,6 +8,8 @@ STRICT_DETERMINISTIC_ROUTES = {
     "doc_scoped_abnormal_results",
     "global_analyte_abnormal_search",
     "global_toxicology_search",
+    "doc_scoped_toxicology_threshold_search",
+    "doc_scoped_toxicology_summary",
     "doc_pair_comparison",
     "multi_doc_comparison",
     "reference_range_lookup",

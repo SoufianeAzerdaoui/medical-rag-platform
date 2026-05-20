@@ -613,6 +613,8 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertIn("72", answer)
         self.assertNotIn("chunk_id", answer)
         self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+        self.assertLessEqual(len(list(result.get("sources") or [])), 3)
+        self.assertNotIn("max_display_results_exceeded_for_simple_query", list((result.get("validation") or {}).get("warnings") or []))
 
     def test_reference_range_acide_urique_femme_deterministic(self) -> None:
         result = run_generation(
@@ -627,6 +629,8 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertIn("60", answer)
         self.assertNotIn("chunk_id", answer)
         self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+        self.assertLessEqual(len(list(result.get("sources") or [])), 3)
+        self.assertNotIn("max_display_results_exceeded_for_simple_query", list((result.get("validation") or {}).get("warnings") or []))
 
     def test_doc_scoped_single_analyte_status_route(self) -> None:
         result = run_generation(
@@ -671,7 +675,90 @@ class TestGenerationDocScope(unittest.TestCase):
         )
         answer = str(result.get("answer") or "").lower()
         self.assertNotIn("cristaux d'acide urique", answer)
-        self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+        if str(result.get("generation_mode") or "") == "deterministic_global_toxicology_search":
+            self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+        else:
+            self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+
+    def test_global_urine_toxicology_reports_and_families(self) -> None:
+        result = run_generation(
+            query="Quels rapports comportent une recherche de toxiques urinaires, et quelles familles sont testées ?",
+            mode="keyword",
+            top_k=50,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "global_toxicology_search")
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_global_toxicology_search")
+        self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+        self.assertTrue(list(result.get("displayed_evidences") or []))
+        self.assertLessEqual(len(list(result.get("displayed_evidences") or [])), 10)
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("| document |", answer)
+        self.assertIn("| nature |", answer)
+        self.assertNotIn("ecbu", answer)
+        self.assertNotIn("cristaux d'acide urique", answer)
+
+    def test_global_blood_toxicology_reports_and_parameters(self) -> None:
+        result = run_generation(
+            query="Quels rapports contiennent une pharmacotoxicologie sanguine, et quels paramètres sont recherchés ?",
+            mode="keyword",
+            top_k=50,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "global_toxicology_search")
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_global_toxicology_search")
+        self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+        self.assertTrue(list(result.get("displayed_evidences") or []))
+        self.assertLessEqual(len(list(result.get("displayed_evidences") or [])), 10)
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("| document |", answer)
+        self.assertIn("| nature |", answer)
+        self.assertNotIn("cristaux", answer)
+
+    def test_doc_scoped_single_analyte_hors_reference_question_can_answer_within_reference(self) -> None:
+        result = run_generation(
+            query="Dans le report 12, la phosphatase alcaline à 40 UI/L est-elle hors référence chez une femme adulte ?",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "doc_scoped_single_analyte_status")
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_single_analyte_lookup")
+        self.assertEqual(str((result.get("validation") or {}).get("validation_status") or ""), "pass")
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("40 ui/l", answer)
+        self.assertIn("dans la référence".lower(), answer)
+        warnings = list((result.get("validation") or {}).get("warnings") or [])
+        self.assertNotIn("filter_violation_hors_reference", warnings)
+        self.assertNotIn("downgraded_non_fact_error:filter_violation_hors_reference", warnings)
+
+    def test_report27_toxicology_threshold_above_only(self) -> None:
+        result = run_generation(
+            query="Dans le report 27, quels résultats de pharmacotoxicologie urinaire dépassent leur seuil de référence ?",
+            mode="keyword",
+            top_k=50,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "doc_scoped_toxicology_threshold_search")
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_doc_scoped_toxicology_threshold_search")
+        evs = list(result.get("displayed_evidences") or [])
+        self.assertTrue(evs)
+        for ev in evs:
+            self.assertEqual(str(ev.get("technical_status_code") or "").strip().lower(), "above_reference")
+
+    def test_report25_toxicology_majority_summary_not_safe_error(self) -> None:
+        result = run_generation(
+            query="Dans le report 25, les toxiques urinaires sont-ils majoritairement sous les seuils ? Donne une réponse technique sans diagnostic.",
+            mode="keyword",
+            top_k=50,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "doc_scoped_toxicology_summary")
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_doc_scoped_toxicology_summary")
+        self.assertNotIn("deterministic_safe_error_response", str(result.get("generation_mode") or ""))
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("sous seuil", answer)
+        self.assertIn("au-dessus", answer)
 
     def test_strict_route_forced_llm_fact_drift_falls_back_to_deterministic(self) -> None:
         old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
@@ -714,7 +801,7 @@ class TestGenerationDocScope(unittest.TestCase):
 
         self.assertTrue(str(result.get("generation_mode") or "").startswith("deterministic_"))
         self.assertNotIn("999", str(result.get("answer") or ""))
-        self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+        self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
         debug = dict(result.get("debug") or {})
         self.assertEqual(str(debug.get("selected_policy") or ""), "deterministic_strict")
         self.assertEqual(str(debug.get("facts_source") or ""), "evidence_rows_only")
@@ -832,7 +919,7 @@ class TestGenerationDocScope(unittest.TestCase):
             else:
                 os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
         self.assertTrue(str(result.get("generation_mode") or "").startswith("deterministic_"))
-        self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+        self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
         dbg = dict(result.get("debug") or {})
         self.assertTrue(bool(dbg.get("hard_gate_triggered")))
         self.assertIn("value_changed", list(dbg.get("hard_gate_errors") or []))
