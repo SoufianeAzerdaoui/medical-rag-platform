@@ -996,6 +996,23 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertNotIn("filter_violation_hors_reference", warnings)
         self.assertNotIn("downgraded_non_fact_error:filter_violation_hors_reference", warnings)
 
+    def test_report29_creatinine_single_analyte_status_not_not_found(self) -> None:
+        result = run_generation(
+            query="Dans le report 29, la créatinine est-elle normale, basse ou élevée ?",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "doc_scoped_single_analyte_status")
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_single_analyte_lookup")
+        answer = str(result.get("answer") or "").lower()
+        self.assertNotIn("non retrouvé", answer)
+        self.assertTrue(("créatinine" in answer) or ("creatinine" in answer))
+        self.assertTrue(any(ch.isdigit() for ch in answer))
+        self.assertIn("statut technique", answer)
+        self.assertGreater(len(list(result.get("sources") or [])), 0)
+        self.assertNotEqual(str((result.get("validation") or {}).get("validation_status") or "").lower(), "fail")
+
     def test_report27_toxicology_threshold_above_only(self) -> None:
         result = run_generation(
             query="Dans le report 27, quels résultats de pharmacotoxicologie urinaire dépassent leur seuil de référence ?",

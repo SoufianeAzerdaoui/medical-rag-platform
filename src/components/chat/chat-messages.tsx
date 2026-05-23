@@ -9,6 +9,7 @@ import { ConversationQualityPanel } from "@/components/chat/conversation-quality
 import { QualityReportCard } from "@/components/chat/quality-report-card";
 import { SourceLinks, stripSourcesSection } from "@/components/sources/source-links";
 import { PatientInventoryRenderer } from "@/components/chat/patient-inventory-renderer";
+import { SingleAnalyteResultCard } from "@/components/chat/single-analyte-result-card";
 import { useChatStore } from "@/store/chat-store";
 import { useEffect, useRef } from "react";
 
@@ -102,6 +103,10 @@ export function ChatMessages() {
         const previousUserContent = String(chat.messages[idx - 1]?.role === "user" ? chat.messages[idx - 1]?.content || "" : "").toLowerCase();
         const expandPatientSourcesByDefault =
           hasPatients && (previousUserContent.includes("source") || previousUserContent.includes("cliquable"));
+        const isSingleAnalyteDeterministic =
+          isAssistant &&
+          isDone &&
+          String(message?.diagnostics?.generation_mode || "") === "deterministic_single_analyte_lookup";
         
         let contentToRender = shouldRenderSourceLinks ? stripSourcesSection(message.content) : message.content;
         
@@ -115,6 +120,11 @@ export function ChatMessages() {
         }
 
         const contentHasTable = hasMarkdownTable(contentToRender);
+        const useSingleAnalyteCard =
+          isSingleAnalyteDeterministic &&
+          /^###\s+/m.test(contentToRender) &&
+          /-\s+\*\*Valeur\*\*/i.test(contentToRender) &&
+          /-\s+\*\*Statut technique\*\*/i.test(contentToRender);
 
         return (
           <motion.article
@@ -152,7 +162,11 @@ export function ChatMessages() {
                       <p className="mt-3 text-xs uppercase tracking-wide text-fg/65">Données utilisées</p>
                     ) : null}
                     
-                    <AssistantMarkdown content={contentToRender} />
+                    {useSingleAnalyteCard ? (
+                      <SingleAnalyteResultCard content={contentToRender} sources={message.sources} />
+                    ) : (
+                      <AssistantMarkdown content={contentToRender} />
+                    )}
                   </>
                 ) : (
                   <p className="whitespace-pre-wrap text-sm leading-6">{contentToRender}</p>
