@@ -25,7 +25,8 @@ ANALYTE_ALIAS_GROUPS: dict[str, list[str]] = {
     "t4_libre": ["t4 libre", "t4l", "ft4", "thyroxine libre", "free t4", "t4libre"],
     "t3_libre": ["t3 libre", "t3l", "ft3", "triiodothyronine libre", "free t3", "t3libre"],
     "anti_tg": ["anti tg", "anti-tg", "anti thyroglobuline", "anticorps anti tg", "anti tg antibodies"],
-    "ckmb": ["ckmb", "ck mb", "ck-mb", "cpkmb"],
+    "ckmb": ["ckmb", "ck mb", "ck-mb", "cpkmb", "cpk mb", "cpk-mb", "ckmb (cpkmb)"],
+    "apo_a1": ["apo a1", "apoa1", "apolipoprotéine a1", "apolipoproteine a1", "apolipoproteine-a1"],
     "triglycerides": ["triglycerides", "triglycérides"],
     "cholesterol_ldl": ["ldl", "cholesterol ldl", "cholestérol ldl", "cholesterol ldl-c", "ldl c"],
     "microalbuminurie": ["microalbuminurie", "micro albuminurie", "microalbumine"],
@@ -59,4 +60,5 @@ ANALYTE_ALIAS_GROUPS: dict[str, list[str]] = {
     "phencyclidine": ["phencyclidine", "pcp"],
     "gh_ou_sth": ["gh", "sth", "gh ou sth"],
     "glucose": ["glucose", "glycemie", "glycémie", "glycemie a jeun", "glycémie à jeun", "glucose sanguin"],
+    "cortisol": ["cortisol", "cortisolemie", "cortisolémie", "cortisol sanguin"],
 }

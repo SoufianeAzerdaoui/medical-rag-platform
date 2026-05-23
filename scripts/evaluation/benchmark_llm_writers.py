@@ -47,6 +47,10 @@ CSV_FIELDS = [
     "ollama_model",
     "model_verified",
     "llm_model_override_applied",
+    "generation_strategy",
+    "llm_expected",
+    "llm_skipped_reason",
+    "deterministic_preferred_reason",
     "llm_writer_attempted",
     "llm_writer_accepted",
     "hard_gate_rejected",
@@ -155,14 +159,24 @@ def _normalize_string(value: Any) -> str:
 
 def _extract_response_fields(model: str, question_id: str, question: str, response: dict[str, Any]) -> dict[str, Any]:
     debug = dict(response.get("debug") or {})
+    raw_debug = dict(debug.get("raw_debug") or {})
+    def _dbg(name: str) -> Any:
+        if name in debug and debug.get(name) is not None:
+            return debug.get(name)
+        return raw_debug.get(name)
     validation = dict(response.get("validation") or {})
-    debug_validation = dict(debug.get("validation") or {})
+    debug_validation = dict((_dbg("validation") or {}))
     score = 0
     validation_status = _normalize_string(response.get("validation_status") or validation.get("validation_status"))
-    fallback_reason = _normalize_string(debug.get("fallback_reason")) or None
-    llm_candidate_validation_errors = debug.get("llm_candidate_validation_errors")
+    fallback_reason = _normalize_string(_dbg("fallback_reason")) or None
+    llm_candidate_validation_errors = _dbg("llm_candidate_validation_errors")
     quality_final_status = _normalize_string((response.get("quality_report") or {}).get("final_status"))
-    generation_writer = _normalize_string(response.get("generation_writer") or debug.get("generation_writer"))
+    generation_writer = _normalize_string(response.get("generation_writer") or _dbg("generation_writer"))
+    generation_mode = _normalize_string(response.get("generation_mode"))
+    generation_strategy = _normalize_string(_dbg("generation_strategy")) or None
+    llm_expected = bool(_dbg("llm_expected"))
+    llm_skipped_reason = _normalize_string(_dbg("llm_skipped_reason")) or None
+    deterministic_preferred_reason = _normalize_string(_dbg("deterministic_preferred_reason")) or None
     answer = str(response.get("answer") or "").strip()
     answer_norm = answer.lower()
 
@@ -174,24 +188,27 @@ def _extract_response_fields(model: str, question_id: str, question: str, respon
         score += 2
     if quality_final_status == "pass":
         score += 1
-    if generation_writer == "llm_writer":
+    if llm_expected:
+        if generation_writer == "llm_writer":
+            score += 1
+    elif generation_mode.startswith("deterministic_"):
         score += 1
     if not DIAGNOSTIC_PATTERNS.search(answer):
         score += 1
     if not TREATMENT_PATTERNS.search(answer):
         score += 1
 
-    llm_candidate_validation_status = _normalize_string(debug.get("llm_candidate_validation_status")) or None
-    llm_candidate_validation_warnings = list(debug.get("llm_candidate_validation_warnings") or [])
+    llm_candidate_validation_status = _normalize_string(_dbg("llm_candidate_validation_status")) or None
+    llm_candidate_validation_warnings = list(_dbg("llm_candidate_validation_warnings") or [])
     validation_errors = list(debug_validation.get("errors") or [])
     validation_warnings = list(debug_validation.get("warnings") or [])
     displayed_evidences = list(response.get("displayed_evidences") or [])
     sources = list(response.get("sources") or [])
-    llm_provider = _normalize_string(debug.get("llm_provider")) or None
-    llm_model_override_applied = bool(debug.get("llm_model_override_applied"))
-    llm_model_requested = _normalize_string(debug.get("llm_model_requested")) or None
-    llm_model_effective = _normalize_string(debug.get("llm_model_effective")) or None
-    ollama_model = _normalize_string(debug.get("ollama_model")) or None
+    llm_provider = _normalize_string(_dbg("llm_provider")) or None
+    llm_model_override_applied = bool(_dbg("llm_model_override_applied"))
+    llm_model_requested = _normalize_string(_dbg("llm_model_requested")) or None
+    llm_model_effective = _normalize_string(_dbg("llm_model_effective")) or None
+    ollama_model = _normalize_string(_dbg("ollama_model")) or None
     debug_model_match = bool(ollama_model and ollama_model == model)
     model_verified: bool = bool(
         llm_model_override_applied
@@ -201,10 +218,10 @@ def _extract_response_fields(model: str, question_id: str, question: str, respon
         and llm_model_effective == model
         and debug_model_match
     )
-    llm_writer_attempted = bool(debug.get("llm_writer_attempted") or debug.get("llm_writer_allowed") or debug.get("llm_writer_used"))
+    llm_writer_attempted = bool(_dbg("llm_writer_attempted"))
     llm_writer_accepted = str(generation_writer).strip().lower() == "llm_writer"
-    hard_gate_rejected = bool(debug.get("hard_gate_rejected") or debug.get("hard_gate_triggered"))
-    repair_attempted = bool(debug.get("repair_attempted") or debug.get("llm_repair_attempted") or debug.get("llm_candidate_repair_used"))
+    hard_gate_rejected = bool(_dbg("hard_gate_rejected") or _dbg("hard_gate_triggered"))
+    repair_attempted = bool(_dbg("repair_attempted") or _dbg("llm_repair_attempted") or _dbg("llm_candidate_repair_used"))
     repair_success = repair_attempted and not hard_gate_rejected and llm_writer_accepted
 
     return {
@@ -213,12 +230,16 @@ def _extract_response_fields(model: str, question_id: str, question: str, respon
         "question_id": question_id,
         "question": question,
         "answer": answer,
-        "generation_mode": _normalize_string(response.get("generation_mode")) or None,
+        "generation_mode": generation_mode or None,
         "generation_writer": generation_writer or None,
+        "generation_strategy": generation_strategy,
+        "llm_expected": llm_expected,
+        "llm_skipped_reason": llm_skipped_reason,
+        "deterministic_preferred_reason": deterministic_preferred_reason,
         "validation_status": validation_status or None,
         "quality_final_status": quality_final_status or None,
         "fallback_reason": fallback_reason,
-        "selected_route": _normalize_string(debug.get("selected_route")) or None,
+        "selected_route": _normalize_string(_dbg("selected_route")) or None,
         "llm_provider": llm_provider,
         "llm_model_requested": llm_model_requested,
         "llm_model_effective": llm_model_effective,
@@ -235,7 +256,7 @@ def _extract_response_fields(model: str, question_id: str, question: str, respon
         "llm_candidate_validation_warnings": llm_candidate_validation_warnings,
         "validation_errors": validation_errors,
         "validation_warnings": validation_warnings,
-        "llm_writer_ms": float((debug.get("stage_timings_ms") or {}).get("llm_writer_ms") or 0.0),
+        "llm_writer_ms": float(((_dbg("stage_timings_ms") or {}) if isinstance(_dbg("stage_timings_ms"), dict) else {}).get("llm_writer_ms") or 0.0),
         "response_time": float(response.get("response_time") or 0.0),
         "displayed_count": len(displayed_evidences),
         "sources_count": len(sources),
@@ -283,11 +304,33 @@ def _build_summary(path: Path, results: list[dict[str, Any]], models: list[str])
     for model, rows in model_rows.items():
         q_rows = [row for row in rows if row["question_id"] in {"Q1", "Q2", "Q3", "Q4"}]
         total = max(1, len(q_rows))
-        llm_writer_count = sum(1 for row in q_rows if row.get("llm_writer_accepted"))
+        expected_rows = [row for row in q_rows if bool(row.get("llm_expected"))]
+        expected_total = max(1, len(expected_rows))
+        llm_writer_count = sum(1 for row in expected_rows if row.get("llm_writer_accepted"))
         fallback_count = sum(1 for row in q_rows if row.get("fallback_reason"))
-        hard_gate_rejection_count = sum(1 for row in q_rows if row.get("hard_gate_rejected"))
-        repair_attempt_count = sum(1 for row in q_rows if row.get("repair_attempted"))
-        repair_success_count = sum(1 for row in q_rows if row.get("repair_success"))
+        deterministic_preferred_count = sum(1 for row in q_rows if str(row.get("generation_strategy") or "") == "deterministic_preferred")
+        deterministic_only_count = sum(1 for row in rows if str(row.get("generation_strategy") or "") == "deterministic_only")
+        deterministic_fallback_count = sum(
+            1
+            for row in q_rows
+            if str(row.get("generation_mode") or "").startswith("deterministic_")
+            and str(row.get("generation_writer") or "").strip().lower() != "llm_writer"
+        )
+        hard_gate_rejection_count = sum(1 for row in expected_rows if row.get("hard_gate_rejected"))
+        repair_attempt_count = sum(1 for row in expected_rows if row.get("repair_attempted"))
+        repair_success_count = sum(1 for row in expected_rows if row.get("repair_success"))
+        model_verified_count = sum(1 for row in expected_rows if row.get("model_verified") is True)
+        llm_expected_success_count = sum(
+            1
+            for row in expected_rows
+            if row.get("llm_writer_accepted") and str(row.get("validation_status") or "").lower() == "pass"
+        )
+        deterministic_preferred_success_count = sum(
+            1
+            for row in q_rows
+            if str(row.get("generation_strategy") or "") == "deterministic_preferred"
+            and str(row.get("validation_status") or "").lower() in {"pass", "warning"}
+        )
         avg_score = round(sum(row["score"] for row in q_rows) / total, 2)
         validation_fail_count = sum(1 for row in q_rows if str(row.get("validation_status") or "").lower() == "fail")
         validation_warning_count = sum(1 for row in q_rows if str(row.get("validation_status") or "").lower() == "warning")
@@ -296,13 +339,25 @@ def _build_summary(path: Path, results: list[dict[str, Any]], models: list[str])
         ranking.append((model, avg_score))
         metrics_by_model[model] = {
             "avg_score": avg_score,
-            "llm_writer_rate": round(llm_writer_count / total * 100.0, 1),
+            "llm_writer_rate": round(llm_writer_count / expected_total * 100.0, 1) if expected_rows else 0.0,
             "fallback_rate": round(fallback_count / total * 100.0, 1),
-            "hard_gate_rejection_rate": round(hard_gate_rejection_count / total * 100.0, 1),
+            "hard_gate_rejection_rate": round(hard_gate_rejection_count / expected_total * 100.0, 1) if expected_rows else 0.0,
             "repair_success_rate": round(repair_success_count / max(1, repair_attempt_count) * 100.0, 1) if repair_attempt_count else 0.0,
+            "model_verified_rate": round(model_verified_count / expected_total * 100.0, 1) if expected_rows else 0.0,
+            "llm_expected_success_rate": round(llm_expected_success_count / expected_total * 100.0, 1) if expected_rows else 0.0,
+            "deterministic_preferred_success_rate": round(
+                deterministic_preferred_success_count / max(1, deterministic_preferred_count) * 100.0,
+                1,
+            )
+            if deterministic_preferred_count
+            else 0.0,
             "avg_llm_writer_ms": avg_llm_writer_ms,
             "avg_response_time": round(sum(row.get("response_time") or 0.0 for row in q_rows) / total, 3),
             "fallback_count": fallback_count,
+            "accepted_llm_writer_count": llm_writer_count,
+            "deterministic_fallback_count": deterministic_fallback_count,
+            "deterministic_preferred_count": deterministic_preferred_count,
+            "deterministic_only_count": deterministic_only_count,
             "validation_fail_count": validation_fail_count,
             "validation_warning_count": validation_warning_count,
             "avg_time": avg_time,
@@ -313,6 +368,7 @@ def _build_summary(path: Path, results: list[dict[str, Any]], models: list[str])
     model_verified_failure = any(
         (
             row.get("question_id") in {"Q1", "Q2", "Q3", "Q4"}
+            and bool(row.get("llm_expected"))
             and (
                 row.get("model_verified") is not True
                 or row.get("debug_model_match") is not True
@@ -326,20 +382,20 @@ def _build_summary(path: Path, results: list[dict[str, Any]], models: list[str])
     if model_verified_failure:
         summary_lines.append(
             "**Benchmark non concluant pour le choix du modèle.** "
-            "Au moins un modèle n'a pas été vérifié sur Q1-Q4."
+            "Au moins un modèle n'a pas été vérifié sur Q1-Q4 (routes llm_expected)."
         )
         summary_lines.append("")
     for rank, (model, score) in enumerate(ranking, start=1):
-        summary_lines.append(f"{rank}. **{model}** — score moyen Q1-Q4 : {score}")
+        summary_lines.append(f"{rank}. **{model}** — score global Q1-Q4 : {score}")
     summary_lines.append("")
 
     summary_lines.append("## Résumé des scores et du temps")
     summary_lines.append("")
-    summary_lines.append("| Modèle | Score moyen Q1-Q4 | llm_writer_rate | fallback_rate | hard_gate_rejection_rate | repair_success_rate | avg_llm_writer_ms | avg_response_time (s) | Fallbacks Q1-Q4 | Fail Q1-Q4 | Warning Q1-Q4 | Temps moyen (s) |")
-    summary_lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    summary_lines.append("| Modèle | Score global Q1-Q4 | model_verified_rate (llm_expected) | llm_writer_rate (llm_expected) | llm_expected_success_rate | deterministic_preferred_success_rate | fallback_rate | hard_gate_rejection_rate (llm_expected) | repair_success_rate | accepted_llm_writer_count | deterministic_fallback_count | deterministic_preferred_count | deterministic_only_count | avg_llm_writer_ms | avg_response_time (s) | Fallbacks Q1-Q4 | Fail Q1-Q4 | Warning Q1-Q4 | Temps moyen (s) |")
+    summary_lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for model, metrics in metrics_by_model.items():
         summary_lines.append(
-            f"| {model} | {metrics['avg_score']} | {metrics['llm_writer_rate']}% | {metrics['fallback_rate']}% | {metrics['hard_gate_rejection_rate']}% | {metrics['repair_success_rate']}% | {metrics['avg_llm_writer_ms']} | {metrics['avg_response_time']} | {metrics['fallback_count']} | {metrics['validation_fail_count']} | {metrics['validation_warning_count']} | {metrics['avg_time']} |"
+            f"| {model} | {metrics['avg_score']} | {metrics['model_verified_rate']}% | {metrics['llm_writer_rate']}% | {metrics['llm_expected_success_rate']}% | {metrics['deterministic_preferred_success_rate']}% | {metrics['fallback_rate']}% | {metrics['hard_gate_rejection_rate']}% | {metrics['repair_success_rate']}% | {metrics['accepted_llm_writer_count']} | {metrics['deterministic_fallback_count']} | {metrics['deterministic_preferred_count']} | {metrics['deterministic_only_count']} | {metrics['avg_llm_writer_ms']} | {metrics['avg_response_time']} | {metrics['fallback_count']} | {metrics['validation_fail_count']} | {metrics['validation_warning_count']} | {metrics['avg_time']} |"
         )
     summary_lines.append("")
 
@@ -395,8 +451,8 @@ def _build_summary(path: Path, results: list[dict[str, Any]], models: list[str])
 
     summary_lines.append("## Détails par modèle / question")
     summary_lines.append("")
-    summary_lines.append("| Modèle | Question | Score | Route | Writer | Validation | Qualité | Fallback | Temps | Answer preview |")
-    summary_lines.append("|---|---|---|---|---|---|---|---|---|---|")
+    summary_lines.append("| Modèle | Question | Score | Route | Strategy | LLM expected | Writer | Validation | Qualité | Fallback | Temps | Answer preview |")
+    summary_lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for row in results:
         if row.get("error"):
             preview = f"ERROR: {row['error']}"
@@ -404,13 +460,13 @@ def _build_summary(path: Path, results: list[dict[str, Any]], models: list[str])
             answer_preview = str(row.get("answer") or "").replace("\n", " ")[:120]
             preview = answer_preview
         summary_lines.append(
-            f"| {row['model']} | {row['question_id']} | {row['score']} | {row.get('selected_route') or ''} | {row.get('generation_writer') or ''} | {row.get('validation_status') or ''} | {row.get('quality_final_status') or ''} | {row.get('fallback_reason') or ''} | {round(float(row.get('response_time') or 0.0), 3)} | {preview} |"
+            f"| {row['model']} | {row['question_id']} | {row['score']} | {row.get('selected_route') or ''} | {row.get('generation_strategy') or ''} | {row.get('llm_expected')} | {row.get('generation_writer') or ''} | {row.get('validation_status') or ''} | {row.get('quality_final_status') or ''} | {row.get('fallback_reason') or ''} | {round(float(row.get('response_time') or 0.0), 3)} | {preview} |"
         )
     summary_lines.append("")
 
     summary_lines.append("## Check non-régression Q5")
     summary_lines.append("")
-    summary_lines.append("Les résultats de Q5 sont inclus dans le JSON et le CSV, mais le score global LLM writer est calculé uniquement sur Q1-Q4.")
+    summary_lines.append("Q5 reste un contrôle non-régression déterministe. Le score LLM writer attendu se concentre sur les routes llm_expected.")
     summary_lines.append("")
 
     path.write_text("\n".join(summary_lines), encoding="utf-8")
@@ -557,6 +613,10 @@ def main() -> int:
                     "ollama_model": None,
                     "model_verified": False,
                     "llm_model_override_applied": False,
+                    "generation_strategy": None,
+                    "llm_expected": False,
+                    "llm_skipped_reason": None,
+                    "deterministic_preferred_reason": None,
                     "llm_writer_attempted": False,
                     "llm_writer_accepted": False,
                     "hard_gate_rejected": False,

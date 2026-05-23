@@ -15,6 +15,7 @@ for root in (SCRIPTS_ROOT, GENERATION_ROOT):
         sys.path.insert(0, str(root))
 
 from generate_answer import run_generation
+from evaluation.benchmark_llm_writers import _extract_response_fields
 from retrieval.models import RetrievalResult, SearchResponse
 
 
@@ -1143,11 +1144,112 @@ class TestGenerationDocScope(unittest.TestCase):
 
         self.assertEqual(captured.get("selected_route"), "doc_scoped_biological_summary")
         debug = dict(result.get("debug") or {})
-        self.assertEqual(str(debug.get("policy_level") or ""), "hybrid_controlled")
+        self.assertEqual(str(debug.get("policy_level") or ""), "deterministic_preferred")
+        self.assertEqual(str(debug.get("generation_strategy") or ""), "deterministic_preferred")
+        self.assertIn(debug.get("llm_expected"), {False, 0})
         self.assertGreater(int(debug.get("llm_prompt_tokens_estimate") or 0), 0)
         self.assertLessEqual(int(debug.get("llm_evidence_rows_count") or 0), 6)
         self.assertTrue(bool(debug.get("use_micro_prompt")))
         self.assertLessEqual(int(debug.get("prompt_hard_limit_chars") or 0), 3500)
+
+    def test_biological_summary_is_deterministic_preferred_by_default(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        if "MEDICAL_RAG_FORCE_LLM_WRITER" in os.environ:
+            os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+        try:
+            result = run_generation(
+                query="Fais une synthèse médico-biologique du report 12 en 6 lignes maximum, en séparant les anomalies et les résultats rassurants. Ne donne pas de diagnostic.",
+                mode="keyword",
+                top_k=30,
+                index_dir="data/indexes",
+            )
+        finally:
+            if old_force is not None:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+        debug = dict(result.get("debug") or {})
+        self.assertEqual(str(debug.get("selected_route") or ""), "doc_scoped_biological_summary")
+        self.assertEqual(str(debug.get("generation_strategy") or ""), "deterministic_preferred")
+        self.assertIn(debug.get("llm_expected"), {False, 0})
+        self.assertIn(debug.get("llm_writer_attempted"), {False, 0})
+        self.assertEqual(str(debug.get("llm_skipped_reason") or ""), "biological_summary_deterministic_preferred")
+        self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+        self.assertTrue(str(result.get("generation_mode") or "").startswith("deterministic_"))
+
+    def test_priority_is_deterministic_preferred_by_default(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        if "MEDICAL_RAG_FORCE_LLM_WRITER" in os.environ:
+            os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+        try:
+            result = run_generation(
+                query="Dans le report 10, explique les anomalies biologiques les plus importantes par priorité technique, avec une justification courte pour chaque anomalie. Ne pose pas de diagnostic.",
+                mode="keyword",
+                top_k=30,
+                index_dir="data/indexes",
+            )
+        finally:
+            if old_force is not None:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+        debug = dict(result.get("debug") or {})
+        self.assertEqual(str(debug.get("selected_route") or ""), "doc_scoped_priority_anomalies")
+        self.assertEqual(str(debug.get("generation_strategy") or ""), "deterministic_preferred")
+        self.assertIn(debug.get("llm_expected"), {False, 0})
+        self.assertIn(debug.get("llm_writer_attempted"), {False, 0})
+        self.assertEqual(str(debug.get("llm_skipped_reason") or ""), "priority_deterministic_structure_preferred")
+        self.assertNotEqual(str(debug.get("fallback_reason") or ""), "llm_repair_failed")
+        self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+
+    def test_guarded_interpretation_uses_llm_expected_strategy(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        if "MEDICAL_RAG_FORCE_LLM_WRITER" in os.environ:
+            os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+        try:
+            result = run_generation(
+                query="Le bilan thyroïdien du report 16 est-il compatible avec une hyperthyroïdie primaire ? Explique prudemment à partir de TSH, T3, T4 et anticorps, sans conclure à un diagnostic.",
+                mode="keyword",
+                top_k=30,
+                index_dir="data/indexes",
+            )
+        finally:
+            if old_force is not None:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+        debug = dict(result.get("debug") or {})
+        self.assertEqual(str(debug.get("selected_route") or ""), "doc_scoped_medical_interpretation_guarded")
+        self.assertEqual(str(debug.get("generation_strategy") or ""), "llm_writer_expected")
+        self.assertIn(debug.get("llm_expected"), {True, 1})
+        self.assertIn(debug.get("llm_writer_attempted"), {True, 1})
+        self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+
+    def test_benchmark_does_not_penalize_deterministic_preferred_routes(self) -> None:
+        response = {
+            "answer": "Anormaux : test.\nRésultats dans la référence uniquement : aucun.\nConclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic.",
+            "generation_mode": "deterministic_doc_scoped_biological_summary",
+            "generation_writer": "professional_fallback",
+            "validation_status": "pass",
+            "quality_report": {"final_status": "pass"},
+            "displayed_evidences": [{"analyte": "CRP"}],
+            "sources": [{"label": "report"}],
+            "debug": {
+                "generation_strategy": "deterministic_preferred",
+                "llm_expected": False,
+                "llm_writer_attempted": False,
+                "llm_model_override_applied": True,
+                "llm_model_requested": "llama3.2:latest",
+                "llm_model_effective": "llama3.2:latest",
+                "ollama_model": "llama3.2:latest",
+                "validation": {"errors": [], "warnings": []},
+                "stage_timings_ms": {"llm_writer_ms": 0.0},
+            },
+        }
+        row = _extract_response_fields(
+            model="llama3.2:latest",
+            question_id="Q1",
+            question="dummy",
+            response=response,
+        )
+        self.assertEqual(row["generation_strategy"], "deterministic_preferred")
+        self.assertFalse(bool(row["llm_expected"]))
+        self.assertFalse(bool(row["llm_writer_attempted"]))
+        self.assertGreaterEqual(int(row["score"]), 9)
 
     def test_level2_timeout_falls_back_with_llm_timeout_reason(self) -> None:
         old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")

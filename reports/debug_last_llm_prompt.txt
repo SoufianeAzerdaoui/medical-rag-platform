@@ -4,7 +4,7 @@ Maximum 6 lignes.
 Structure attendue :
 - Faits techniques observés
 - Limites
-- Conclusion de prudence
+- Conclusion technique
 
 Règles :
 - Ne modifie aucune valeur, unité, référence ou statut.
@@ -19,6 +19,7 @@ Règles :
 - Écris seulement: profil biologique discordant pour une hyperthyroïdie primaire.
 
 Faits anormaux :
+- TSHus : 55,00 mUI/L ; référence 0,35 - 4,94 ; au-dessus de la référence.
 - TSHus : 55,00 mUI/L ; référence 0,35 - 4,94 ; au-dessus de la référence.
 - T4 LIBRE : 112,00 pmol/l ; référence 9,01 - 19,05 ; au-dessus de la référence.
 - T3 LIBRE : 66,00 pmol/l ; référence 2,42 - 6,01 ; au-dessus de la référence.

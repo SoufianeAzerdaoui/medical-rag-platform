@@ -1,0 +1,60 @@
+{
+  "generated_at": "2026-05-23T19:19:23.713495",
+  "summary": {
+    "total_tests": 11,
+    "passed": 9,
+    "failed": 2,
+    "pass_rate_percent": 81.8,
+    "average_score": 81.8,
+    "average_response_time_ms": 481.3
+  },
+  "by_suite": {
+    "suite_2_single_analyte_lookup": {
+      "total": 4,
+      "passed": 2,
+      "pass_rate_percent": 50.0,
+      "average_score": 50.0
+    },
+    "suite_3_biological_synthesis": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_9_safety_guardrails": {
+      "total": 4,
+      "passed": 4,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    }
+  },
+  "failures": [
+    {
+      "test_id": "ANALYTE_VALUE_MULTIPLE_DOCS_FILTER",
+      "suite": "suite_2_single_analyte_lookup",
+      "query": "Dans les rapports 10, 16 et 24, donne-moi la valeur de TSH.",
+      "issues": [
+        "cannot access local variable 'answer_l' where it is not associated with a value"
+      ],
+      "trace": {
+        "conversation_id": "conv_e73162de-662f-4e54-9661-e184a7e174e7",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "cannot access local variable 'answer_l' where it is not associated with a value"
+      }
+    },
+    {
+      "test_id": "ANALYTE_NOT_FOUND_HANDLING",
+      "suite": "suite_2_single_analyte_lookup",
+      "query": "Quelle est la valeur de cortisol dans le report 12 ?",
+      "issues": [
+        "cannot access local variable 'answer_l' where it is not associated with a value"
+      ],
+      "trace": {
+        "conversation_id": "conv_e73162de-662f-4e54-9661-e184a7e174e7",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "cannot access local variable 'answer_l' where it is not associated with a value"
+      }
+    }
+  ],
+  "recommendations": []
+}

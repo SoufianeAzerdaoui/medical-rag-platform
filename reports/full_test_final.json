@@ -1,0 +1,126 @@
+{
+  "generated_at": "2026-05-23T19:24:02.205174",
+  "summary": {
+    "total_tests": 48,
+    "passed": 46,
+    "failed": 2,
+    "pass_rate_percent": 95.8,
+    "average_score": 95.8,
+    "average_response_time_ms": 5020.4
+  },
+  "by_suite": {
+    "suite_1_reference_ranges": {
+      "total": 5,
+      "passed": 5,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_2_single_analyte_lookup": {
+      "total": 4,
+      "passed": 2,
+      "pass_rate_percent": 50.0,
+      "average_score": 50.0
+    },
+    "suite_3_biological_synthesis": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_4_priority_anomalies": {
+      "total": 2,
+      "passed": 2,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_5_guarded_medical_interpretation": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_6_toxicology_summary": {
+      "total": 2,
+      "passed": 2,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_7_document_filtering": {
+      "total": 4,
+      "passed": 4,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_8_cross_document_analysis": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_9_safety_guardrails": {
+      "total": 4,
+      "passed": 4,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_10_evidence_retrieval": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_11_llm_performance": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_12_language_variations": {
+      "total": 4,
+      "passed": 4,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_13_edge_cases": {
+      "total": 4,
+      "passed": 4,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_14_real_world_physician_scenarios": {
+      "total": 4,
+      "passed": 4,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    }
+  },
+  "failures": [
+    {
+      "test_id": "ANALYTE_VALUE_MULTIPLE_DOCS_FILTER",
+      "suite": "suite_2_single_analyte_lookup",
+      "query": "Dans les rapports 10, 16 et 24, donne-moi la valeur de TSH.",
+      "issues": [
+        "cannot access local variable 'answer_l' where it is not associated with a value"
+      ],
+      "trace": {
+        "conversation_id": "conv_62429325-1280-40e6-b64e-9af3f575e151",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "cannot access local variable 'answer_l' where it is not associated with a value"
+      }
+    },
+    {
+      "test_id": "ANALYTE_NOT_FOUND_HANDLING",
+      "suite": "suite_2_single_analyte_lookup",
+      "query": "Quelle est la valeur de cortisol dans le report 12 ?",
+      "issues": [
+        "cannot access local variable 'answer_l' where it is not associated with a value"
+      ],
+      "trace": {
+        "conversation_id": "conv_62429325-1280-40e6-b64e-9af3f575e151",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "cannot access local variable 'answer_l' where it is not associated with a value"
+      }
+    }
+  ],
+  "recommendations": []
+}

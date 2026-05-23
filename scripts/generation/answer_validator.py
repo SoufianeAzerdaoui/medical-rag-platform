@@ -36,6 +36,22 @@ _FORBIDDEN_INTERNAL_MARKERS = [
     "loading weights",
     "inference embeddings",
     "pre tokenize",
+    "total_results_count",
+    "abnormal_rows_count",
+    "within_reference_rows_count",
+    "ambiguous_rows_count",
+    "evidence_rows_count",
+    "llm_evidence_rows_count",
+    "raw_debug",
+    "debug.",
+    "fallback_reason",
+    "validation_status",
+    "generation_mode",
+    "generation_writer",
+    "selected_route",
+    "technical_condition",
+    "requested_doc_ids",
+    "requested_analytes",
 ]
 
 _GENERIC_COLD_SENTENCES = [
@@ -817,6 +833,28 @@ def validate_answer(
     forbidden_internal_hits = [m for m in _FORBIDDEN_INTERNAL_MARKERS if m in text_norm]
     if forbidden_internal_hits or "/home/" in text or "\\home\\" in text or re.search(r"[A-Za-z]:\\", text):
         errors.append("forbidden_internal_field")
+    if any(
+        marker in text_norm
+        for marker in [
+            "total_results_count",
+            "abnormal_rows_count",
+            "within_reference_rows_count",
+            "ambiguous_rows_count",
+            "evidence_rows_count",
+            "llm_evidence_rows_count",
+            "raw_debug",
+            "debug.",
+            "fallback_reason",
+            "validation_status",
+            "generation_mode",
+            "generation_writer",
+            "selected_route",
+            "technical_condition",
+            "requested_doc_ids",
+            "requested_analytes",
+        ]
+    ):
+        errors.append("internal_debug_leak")
     if re.search(r"résultat\(s\)|correspondant\(s\)", text, flags=re.IGNORECASE):
         warnings.append("ugly_pluralization")
     if (
@@ -1744,12 +1782,19 @@ def validate_answer(
 
     intro_block = (core_text or "").split("\n\n")[0].strip() if (core_text or "").strip() else ""
     intro_sentences = [s for s in re.split(r"[.!?]+", intro_block) if s.strip()]
+    section_intro_ok = bool(
+        re.match(
+            r"(?is)^\s*(anormaux|résultats?\s+dans\s+la\s+référence\s+uniquement|resultats?\s+dans\s+la\s+reference\s+uniquement|priorité\s+élevée|priorite\s+elevee|priorité\s+modérée/faible|priorite\s+moderee/faible|faits\s+techniques\s+observés|faits\s+techniques\s+observes|limites|conclusion\s+technique|synthèse\s+toxicologique\s+technique|synthese\s+toxicologique\s+technique)\s*:",
+            intro_block or "",
+            flags=re.IGNORECASE,
+        )
+    )
     if (
         (answer_style_requested or "").strip().lower() != "yes_no"
         and (output_format_requested or "").strip().lower() != "json"
         and not is_general_conversation_query
     ):
-        if len(intro_sentences) > 2:
+        if len(intro_sentences) > 2 and not section_intro_ok:
             warnings.append("over_verbose_intro")
         if requested_value:
             intro_norm = _norm(intro_block)
@@ -2335,6 +2380,12 @@ def validate_answer(
             errors.append(f"{pc['id']}:{pc['message']}")
         elif pc["status"] == "warning":
             warnings.append(f"{pc['id']}:{pc['message']}")
+    if generation_mode_norm == "deterministic_doc_scoped_priority_anomalies":
+        warnings = [
+            w
+            for w in warnings
+            if not str(w).startswith("patient_inventory_long_cell:")
+        ]
 
     deterministic_fact_modes = {
         "deterministic_professional_fallback",

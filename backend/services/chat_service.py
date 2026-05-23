@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import traceback
+import unicodedata
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -104,6 +106,30 @@ def _dedup_keep_order(items: list[str]) -> list[str]:
     seen: set[str] = set()
     for item in items:
         key = str(item or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _canonicalize_analyte_token(value: str) -> str:
+    s = str(value or "").strip().lower()
+    if not s:
+        return ""
+    s = s.replace("µ", "u")
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"[^a-z0-9_\s-]", " ", s)
+    s = re.sub(r"[\s-]+", "_", s).strip("_")
+    return s
+
+
+def _canonicalize_analytes(values: list[str] | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in list(values or []):
+        key = _canonicalize_analyte_token(str(raw))
         if not key or key in seen:
             continue
         seen.add(key)
@@ -369,14 +395,18 @@ def process_chat(
         model_verified = None
         if llm_model_requested or llm_model_effective:
             model_verified = llm_model_requested == llm_model_effective
+        canonical_requested_analytes = _canonicalize_analytes(list(qu.get("requested_analytes") or []))
+        qu_debug = dict(qu) if qu else {}
+        if qu_debug:
+            qu_debug["requested_analytes"] = canonical_requested_analytes
         response_debug = {
             "intent": str(qu.get("intent") or "") or None,
             "safety_intent": str(qu.get("safety_intent") or "") or None,
             "intent_arbitration": (qu.get("intent_arbitration") if isinstance(qu.get("intent_arbitration"), dict) else None),
             "technical_condition": str(qu.get("technical_condition") or "") or None,
             "requested_doc_ids": list(qu.get("requested_doc_ids") or []),
-            "requested_analytes": list(qu.get("requested_analytes") or []),
-            "query_understanding": qu if qu else None,
+            "requested_analytes": canonical_requested_analytes,
+            "query_understanding": qu_debug if qu_debug else None,
             "selected_route": str((generation_debug.get("selected_route") or "")) or None,
             "route_reason": str((generation_debug.get("route_reason") or "")) or None,
             "evidence_rows_preview": list((generation_debug.get("evidence_rows_preview") or [])),
@@ -393,8 +423,14 @@ def process_chat(
             "llm_model_effective": llm_model_effective,
             "ollama_model": str((generation_debug.get("ollama_model") or "")) or None,
             "model_verified": model_verified,
-            "llm_writer_attempted": bool(generation_debug.get("llm_writer_allowed") or generation_debug.get("llm_writer_used")),
-            "llm_writer_accepted": str((generation_debug.get("generation_writer") or "")).strip().lower() == "llm_writer",
+            "generation_strategy": str((generation_debug.get("generation_strategy") or "")) or None,
+            "llm_expected": bool(generation_debug.get("llm_expected")),
+            "llm_skipped_reason": str((generation_debug.get("llm_skipped_reason") or "")) or None,
+            "deterministic_preferred_reason": str((generation_debug.get("deterministic_preferred_reason") or "")) or None,
+            "llm_writer_attempted": bool(generation_debug.get("llm_writer_attempted")),
+            "llm_writer_accepted": bool(generation_debug.get("llm_writer_accepted"))
+            if generation_debug.get("llm_writer_accepted") is not None
+            else (str((generation_debug.get("generation_writer") or "")).strip().lower() == "llm_writer"),
             "hard_gate_rejected": bool(generation_debug.get("hard_gate_triggered")),
             "repair_attempted": bool(generation_debug.get("llm_repair_attempted") or generation_debug.get("llm_candidate_repair_used")),
             "repair_success": bool(generation_debug.get("llm_repair_attempted") or generation_debug.get("llm_candidate_repair_used"))

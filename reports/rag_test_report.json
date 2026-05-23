@@ -1,0 +1,21 @@
+{
+  "generated_at": "2026-05-23T17:05:25.779076",
+  "summary": {
+    "total_tests": 4,
+    "passed": 4,
+    "failed": 0,
+    "pass_rate_percent": 100.0,
+    "average_score": 100.0,
+    "average_response_time_ms": 230.4
+  },
+  "by_suite": {
+    "suite_9_safety_guardrails": {
+      "total": 4,
+      "passed": 4,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    }
+  },
+  "failures": [],
+  "recommendations": []
+}
