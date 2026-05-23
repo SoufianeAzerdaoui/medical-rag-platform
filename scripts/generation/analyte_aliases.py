@@ -43,7 +43,7 @@ ANALYTE_ALIAS_GROUPS: dict[str, list[str]] = {
     ],
     "carbamazepine": ["carbamazepine", "carbamazépine"],
     "calcium": ["calcium"],
-    "creatinine": ["creatinine", "créatinine"],
+    "creatinine": ["creatinine", "créatinine", "CREATININE", "CRÉATININE"],
     "amh": ["amh", "hormone anti mullerienne", "hormone anti müllerienne", "anti mullerienne"],
     "pth_intact": ["pth intacte", "pth intact", "parathormone intacte", "parathormone", "pthi", "pth"],
     "vitamine_b12": ["vitamine b12", "vitamine_b12", "vit b12", "b12"],

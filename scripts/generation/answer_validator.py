@@ -249,6 +249,12 @@ def _extract_numeric_tokens_for_validation(core_text: str) -> list[str]:
         line = re.sub(r"\bT\d+\b", " ", line, flags=re.IGNORECASE)
         line = re.sub(r"\bCA\s*\d+(?:\s*[-/]\s*\d+)+\b", " ", line, flags=re.IGNORECASE)
         line = re.sub(r"\breport[_\-]?\d+\b", " ", line, flags=re.IGNORECASE)
+        line = re.sub(r"\breport\s+\d+\b", " ", line, flags=re.IGNORECASE)
+        line = re.sub(r"\breport\s*\(\s*\d+\s*\)", " ", line, flags=re.IGNORECASE)
+        line = re.sub(r"\bpage\s+\d+\b", " ", line, flags=re.IGNORECASE)
+        line = re.sub(r"\bligne\s+\d+\b", " ", line, flags=re.IGNORECASE)
+        line = re.sub(r"\bline\s+\d+\b", " ", line, flags=re.IGNORECASE)
+        line = re.sub(r"\brow\s+\d+\b", " ", line, flags=re.IGNORECASE)
         line = re.sub(r"\bpat[_\-]?\d+\b", " ", line, flags=re.IGNORECASE)
 
         # Normalize spaces around decimal separators to keep "0,45" as one token.
@@ -1122,6 +1128,7 @@ def validate_answer(
         "deterministic_section_grouped_summary_sql_template",
         "deterministic_multi_doc_analyte_comparison_sql_template",
         "deterministic_measured_value_vs_comment_sql_template",
+        "deterministic_single_analyte_lookup",
     }
     if (
         generation_mode not in relaxed_line_source_modes
@@ -2326,11 +2333,11 @@ def validate_answer(
             errors.append("reference_semantic_forbidden_multi_analyte_table")
 
     if len(requested_analyte_list) == 1 and len(requested_doc_ids_norm) == 1 and displayed:
-        requested_norm = str(requested_analyte_list[0] or "").strip().lower()
+        requested_norm = _canonical_analyte_key(str(requested_analyte_list[0] or ""))
         displayed_norms = {
-            str(ev.get("analyte_norm") or "").strip().lower()
+            _canonical_analyte_key(str(ev.get("analyte_norm") or ev.get("analyte") or ""))
             for ev in displayed
-            if str(ev.get("analyte_norm") or "").strip()
+            if str(ev.get("analyte_norm") or ev.get("analyte") or "").strip()
         }
         extra = sorted([a for a in displayed_norms if a and a != requested_norm])
         if extra:

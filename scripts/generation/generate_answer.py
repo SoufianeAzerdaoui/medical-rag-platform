@@ -12806,14 +12806,40 @@ def run_generation(
                     stage_times_ms["llm_writer_ms"] = 0.0
                     stage_times_ms["repair_ms"] = 0.0
                 elif str(selected_route or "").strip().lower() == "doc_scoped_single_analyte_status":
-                    req_analytes = [str(a).strip().lower() for a in list(exact_analytes or []) if str(a).strip()]
+                    req_analytes = [
+                        str(a).strip().lower()
+                        for a in list(exact_analytes or query_understanding.requested_analytes or [])
+                        if str(a).strip()
+                    ]
                     req_analyte = req_analytes[0] if req_analytes else "analyte"
+                    candidate_rows = list(structured_rows or [])
+                    if requested_doc_ids:
+                        requested_doc_norm = {str(d).strip().lower() for d in requested_doc_ids if str(d).strip()}
+                        candidate_rows = [
+                            r
+                            for r in candidate_rows
+                            if str(r.get("doc_id") or "").strip().lower() in requested_doc_norm
+                        ]
+                    has_matching_single_analyte_row = bool(
+                        candidate_rows
+                        and req_analytes
+                        and any(_best_row_for_analyte(candidate_rows, a) is not None for a in req_analytes)
+                    )
                     if len(requested_doc_ids or []) >= 2:
                         final_answer = _format_multi_doc_single_analyte_status_answer(
                             rows=list(structured_rows or []),
                             requested_doc_ids=list(requested_doc_ids or []),
                             requested_analyte=req_analyte,
                         )
+                    elif has_matching_single_analyte_row:
+                        fallback_composed = compose_professional_answer(
+                            user_question=q,
+                            query_understanding=query_understanding,
+                            evidence_pack=structured_pack,
+                            mode="fallback",
+                            source_citations=source_citations,
+                        )
+                        final_answer = str(fallback_composed.get("answer") or final_answer).strip()
                     else:
                         doc = requested_doc_ids[0] if requested_doc_ids else "le document demandé"
                         label = "TSH/TSHus" if req_analyte in {"tsh", "tshus"} else _canonical_display_name(req_analyte)
@@ -12823,19 +12849,57 @@ def run_generation(
                             f"Conclusion technique : aucun résultat correspondant à {label} n’a été retrouvé dans le rapport demandé."
                         )
                     generation_mode = "deterministic_single_analyte_lookup"
-                    validation = {
-                        "validation_status": "warning",
-                        "errors": [],
-                        "warnings": ["single_analyte_no_evidence_recovered_to_deterministic"],
-                    }
+                    if has_matching_single_analyte_row:
+                        validation = validate_answer(
+                            query=q,
+                            answer_text=final_answer,
+                            evidence_pack=evidence_pack,
+                            displayed_evidences=displayed_evidences,
+                            source_citations=source_citations,
+                            generation_mode=generation_mode,
+                            retrieval_status="answerable" if displayed_evidences else "insufficient_context",
+                            query_received=query_received,
+                            query_used_for_retrieval=query_used_for_retrieval,
+                            query_used_for_prompt=query_used_for_prompt,
+                            query_stored=q,
+                            detected_analytes=exact_analytes,
+                            query_intents=intents,
+                            output_format_requested=query_understanding.output_format,
+                            answer_style_requested=query_understanding.answer_style,
+                            requested_table_columns=query_understanding.requested_table_columns,
+                            requested_technical_condition=query_understanding.technical_condition,
+                            source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                            requested_value=query_understanding.requested_value,
+                            comparison_operator=query_understanding.comparison_operator,
+                            raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                            unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+                            user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+                            requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+                            visualization_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[0],
+                            chart_data_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[1],
+                        )
+                        fallback_reason_debug = (
+                            None
+                            if str(fallback_reason_debug or "").strip().lower() in {"single_analyte_no_evidence", "llm_validation_failed"}
+                            else fallback_reason_debug
+                        )
+                    else:
+                        validation = {
+                            "validation_status": "warning",
+                            "errors": [],
+                            "warnings": ["single_analyte_no_evidence_recovered_to_deterministic"],
+                        }
                     quality = _quality_report(
                         answer=final_answer,
                         validation=validation,
                         source_clickable_requested=False,
                         recent_style_history=style_history,
                     )
-                    fallback_stage = fallback_stage or "single_analyte_no_evidence_recovery"
-                    fallback_reason_debug = fallback_reason_debug or "single_analyte_no_evidence"
+                    if has_matching_single_analyte_row:
+                        fallback_stage = fallback_stage or "single_analyte_validation_recovery"
+                    else:
+                        fallback_stage = fallback_stage or "single_analyte_no_evidence_recovery"
+                        fallback_reason_debug = fallback_reason_debug or "single_analyte_no_evidence"
                     stage_times_ms["llm_writer_ms"] = 0.0
                     stage_times_ms["repair_ms"] = 0.0
                 else:

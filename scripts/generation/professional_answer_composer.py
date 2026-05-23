@@ -665,6 +665,72 @@ def _display_analyte(ev: dict[str, Any]) -> str:
     return analyte_display_name(raw or norm, norm or None) or raw or "non précisé"
 
 
+def _single_analyte_display_label(label: str) -> str:
+    txt = _safe_str(label)
+    if txt and " " in txt and txt.upper() == txt:
+        lowered = txt.lower()
+        return lowered[:1].upper() + lowered[1:]
+    return txt
+
+
+def _human_report_label(doc_id: str) -> str:
+    raw = _safe_str(doc_id)
+    if not raw:
+        return "document demandé"
+    m = re.match(r"(?i)^\s*report[\s_\-\(]*0*([0-9]+)\)?\s*$", raw)
+    if m:
+        try:
+            return f"report {int(m.group(1))}"
+        except Exception:
+            return f"report {m.group(1)}"
+    return raw.replace("_", " ")
+
+
+def _compact_reference_text(reference: str) -> str:
+    ref = _safe_str(reference)
+    ref = re.sub(r"\s+", " ", ref).strip(" ;")
+    return ref or "non disponible"
+
+
+def _extract_sex_reference_segment(reference: str, sex_token: str, other_token: str) -> str:
+    pattern = re.compile(
+        rf"\b{re.escape(sex_token)}\b\s*:?\s*(.+?)(?=(?:\b{re.escape(other_token)}\b\s*:?)|$)",
+        re.IGNORECASE,
+    )
+    m = pattern.search(reference or "")
+    if not m:
+        return ""
+    seg = re.sub(r"\s+", " ", str(m.group(1) or "")).strip(" ;,.-")
+    return seg
+
+
+def _resolve_single_analyte_reference(reference: str, user_question: str) -> tuple[str, str]:
+    ref = _compact_reference_text(reference)
+    if ref == "non disponible":
+        return "Référence disponible", ref
+    qn = norm_text(user_question or "")
+    wants_female = any(tok in qn for tok in ["femme", "feminin", "féminin", "female"])
+    wants_male = any(tok in qn for tok in ["homme", "masculin", "male"])
+    if wants_female and not wants_male:
+        seg = _extract_sex_reference_segment(ref, "femme", "homme")
+        if seg:
+            return "Référence applicable", f"Femme {seg}"
+    if wants_male and not wants_female:
+        seg = _extract_sex_reference_segment(ref, "homme", "femme")
+        if seg:
+            return "Référence applicable", f"Homme {seg}"
+    return "Référence disponible", ref
+
+
+def _single_analyte_conclusion(status_code: str) -> str:
+    sc = _safe_str(status_code).lower()
+    if sc in {"above_reference", "below_reference"}:
+        return "Conclusion technique : la valeur est hors de l’intervalle de référence indiqué, sans interprétation diagnostique."
+    if sc == "within_reference":
+        return "Conclusion technique : la valeur est dans l’intervalle de référence indiqué, sans interprétation diagnostique."
+    return "Conclusion technique : interprétation technique limitée aux données disponibles, sans interprétation diagnostique."
+
+
 def _writer_intent(intent: str) -> str:
     mapping = {
         "cohort_search": "cohort_search",
@@ -1363,6 +1429,57 @@ def render_professional_fallback(
 
     presentation = choose_presentation_format(query_understanding, evidence_pack)
     intent = _safe_str(query_understanding.intent, "unstructured")
+    requested_docs = [d for d in (query_understanding.requested_doc_ids or []) if str(d).strip()]
+    requested_analytes = [a for a in (query_understanding.requested_analytes or []) if str(a).strip()]
+
+    # UX-focused deterministic template for single analyte in a single report.
+    if (
+        intent in {"doc_scoped_results", "single_analyte_lookup"}
+        and len(evidences) == 1
+        and len(requested_docs) == 1
+        and len(requested_analytes) == 1
+        and not missing_items
+        and presentation in {"list", "paragraph"}
+    ):
+        ev = dict(evidences[0] or {})
+        analyte = _single_analyte_display_label(_display_analyte(ev))
+        report_label = _human_report_label(_safe_str(ev.get("doc_id")) or requested_docs[0])
+        value = _safe_str(ev.get("current_value"), _safe_str(ev.get("value_raw"), "non disponible"))
+        unit = _safe_str(ev.get("unit"))
+        value_text = value if not unit else f"{value} {unit}"
+        reference = _safe_str(ev.get("reference"), _safe_str(ev.get("reference_range"), "non disponible"))
+        ref_label, ref_value = _resolve_single_analyte_reference(reference, user_question)
+        status = _safe_str(ev.get("technical_status"), "non interprétable")
+        source = _safe_str(ev.get("source_label"))
+        if not source:
+            source = format_source_label(
+                {
+                    "filename": ev.get("filename"),
+                    "doc_id": ev.get("doc_id"),
+                    "page": ev.get("page"),
+                    "row": ev.get("row"),
+                }
+            )
+        conclusion = _single_analyte_conclusion(_safe_str(ev.get("technical_status_code"), _safe_str(ev.get("interpretation_status"))))
+        answer = (
+            f"### {analyte} — {report_label}\n\n"
+            f"- **Valeur** : **{value_text}**\n"
+            f"- **{ref_label}** : {ref_value}\n"
+            f"- **Statut technique** : {status}\n"
+            f"- **Source** : {source}\n\n"
+            f"{conclusion}"
+        )
+        return {
+            "intro": "",
+            "content_type": "list",
+            "content": answer.strip(),
+            "conclusion": conclusion,
+            "sources": sources,
+            "rendering_hints": {"preferred_format": "list", "show_sources": True, "strict_json": False},
+            "answer": answer.strip(),
+            "mode": "deterministic_professional_fallback",
+            "llm_error": None,
+        }
 
     if presentation == "json":
         answer = _build_json_answer(
@@ -1463,7 +1580,6 @@ def render_professional_fallback(
     count_line = format_result_count(len(evidences)) if _should_show_count_line(intent, presentation, evidences) else ""
 
     include_previous = bool(query_understanding.requires_previous_results)
-    requested_docs = [d for d in (query_understanding.requested_doc_ids or []) if str(d).strip()]
     if intent == "multi_doc_presence_diff" and not evidences:
         doc_a = requested_docs[0] if len(requested_docs) >= 1 else "report_A"
         doc_b = requested_docs[1] if len(requested_docs) >= 2 else "report_B"
