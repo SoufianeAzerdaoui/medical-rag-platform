@@ -568,7 +568,11 @@ def _build_sources_block(
 
 
 def build_short_conclusion(intent: str, evidence_pack: dict[str, Any], safety_intent: str | None) -> str | None:
-    if safety_intent or intent == "diagnostic_safety_question":
+    # Only force the diagnostic-refusal wording when the intent is explicitly
+    # a diagnostic safety question. A generic safety_intent like
+    # "no_diagnosis_constraint" (user asked "sans diagnostic") should not
+    # trigger the stronger refusal phrasing — prefer the neutral summary.
+    if intent == "diagnostic_safety_question" or safety_intent == "diagnostic_safety_question":
         return "Conclusion technique : aucune conclusion diagnostique ne peut être tirée uniquement de ces résultats."
 
     evidences = list(evidence_pack.get("evidences") or evidence_pack.get("results") or [])

@@ -22,6 +22,12 @@ from scripts.generation.model_settings import (
 )
 
 
+def _debug_or_devtest_enabled() -> bool:
+    if str(os.getenv("CHAT_DEBUG_ERRORS", "")).strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    return str(os.getenv("APP_ENV", "")).strip().lower() in {"dev", "development", "test", "local"}
+
+
 def to_source_items(result: dict[str, Any]) -> list[SourceItem]:
     items: list[SourceItem] = []
 
@@ -235,12 +241,15 @@ def process_chat(
         )
 
         query = f"{payload.message} doc_id {payload.document_id}" if payload.document_id else payload.message
+        requested_model_override = str(payload.llm_model_override or "").strip() or None
+        allow_model_override = _debug_or_devtest_enabled()
+        model_for_request = requested_model_override if (allow_model_override and requested_model_override) else DEFAULT_LLM_MODEL
         generation = run_generation(
             query=query,
             top_k=5,
             mode="hybrid",
             provider=DEFAULT_LLM_PROVIDER,
-            model=DEFAULT_LLM_MODEL,
+            model=model_for_request,
             temperature=DEFAULT_LLM_TEMPERATURE,
             num_ctx=DEFAULT_LLM_NUM_CTX,
             max_tokens=max(600, DEFAULT_LLM_MAX_TOKENS),
@@ -353,6 +362,13 @@ def process_chat(
         qu = generation.get("query_understanding") if isinstance(generation.get("query_understanding"), dict) else {}
         displayed_evidences = _resolve_displayed_evidences(generation)
         stage_timings_ms = _stage_timings_from_generation(generation)
+        generation_debug = generation.get("debug") if isinstance(generation.get("debug"), dict) else {}
+        llm_provider = str(generation.get("provider") or "") or None
+        llm_model_requested = str(generation.get("model") or "") or None
+        llm_model_effective = str(generation_debug.get("ollama_model") or "") or None
+        model_verified = None
+        if llm_model_requested or llm_model_effective:
+            model_verified = llm_model_requested == llm_model_effective
         response_debug = {
             "intent": str(qu.get("intent") or "") or None,
             "safety_intent": str(qu.get("safety_intent") or "") or None,
@@ -361,13 +377,29 @@ def process_chat(
             "requested_doc_ids": list(qu.get("requested_doc_ids") or []),
             "requested_analytes": list(qu.get("requested_analytes") or []),
             "query_understanding": qu if qu else None,
-            "selected_route": str(((generation.get("debug") or {}).get("selected_route") or "")) or None,
-            "route_reason": str(((generation.get("debug") or {}).get("route_reason") or "")) or None,
-            "evidence_rows_preview": list(((generation.get("debug") or {}).get("evidence_rows_preview") or [])),
-            "included_rows": list(((generation.get("debug") or {}).get("included_rows") or [])),
-            "excluded_rows": list(((generation.get("debug") or {}).get("excluded_rows") or [])),
-            "fallback_reason": str(((generation.get("debug") or {}).get("fallback_reason") or "")) or None,
-            "generation_mode_before_fallback": str(((generation.get("debug") or {}).get("generation_mode_before_fallback") or "")) or None,
+            "selected_route": str((generation_debug.get("selected_route") or "")) or None,
+            "route_reason": str((generation_debug.get("route_reason") or "")) or None,
+            "evidence_rows_preview": list((generation_debug.get("evidence_rows_preview") or [])),
+            "included_rows": list((generation_debug.get("included_rows") or [])),
+            "excluded_rows": list((generation_debug.get("excluded_rows") or [])),
+            "fallback_reason": str((generation_debug.get("fallback_reason") or "")) or None,
+            "generation_mode_before_fallback": str((generation_debug.get("generation_mode_before_fallback") or "")) or None,
+            "llm_provider": llm_provider,
+            "llm_model_override_requested": requested_model_override,
+            "llm_model_override_allowed": allow_model_override,
+            "llm_model_override_applied": bool(requested_model_override and allow_model_override),
+            "llm_model_override_rejected": bool(requested_model_override and not allow_model_override),
+            "llm_model_requested": llm_model_requested,
+            "llm_model_effective": llm_model_effective,
+            "ollama_model": str((generation_debug.get("ollama_model") or "")) or None,
+            "model_verified": model_verified,
+            "llm_writer_attempted": bool(generation_debug.get("llm_writer_allowed") or generation_debug.get("llm_writer_used")),
+            "llm_writer_accepted": str((generation_debug.get("generation_writer") or "")).strip().lower() == "llm_writer",
+            "hard_gate_rejected": bool(generation_debug.get("hard_gate_triggered")),
+            "repair_attempted": bool(generation_debug.get("llm_repair_attempted") or generation_debug.get("llm_candidate_repair_used")),
+            "repair_success": bool(generation_debug.get("llm_repair_attempted") or generation_debug.get("llm_candidate_repair_used"))
+            and not bool(generation_debug.get("hard_gate_triggered"))
+            and str((generation_debug.get("generation_writer") or "")).strip().lower() == "llm_writer",
             "validation": {
                 "status": str(validation.get("validation_status") or "") or None,
                 "errors": validation_errors,
@@ -375,7 +407,7 @@ def process_chat(
                 "unsupported_claims": list(validation.get("unsupported_claims") or []),
             },
             "stage_timings_ms": stage_timings_ms,
-            "raw_debug": (generation.get("debug") if isinstance(generation.get("debug"), dict) else None),
+            "raw_debug": generation_debug,
         }
 
         return ChatResponse(

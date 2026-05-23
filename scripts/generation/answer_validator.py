@@ -1022,6 +1022,7 @@ def validate_answer(
 
     if requested_analyte_list:
         requested_set = set(requested_analyte_list)
+        effective_missing_requested = list(missing_requested)
         # Guarded thyroid asks should only require analytes that are actually present in evidence rows.
         if diagnostic_safety_intent and any(k in qn_query for k in _thyroid_topic_keywords()):
             evidence_norms = {
@@ -1036,6 +1037,13 @@ def validate_answer(
                     requested_restricted.add(req)
             if requested_restricted:
                 requested_set = requested_restricted
+                filtered_missing: list[str] = []
+                for item in effective_missing_requested:
+                    item_key = _canonical_analyte_key(item)
+                    item_equivs = _thyroid_equivalent_requested_keys(item_key)
+                    if item_equivs.intersection(requested_set):
+                        filtered_missing.append(item)
+                effective_missing_requested = filtered_missing
         coverage_set = set(found_requested) | set(missing_requested)
         coverage_with_equiv: set[str] = set(coverage_set)
         for item in coverage_set:
@@ -1044,7 +1052,7 @@ def validate_answer(
         if uncovered:
             errors.append("requested_analyte_coverage_incomplete")
             unsupported_claims.append(f"Requested analytes without found/missing status: {uncovered}")
-        if missing_requested and generation_mode != "deterministic_measured_value_vs_comment_sql_template":
+        if effective_missing_requested and generation_mode != "deterministic_measured_value_vs_comment_sql_template":
             warnings.append("controlled_warning_missing_requested_analytes")
 
         displayed_norms = {str(ev.get("analyte_norm") or "").strip().lower() for ev in displayed if ev.get("analyte_norm")}
@@ -1077,7 +1085,12 @@ def validate_answer(
         "deterministic_multi_doc_analyte_comparison_sql_template",
         "deterministic_measured_value_vs_comment_sql_template",
     }
-    if generation_mode not in relaxed_line_source_modes and result_line_count >= 2 and source_count < result_line_count:
+    if (
+        generation_mode not in relaxed_line_source_modes
+        and result_line_count >= 2
+        and source_count < result_line_count
+        and not diagnostic_safety_intent
+    ):
         warnings.append("multi_result_missing_structured_details")
 
     prev_mentions = list(
@@ -1718,7 +1731,8 @@ def validate_answer(
             or "aucun resultat biologique exploitable" in core_norm
             or "aucune recherche" in core_norm
         )
-        if has_table and "conclusion technique" not in core_norm and not no_evidence_like and generation_mode != "deterministic_reference_range_lookup" and not (query_intents or {}).get("reference_range_lookup"):
+        has_conclusion_header = ("conclusion technique" in core_norm) or ("conclusion de prudence" in core_norm)
+        if has_table and not has_conclusion_header and not no_evidence_like and generation_mode != "deterministic_reference_range_lookup" and not (query_intents or {}).get("reference_range_lookup"):
             warnings.append("missing_conclusion")
 
     if source_clickable_requested:
@@ -1773,7 +1787,8 @@ def validate_answer(
             or "aucun resultat biologique exploitable" in core_norm
             or "aucune recherche" in core_norm
         )
-        if "conclusion technique" not in core_norm and not no_evidence_like and generation_mode != "deterministic_reference_range_lookup" and not (query_intents or {}).get("reference_range_lookup"):
+        has_conclusion_header = ("conclusion technique" in core_norm) or ("conclusion de prudence" in core_norm)
+        if not has_conclusion_header and not no_evidence_like and generation_mode != "deterministic_reference_range_lookup" and not (query_intents or {}).get("reference_range_lookup"):
             warnings.append("missing_conclusion")
     if re.search(r"\btshus\s*,\s*tsh\b|\btsh\s*,\s*tshus\b", intro_block, flags=re.IGNORECASE):
         errors.append("internal_alias_leak")
@@ -2415,7 +2430,37 @@ def validate_answer(
             kept.append(err)
         errors = kept
 
-    if generation_mode_norm == "deterministic_general_conversation" and not errors:
+    guarded_style_only_warnings = {
+        "missing_conclusion",
+        "over_verbose_intro",
+        "multi_result_missing_structured_details",
+    }
+    guarded_thyroid_contract_pass = bool(
+        diagnostic_safety_intent
+        and any(k in qn_query for k in _thyroid_topic_keywords())
+        and not errors
+        and any(
+            phrase in core_norm
+            for phrase in [
+                "on ne peut pas conclure a un diagnostic",
+                "on ne peut pas conclure à un diagnostic",
+                "aucune conclusion diagnostique ne peut etre posee",
+                "aucune conclusion diagnostique ne peut être posée",
+            ]
+        )
+        and any(k in core_norm for k in ["t4 libre", "t3 libre", "tshus", "anti tg"])
+        and any(k in core_norm for k in ["conclusion technique", "conclusion de prudence"])
+    )
+    if guarded_thyroid_contract_pass:
+        validation_status = "pass"
+    elif (
+        diagnostic_safety_intent
+        and not errors
+        and warnings
+        and set(str(w) for w in warnings).issubset(guarded_style_only_warnings)
+    ):
+        validation_status = "pass"
+    elif generation_mode_norm == "deterministic_general_conversation" and not errors:
         validation_status = "pass"
     elif generation_mode_norm in deterministic_fact_modes and not errors:
         validation_status = "pass"

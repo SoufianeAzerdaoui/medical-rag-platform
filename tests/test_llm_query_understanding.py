@@ -62,6 +62,28 @@ class TestLlmQueryUnderstanding(unittest.TestCase):
         self.assertEqual(merged.requested_date_iso, "2024-07-19")
         self.assertTrue(bool(dbg.get("used")))
 
+    def test_llm_does_not_override_reference_range_selection(self) -> None:
+        base = parse_query_understanding("plage calcium pour homme > 60 ans")
+        llm_json = (
+            '{"intent":"reference_range_lookup","requested_analytes":["calcium"],'
+            '"requested_reference_profile":{"sex":"male","age_operator":">","age":60,"age_unit":"years"},'
+            '"use_patient_profile":false,"request_all_reference_ranges":true,'
+            '"output_format":"table","answer_style":"standard"}'
+        )
+        with patch("generate_answer._is_feature_enabled", return_value=True):
+            merged, dbg = _llm_assisted_query_understanding(
+                query="plage calcium pour homme > 60 ans",
+                base_qu=base,
+                llm_client=_FakeLLMClient(llm_json),
+                provider="ollama",
+                model="llama3.2:latest",
+                timeout=20,
+            )
+        self.assertEqual(merged.intent, "reference_range_lookup")
+        self.assertFalse(merged.request_all_reference_ranges)
+        self.assertEqual(merged.requested_reference_profile, base.requested_reference_profile)
+        self.assertTrue(bool(dbg.get("used")))
+
     def test_enabled_flag_invalid_json_fallback(self) -> None:
         base = parse_query_understanding("donne moi le resultat de AMH")
         with patch("generate_answer._is_feature_enabled", return_value=True):

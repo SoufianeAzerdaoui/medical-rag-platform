@@ -353,10 +353,17 @@ def _llm_assisted_query_understanding(
         report_type = str(parsed.get("requested_report_type") or "").strip() or base_qu.requested_report_type
         date_iso = str(parsed.get("requested_date_iso") or "").strip() or base_qu.requested_date_iso
         profile = parsed.get("requested_reference_profile")
-        if not isinstance(profile, dict):
+        if not isinstance(profile, dict) or base_qu.requested_reference_profile:
             profile = base_qu.requested_reference_profile
-        use_patient_profile = bool(parsed.get("use_patient_profile")) if "use_patient_profile" in parsed else base_qu.use_patient_profile
-        request_all = bool(parsed.get("request_all_reference_ranges")) if "request_all_reference_ranges" in parsed else base_qu.request_all_reference_ranges
+
+        use_patient_profile = base_qu.use_patient_profile
+        if not use_patient_profile and "use_patient_profile" in parsed:
+            use_patient_profile = bool(parsed.get("use_patient_profile"))
+
+        request_all = base_qu.request_all_reference_ranges
+        if not request_all and not base_qu.requested_reference_profile and "request_all_reference_ranges" in parsed:
+            request_all = bool(parsed.get("request_all_reference_ranges"))
+
         output_format = str(parsed.get("output_format") or "").strip().lower() or base_qu.output_format
         answer_style = str(parsed.get("answer_style") or "").strip().lower() or base_qu.answer_style
         merged = replace(
@@ -6478,6 +6485,8 @@ def _build_route_specific_short_fallback_answer(
             max_lines=getattr(query_understanding, "requested_summary_points", None),
             no_diagnosis=no_diag,
         )
+    if str(selected_route or "").strip().lower() == "doc_scoped_medical_interpretation_guarded":
+        return _ensure_guarded_thyroid_conclusion(default_answer)
     return default_answer
 
 
@@ -6602,6 +6611,7 @@ def _ensure_guarded_thyroid_conclusion(answer: str) -> str:
     text = str(answer or "").strip()
     if not text:
         return text
+    text = re.sub(r"(?im)^conclusion de prudence\s*:?", "Conclusion technique :", text)
     strong_patterns = _safety_guardrail_list(
         ["diagnostic_safety", "strong_suggestion_patterns"],
         [
@@ -7194,7 +7204,7 @@ def _compose_level2_micro_prompt_answer(
             "Structure attendue :\n"
             "- Faits techniques observés\n"
             "- Limites\n"
-            "- Conclusion de prudence\n\n"
+            "- Conclusion technique\n\n"
             "Règles :\n"
             "- Ne modifie aucune valeur, unité, référence ou statut.\n"
             "- N’affirme aucun diagnostic.\n"
@@ -8845,20 +8855,47 @@ def run_generation(
     sqlite_path = idx / "medical_rag.sqlite"
     t_qu0 = time.perf_counter()
     query_understanding = parse_query_understanding(q)
-    query_understanding, llm_qu_debug = _llm_assisted_query_understanding(
-        query=q,
-        base_qu=query_understanding,
-        llm_client=llm_client,
-        provider=provider,
-        model=model,
-        timeout=timeout,
+    reference_lookup_guard = bool(
+        str(getattr(query_understanding, "intent", "") or "").strip().lower() == "reference_range_lookup"
+        or _should_force_reference_range_lookup(qn, query_understanding)
     )
+    if reference_lookup_guard:
+        llm_qu_debug = {
+            "enabled": False,
+            "used": False,
+            "error": None,
+            "skipped": True,
+            "reason": "deterministic_reference_range_lookup_guard",
+        }
+    else:
+        query_understanding, llm_qu_debug = _llm_assisted_query_understanding(
+            query=q,
+            base_qu=query_understanding,
+            llm_client=llm_client,
+            provider=provider,
+            model=model,
+            timeout=timeout,
+        )
     query_plan = understand_medical_query(
         q,
         llm_client=llm_client,
         model=model,
         timeout=timeout,
     )
+    _validate_answer = globals()["validate_answer"]
+    hard_gate_errors_at_any_point: list[str] = []
+    hard_gate_was_triggered = False
+
+    def validate_answer(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        result = _validate_answer(*args, **kwargs)
+        if isinstance(result, dict):
+            errors = [str(e) for e in (result.get("errors") or []) if e is not None]
+            gate_hits = sorted(set(errors).intersection(HARD_GATE_ERRORS))
+            for error_name in gate_hits:
+                if error_name not in hard_gate_errors_at_any_point:
+                    hard_gate_errors_at_any_point.append(error_name)
+        return result
+
     planner_intent_to_qu_intent = {
         "single_analyte_lookup": "single_analyte_lookup",
         "doc_scoped_abnormal_results": "doc_scoped_abnormal_results",
@@ -11848,8 +11885,13 @@ def run_generation(
             recent_style_history=style_history,
         )
         validation_errors_set = {str(e) for e in (validation or {}).get("errors") or []}
-        hard_gate_triggered = sorted(validation_errors_set.intersection(HARD_GATE_ERRORS))
-        if compose_mode == "hybrid_structured_llm_writer" and hard_gate_triggered:
+        hard_gate_errors_detected = sorted(validation_errors_set.intersection(HARD_GATE_ERRORS))
+        hard_gate_triggered_runtime = bool(hard_gate_errors_detected)
+        hard_gate_errors_at_any_point = sorted(
+            set(hard_gate_errors_at_any_point or []).union(hard_gate_errors_detected)
+        )
+        hard_gate_was_triggered = hard_gate_was_triggered or hard_gate_triggered_runtime
+        if compose_mode == "hybrid_structured_llm_writer" and hard_gate_triggered_runtime:
             validation = dict(validation or {})
             validation["validation_status"] = "fail"
 
@@ -12038,6 +12080,11 @@ def run_generation(
             or str(generation_mode or "") in {"hybrid_structured_llm_writer", "llm"}
         )
         if llm_like_mode and str((validation or {}).get("validation_status") or "fail") == "fail":
+            hard_gate_was_triggered = True
+            hard_gate_errors_at_any_point = sorted(
+                set(hard_gate_errors_at_any_point or [])
+                | (set(str(e) for e in (validation or {}).get("errors") or []) & set(HARD_GATE_ERRORS))
+            )
             t_fb0 = time.perf_counter()
             fallback_composed = compose_professional_answer(
                 user_question=q,
@@ -12135,6 +12182,13 @@ def run_generation(
         hard_gate_errors = set(str(e) for e in (validation or {}).get("errors") or [])
         hard_gate_hits = sorted(hard_gate_errors.intersection(HARD_GATE_ERRORS))
         hard_gate_triggered = bool(hard_gate_hits)
+        if hard_gate_was_triggered:
+            hard_gate_hits = sorted(set(hard_gate_hits).union(set(hard_gate_errors_at_any_point or [])))
+            hard_gate_triggered = True
+        elif hard_gate_errors_at_any_point:
+            hard_gate_hits = sorted(set(hard_gate_hits).union(set(hard_gate_errors_at_any_point)))
+            hard_gate_triggered = True
+        hard_gate_errors_at_any_point = list(hard_gate_hits)
         if hard_gate_triggered:
             fallback_mode = _select_hard_gate_fallback_mode(
                 hard_gate_errors=hard_gate_errors,
@@ -12163,6 +12217,13 @@ def run_generation(
                     source_citations=source_citations,
                 )
                 final_answer = str(fallback_composed.get("answer") or final_answer).strip()
+                final_answer = _build_route_specific_short_fallback_answer(
+                    selected_route=selected_route,
+                    query_understanding=query_understanding,
+                    displayed_evidences=displayed_evidences,
+                    evidence_all_summary=summary_all_evidences,
+                    default_answer=final_answer,
+                )
                 if fallback_mode == "deterministic_diagnostic_refusal_with_technical_summary":
                     refusal = "Je ne peux pas poser ni évoquer un diagnostic à partir de ces résultats seuls."
                     if not final_answer.lower().startswith(refusal.lower()):

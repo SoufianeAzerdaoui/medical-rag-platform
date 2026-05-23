@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import unittest
 from typing import Iterable
 
@@ -209,6 +210,67 @@ class TestChatApiContract(unittest.TestCase):
         self.assertEqual(response.validation_status, "pass")
         self.assertEqual(len(response.displayed_evidences), 5)
         self.assertIsInstance((response.debug or {}).get("stage_timings_ms"), dict)
+
+    def test_llm_model_override_is_applied_only_in_devtest(self) -> None:
+        captured: list[dict] = []
+
+        def _fake_run_generation(**kwargs):
+            captured.append(dict(kwargs))
+            return {
+                "answer": "ok",
+                "generation_time_seconds": 0.1,
+                "generation_mode": "hybrid_structured_llm_writer",
+                "provider": "ollama",
+                "model": kwargs.get("model"),
+                "validation": {"validation_status": "pass", "warnings": [], "errors": []},
+                "quality_report": {"final_status": "pass"},
+                "query_understanding": {"intent": "doc_scoped_summary", "requested_doc_ids": ["report_24"]},
+                "sources": [],
+                "displayed_evidences": [],
+                "debug": {
+                    "generation_writer": "llm_writer",
+                    "ollama_model": kwargs.get("model"),
+                },
+            }
+
+        old_app_env = os.environ.get("APP_ENV")
+        old_debug = os.environ.get("CHAT_DEBUG_ERRORS")
+        try:
+            os.environ["APP_ENV"] = "test"
+            os.environ.pop("CHAT_DEBUG_ERRORS", None)
+            response = chat_service.process_chat(
+                payload=ChatRequest(conversation_id="conv_dev", message="q", llm_model_override="qwen2.5:7b-instruct"),
+                current_user={"id": "u1"},
+                state_service=_FakeStateService(),
+                run_generation=_fake_run_generation,
+                logger=logging.getLogger("test.chat.contract"),
+            )
+            self.assertEqual(captured[-1]["model"], "qwen2.5:7b-instruct")
+            self.assertEqual((response.debug or {}).get("llm_model_requested"), "qwen2.5:7b-instruct")
+            self.assertEqual((response.debug or {}).get("llm_model_effective"), "qwen2.5:7b-instruct")
+            self.assertTrue(bool((response.debug or {}).get("llm_model_override_applied")))
+
+            os.environ["APP_ENV"] = "prod"
+            os.environ.pop("CHAT_DEBUG_ERRORS", None)
+            response_prod = chat_service.process_chat(
+                payload=ChatRequest(conversation_id="conv_prod", message="q", llm_model_override="qwen2.5:7b-instruct"),
+                current_user={"id": "u1"},
+                state_service=_FakeStateService(),
+                run_generation=_fake_run_generation,
+                logger=logging.getLogger("test.chat.contract"),
+            )
+            self.assertNotEqual(captured[-1]["model"], "qwen2.5:7b-instruct")
+            self.assertFalse(bool((response_prod.debug or {}).get("llm_model_override_applied")))
+            self.assertTrue(bool((response_prod.debug or {}).get("llm_model_override_rejected")))
+        finally:
+            if old_app_env is None:
+                os.environ.pop("APP_ENV", None)
+            else:
+                os.environ["APP_ENV"] = old_app_env
+            if old_debug is None:
+                os.environ.pop("CHAT_DEBUG_ERRORS", None)
+            else:
+                os.environ["CHAT_DEBUG_ERRORS"] = old_debug
 
 
 if __name__ == "__main__":

@@ -12,10 +12,10 @@ Règles :
 - Écris explicitement : « On ne peut pas conclure à un diagnostic à partir de ces seuls éléments. »
 - Ne propose aucun traitement.
 
-- Évite les formulations cliniques générales (cause sous-jacente, évaluation clinique, diverses conditions médicales).
+- Évite les formulations cliniques générales ([eé]valuation compl[eè]te, cause sous[-s]jacente, examens compl[eé]mentaires, il est essentiel de).
 - Utilise un vocabulaire technique factuel: profil biologique discordant, interprétation limitée aux données disponibles.
 
-- N'écris jamais que les résultats suggèrent, évoquent ou sont compatibles avec une hyperthyroïdie.
+- N'écris jamais de formulation de type: sugg[eè]reunehyperthyro, compatibleavecunehyperthyro, [eé]voqueunehyperthyro.
 - Écris seulement: profil biologique discordant pour une hyperthyroïdie primaire.
 
 Faits anormaux :

@@ -1,261 +1,243 @@
 {
   "base_url": "http://127.0.0.1:8000",
-  "conversation_id": "conv_d2dc8732-3190-4bd4-be07-9dede4e537b1",
-  "started_at_epoch": 27805.130943638,
-  "elapsed_seconds": 0.055,
-  "score": "0/10",
-  "passed": 0,
+  "conversation_id": "conv_256bf6e2-81a6-4411-a12b-2f1f87df86fa",
+  "started_at_epoch": 21048.780161851,
+  "elapsed_seconds": 1.197,
+  "score": "10/10",
+  "passed": 10,
   "total": 10,
   "results": [
     {
       "test_number": 1,
       "question": "Quelle est la plage physiologique de l’acide urique chez l’homme dans les rapports disponibles ?",
-      "selected_route": null,
-      "generation_mode": null,
-      "validation_status": "fail",
-      "quality_final_status": null,
-      "response_time": 0.0,
+      "selected_route": "reference_range_lookup",
+      "generation_mode": "deterministic_reference_range_lookup",
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.081,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
-      "requested_analytes": [],
+      "requested_analytes": [
+        "acide_urique"
+      ],
       "requested_doc_ids": [],
       "technical_condition": null,
       "displayed_count": 0,
-      "sources_count": 0,
-      "validation_errors": [
-        "runner_exception:Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 111] Connection refused>"
-      ],
+      "sources_count": 3,
+      "validation_errors": [],
       "validation_warnings": [],
-      "status": "FAIL",
-      "fail_reasons": [
-        "runner_exception: Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 111] Connection refused>"
-      ],
-      "answer_preview": ""
+      "status": "PASS",
+      "fail_reasons": [],
+      "answer_preview": "Pour l’Acide urique, la valeur de référence pour un homme est 35–72 mg/l.\n\nCette plage a été retrouvée dans plusieurs rapports. Précisez une date si vous voulez une source documentaire unique."
     },
     {
       "test_number": 2,
       "question": "Quelle est la plage normale de l’acide urique chez la femme selon les rapports ?",
-      "selected_route": null,
-      "generation_mode": null,
-      "validation_status": "fail",
-      "quality_final_status": null,
-      "response_time": 0.0,
+      "selected_route": "reference_range_lookup",
+      "generation_mode": "deterministic_reference_range_lookup",
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.059,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
-      "requested_analytes": [],
+      "requested_analytes": [
+        "acide_urique"
+      ],
       "requested_doc_ids": [],
       "technical_condition": null,
       "displayed_count": 0,
-      "sources_count": 0,
-      "validation_errors": [
-        "runner_exception:Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 111] Connection refused>"
-      ],
+      "sources_count": 3,
+      "validation_errors": [],
       "validation_warnings": [],
-      "status": "FAIL",
-      "fail_reasons": [
-        "runner_exception: Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 111] Connection refused>"
-      ],
-      "answer_preview": ""
+      "status": "PASS",
+      "fail_reasons": [],
+      "answer_preview": "Pour l’Acide urique, la plage physiologique indiquée pour une femme est 26–60 mg/l.\n\nCette plage a été retrouvée dans plusieurs rapports. Précisez une date si vous voulez une source documentaire unique."
     },
     {
       "test_number": 3,
       "question": "Dans le report 24, quelle est la valeur d’acide urique et est-elle dans la référence pour une femme ?",
-      "selected_route": null,
-      "generation_mode": null,
-      "validation_status": "fail",
-      "quality_final_status": null,
-      "response_time": 0.0,
+      "selected_route": "doc_scoped_single_analyte_status",
+      "generation_mode": "deterministic_single_analyte_lookup",
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.051,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
-      "requested_analytes": [],
-      "requested_doc_ids": [],
-      "technical_condition": null,
-      "displayed_count": 0,
-      "sources_count": 0,
-      "validation_errors": [
-        "runner_exception:Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 111] Connection refused>"
+      "requested_analytes": [
+        "acide_urique"
       ],
+      "requested_doc_ids": [
+        "report_24"
+      ],
+      "technical_condition": "within_reference",
+      "displayed_count": 1,
+      "sources_count": 1,
+      "validation_errors": [],
       "validation_warnings": [],
-      "status": "FAIL",
-      "fail_reasons": [
-        "runner_exception: Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 111] Connection refused>"
-      ],
-      "answer_preview": ""
+      "status": "PASS",
+      "fail_reasons": [],
+      "answer_preview": "Dans report_24, les valeurs demandées ont été extraites.\n\nACIDE URIQUE = 40 mg/l ; référence : Homme : 35 - 72 mg/l Femme: 26-60 mg/l ; statut technique : dans la référence.\n\nConclusion technique : la valeur est dans l’intervalle de référence indiqué.\n\nSources :\n- [report (24).pdf — page 1, ligne 1](/viewer/pdf?doc_id=report_24&page=1)"
     },
     {
       "test_number": 4,
       "question": "Dans le report 29, l’acide urique est-il bas par rapport à la référence féminine ? Donne valeur, référence et statut.",
-      "selected_route": null,
-      "generation_mode": null,
-      "validation_status": "fail",
-      "quality_final_status": null,
-      "response_time": 0.0,
+      "selected_route": "doc_scoped_single_analyte_status",
+      "generation_mode": "deterministic_single_analyte_lookup",
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.05,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
-      "requested_analytes": [],
-      "requested_doc_ids": [],
-      "technical_condition": null,
-      "displayed_count": 0,
-      "sources_count": 0,
-      "validation_errors": [
-        "runner_exception:Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 111] Connection refused>"
+      "requested_analytes": [
+        "acide_urique"
       ],
+      "requested_doc_ids": [
+        "report_29"
+      ],
+      "technical_condition": "below_reference",
+      "displayed_count": 1,
+      "sources_count": 1,
+      "validation_errors": [],
       "validation_warnings": [],
-      "status": "FAIL",
-      "fail_reasons": [
-        "runner_exception: Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 111] Connection refused>"
-      ],
-      "answer_preview": ""
+      "status": "PASS",
+      "fail_reasons": [],
+      "answer_preview": "Les données ci-dessous proviennent de report_29.\n\nACIDE URIQUE = 11.11 mg/l ; référence : Homme : 35 - 72 mg/l Femme: 26-60 mg/l ; statut technique : en dessous de la référence.\n\nConclusion technique : ACIDE URIQUE est en dessous de l’intervalle de référence indiqué.\n\nSources :\n- [report (29).pdf — page 1, ligne 3](/viewer/pdf?doc_id=report_29&page=1)"
     },
     {
       "test_number": 5,
       "question": "Dans tous les rapports disponibles, quels documents montrent un acide urique en dessous de la référence ? Donne document, valeur, référence et statut.",
-      "selected_route": null,
-      "generation_mode": null,
-      "validation_status": "fail",
-      "quality_final_status": null,
-      "response_time": 0.0,
+      "selected_route": "global_analyte_abnormal_search",
+      "generation_mode": "deterministic_global_analyte_abnormal_search",
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.078,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
-      "requested_analytes": [],
+      "requested_analytes": [
+        "acide_urique"
+      ],
       "requested_doc_ids": [],
-      "technical_condition": null,
-      "displayed_count": 0,
-      "sources_count": 0,
-      "validation_errors": [
-        "runner_exception:Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 111] Connection refused>"
-      ],
+      "technical_condition": "below_reference",
+      "displayed_count": 5,
+      "sources_count": 5,
+      "validation_errors": [],
       "validation_warnings": [],
-      "status": "FAIL",
-      "fail_reasons": [
-        "runner_exception: Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 111] Connection refused>"
-      ],
-      "answer_preview": ""
+      "status": "PASS",
+      "fail_reasons": [],
+      "answer_preview": "J’ai recherché les patients ayant ACIDE URIQUE en dessous de la référence.\n\n5 valeurs exploitables ont été retrouvées.\n\n| Patient | Report | Analyte | Valeur actuelle | Référence | Statut |\n| --- | --- | --- | --- | --- | --- |\n| PAT_000001 | report_10 | ACIDE URIQUE | 7 mg/l | Homme : 35 - 72 mg/l Femme: 26-60 mg/l | en dessous de la référence |\n| PAT_000001 | report_12 | ACIDE URIQUE | 23 mg/l | Homme : 35 - 72 mg/l Femme: 26-60 mg/l | en dessous de la référence |\n| PAT_000001 | report_2 | ACIDE URIQUE | 12 mg/l | Homme : 35 - 72 mg/l Femme: 26-60 mg/l | en dessous de la référence |\n| PAT_00"
     },
     {
       "test_number": 6,
       "question": "Quels rapports comportent une recherche de toxiques urinaires, et quelles familles sont testées ?",
-      "selected_route": null,
-      "generation_mode": null,
-      "validation_status": "fail",
-      "quality_final_status": null,
-      "response_time": 0.0,
+      "selected_route": "global_toxicology_search",
+      "generation_mode": "deterministic_global_toxicology_search",
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.118,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [],
       "requested_doc_ids": [],
       "technical_condition": null,
-      "displayed_count": 0,
-      "sources_count": 0,
-      "validation_errors": [
-        "runner_exception:Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 111] Connection refused>"
-      ],
+      "displayed_count": 5,
+      "sources_count": 5,
+      "validation_errors": [],
       "validation_warnings": [],
-      "status": "FAIL",
-      "fail_reasons": [
-        "runner_exception: Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 111] Connection refused>"
-      ],
-      "answer_preview": ""
+      "status": "PASS",
+      "fail_reasons": [],
+      "answer_preview": "Toxicologie urinaire — rapports retrouvés\n\n| Document | Nature | Familles / paramètres testés | Nombre de lignes exploitées |\n| --- | --- | --- | --- |\n| report_27 | URINE | amphétamine, benzodiazépine, cocaïne, ecstasy, opiacés, phencyclidine | 18 |\n| report_25 | URINE | amphétamine, benzodiazépine, cocaïne, ecstasy, opiacés, phencyclidine | 13 |\n| report_14 | URINE | amphétamine, benzodiazépine, cocaïne, ecstasy, opiacés, phencyclidine | 16 |\n| report_4 | URINE | amphétamine, benzodiazépine, cocaïne, ecstasy, opiacés, phencyclidine | 18 |\n| report_3 | URINE | amphétamine, benzodiazépine, coc"
     },
     {
       "test_number": 7,
       "question": "Quels rapports contiennent une pharmacotoxicologie sanguine, et quels paramètres sont recherchés ?",
-      "selected_route": null,
-      "generation_mode": null,
-      "validation_status": "fail",
-      "quality_final_status": null,
-      "response_time": 0.0,
+      "selected_route": "global_toxicology_search",
+      "generation_mode": "deterministic_global_toxicology_search",
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.083,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [],
       "requested_doc_ids": [],
       "technical_condition": null,
-      "displayed_count": 0,
-      "sources_count": 0,
-      "validation_errors": [
-        "runner_exception:Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 111] Connection refused>"
-      ],
+      "displayed_count": 3,
+      "sources_count": 3,
+      "validation_errors": [],
       "validation_warnings": [],
-      "status": "FAIL",
-      "fail_reasons": [
-        "runner_exception: Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 111] Connection refused>"
-      ],
-      "answer_preview": ""
+      "status": "PASS",
+      "fail_reasons": [],
+      "answer_preview": "Toxicologie sanguine — rapports retrouvés\n\n| Document | Nature | Paramètres recherchés | Nombre de lignes exploitées |\n| --- | --- | --- | --- |\n| report_26 | SANG | carbamazépine, éthanol, lithium | 3 |\n| report_21 | SANG | carbamazépine, éthanol, lithium | 3 |\n| report_15 | SANG | carbamazépine, lithium | 2 |\n\nConclusion technique : synthèse groupée par document à partir des sections et analytes toxicologiques extraits."
     },
     {
       "test_number": 8,
       "question": "Dans le report 27, quels résultats de pharmacotoxicologie urinaire dépassent leur seuil de référence ?",
-      "selected_route": null,
-      "generation_mode": null,
-      "validation_status": "fail",
-      "quality_final_status": null,
-      "response_time": 0.0,
+      "selected_route": "doc_scoped_toxicology_threshold_search",
+      "generation_mode": "deterministic_doc_scoped_toxicology_threshold_search",
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.079,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [],
-      "requested_doc_ids": [],
-      "technical_condition": null,
-      "displayed_count": 0,
-      "sources_count": 0,
-      "validation_errors": [
-        "runner_exception:Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 111] Connection refused>"
+      "requested_doc_ids": [
+        "report_27"
       ],
+      "technical_condition": "above_reference",
+      "displayed_count": 2,
+      "sources_count": 2,
+      "validation_errors": [],
       "validation_warnings": [],
-      "status": "FAIL",
-      "fail_reasons": [
-        "runner_exception: Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 111] Connection refused>"
-      ],
-      "answer_preview": ""
+      "status": "PASS",
+      "fail_reasons": [],
+      "answer_preview": "Résultats toxicologiques au-dessus du seuil\n\n- PHENCYCLIDINE QUALITATIF: 65 non spécifiée (référence: <25; statut: au-dessus de la référence)\n- PHENCYCLIDINE SEMI-QUANTITATIF: 100 ng/ml (référence: <25; statut: au-dessus de la référence)\n\nConclusion technique : seules les lignes au-dessus du seuil sont affichées."
     },
     {
       "test_number": 9,
       "question": "Dans le report 25, les toxiques urinaires sont-ils majoritairement sous les seuils ? Donne une réponse technique sans diagnostic.",
-      "selected_route": null,
-      "generation_mode": null,
-      "validation_status": "fail",
-      "quality_final_status": null,
-      "response_time": 0.0,
+      "selected_route": "doc_scoped_toxicology_summary",
+      "generation_mode": "deterministic_doc_scoped_toxicology_summary",
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.112,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [],
-      "requested_doc_ids": [],
-      "technical_condition": null,
-      "displayed_count": 0,
-      "sources_count": 0,
-      "validation_errors": [
-        "runner_exception:Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 111] Connection refused>"
+      "requested_doc_ids": [
+        "report_25"
       ],
+      "technical_condition": "any_result",
+      "displayed_count": 13,
+      "sources_count": 13,
+      "validation_errors": [],
       "validation_warnings": [],
-      "status": "FAIL",
-      "fail_reasons": [
-        "runner_exception: Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 111] Connection refused>"
-      ],
-      "answer_preview": ""
+      "status": "PASS",
+      "fail_reasons": [],
+      "answer_preview": "Synthèse toxicologique technique\n\n- Sous seuil: 10\n- Au-dessus du seuil: 3\n- Référence manquante/ambiguë: 0\n\nConclusion technique : profil majoritairement sous les seuils, sous réserve des lignes ambiguës. Aucune interprétation diagnostique n’est fournie."
     },
     {
       "test_number": 10,
       "question": "Dans le report 12, la phosphatase alcaline à 40 UI/L est-elle hors référence chez une femme adulte ?",
-      "selected_route": null,
-      "generation_mode": null,
-      "validation_status": "fail",
-      "quality_final_status": null,
-      "response_time": 0.0,
+      "selected_route": "doc_scoped_single_analyte_status",
+      "generation_mode": "deterministic_single_analyte_lookup",
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.051,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
-      "requested_analytes": [],
-      "requested_doc_ids": [],
-      "technical_condition": null,
-      "displayed_count": 0,
-      "sources_count": 0,
-      "validation_errors": [
-        "runner_exception:Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 111] Connection refused>"
+      "requested_analytes": [
+        "phosphatase_alcaline"
       ],
+      "requested_doc_ids": [
+        "report_12"
+      ],
+      "technical_condition": "out_of_reference",
+      "displayed_count": 1,
+      "sources_count": 1,
+      "validation_errors": [],
       "validation_warnings": [],
-      "status": "FAIL",
-      "fail_reasons": [
-        "runner_exception: Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 111] Connection refused>"
-      ],
-      "answer_preview": ""
+      "status": "PASS",
+      "fail_reasons": [],
+      "answer_preview": "Les données ci-dessous proviennent de report_12.\n\nPHOSPHATASE ALCALINE = 40 UI/L ; référence : Femme : 1 à 12 ans: < 500 UI/L > 15 ans: 40 - 150 UI/L Homme : 1 à 12 ans: < 500 UI/L 12 à 15 ans: < 750 UI/L >20 ans: 40 - 150 UI/L ; statut technique : dans la référence.\n\nConclusion technique : la valeur est dans l’intervalle de référence indiqué.\n\nSources :\n- [report (12).pdf — page 2, ligne 20](/viewer/pdf?doc_id=report_12&page=2)"
     }
   ]
 }
