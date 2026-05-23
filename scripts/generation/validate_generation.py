@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from generate_answer import run_generation
+from model_settings import DEFAULT_LLM_MODEL, DEFAULT_LLM_PROVIDER
 
 
 def _now_iso() -> str:
@@ -756,8 +757,8 @@ def run_suite(
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate generation acceptance suite")
-    parser.add_argument("--provider", default="ollama")
-    parser.add_argument("--model", default="qwen3:4b")
+    parser.add_argument("--provider", default=DEFAULT_LLM_PROVIDER)
+    parser.add_argument("--model", default=DEFAULT_LLM_MODEL)
     parser.add_argument("--mode", default="keyword", choices=["keyword", "vector", "hybrid"])
     parser.add_argument("--top-k", type=int, default=8)
     parser.add_argument("--index-dir", default="data/indexes")

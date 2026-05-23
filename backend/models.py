@@ -17,6 +17,7 @@ class ChatRequest(BaseModel):
     history: list[ChatHistoryItem] = Field(default_factory=list)
     document_id: str | None = None
     mode: Literal["general", "document_analysis", "comparison", "summary"] = "general"
+    llm_model_override: str | None = Field(default=None, min_length=1)
 
     def resolved_conversation_id(self) -> str:
         return str(self.conversation_id or self.chat_id or "").strip()
@@ -105,19 +106,27 @@ class ChatResponse(BaseModel):
     quality_report: dict[str, Any] | None = None
     validation_status: Literal["pass", "warning", "fail"] | None = None
     generation_mode: str | None = None
-    generation_writer: Literal[
-        "llm_writer",
-        "professional_fallback",
-        "deterministic_metadata_query",
-        "deterministic_response_transform_json",
-        "deterministic_context_summary",
-    ] | None = None
+    generation_writer: str | None = None
     visualization: dict[str, Any] | None = None
     chart_data: dict[str, Any] | None = None
     patients: list[dict[str, Any]] | None = None
     inventory_view: dict[str, Any] | None = None
+    displayed_evidences: list[dict[str, Any]] = Field(default_factory=list)
+    debug: dict[str, Any] | None = None
 
 
 class DocumentItem(BaseModel):
     id: str
     name: str
+
+
+class FeatureFlagItemResponse(BaseModel):
+    name: str
+    enabled: bool
+    description: str
+    updated_at: str
+    updated_by: str
+
+
+class FeatureFlagUpdateRequest(BaseModel):
+    enabled: bool

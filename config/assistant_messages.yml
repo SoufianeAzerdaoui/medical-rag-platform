@@ -1,0 +1,23 @@
+{
+  "general_conversation": {
+    "small_talk": "Bonjour. Je peux vous aider à analyser les rapports médicaux indexés : anomalies biologiques, comparaisons entre rapports, valeurs hors référence ou synthèses descriptives sans diagnostic.",
+    "identity_question": "Je suis un assistant RAG médical. Mon rôle est d’aider à interroger les rapports médicaux indexés en restant fidèle aux données extraites, avec sources, sans poser de diagnostic ni recommander de traitement.",
+    "capabilities": "Vous pouvez me demander de lister les anomalies d’un rapport, comparer deux rapports, rechercher des valeurs hors référence dans tous les documents, ou produire une synthèse descriptive sans diagnostic.",
+    "help_question": "Vous pouvez me demander de lister les anomalies d’un rapport, comparer deux rapports, rechercher des valeurs hors référence dans tous les documents, ou produire une synthèse descriptive sans diagnostic.",
+    "fallback": "Je peux vous aider à interroger les rapports médicaux indexés."
+  },
+  "diagnostic_safety": {
+    "generic": {
+      "cancer_refusal": "Non, on ne peut pas conclure à un cancer uniquement à partir de ces marqueurs.",
+      "markers_intro": "Constat technique sur les marqueurs retrouvés :",
+      "closing": "Ces marqueurs biologiques ne suffisent pas à poser un diagnostic ; une interprétation médicale spécialisée est nécessaire."
+    },
+    "thyroid": {
+      "detail_fallback": "anomalies thyroïdiennes",
+      "discordance_sentence": "Ce profil est biologiquement discordant pour une hyperthyroïdie primaire.",
+      "no_diagnostic_sentence": "Cependant, on ne peut pas conclure seul à un diagnostic thyroïdien à partir de ce document.",
+      "correlation_sentence": "Il faut corréler avec le contexte clinique, les traitements, les interférences analytiques et, si besoin, répéter/compléter le bilan.",
+      "summary_template": "Le document montre des anomalies thyroïdiennes importantes : {details_txt}. {no_diagnostic_sentence} {discordance} {correlation_sentence}"
+    }
+  }
+}

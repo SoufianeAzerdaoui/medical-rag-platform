@@ -113,6 +113,7 @@ export interface ChatItem {
   id: string;
   conversationId: string;
   title: string;
+  titleSource?: "auto" | "manual";
   createdAt: string;
   updatedAt: string;
   messages: MessageItem[];

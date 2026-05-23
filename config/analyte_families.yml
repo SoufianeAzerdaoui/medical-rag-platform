@@ -1,0 +1,12 @@
+{
+  "families": {
+    "inflammation": {"weight": 0.15, "analytes": ["crp", "procalcitonine", "pct"]},
+    "cardio_muscle": {"weight": 0.15, "analytes": ["troponine", "ckmb", "cpkmb", "ck", "ldh"]},
+    "renal": {"weight": 0.15, "analytes": ["creatinine", "uree", "dfg", "clairance creatinine"]},
+    "lipid": {"weight": 0.15, "analytes": ["triglycerides", "cholesterol ldl", "cholesterol hdl", "apo b", "apo a1"]},
+    "protein_nutrition": {"weight": 0.15, "analytes": ["albumine", "proteines totales"]},
+    "hepatic": {"weight": 0.15, "analytes": ["asat", "alat", "ggt", "bilirubine"]},
+    "endocrino": {"weight": 0.15, "analytes": ["tsh", "tshus", "t3", "t4", "t3_libre", "t4_libre", "insuline"]},
+    "vitamines": {"weight": 0.15, "analytes": ["vitamine d", "vitamine b12", "b12", "ferritine"]}
+  }
+}

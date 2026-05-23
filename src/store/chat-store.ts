@@ -7,6 +7,7 @@ import {
   getConversationMessages,
   listConversations,
 } from "@/services/rag-api";
+import { resolveAutoTitleUpdate } from "@/lib/chat-title";
 import { uid } from "@/lib/utils";
 import type {
   AssistantDiagnostics,
@@ -84,6 +85,7 @@ function toChatItem(row: { id: string; title: string; created_at: string; update
     id: row.id,
     conversationId: row.id,
     title: row.title,
+    titleSource: "auto",
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     favorite: false,
@@ -224,6 +226,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               id: conversationId,
               conversationId,
               title: "Conversation",
+              titleSource: "auto",
               createdAt: now(),
               updatedAt: mapped.at(-1)?.createdAt || now(),
               favorite: false,
@@ -281,6 +284,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       id: uid("chat-local"),
       conversationId: uid("chat-local-conv"),
       title: "Nouveau chat clinique",
+      titleSource: "auto",
       createdAt: now(),
       updatedAt: now(),
       favorite: false,
@@ -322,12 +326,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
       createdAt: now(),
       status: "done",
     };
-    const updated = chats.map((chat) =>
+    const updated: ChatItem[] = chats.map((chat) =>
       chat.id === activeChatId
         ? {
             ...chat,
+            ...(() => resolveAutoTitleUpdate({
+              currentTitle: chat.title,
+              titleSource: chat.titleSource ?? "auto",
+              message: content,
+              mode,
+              messageCount: chat.messages.length,
+            }))(),
             mode,
-            title: chat.messages.length === 0 ? content.slice(0, 60) : chat.title,
             messages: [...chat.messages, msg],
             updatedAt: now(),
           }
@@ -430,8 +440,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   renameChat: (chatId, title) => {
     const { chats } = get();
-    const updated = chats.map((chat) =>
-      chat.id === chatId ? { ...chat, title: title || chat.title, updatedAt: now() } : chat,
+    const updated: ChatItem[] = chats.map((chat) =>
+      chat.id === chatId ? { ...chat, title: title || chat.title, titleSource: "manual" as const, updatedAt: now() } : chat,
     );
     set({ chats: updated, conversations: updated });
   },

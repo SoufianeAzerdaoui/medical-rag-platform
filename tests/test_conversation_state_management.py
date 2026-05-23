@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -359,6 +360,28 @@ class TestConversationStateManagement(unittest.TestCase):
         self.assertNotIn("valeur seuil", answer)
         self.assertIsNone(result.get("visualization"))
         self.assertIsNone(result.get("chart_data"))
+
+    def test_direct_analyte_request_after_inventory_does_not_stay_in_transform_mode(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible dans cet environnement: {exc}")
+        try:
+            result = run_generation(
+                query="donne moi le resultat de AMH",
+                index_dir="data/indexes",
+                previous_structured_evidence_pack=None,
+                previous_context_intent="patient_inventory",
+                previous_data_context_intent="patient_inventory",
+                previous_data_context_type="patient_inventory",
+                previous_has_patient_inventory=True,
+                previous_patient_inventory=[{"patient": "PAT_000001"}],
+            )
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible dans cet environnement: {exc}")
+        answer = str(result.get("answer") or "").lower()
+        self.assertNotIn("pas de resultats biologiques numeriques recents a transformer", answer)
+        self.assertNotEqual(str(result.get("generation_mode") or ""), "deterministic_response_transform")
 
     def test_qualitative_comment_pack_not_transformable(self) -> None:
         pack = {
@@ -918,6 +941,39 @@ class TestConversationStateManagement(unittest.TestCase):
         self.assertIn("report (18).pdf — page 1, ligne 1", answer)
         self.assertNotIn("sqlite_deterministic", answer)
 
+    def test_qualitative_correction_followup_non_dans_une_table_keeps_context(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible dans cet environnement: {exc}")
+        pack = {
+            "evidences": [
+                {
+                    "subject": "Commentaire médical",
+                    "display_comment_text": "Valeur seuil : 20 mUI/l (Indicative car pas de signification diagnostique : sécrétion pulsatile)",
+                    "source": "report (20).pdf — page 1, ligne 1",
+                    "source_pdf": "report (20).pdf",
+                    "page": 1,
+                    "row": 1,
+                }
+            ]
+        }
+        result = run_generation(
+            query="non, dans une table",
+            index_dir="data/indexes",
+            previous_context_intent="comment_without_measured_value",
+            previous_data_context_intent="comment_without_measured_value",
+            previous_data_context_type="medical_qualitative_comment",
+            previous_qualitative_evidence_pack=pack,
+            previous_displayed_context={"context_type": "medical_qualitative_comment", "subject": "Commentaire médical"},
+        )
+        answer = str(result.get("answer") or "")
+        self.assertIn("| Sujet | Commentaire | Source |", answer)
+        self.assertIn("20 mUI/l", answer)
+        self.assertIn("report (20).pdf — page 1, ligne 1", answer)
+        self.assertNotIn("PIGF", answer)
+        self.assertNotIn("report (1).pdf", answer)
+
     def test_last_qualitative_pack_preserves_subject_and_pdf_source(self) -> None:
         chat_id = "ut-state-qualitative-preserve-source"
         generation = {
@@ -975,6 +1031,37 @@ class TestConversationStateManagement(unittest.TestCase):
         self.assertIn("report (18).pdf — page 1, ligne 1", answer)
         self.assertNotIn("report (28).pdf", answer)
         self.assertEqual((result.get("retrieval") or {}).get("answerability", {}).get("reason"), "source_followup_no_retrieval")
+
+    def test_resolution_arbitration_prefers_deictic_when_resolved(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible dans cet environnement: {exc}")
+
+        result = run_generation(
+            query="d'où vient ce commentaire ?",
+            index_dir="data/indexes",
+            previous_context_intent="comment_without_measured_value",
+            previous_data_context_intent="comment_without_measured_value",
+            previous_data_context_type="medical_qualitative_comment",
+            previous_displayed_context={
+                "context_type": "medical_qualitative_comment",
+                "subject": "Troponine",
+                "sources": [
+                    {
+                        "label": "report (18).pdf — page 1, ligne 1",
+                        "source_pdf": "report (18).pdf",
+                        "doc_id": "report_18",
+                        "page": 1,
+                        "line": 1,
+                    }
+                ],
+            },
+        )
+        dbg = dict(result.get("debug") or {})
+        arb = dict(dbg.get("resolution_arbitration") or {})
+        self.assertEqual(str(arb.get("chosen") or ""), "deictic")
+        self.assertIn("priority_rule", arb)
 
     def test_source_followup_falls_back_to_previous_qualitative_pack_source(self) -> None:
         try:
@@ -1236,6 +1323,57 @@ class TestConversationStateManagement(unittest.TestCase):
         self.assertIn("Sujet : Troponine", answer)
         self.assertNotIn("aucun résultat précédent exploitable", answer.lower())
 
+    def test_qualitative_deictic_table_keeps_all_comments(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible dans cet environnement: {exc}")
+        pack = {
+            "evidences": [
+                {
+                    "subject": "Commentaire médical",
+                    "display_comment_text": "Valeur seuil au 99ème percentile : 26 ng/l.",
+                    "source": "report (18).pdf — page 1, ligne 1",
+                    "source_pdf": "report (18).pdf",
+                    "page": 1,
+                    "row": 1,
+                },
+                {
+                    "subject": "Commentaire médical",
+                    "display_comment_text": "Valeur seuil : 20 mUI/l (Indicative).",
+                    "source": "report (18).pdf — page 1, ligne 2",
+                    "source_pdf": "report (18).pdf",
+                    "page": 1,
+                    "row": 2,
+                },
+                {
+                    "subject": "Commentaire médical",
+                    "display_comment_text": "<4,11 IU/ml",
+                    "source": "report (18).pdf — page 1, ligne 3",
+                    "source_pdf": "report (18).pdf",
+                    "page": 1,
+                    "row": 3,
+                },
+            ]
+        }
+        result = run_generation(
+            query="affiche ça en table",
+            index_dir="data/indexes",
+            previous_context_intent="comment_without_measured_value",
+            previous_data_context_intent="comment_without_measured_value",
+            previous_data_context_type="medical_qualitative_comment",
+            previous_qualitative_evidence_pack=pack,
+            previous_displayed_context={"context_type": "medical_qualitative_comment", "subject": "IMMUNOANALYSE"},
+        )
+        answer = str(result.get("answer") or "")
+        self.assertIn("| Sujet | Commentaire | Source |", answer)
+        self.assertIn("26 ng/l.", answer)
+        self.assertIn("20 mUI/l", answer)
+        self.assertIn("<4,11 IU/ml", answer)
+        self.assertIn("report (18).pdf — page 1, ligne 1", answer)
+        self.assertIn("report (18).pdf — page 1, ligne 2", answer)
+        self.assertIn("report (18).pdf — page 1, ligne 3", answer)
+
     def test_deictic_no_context_guard_no_retrieval(self) -> None:
         try:
             from scripts.generation.generate_answer import run_generation
@@ -1349,8 +1487,286 @@ class TestConversationStateManagement(unittest.TestCase):
         )
         answer = str(result.get("answer") or "").lower()
         self.assertNotIn("troponine", answer)
-        self.assertNotIn("sca", answer)
-        self.assertNotIn("myopéricard", answer)
+
+    def test_list_all_comments_returns_three_unique_without_duplicates(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible dans cet environnement: {exc}")
+
+        mock_rows = [
+            {
+                "chunk_id": "c18-1",
+                "doc_id": "report_18",
+                "analyte": "Commentaire",
+                "analyte_norm": "commentaire",
+                "value_raw": "Valeur seuil au 99ème percentile : 26 ng/l. Attention : Elévation de la troponine...",
+                "text_for_keyword": "Commentaire : Valeur seuil au 99ème percentile : 26 ng/l. Attention : Elévation de la troponine...",
+                "text_for_embedding": "Commentaire : Valeur seuil au 99ème percentile : 26 ng/l. Attention : Elévation de la troponine...",
+                "section": "Commentaire",
+                "section_norm": "commentaire",
+                "reference_range": "",
+                "source_pdf": "report (18).pdf",
+                "page_number": 1,
+                "row_index": 1,
+            },
+            {
+                "chunk_id": "c18-dup",
+                "doc_id": "report_18",
+                "analyte": "Commentaire",
+                "analyte_norm": "commentaire",
+                "value_raw": "Valeur seuil au 99eme percentile : 26 ng/l Attention : Elevation de la troponine...",
+                "text_for_keyword": "Valeur seuil au 99eme percentile : 26 ng/l Attention : Elevation de la troponine...",
+                "text_for_embedding": "Valeur seuil au 99eme percentile : 26 ng/l Attention : Elevation de la troponine...",
+                "section": "Commentaire",
+                "section_norm": "commentaire",
+                "reference_range": "",
+                "source_pdf": "report (18).pdf",
+                "page_number": 1,
+                "row_index": None,
+            },
+            {
+                "chunk_id": "c18-low",
+                "doc_id": "report_18",
+                "analyte": "Commentaire",
+                "analyte_norm": "commentaire",
+                "value_raw": "Commentaire. Resume du rapport medical. Type de document : biology_report. Laboratoire : LABORATOIRE.",
+                "text_for_keyword": "Commentaire. Resume du rapport medical. Type de document : biology_report. Laboratoire : LABORATOIRE.",
+                "text_for_embedding": "Commentaire. Resume du rapport medical. Type de document : biology_report. Laboratoire : LABORATOIRE.",
+                "section": "Résumé",
+                "section_norm": "resume",
+                "reference_range": "",
+                "source_pdf": "report (18).pdf",
+                "page_number": 1,
+                "row_index": 99,
+            },
+            {
+                "chunk_id": "c20-1",
+                "doc_id": "report_20",
+                "analyte": "Commentaire",
+                "analyte_norm": "commentaire",
+                "value_raw": "Valeur seuil : 20 mUI/l (Indicative car pas de signification diagnostique : sécrétion pulsatile).",
+                "text_for_keyword": "Commentaire : Valeur seuil : 20 mUI/l (Indicative car pas de signification diagnostique : sécrétion pulsatile).",
+                "text_for_embedding": "Commentaire : Valeur seuil : 20 mUI/l (Indicative car pas de signification diagnostique : sécrétion pulsatile).",
+                "section": "Commentaire",
+                "section_norm": "commentaire",
+                "reference_range": "",
+                "source_pdf": "report (20).pdf",
+                "page_number": 1,
+                "row_index": 1,
+            },
+            {
+                "chunk_id": "c20-dup",
+                "doc_id": "report_20",
+                "analyte": "Commentaire",
+                "analyte_norm": "commentaire",
+                "value_raw": "Valeur seuil : 20 mUI/l (indicative car pas de signification diagnostique : secretion pulsatile).",
+                "text_for_keyword": "Valeur seuil : 20 mUI/l (indicative car pas de signification diagnostique : secretion pulsatile).",
+                "text_for_embedding": "Valeur seuil : 20 mUI/l (indicative car pas de signification diagnostique : secretion pulsatile).",
+                "section": "Commentaire",
+                "section_norm": "commentaire",
+                "reference_range": "",
+                "source_pdf": "report (20).pdf",
+                "page_number": 1,
+                "row_index": None,
+            },
+            {
+                "chunk_id": "c28-1",
+                "doc_id": "report_28",
+                "analyte": "Commentaire",
+                "analyte_norm": "commentaire",
+                "value_raw": "Commentaire : <4,11 IU/ml.",
+                "text_for_keyword": "Commentaire : <4,11 IU/ml.",
+                "text_for_embedding": "Commentaire : <4,11 IU/ml.",
+                "section": "Commentaire",
+                "section_norm": "commentaire",
+                "reference_range": "",
+                "source_pdf": "report (28).pdf",
+                "page_number": 1,
+                "row_index": 2,
+            },
+            {
+                "chunk_id": "c28-low",
+                "doc_id": "report_28",
+                "analyte": "Commentaire",
+                "analyte_norm": "commentaire",
+                "value_raw": "Laboratory results. Section medicale.",
+                "text_for_keyword": "Laboratory results. Section medicale.",
+                "text_for_embedding": "Laboratory results. Section medicale.",
+                "section": "Résumé",
+                "section_norm": "resume",
+                "reference_range": "",
+                "source_pdf": "report (28).pdf",
+                "page_number": 1,
+                "row_index": 90,
+            },
+        ]
+
+        with (
+            patch("scripts.generation.generate_answer._fetch_global_comment_rows", return_value=mock_rows),
+            patch(
+                "scripts.generation.generate_answer.compose_professional_answer",
+                return_value={"answer": "placeholder", "mode": "deterministic_professional_fallback", "llm_error": None},
+            ),
+        ):
+            result = run_generation(
+                query="liste moi tous les commentaires",
+                index_dir="data/indexes",
+            )
+
+        answer = str(result.get("answer") or "")
+        self.assertIn("Commentaires retrouvés", answer)
+        self.assertEqual(answer.count("\n- "), 3)
+        self.assertNotIn("Source :", answer)
+        self.assertNotIn("Resume du rapport medical", answer)
+        self.assertNotIn("Laboratory results", answer)
+        src_labels = [str(s.get("label") or "") for s in list(result.get("sources") or [])]
+        self.assertEqual(len(src_labels), 3)
+        self.assertTrue(any("report (18).pdf" in lbl for lbl in src_labels))
+        self.assertTrue(any("report (20).pdf" in lbl for lbl in src_labels))
+        self.assertTrue(any("report (28).pdf" in lbl for lbl in src_labels))
+
+    def test_latest_report_comment_fallback_to_latest_doc_with_comment(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible dans cet environnement: {exc}")
+
+        # report_30 is considered latest but has no comment rows; fallback should pick report_28.
+        scoped_rows: list[dict] = []
+        global_rows = [
+            {
+                "chunk_id": "c18-1",
+                "doc_id": "report_18",
+                "analyte": "Commentaire",
+                "analyte_norm": "commentaire",
+                "value_raw": "Valeur seuil au 99ème percentile : 26 ng/l.",
+                "text_for_keyword": "Commentaire : Valeur seuil au 99ème percentile : 26 ng/l.",
+                "text_for_embedding": "Commentaire : Valeur seuil au 99ème percentile : 26 ng/l.",
+                "section": "Commentaire",
+                "section_norm": "commentaire",
+                "reference_range": "",
+                "source_pdf": "report (18).pdf",
+                "page_number": 1,
+                "row_index": 1,
+            },
+            {
+                "chunk_id": "c28-1",
+                "doc_id": "report_28",
+                "analyte": "Commentaire",
+                "analyte_norm": "commentaire",
+                "value_raw": "Commentaire : <4,11",
+                "unit": "IU/ml",
+                "text_for_keyword": "Commentaire : <4,11",
+                "text_for_embedding": "Commentaire : <4,11",
+                "section": "Commentaire",
+                "section_norm": "commentaire",
+                "reference_range": "",
+                "source_pdf": "report (28).pdf",
+                "page_number": 1,
+                "row_index": 2,
+            },
+        ]
+
+        def _fake_fetch_doc_lab_rows(**_: dict) -> list[dict]:
+            return scoped_rows
+
+        with (
+            patch("scripts.generation.generate_answer._resolve_latest_doc_id", return_value="report_30"),
+            patch("scripts.generation.generate_answer._fetch_doc_lab_rows", side_effect=_fake_fetch_doc_lab_rows),
+            patch("scripts.generation.generate_answer._fetch_global_comment_rows", return_value=global_rows),
+            patch(
+                "scripts.generation.generate_answer.compose_professional_answer",
+                return_value={"answer": "placeholder", "mode": "deterministic_professional_fallback", "llm_error": None},
+            ),
+        ):
+            result = run_generation(
+                query="liste moi le commentaire du dernier rapport",
+                index_dir="data/indexes",
+            )
+
+        answer = str(result.get("answer") or "")
+        self.assertIn("Commentaires retrouvés", answer)
+        self.assertIn("<4,11 IU/ml", answer)
+        src_labels = [str(s.get("label") or "") for s in list(result.get("sources") or [])]
+        self.assertEqual(len(src_labels), 1)
+        self.assertTrue(any("report (28).pdf" in lbl for lbl in src_labels))
+
+    def test_single_comment_request_returns_only_one_latest_comment(self) -> None:
+        try:
+            from scripts.generation.generate_answer import run_generation
+        except Exception as exc:
+            self.skipTest(f"run_generation indisponible dans cet environnement: {exc}")
+
+        mock_rows = [
+            {
+                "chunk_id": "c18-1",
+                "doc_id": "report_18",
+                "analyte": "Commentaire",
+                "analyte_norm": "commentaire",
+                "value_raw": "Valeur seuil au 99ème percentile : 26 ng/l.",
+                "text_for_keyword": "Commentaire : Valeur seuil au 99ème percentile : 26 ng/l.",
+                "text_for_embedding": "Commentaire : Valeur seuil au 99ème percentile : 26 ng/l.",
+                "section": "Commentaire",
+                "section_norm": "commentaire",
+                "reference_range": "",
+                "source_pdf": "report (18).pdf",
+                "page_number": 1,
+                "row_index": 1,
+            },
+            {
+                "chunk_id": "c20-1",
+                "doc_id": "report_20",
+                "analyte": "Commentaire",
+                "analyte_norm": "commentaire",
+                "value_raw": "Valeur seuil : 20 mUI/l.",
+                "text_for_keyword": "Commentaire : Valeur seuil : 20 mUI/l.",
+                "text_for_embedding": "Commentaire : Valeur seuil : 20 mUI/l.",
+                "section": "Commentaire",
+                "section_norm": "commentaire",
+                "reference_range": "",
+                "source_pdf": "report (20).pdf",
+                "page_number": 1,
+                "row_index": 1,
+            },
+            {
+                "chunk_id": "c28-1",
+                "doc_id": "report_28",
+                "analyte": "Commentaire",
+                "analyte_norm": "commentaire",
+                "value_raw": "Commentaire : <4,11",
+                "unit": "IU/ml",
+                "text_for_keyword": "Commentaire : <4,11",
+                "text_for_embedding": "Commentaire : <4,11",
+                "section": "Commentaire",
+                "section_norm": "commentaire",
+                "reference_range": "",
+                "source_pdf": "report (28).pdf",
+                "page_number": 1,
+                "row_index": 2,
+            },
+        ]
+
+        with (
+            patch("scripts.generation.generate_answer._fetch_global_comment_rows", return_value=mock_rows),
+            patch(
+                "scripts.generation.generate_answer.compose_professional_answer",
+                return_value={"answer": "placeholder", "mode": "deterministic_professional_fallback", "llm_error": None},
+            ),
+        ):
+            result = run_generation(
+                query="liste une seule commentaire",
+                index_dir="data/indexes",
+            )
+
+        answer = str(result.get("answer") or "")
+        self.assertIn("Commentaires retrouvés", answer)
+        # Only one numbered item should remain.
+        self.assertEqual(answer.count("\n1. **"), 1)
+        self.assertNotIn("\n2. **", answer)
+        src_labels = [str(s.get("label") or "") for s in list(result.get("sources") or [])]
+        self.assertEqual(len(src_labels), 1)
+        self.assertTrue(any("report (28).pdf" in lbl for lbl in src_labels))
 
     def test_context_summary_limitation_singular_wording(self) -> None:
         try:

@@ -17,6 +17,14 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from generate_answer import run_generation
 from llm_client import LLMClient
+from model_settings import (
+    DEFAULT_LLM_MAX_TOKENS,
+    DEFAULT_LLM_MODEL,
+    DEFAULT_LLM_NUM_CTX,
+    DEFAULT_LLM_PROVIDER,
+    DEFAULT_LLM_TEMPERATURE,
+    DEFAULT_LLM_TIMEOUT,
+)
 from retrieval.search import SearchEngine
 from query_understanding import parse_query_understanding
 from conversation_state_utils import (
@@ -237,14 +245,14 @@ def _handle_command(raw: str, state: ChatState) -> bool:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Interactive terminal chat for Medical RAG generation")
-    parser.add_argument("--provider", default="ollama")
-    parser.add_argument("--model", default="qwen3:4b")
+    parser.add_argument("--provider", default=DEFAULT_LLM_PROVIDER)
+    parser.add_argument("--model", default=DEFAULT_LLM_MODEL)
     parser.add_argument("--mode", default="hybrid", choices=["keyword", "vector", "hybrid"])
     parser.add_argument("--top-k", type=int, default=5)
-    parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--num-ctx", type=int, default=4096)
-    parser.add_argument("--max-tokens", type=int, default=300)
-    parser.add_argument("--timeout", type=int, default=90)
+    parser.add_argument("--temperature", type=float, default=DEFAULT_LLM_TEMPERATURE)
+    parser.add_argument("--num-ctx", type=int, default=DEFAULT_LLM_NUM_CTX)
+    parser.add_argument("--max-tokens", type=int, default=DEFAULT_LLM_MAX_TOKENS)
+    parser.add_argument("--timeout", type=int, default=DEFAULT_LLM_TIMEOUT)
     parser.add_argument("--index-dir", default="data/indexes")
     parser.add_argument("--collection", default="medical_chunks")
     parser.add_argument("--max-display-results", type=int, default=3)

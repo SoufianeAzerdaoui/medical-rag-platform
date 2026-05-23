@@ -1,0 +1,29 @@
+{
+  "diagnostic_safety": {
+    "thyroid_topic_keywords": ["hyperthyro", "hypothyro", "thyroid", "thyroide", "thyroïde"],
+    "strong_suggestion_patterns": [
+      "\\bsugg[eè]re\\s+une?\\s+hyperthyro",
+      "\\bcompatible\\s+avec\\s+une?\\s+hyperthyro",
+      "\\b[eé]voque\\s+une?\\s+hyperthyro",
+      "\\bindique\\s+une?\\s+hyperthyro",
+      "\\ben\\s+faveur\\s+d['’]une?\\s+hyperthyro"
+    ],
+    "explicit_negation_markers": [
+      "ne permet pas de conclure",
+      "n est pas suffisant pour conclure",
+      "n'est pas suffisant pour conclure",
+      "on ne peut pas conclure"
+    ],
+    "forbidden_clinical_style_patterns": [
+      "(?im)^.*il est essentiel de.*$",
+      "(?im)^.*examens compl[eé]mentaires.*$",
+      "(?im)^.*[eé]valuation compl[eè]te.*$",
+      "(?im)^.*cause sous[-\\s]jacente.*$",
+      "(?im)^.*prendre en compte les autres facteurs cliniques.*$",
+      "(?im)^.*confirmer ou [eé]liminer le diagnostic.*$",
+      "(?im)^.*\\bconsulter\\b.*$"
+    ],
+    "limitation_sentence": "L’interprétation reste limitée aux données biologiques fournies.",
+    "discordance_replacement": "profil biologique discordant pour une hyperthyroïdie primaire"
+  }
+}

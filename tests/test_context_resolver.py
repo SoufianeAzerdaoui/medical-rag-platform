@@ -10,7 +10,7 @@ GENERATION_DIR = PROJECT_ROOT / "scripts" / "generation"
 if str(GENERATION_DIR) not in sys.path:
     sys.path.insert(0, str(GENERATION_DIR))
 
-from context_resolver import resolve_context_for_turn
+from context_resolver import resolve_context_for_turn, resolve_deictic_request
 from query_understanding import parse_query_understanding
 
 
@@ -57,6 +57,43 @@ class TestContextResolver(unittest.TestCase):
         resolved = resolve_context_for_turn("ok affiche ce commentaire dans un bloc commentaire sourcé", qu, state)
         self.assertTrue(resolved.get("reuse_qualitative_pack"))
         self.assertTrue(resolved.get("should_skip_retrieval"))
+
+    def test_correction_table_followup_reuses_qualitative_context(self) -> None:
+        qu = parse_query_understanding("non, dans une table")
+        state = {
+            "last_data_context_type": "medical_qualitative_comment",
+            "last_qualitative_evidence_pack": {"evidences": [{"subject": "Commentaire médical", "display_comment_text": "<4,11 IU/ml"}]},
+            "last_displayed_context": {"context_type": "medical_qualitative_comment", "subject": "IMMUNOANALYSE"},
+        }
+        resolved = resolve_deictic_request("non, dans une table", qu, state)
+        self.assertTrue(resolved.get("resolved"))
+        self.assertEqual(resolved.get("intent"), "qualitative_comment_render")
+        self.assertEqual(resolved.get("render_type"), "text_table")
+        self.assertTrue(resolved.get("skip_retrieval"))
+
+    def test_typo_tabl_followup_reuses_qualitative_text_table(self) -> None:
+        qu = parse_query_understanding("affiche ca dans une tabl")
+        state = {
+            "last_data_context_type": "medical_qualitative_comment",
+            "last_qualitative_evidence_pack": {"evidences": [{"subject": "Commentaire médical", "display_comment_text": "<4,11 IU/ml"}]},
+            "last_displayed_context": {"context_type": "medical_qualitative_comment", "subject": "IMMUNOANALYSE"},
+        }
+        resolved = resolve_deictic_request("affiche ca dans une tabl", qu, state)
+        self.assertTrue(resolved.get("resolved"))
+        self.assertEqual(resolved.get("intent"), "qualitative_comment_render")
+        self.assertEqual(resolved.get("render_type"), "text_table")
+
+    def test_same_action_followup_keeps_reference_range_lookup_intent(self) -> None:
+        qu = parse_query_understanding("et pour TSHus")
+        state = {
+            "last_intent": "reference_range_lookup",
+            "last_data_context_type": "biological_numeric_results",
+            "last_displayed_context": {"context_type": "biological_numeric_results", "subject": "ACTH"},
+            "last_doc_scope": {"doc_ids": ["report_1"]},
+        }
+        resolved = resolve_deictic_request("et pour TSHus", qu, state)
+        self.assertTrue(resolved.get("resolved"))
+        self.assertEqual(resolved.get("intent"), "reference_range_lookup")
 
 
 if __name__ == "__main__":

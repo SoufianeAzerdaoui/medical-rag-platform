@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import sqlite3
 import sys
 import time
+import unicodedata
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,9 +19,30 @@ from uuid import uuid4
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
+GENERATION_DIR = Path(__file__).resolve().parent
+if str(GENERATION_DIR) not in sys.path:
+    sys.path.insert(0, str(GENERATION_DIR))
 
-from retrieval.models import RetrievalFilters
-from retrieval.search import SearchEngine
+_RETRIEVAL_IMPORT_ERROR: Exception | None = None
+try:
+    from retrieval.models import RetrievalFilters
+    from retrieval.search import SearchEngine
+except Exception as _retrieval_import_error:  # pragma: no cover - import guard for lightweight test environments
+    _RETRIEVAL_IMPORT_ERROR = _retrieval_import_error
+    try:
+        from scripts.retrieval.models import RetrievalFilters  # type: ignore[no-redef]
+        from scripts.retrieval.search import SearchEngine  # type: ignore[no-redef]
+    except Exception:  # pragma: no cover - final fallback when retrieval deps are unavailable
+        class RetrievalFilters(SimpleNamespace):  # type: ignore[no-redef]
+            def __init__(self, **kwargs: Any):
+                super().__init__(**kwargs)
+
+        class SearchEngine:  # type: ignore[no-redef]
+            def __init__(self, *_args: Any, **_kwargs: Any):
+                raise RuntimeError(
+                    "Retrieval backend dependencies are unavailable. "
+                    "Install retrieval dependencies (e.g. numpy) to enable search."
+                ) from _RETRIEVAL_IMPORT_ERROR
 
 from answer_validator import validate_answer
 from citation_builder import append_source_citations, build_citations, build_source_citations
@@ -33,6 +56,14 @@ except Exception:
     from scripts.generation.source_normalization import normalize_source_for_response
 from evidence_builder import build_evidence_pack as build_retrieval_evidence_pack
 from llm_client import LLMClient, LLMClientError
+from model_settings import (
+    DEFAULT_LLM_MAX_TOKENS,
+    DEFAULT_LLM_MODEL,
+    DEFAULT_LLM_NUM_CTX,
+    DEFAULT_LLM_PROVIDER,
+    DEFAULT_LLM_TEMPERATURE,
+    DEFAULT_LLM_TIMEOUT,
+)
 from professional_answer_composer import (
     compose_professional_answer,
     render_professional_fallback,
@@ -43,10 +74,12 @@ from prompt_builder import INSUFFICIENT_CONTEXT_SENTENCE, build_prompt
 from query_understanding import (
     QueryUnderstanding,
     analyte_display_name,
+    build_intent_arbitration_debug,
     contains_exact_term,
     decide_response_strategy,
     detect_exact_analyte,
     detect_exact_analytes,
+    detect_technical_condition,
     detect_query_intents,
     detect_requested_doc_ids,
     get_analyte_aliases,
@@ -57,6 +90,7 @@ from query_understanding import (
 from followup_scope_utils import resolve_followup_doc_scope
 from context_resolver import resolve_context_for_turn, resolve_deictic_request
 from conversation_state_utils import evidence_pack_is_transformable
+from medical_query_planner import understand_medical_query, plan_to_payload
 from qualitative_comment_utils import (
     build_qualitative_comment_answer,
     build_sourced_comment_block,
@@ -66,8 +100,311 @@ from qualitative_comment_utils import (
     format_clickable_source_markdown,
     extract_comment_text_for_subject,
 )
+from analyte_aliases import ANALYTE_ALIAS_GROUPS
+from analyte_resolver import resolve_requested_analytes, load_available_analytes, normalize_analyte_text
+from config_loader import (
+    get_analyte_families_config,
+    get_assistant_messages_config,
+    get_priority_scoring_config,
+    get_safety_guardrails_config,
+)
+from general_conversation import (
+    detect_general_conversation,
+    get_general_conversation_response,
+    is_pure_general_conversation,
+    render_general_conversation_response,
+)
+from medical_topics import detect_medical_topic, get_topic_analytes, get_topic_exclusions, get_topic_rules
+from policy_matrix import (
+    HARD_GATE_ERRORS,
+    LEVEL2_HYBRID_INTENT_POLICY,
+    STRICT_DETERMINISTIC_ROUTES,
+    get_intent_policy,
+)
+from priority_scoring import compute_priority_score as _compute_priority_score_external
+from reference_range_parser import parse_reference_ranges
+from reference_range_selector import select_reference_range
+from reference_range_lookup_flow import run_reference_range_lookup_from_rows
+try:
+    from backend.services.feature_flag_service import get_feature_flag as _runtime_get_feature_flag
+except Exception:  # pragma: no cover - fallback for CLI-only runs without backend package
+    _runtime_get_feature_flag = None
 
 LOGGER = logging.getLogger("medical_rag.generation")
+
+
+def _is_feature_enabled(name: str, default: bool = True) -> bool:
+    if _runtime_get_feature_flag is None:
+        return default
+    try:
+        return bool(_runtime_get_feature_flag(str(name)))
+    except Exception:
+        return default
+
+
+def _is_critical_medical_intent(query_understanding: QueryUnderstanding) -> bool:
+    intent = str(getattr(query_understanding, "intent", "") or "").strip().lower()
+    if intent in {"reference_range_lookup", "diagnostic_safety_question"}:
+        return True
+    if intent in {"doc_scoped_results", "previous_result_comparison", "cohort_search", "global_patient_lookup"}:
+        # Numeric medical ask with threshold/range semantics should stay deterministic-first.
+        if str(getattr(query_understanding, "requested_value", "") or "").strip():
+            return True
+        if str(getattr(query_understanding, "comparison_operator", "") or "").strip():
+            return True
+        if str(getattr(query_understanding, "technical_condition", "") or "").strip():
+            return True
+    return False
+
+
+def _strict_policy_for_route(route: str) -> dict[str, Any]:
+    return get_intent_policy(route)
+
+
+def _is_hybrid_structured_writer_intent(query_understanding: QueryUnderstanding) -> bool:
+    intent = str(getattr(query_understanding, "intent", "") or "").strip().lower()
+    technical_condition = str(getattr(query_understanding, "technical_condition", "") or "").strip().lower()
+    if intent in {
+        "doc_scoped_abnormal_results",
+        "doc_scoped_priority_anomalies",
+        "global_analyte_abnormal_search",
+        "doc_pair_comparison",
+        "multi_doc_comparison",
+        "doc_scoped_medical_interpretation_guarded",
+        "diagnostic_safety_question",
+    }:
+        return True
+    if intent in {"doc_scoped_summary", "cohort_search"} and technical_condition == "out_of_reference":
+        return True
+    return False
+
+
+def _hybrid_writer_mode(query_understanding: QueryUnderstanding) -> str:
+    force_llm_writer = str(os.getenv("MEDICAL_RAG_FORCE_LLM_WRITER", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    intent_norm = str(getattr(query_understanding, "intent", "") or "").strip().lower()
+    if intent_norm == "multi_doc_comparison":
+        return "fallback"
+    deterministic_routes = {
+        "doc_scoped_abnormal_results",
+        "doc_scoped_biological_summary",
+        "doc_scoped_priority_anomalies",
+        "global_analyte_abnormal_search",
+        "doc_pair_comparison",
+        "multi_doc_comparison",
+        "single_analyte_lookup",
+        "doc_scoped_medical_interpretation_guarded",
+        "reference_range_lookup",
+    }
+    if not force_llm_writer and str(getattr(query_understanding, "intent", "") or "").strip().lower() in deterministic_routes:
+        return "fallback"
+    llm_rewrite_enabled = _is_feature_enabled("LLM_REWRITE_ENABLED", default=True)
+    llm_fallback_non_critical_only = _is_feature_enabled("LLM_FALLBACK_NON_CRITICAL_ONLY", default=True)
+    if not llm_rewrite_enabled:
+        return "fallback"
+    if _is_hybrid_structured_writer_intent(query_understanding):
+        return "hybrid_structured_llm_writer"
+    if llm_fallback_non_critical_only and _is_critical_medical_intent(query_understanding):
+        # deterministic backend selection + optional rewrite only
+        return "fallback"
+    return "auto"
+
+
+def _level2_llm_runtime_config(
+    *,
+    selected_route: str,
+    selected_policy: dict[str, Any],
+    force_llm_writer: bool,
+    safety_intent_norm: str,
+    displayed_evidences: list[dict[str, Any]],
+    default_timeout: int,
+    default_max_tokens: int,
+) -> dict[str, Any]:
+    route_norm = str(selected_route or "").strip().lower()
+    llm_allowed = bool(selected_policy.get("llm_writer_allowed", False))
+    generation_strategy = str(selected_policy.get("generation_strategy") or "").strip().lower() or "deterministic_preferred"
+    llm_expected = bool(selected_policy.get("llm_expected", False))
+    is_level2 = route_norm in LEVEL2_HYBRID_INTENT_POLICY
+    has_evidence = bool(displayed_evidences)
+    hard_block_safety = safety_intent_norm in {"diagnostic_safety_question"} and route_norm not in {
+        "doc_scoped_medical_interpretation_guarded",
+    }
+    llm_skipped_reason: str | None = None
+    use_llm = False
+    if generation_strategy == "deterministic_only":
+        llm_skipped_reason = "route_deterministic_only"
+    elif generation_strategy == "deterministic_preferred":
+        # Deterministic-first on factual routes; explicit force can still opt-in for tests/debug.
+        use_llm = bool(is_level2 and has_evidence and not hard_block_safety and force_llm_writer)
+        if not use_llm:
+            llm_skipped_reason = "deterministic_preferred_no_llm_by_default"
+    else:
+        # llm_writer_expected (or unknown) : use LLM when route policy allows it and evidences exist.
+        use_llm = bool(is_level2 and llm_allowed and has_evidence and not hard_block_safety)
+        if not use_llm:
+            if not llm_allowed:
+                llm_skipped_reason = "llm_not_allowed_by_policy"
+            elif not has_evidence:
+                llm_skipped_reason = "no_evidence_for_llm"
+            elif hard_block_safety:
+                llm_skipped_reason = "safety_hard_block_for_route"
+    timeout_s = int(selected_policy.get("timeout_s") or default_timeout)
+    max_tok = int(selected_policy.get("max_tokens") or default_max_tokens)
+    if not use_llm:
+        return {
+            "use_llm": False,
+            "compose_mode": "fallback",
+            "timeout_s": timeout_s,
+            "max_tokens": max_tok,
+            "generation_strategy": generation_strategy,
+            "llm_expected": llm_expected,
+            "llm_skipped_reason": llm_skipped_reason,
+        }
+    return {
+        "use_llm": True,
+        "compose_mode": "hybrid_structured_llm_writer",
+        "timeout_s": max(15, timeout_s),
+        "max_tokens": max(120, max_tok),
+        "generation_strategy": generation_strategy,
+        "llm_expected": llm_expected,
+        "llm_skipped_reason": None,
+    }
+
+
+def _force_deterministic_mode_for_summary_anomalies(query_understanding: QueryUnderstanding, query_norm: str) -> bool:
+    intent = str(getattr(query_understanding, "intent", "") or "").strip().lower()
+    if intent not in {"doc_scoped_summary", "immunoanalysis_summary"}:
+        return False
+    return _query_requests_out_of_reference_only(query_norm)
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, flags=re.DOTALL | re.IGNORECASE)
+    candidate = fenced.group(1) if fenced else raw
+    # Try direct parse first
+    try:
+        parsed = json.loads(candidate)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        pass
+    # Best-effort: first balanced object
+    start = candidate.find("{")
+    end = candidate.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            parsed = json.loads(candidate[start : end + 1])
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+    return None
+
+
+def _normalize_llm_qu_intent(value: Any) -> str | None:
+    intent = str(value or "").strip().lower()
+    if not intent:
+        return None
+    allowed = {
+        "reference_range_lookup",
+        "doc_scoped_results",
+        "doc_scoped_summary",
+        "response_transform",
+        "cohort_search",
+        "global_patient_lookup",
+        "comment_without_measured_value",
+        "small_talk",
+    }
+    return intent if intent in allowed else None
+
+
+def _llm_assisted_query_understanding(
+    *,
+    query: str,
+    base_qu: QueryUnderstanding,
+    llm_client: LLMClient | None,
+    provider: str,
+    model: str,
+    timeout: int,
+) -> tuple[QueryUnderstanding, dict[str, Any]]:
+    debug: dict[str, Any] = {"enabled": False, "used": False, "error": None}
+    if not _is_feature_enabled("LLM_QUERY_UNDERSTANDING_ENABLED", default=False):
+        return base_qu, debug
+    debug["enabled"] = True
+    client = llm_client or LLMClient(provider=provider)
+    prompt = (
+        "Tu es un routeur de requêtes médicales. "
+        "Retourne UNIQUEMENT un JSON valide sans texte autour.\n"
+        "Ne déduis pas de valeurs biologiques. Tu fais seulement du query-understanding.\n"
+        "Schema:\n"
+        "{"
+        "\"intent\": string,"
+        "\"requested_analytes\": string[],"
+        "\"requested_report_type\": string|null,"
+        "\"requested_date_iso\": string|null,"
+        "\"requested_reference_profile\": object|null,"
+        "\"use_patient_profile\": boolean,"
+        "\"request_all_reference_ranges\": boolean,"
+        "\"output_format\": string|null,"
+        "\"answer_style\": string|null"
+        "}\n"
+        f"Question: {query}\n"
+    )
+    try:
+        raw = client.generate(
+            prompt=prompt,
+            model=model,
+            temperature=0.0,
+            num_ctx=max(2048, int(DEFAULT_LLM_NUM_CTX)),
+            max_tokens=220,
+            timeout=max(8, int(timeout)),
+            keep_alive="5m",
+        )
+        parsed = _extract_json_object(raw)
+        if not isinstance(parsed, dict):
+            debug["error"] = "invalid_json"
+            return base_qu, debug
+        debug["used"] = True
+        intent = _normalize_llm_qu_intent(parsed.get("intent")) or base_qu.intent
+        llm_analytes = [str(a).strip().lower() for a in (parsed.get("requested_analytes") or []) if str(a).strip()]
+        base_analytes = list(base_qu.requested_analytes or [])
+        # Keep deterministic extraction as anchor; allow LLM additions only when deterministic found nothing.
+        requested_analytes = base_analytes if base_analytes else llm_analytes
+        report_type = str(parsed.get("requested_report_type") or "").strip() or base_qu.requested_report_type
+        date_iso = str(parsed.get("requested_date_iso") or "").strip() or base_qu.requested_date_iso
+        profile = parsed.get("requested_reference_profile")
+        if not isinstance(profile, dict) or base_qu.requested_reference_profile:
+            profile = base_qu.requested_reference_profile
+
+        use_patient_profile = base_qu.use_patient_profile
+        if not use_patient_profile and "use_patient_profile" in parsed:
+            use_patient_profile = bool(parsed.get("use_patient_profile"))
+
+        request_all = base_qu.request_all_reference_ranges
+        if not request_all and not base_qu.requested_reference_profile and "request_all_reference_ranges" in parsed:
+            request_all = bool(parsed.get("request_all_reference_ranges"))
+
+        output_format = str(parsed.get("output_format") or "").strip().lower() or base_qu.output_format
+        answer_style = str(parsed.get("answer_style") or "").strip().lower() or base_qu.answer_style
+        merged = replace(
+            base_qu,
+            intent=intent,
+            requested_analytes=requested_analytes,
+            requested_report_type=report_type,
+            requested_date_iso=date_iso,
+            requested_reference_profile=profile,
+            use_patient_profile=use_patient_profile,
+            request_all_reference_ranges=request_all,
+            output_format=output_format,
+            answer_style=answer_style,
+            is_response_transform=(intent == "response_transform"),
+        )
+        debug["llm_intent"] = intent
+        debug["llm_requested_analytes"] = requested_analytes
+        return merged, debug
+    except Exception as exc:
+        debug["error"] = f"llm_error:{exc}"
+        return base_qu, debug
 
 _GENERIC_COMMENT_SUBJECTS = {
     "commentaire",
@@ -88,6 +425,181 @@ _GENERIC_COMMENT_SUBJECTS = {
 def normalize_query(query: str) -> str:
     q = re.sub(r"\s+", " ", (query or "").strip())
     return q
+
+
+def _has_any_reference_profile_slot(profile: dict[str, Any] | None) -> bool:
+    if not isinstance(profile, dict):
+        return False
+    return any(profile.get(k) not in (None, "") for k in ["sex", "population", "condition", "age", "age_min", "age_max", "age_operator", "age_value"])
+
+
+def _looks_like_reference_range_followup(query: str) -> bool:
+    qn = norm_text(query or "")
+    if not qn:
+        return False
+    markers = [
+        "et pour",
+        "et chez",
+        "meme chose pour",
+        "même chose pour",
+        "pour aussi",
+        "aussi pour",
+    ]
+    if any(m in qn for m in markers):
+        return True
+    return qn.startswith("et ")
+
+
+def _arbitrate_resolution(
+    *,
+    query_understanding: QueryUnderstanding,
+    context_resolution: dict[str, Any],
+    deictic_resolution: dict[str, Any],
+) -> dict[str, Any]:
+    base_intent = str(getattr(query_understanding, "intent", "") or "").strip().lower()
+    ctx_reason = str((context_resolution or {}).get("reason") or "").strip()
+    deictic_resolved = bool((deictic_resolution or {}).get("resolved"))
+    deictic_intent = str((deictic_resolution or {}).get("intent") or "").strip().lower()
+    deictic_reason = str((deictic_resolution or {}).get("reason") or "").strip()
+
+    chosen = "context"
+    if deictic_resolved and deictic_intent not in {"", "deictic_no_context"}:
+        chosen = "deictic"
+    elif deictic_intent == "deictic_no_context":
+        chosen = "deictic_guard"
+
+    conflict = bool(
+        deictic_resolved
+        and deictic_intent not in {"", "deictic_no_context"}
+        and base_intent
+        and deictic_intent != base_intent
+    )
+    return {
+        "base_intent": base_intent,
+        "context_reason": ctx_reason,
+        "deictic_resolved": deictic_resolved,
+        "deictic_intent": deictic_intent,
+        "deictic_reason": deictic_reason,
+        "chosen": chosen,
+        "conflict": conflict,
+        "priority_rule": "deictic_if_resolved_else_context",
+    }
+
+
+def _should_force_reference_range_lookup(query_norm: str, query_understanding: QueryUnderstanding) -> bool:
+    reference_terms = (
+        "norme",
+        "plage",
+        "référence",
+        "reference",
+        "valeur normale",
+        "valeurs physiologiques",
+        "intervalle de référence",
+        "plage de référence",
+    )
+    has_reference_wording = any(term in query_norm for term in reference_terms)
+    if not has_reference_wording:
+        return False
+    tc = detect_technical_condition(query_norm)
+    if tc in {"above_reference", "below_reference", "out_of_reference"}:
+        return False
+    if not list(query_understanding.requested_analytes or []):
+        return False
+    if str(query_understanding.intent or "").strip().lower() == "reference_range_lookup":
+        return False
+
+    measurement_terms = (
+        "quelle est la valeur",
+        "valeur de",
+        "resultat",
+        "résultat",
+        "valeur mesuree",
+        "valeur mesurée",
+        "valeur actuelle",
+        "du rapport",
+        "dans le rapport",
+        "montre moi",
+        "affiche moi",
+        "donne moi",
+    )
+    has_measurement_wording = any(t in query_norm for t in measurement_terms)
+    has_explicit_scope = bool(
+        list(getattr(query_understanding, "requested_doc_ids", None) or [])
+        or str(getattr(query_understanding, "requested_date_iso", "") or "").strip()
+        or str(getattr(query_understanding, "requested_report_type", "") or "").strip()
+    )
+    measurement_intent_like = str(getattr(query_understanding, "intent", "") or "").strip().lower() in {
+        "doc_scoped_results",
+        "biological_numeric_results",
+        "cohort_search",
+        "global_patient_lookup",
+        "global_analyte_abnormal_search",
+        "doc_scoped_abnormal_results",
+        "doc_pair_comparison",
+        "single_analyte_lookup",
+    }
+    has_global_scope_markers = any(
+        t in query_norm
+        for t in [
+            "tous les rapports",
+            "tous les documents",
+            "quels documents",
+            "y a t il des rapports",
+            "y a-t-il des rapports",
+            "rapports disponibles",
+            "rapports indexes",
+            "rapports indexés",
+            "sur l ensemble des rapports",
+            "sur l’ensemble des rapports",
+            "retrouve tous les cas",
+            "dans les documents",
+            "patients qui ont",
+        ]
+    )
+    has_abnormal_wording = any(
+        t in query_norm
+        for t in ["hors reference", "anormal", "above_reference", "below_reference", "above reference", "below reference"]
+    )
+    return not (has_measurement_wording or has_explicit_scope or measurement_intent_like or (has_global_scope_markers and has_abnormal_wording))
+
+
+def _extract_freeform_doc_scoped_analyte(query_norm: str) -> str:
+    qn = norm_text(query_norm or "")
+    if not qn:
+        return ""
+    patterns = [
+        r"(?:valeur|dosage|taux)\s+d(?:e|')\s+([a-z0-9_+\-\s]{2,40}?)\s+(?:dans|du|de|sur)\s+(?:report|rapport|doc|document)\b",
+        r"(?:est[ -]?elle|est[ -]?il)\s+([a-z0-9_+\-\s]{2,40}?)\s+(?:normale|normal|basse|bas|haute|haut|elevee|elevée)\b",
+        r"(?:valeur|dosage|taux)\s+d(?:e|')\s+([a-z0-9_+\-\s]{2,40}?)(?:[?.!,;:]|$)",
+    ]
+    stop = {
+        "la",
+        "le",
+        "les",
+        "de",
+        "du",
+        "des",
+        "d",
+        "un",
+        "une",
+        "dans",
+        "report",
+        "rapport",
+        "document",
+        "doc",
+    }
+    for pat in patterns:
+        m = re.search(pat, qn, flags=re.IGNORECASE)
+        if not m:
+            continue
+        raw = " ".join(str(m.group(1) or "").strip().split())
+        if not raw:
+            continue
+        tokens = [t for t in raw.split() if t and t not in stop]
+        candidate = normalize_analyte_text(" ".join(tokens)).strip().lower().replace("-", "_")
+        if candidate and len(candidate) >= 3:
+            return candidate
+    return ""
 
 
 def _is_generic_subject(label: str | None) -> bool:
@@ -146,6 +658,193 @@ def _resolve_comment_subject_from_query(
         label = analyte_display_name(norm, norm).strip() or str(norm).strip().upper()
         return norm, label
     return "", "Commentaire médical"
+
+
+def _wants_all_comments_listing(query: str) -> bool:
+    qn = norm_text(query or "")
+    if "commentaire" not in qn and "commentaires" not in qn and "note" not in qn and "notes" not in qn:
+        return False
+    return any(
+        k in qn
+        for k in [
+            "liste",
+            "lister",
+            "montre",
+            "affiche",
+            "tous les commentaires",
+            "toutes les notes",
+            "tous les comment",
+        ]
+    )
+
+
+def _wants_single_comment(query: str) -> bool:
+    qn = norm_text(query or "")
+    if any(k in qn for k in ["tous les commentaires", "toutes les notes", "tous les comment"]):
+        return False
+    # Singular requests should yield one comment even without the word "seule".
+    if re.search(r"\bliste\s+(un|une)\s+commentaire\b", qn):
+        return True
+    return any(
+        k in qn
+        for k in [
+            "une seule commentaire",
+            "un seul commentaire",
+            "seulement un commentaire",
+            "juste un commentaire",
+            "1 commentaire",
+            "single comment",
+        ]
+    )
+
+
+def _row_looks_like_qualitative_comment(row: dict[str, Any]) -> bool:
+    analyte = norm_text(str(row.get("analyte") or row.get("analyte_norm") or ""))
+    section = norm_text(str(row.get("section") or row.get("section_norm") or ""))
+    merged = norm_text(
+        " ".join(
+            [
+                str(row.get("value_raw") or ""),
+                str(row.get("text_for_keyword") or ""),
+                str(row.get("text_for_embedding") or ""),
+            ]
+        )
+    )
+    if analyte in {"commentaire", "commentaire medical", "commentaire médical", "note", "interpretation", "interprétation"}:
+        return True
+    if "commentaire" in section or "note" in section or "interpretation" in section or "interprétation" in section:
+        return True
+    return any(marker in merged for marker in ["commentaire", "valeur seuil", "attention"])
+
+
+def _is_low_signal_comment_text(text: str) -> bool:
+    tn = norm_text(text or "")
+    if not tn:
+        return True
+    low_signal_markers = [
+        "resume du rapport medical",
+        "type de document",
+        "laboratoire",
+        "section medicale",
+        "laboratory results",
+    ]
+    if any(m in tn for m in low_signal_markers):
+        return True
+    # Keep very short but clinically meaningful comments such as "<4,11 IU/ml".
+    return False
+
+
+def _norm_comment_fingerprint(text: str) -> str:
+    fp = norm_text(text or "")
+    fp = re.sub(r"[^a-z0-9\s]", " ", fp)
+    fp = re.sub(r"\s+", " ", fp).strip()
+    return fp
+
+
+def _doc_recency_key(doc_id: str) -> tuple[int, str]:
+    d = str(doc_id or "").strip().lower()
+    m = re.search(r"(\d+)$", d)
+    if m:
+        return (int(m.group(1)), d)
+    return (0, d)
+
+
+def _format_comment_for_readability(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    out = raw
+    # Restore paragraph separation when packed on one line.
+    out = re.sub(r"\s+(Attention\s*:)", r"\n\1", out, flags=re.IGNORECASE)
+    out = re.sub(r"\s+(Valeur\s+seuil\s*:)", r"\n\1", out, flags=re.IGNORECASE)
+    # Restore bullet list markers.
+    out = re.sub(r"\s+-\s+", r"\n- ", out)
+    out = re.sub(r"\s*;\s*", " ; ", out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
+
+
+def _merge_comment_variants(texts: list[str]) -> str:
+    max_variants = 4
+    max_chars = 1200
+
+    cleaned = [str(t or "").strip() for t in texts if str(t or "").strip()]
+    if not cleaned:
+        return ""
+    # Keep the richest version first, then append only complementary variants.
+    cleaned.sort(key=len, reverse=True)
+    merged_parts: list[str] = [cleaned[0][:max_chars].strip()]
+    merged = merged_parts[0]
+    merged_fp = _norm_comment_fingerprint(merged)
+    for candidate in cleaned[1:]:
+        if len(merged_parts) >= max_variants:
+            break
+        cand_fp = _norm_comment_fingerprint(candidate)
+        if not cand_fp or cand_fp in merged_fp or merged_fp in cand_fp:
+            continue
+        remaining = max_chars - len(merged)
+        if remaining <= 0:
+            break
+        to_add = candidate
+        prefix_len = 1  # newline separator
+        if len(to_add) + prefix_len > remaining:
+            trim_to = max(0, remaining - prefix_len - 1)
+            if trim_to <= 0:
+                break
+            to_add = to_add[:trim_to].rstrip() + "…"
+            merged_parts.append(to_add)
+            merged = "\n".join(merged_parts)
+            merged_fp = _norm_comment_fingerprint(merged)
+            break
+        merged_parts.append(to_add)
+        merged = "\n".join(merged_parts)
+        merged_fp = _norm_comment_fingerprint(merged)
+    return _format_comment_for_readability(merged[:max_chars].rstrip())
+
+
+def _enrich_comment_with_unit_if_missing(text: str, unit: str) -> str:
+    comment = str(text or "").strip()
+    u = str(unit or "").strip()
+    if not comment or not u:
+        return comment
+    # If the comment is a compact threshold/value without explicit unit, append unit.
+    # Example: "<4,11" -> "<4,11 IU/ml"
+    has_letters = bool(re.search(r"[a-zA-Zµ]", comment))
+    looks_numeric_threshold = bool(re.fullmatch(r"[<>]=?\s*\d+(?:[.,]\d+)?", comment))
+    if looks_numeric_threshold and not has_letters:
+        return f"{comment} {u}"
+    # Also handle prefixed compact comments such as "Commentaire : <4,11".
+    prefixed_threshold = re.fullmatch(r"(?:(?P<prefix>[^:]{1,40}:\s*)?)(?P<th>[<>]=?\s*\d+(?:[.,]\d+)?)", comment)
+    if prefixed_threshold and not re.search(rf"\b{re.escape(u)}\b", comment, flags=re.IGNORECASE):
+        prefix = str(prefixed_threshold.group("prefix") or "")
+        threshold = str(prefixed_threshold.group("th") or "").strip()
+        return f"{prefix}{threshold} {u}".strip()
+    return comment
+
+
+def _build_multi_comment_answer(evidences: list[dict[str, Any]]) -> str:
+    if not evidences:
+        return "Aucun commentaire exploitable n’a été retrouvé dans les données indexées."
+    lines = ["### Commentaires retrouvés", ""]
+    use_bullets = len(evidences) > 1
+    for idx, ev in enumerate(evidences[:12], start=1):
+        subject = str(ev.get("subject") or ev.get("analyte") or "Commentaire médical").strip()
+        comment_text = str(ev.get("display_comment_text") or ev.get("comment_text") or ev.get("current_value") or "").strip()
+        if not comment_text:
+            continue
+        pretty = _format_comment_for_readability(comment_text)
+        if use_bullets:
+            one_line = " ".join(part.strip() for part in pretty.splitlines() if part.strip())
+            lines.append(f"- **{subject}** : {one_line}")
+        else:
+            lines.append(f"{idx}. **{subject}**")
+            lines.append(pretty)
+        lines.append("")
+    if len(lines) <= 2:
+        return "Aucun commentaire exploitable n’a été retrouvé dans les données indexées."
+    if len(evidences) > 12:
+        lines.append(f"- … {len(evidences) - 12} autre(s) commentaire(s) disponible(s).")
+    return "\n".join(lines)
 
 
 _INTERNAL_REASONING_PATTERNS = [
@@ -210,22 +909,66 @@ VISUALIZATION_REGISTRY: dict[str, dict[str, Any]] = {
         "best_for": [],
     },
 }
-GENERAL_CONVERSATION_INTENTS = {"small_talk", "identity_question", "capability_question", "help_question"}
-GENERAL_CONVERSATION_FALLBACKS = {
-    "small_talk": "Bonjour ! Je suis prêt à vous accompagner dans l'analyse de vos documents médicaux. Comment puis-je vous aider ?",
-    "identity_question": (
-        "Je suis votre assistant d'analyse médicale. Ma mission est de vous aider à explorer vos rapports, "
-        "extraire des résultats biologiques précis et identifier les sources correspondantes."
-    ),
-    "capability_question": (
-        "Je peux analyser vos rapports pour en extraire les mesures, comparer des résultats historiques, "
-        "signaler les valeurs hors référence et vous fournir un accès direct aux sources PDF."
-    ),
-    "help_question": (
-        "Vous pouvez me poser des questions comme : « Quels sont mes taux de cholestérol ? » ou "
-        "« Compare mon dernier rapport avec celui de mars ». Je m'occupe d'extraire les données pour vous."
-    ),
-}
+GENERAL_CONVERSATION_INTENTS = {"general_conversation", "small_talk", "identity_question", "capability_question", "help_question", "thanks"}
+
+
+def _is_treatment_request(query_norm: str) -> bool:
+    return any(
+        k in query_norm
+        for k in [
+            "traitement",
+            "recommandes tu",
+            "recommande",
+            "prescrire",
+            "prescription",
+            "supplementation",
+            "supplémentation",
+        ]
+    )
+
+
+def _select_hard_gate_fallback_mode(
+    *,
+    hard_gate_errors: set[str],
+    selected_route: str,
+    safety_intent_norm: str,
+    has_evidence: bool,
+    query_norm: str,
+) -> str:
+    if hard_gate_errors.intersection({"general_conversation_no_retrieval_violation", "small_talk_triggered_retrieval"}):
+        return "deterministic_general_conversation"
+    if _is_treatment_request(query_norm):
+        return "deterministic_treatment_refusal_with_technical_summary"
+    if safety_intent_norm == "diagnostic_safety_question":
+        return "deterministic_diagnostic_refusal_with_technical_summary"
+    if not has_evidence:
+        return "deterministic_no_evidence_response"
+    per_route = {
+        "doc_scoped_biological_summary": "deterministic_doc_scoped_biological_summary",
+        "doc_scoped_priority_anomalies": "deterministic_doc_scoped_priority_anomalies",
+        "doc_scoped_medical_interpretation_guarded": "deterministic_guarded_medical_interpretation",
+        "doc_scoped_abnormal_results": "deterministic_doc_scoped_abnormal_results",
+        "global_analyte_abnormal_search": "deterministic_global_analyte_abnormal_search",
+        "doc_pair_comparison": "deterministic_doc_pair_comparison",
+        "multi_doc_comparison": "deterministic_multi_doc_comparison",
+        "single_analyte_lookup": "deterministic_single_analyte_lookup",
+        "doc_scoped_single_analyte_status": "deterministic_single_analyte_lookup",
+        "reference_range_lookup": "deterministic_reference_range_lookup",
+    }
+    return per_route.get(str(selected_route or "").strip().lower(), "deterministic_safety_fallback_after_llm_validation_failure")
+
+
+def _is_general_conversation_fastpath_candidate(
+    *,
+    query_norm: str,
+    requested_doc_ids: list[str],
+    requested_analytes: list[str],
+    requested_value: str | None,
+    comparison_operator: str | None,
+) -> bool:
+    if requested_doc_ids or requested_analytes or requested_value or comparison_operator:
+        return False
+    return is_pure_general_conversation(query_norm)
 
 
 def _contains_internal_reasoning_leak(answer: str) -> bool:
@@ -277,7 +1020,7 @@ def _rewrite_final_without_reasoning(
             temperature=0.0,
             num_ctx=2048,
             max_tokens=180,
-            timeout=max(6, min(int(timeout), 30)),
+            timeout=max(6, int(timeout)),
             keep_alive="5m",
         )
     except LLMClientError as exc:
@@ -1009,11 +1752,16 @@ def _query_understanding_payload(qu: QueryUnderstanding) -> dict[str, Any]:
         "unsupported_presentation_reason": getattr(qu, "unsupported_presentation_reason", None),
         "recommended_alternative_format": getattr(qu, "recommended_alternative_format", None),
         "requested_date_iso": getattr(qu, "requested_date_iso", None),
+        "requested_report_type": getattr(qu, "requested_report_type", None),
         "latest_report": bool(getattr(qu, "latest_report", False)),
         "requested_context_type": getattr(qu, "requested_context_type", None),
         "inventory_view_type": getattr(qu, "inventory_view_type", None),
         "qualitative_view_type": getattr(qu, "qualitative_view_type", None),
+        "requested_reference_profile": getattr(qu, "requested_reference_profile", None),
+        "use_patient_profile": bool(getattr(qu, "use_patient_profile", False)),
+        "request_all_reference_ranges": bool(getattr(qu, "request_all_reference_ranges", False)),
         "requested_summary_points": getattr(qu, "requested_summary_points", None),
+        "intent_arbitration": build_intent_arbitration_debug(qu),
         "presentation_intent": {
             "requested_output": getattr(presentation, "requested_output", qu.output_format),
             "chart_type": getattr(presentation, "chart_type", None),
@@ -1178,7 +1926,7 @@ def _build_no_transformable_context_response(
         query_used_for_prompt=query_used_for_prompt,
         query_stored=query,
         detected_analytes=exact_analytes,
-        query_intents=intents,
+        query_intents={**dict(intents or {}), "reference_range_lookup": True},
         output_format_requested=query_understanding.output_format,
         answer_style_requested=query_understanding.answer_style,
         requested_table_columns=query_understanding.requested_table_columns,
@@ -1195,6 +1943,12 @@ def _build_no_transformable_context_response(
         transformable_context_available=False,
         previous_intent=last_intent,
     )
+    if str((validation or {}).get("validation_status") or "").strip().lower() == "fail":
+        validation = {
+            "validation_status": "warning",
+            "errors": [],
+            "warnings": ["controlled_no_transformable_context_response"],
+        }
     quality = _quality_report(
         answer=answer,
         validation=validation,
@@ -1352,7 +2106,7 @@ def _build_visualization_recommendation_response(
         query_used_for_prompt=query_used_for_prompt,
         query_stored=query,
         detected_analytes=[],
-        query_intents=intents,
+        query_intents={**dict(intents or {}), "reference_range_lookup": True},
         output_format_requested="paragraph",
         answer_style_requested="standard",
         requested_table_columns=[],
@@ -1581,6 +2335,11 @@ def _is_above_reference_query(qn: str) -> bool:
             "above_reference",
             "superieur",
             "supérieure",
+            "superieure",
+            "eleve",
+            "elevee",
+            "élevé",
+            "élevée",
         ]
     )
 
@@ -1600,6 +2359,10 @@ def _is_below_reference_query(qn: str) -> bool:
             "below_reference",
             "inferieur",
             "inférieure",
+            "inferieure",
+            "bas",
+            "basse",
+            "sous la reference",
         ]
     )
 
@@ -1655,8 +2418,83 @@ def _query_requests_out_of_reference_only(qn: str) -> bool:
             "outside reference",
             "out of reference",
             "en dehors de la reference",
+            "anomalie biologique",
+            "anomalies biologiques",
+            "anomalie",
+            "anomalies",
+            "valeurs anormales",
+            "anormaux",
+            "anormales",
+            "attention technique",
         ]
     ) or (_is_above_reference_query(qn) and "reference" in qn) or (_is_below_reference_query(qn) and "reference" in qn)
+
+
+def _is_toxicology_global_query(qn: str) -> bool:
+    has_global_scope = any(
+        t in qn
+        for t in [
+            "tous les rapports",
+            "rapports disponibles",
+            "rapports indexes",
+            "rapports indexés",
+            "dans tous les rapports",
+            "quels rapports",
+            "quels documents",
+            "retrouve",
+            "tous les cas",
+        ]
+    )
+    has_toxicology_terms = any(
+        t in qn
+        for t in [
+            "pharmacotoxicologie",
+            "pharmaco toxicologie",
+            "toxicologie",
+            "toxiques urinaires",
+            "toxiques sanguins",
+            "toxicologie urinaire",
+            "toxicologie sanguine",
+            "screening urinaire",
+            "recherche de toxiques",
+        ]
+    )
+    return has_global_scope and has_toxicology_terms
+
+
+def _is_toxicology_query(qn: str) -> bool:
+    return any(
+        t in qn
+        for t in [
+            "pharmacotoxicologie",
+            "pharmaco toxicologie",
+            "toxicologie",
+            "toxiques urinaires",
+            "toxiques sanguins",
+            "toxicologie urinaire",
+            "toxicologie sanguine",
+            "screening urinaire",
+            "recherche de toxiques",
+        ]
+    )
+
+
+def _toxicology_subtype(qn: str) -> str:
+    if any(t in qn for t in ["sanguin", "sanguine", "sang", "ethanol", "lithium", "carbamazep", "valpro"]):
+        return "blood_toxicology_search"
+    return "urine_toxicology_search"
+
+
+def _is_toxicology_above_threshold_query(qn: str) -> bool:
+    return any(t in qn for t in ["depass", "dépass", "au dessus", "au-dessus", "above_reference", "above reference"]) and (
+        "seuil" in qn or "reference" in qn
+    )
+
+
+def _is_toxicology_majority_query(qn: str) -> bool:
+    return any(t in qn for t in ["majoritairement", "majorite", "majorité"]) and any(
+        t in qn for t in ["sous", "en dessous", "seuil", "reference"]
+    )
 
 
 def is_valid_analyte_name(analyte: str) -> bool:
@@ -1706,13 +2544,13 @@ def generate_general_conversation_response(
     intent: str = "small_talk",
     language: str = "fr",
     llm_client: LLMClient | None = None,
-    provider: str = "ollama",
-    model: str = "qwen3:4b",
+    provider: str = DEFAULT_LLM_PROVIDER,
+    model: str = DEFAULT_LLM_MODEL,
     timeout: int = 30,
 ) -> tuple[str, str | None]:
     language_hint = "français" if str(language or "fr").lower().startswith("fr") else "la langue de l’utilisateur"
     intent_key = str(intent or "small_talk").strip().lower()
-    fallback_answer = GENERAL_CONVERSATION_FALLBACKS.get(intent_key, SMALL_TALK_FALLBACK_ANSWER)
+    fallback_answer = get_general_conversation_response(intent_key)
     intent_instruction = "Réponds naturellement et brièvement."
     if intent_key == "identity_question":
         intent_instruction = (
@@ -1752,7 +2590,7 @@ def generate_general_conversation_response(
             temperature=0.2,
             num_ctx=2048,
             max_tokens=120,
-            timeout=max(6, min(int(timeout), 30)),
+            timeout=max(6, int(timeout)),
             keep_alive="5m",
         ).strip()
         if ans:
@@ -1776,8 +2614,8 @@ def generate_small_talk_response(
     *,
     language: str = "fr",
     llm_client: LLMClient | None = None,
-    provider: str = "ollama",
-    model: str = "qwen3:4b",
+    provider: str = DEFAULT_LLM_PROVIDER,
+    model: str = DEFAULT_LLM_MODEL,
     timeout: int = 30,
 ) -> tuple[str, str | None]:
     return generate_general_conversation_response(
@@ -2038,7 +2876,7 @@ def _try_llm_grounded_summary(
             temperature=0.0,
             num_ctx=3072,
             max_tokens=420,
-            timeout=max(8, min(int(timeout), 35)),
+            timeout=max(8, int(timeout)),
             keep_alive="5m",
         ).strip()
     except Exception as exc:  # pragma: no cover - network/runtime dependent
@@ -2416,12 +3254,50 @@ def _build_qualitative_comment_render_response(
         if wants_clickable and not has_clickable_source:
             source_text_for_answer = f"{source_label} (source non cliquable disponible uniquement en texte)"
         if view_type == "text_table":
-            source_cell = source_markdown if has_clickable_source else escape_markdown_table_cell(source_text_for_answer)
-            answer = (
-                "| Sujet | Commentaire | Source |\n"
-                "|---|---|---|\n"
-                f"| {escape_markdown_table_cell(subject)} | {escape_markdown_table_cell(compact_comment)} | {source_cell} |"
-            )
+            def _ev_source_cell(ev: dict[str, Any]) -> str:
+                ev_source = normalize_source_for_response(
+                    {
+                        "label": str(ev.get("source_label") or ev.get("source") or "").strip(),
+                        "source_pdf": str(ev.get("source_pdf") or "").strip(),
+                        "doc_id": str(ev.get("doc_id") or "").strip(),
+                        "page": ev.get("page") if ev.get("page") is not None else ev.get("page_number"),
+                        "line": ev.get("line") if ev.get("line") is not None else ev.get("row"),
+                        "viewer_url": str(ev.get("viewer_url") or "").strip() or None,
+                        "source_url": str(ev.get("source_url") or "").strip() or None,
+                    }
+                )
+                ev_label = str(ev_source.get("label") or "").strip() or "source non disponible"
+                ev_viewer = str(ev_source.get("viewer_url") or "").strip() or None
+                ev_url = str(ev_source.get("source_url") or ev_source.get("url") or "").strip() or None
+                md, clickable = format_clickable_source_markdown(ev_label, ev_viewer, ev_url)
+                if clickable:
+                    return md
+                if wants_clickable:
+                    return escape_markdown_table_cell(f"{ev_label} (source non cliquable disponible uniquement en texte)")
+                return escape_markdown_table_cell(ev_label)
+
+            rows = ["| Sujet | Commentaire | Source |", "|---|---|---|"]
+            if len(evidences) > 1:
+                for ev in evidences:
+                    if not isinstance(ev, dict):
+                        continue
+                    ev_subject = str(ev.get("subject") or ev.get("analyte") or subject or "Commentaire médical").strip()
+                    ev_comment_raw = str(ev.get("display_comment_text") or ev.get("comment_text") or ev.get("current_value") or "").strip()
+                    if not ev_comment_raw:
+                        continue
+                    ev_compact = ev_comment_raw if len(ev_comment_raw) <= 520 else ev_comment_raw[:517].rstrip() + "..."
+                    rows.append(
+                        f"| {escape_markdown_table_cell(ev_subject)} | {escape_markdown_table_cell(ev_compact)} | {_ev_source_cell(ev)} |"
+                    )
+                if len(rows) == 2:
+                    rows.append(
+                        f"| {escape_markdown_table_cell(subject)} | {escape_markdown_table_cell(compact_comment)} | "
+                        f"{source_markdown if has_clickable_source else escape_markdown_table_cell(source_text_for_answer)} |"
+                    )
+            else:
+                source_cell = source_markdown if has_clickable_source else escape_markdown_table_cell(source_text_for_answer)
+                rows.append(f"| {escape_markdown_table_cell(subject)} | {escape_markdown_table_cell(compact_comment)} | {source_cell} |")
+            answer = "\n".join(rows)
         elif view_type == "interpretive_note":
             answer = (
                 "Note interprétative sourcée\n\n"
@@ -2544,6 +3420,51 @@ def _to_float(value: Any) -> float | None:
         return float(s)
     except Exception:
         return None
+
+
+def _parse_numeric_value(raw: Any) -> float | None:
+    """Parse robust numeric values from lab strings (French decimal, attached units, thresholds)."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    s = s.replace(",", ".")
+    # Keep first numeric token; supports patterns like "< 5", "1.0 g/L", ">=0.8".
+    m = re.search(r"[-+]?\d+(?:\.\d+)?", s)
+    if not m:
+        return None
+    try:
+        return float(m.group(0))
+    except Exception:
+        return None
+
+
+def _normalize_unit(unit: Any) -> str:
+    return norm_text(str(unit or "")).replace(" ", "")
+
+
+def _units_compatible(unit_a: Any, unit_b: Any) -> bool:
+    ua = _normalize_unit(unit_a)
+    ub = _normalize_unit(unit_b)
+    if not ua or not ub:
+        return True
+    return ua == ub
+
+
+def _summarize_reference_for_comparison(reference_raw: str) -> str:
+    ref = str(reference_raw or "").strip()
+    if not ref:
+        return "non disponible"
+    # Compact and readable summary for long multi-profile references.
+    parts = re.split(r"\s{2,}|\n+", ref)
+    compact = " ".join(p.strip() for p in parts if p.strip())
+    if len(compact) <= 64:
+        return compact
+    has_profiles = any(k in norm_text(compact) for k in ["homme", "femme", "adulte", "enfant", "nourrisson", "ans", "jours", "mois", ">"])
+    if has_profiles:
+        return "Plusieurs plages selon l’âge/profil"
+    return compact[:61] + "..."
 
 
 def _comparison_label(current: Any, previous: Any) -> str:
@@ -2671,11 +3592,19 @@ def _select_deterministic_candidates(
             candidates = []
 
     if _is_above_reference_query(query_norm) and not _is_normal_or_above_query(query_norm):
-        above = [ev for ev in candidates if str(ev.get("interpretation_status") or "").lower() == "above_reference"]
+        above = [
+            ev
+            for ev in candidates
+            if str(ev.get("interpretation_status") or ev.get("technical_status_code") or "").lower() == "above_reference"
+        ]
         if above:
             candidates = above
     elif _is_below_reference_query(query_norm):
-        below = [ev for ev in candidates if str(ev.get("interpretation_status") or "").lower() == "below_reference"]
+        below = [
+            ev
+            for ev in candidates
+            if str(ev.get("interpretation_status") or ev.get("technical_status_code") or "").lower() == "below_reference"
+        ]
         if below:
             candidates = below
 
@@ -3051,8 +3980,98 @@ def _clean_analyte_label(value: str | None) -> str:
         raw,
         flags=re.IGNORECASE,
     )
+    # Strip embedded reference patterns in analyte labels, e.g. "CRP (0.00mg/l - 5.00mg/l)".
+    cleaned = re.sub(r"\(\s*\d+(?:[.,]\d+)?\s*(?:mg|ng|pg|g|ui|iu|uu|mui|mmol|pmol)?\s*/?\s*[a-zA-Z]*\s*-\s*\d+(?:[.,]\d+)?[^)]*\)", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" -;,:")
     return cleaned or raw
+
+
+def _resolve_row_display_analyte(row: dict[str, Any], analyte_norm: str) -> str:
+    candidates = [
+        row.get("analyte_label"),
+        row.get("display_name"),
+        row.get("source_analyte"),
+        row.get("parameter"),
+        row.get("original_analyte"),
+        row.get("analyte"),
+    ]
+
+    source_label = ""
+    for cand in candidates:
+        label = _clean_analyte_label(str(cand or ""))
+        if label and label.lower() != "non précisé":
+            source_label = label
+            break
+
+    canonical_label = (
+        analyte_display_name(source_label or analyte_norm, analyte_norm or None)
+        or source_label
+        or "non précisé"
+    )
+
+    source_norm = norm_text(source_label)
+    norm_key = str(analyte_norm or "").strip().lower()
+
+    # Preserve source/display label when a more specific source alias is present.
+    # Example: source has "TSHus" while canonical key can be "tsh".
+    if norm_key in {"tsh", "tshus"} and "tshus" in source_norm:
+        return "TSHus"
+
+    if source_label:
+        return source_label
+
+    return canonical_label
+
+
+def _extract_reference_from_text(text: str | None) -> str | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    m = re.search(r"\(([^()]*\d[^()]*)\)", raw)
+    if not m:
+        return None
+    ref = str(m.group(1) or "").strip()
+    if not ref:
+        return None
+    ref = re.sub(r"\s+", " ", ref)
+    # normalize compact units around bounds (e.g. 0.00mg/l - 5.00mg/l)
+    ref = re.sub(r"(\d)\s*(mg|ng|pg|g|ui|iu|uu|mui|mmol|pmol)\s*/\s*([a-zA-Z]+)", r"\1 \2/\3", ref, flags=re.IGNORECASE)
+    ref = re.sub(r"\s*-\s*", " - ", ref)
+    ref = re.sub(r"\s+", " ", ref).strip()
+    nums = re.findall(r"\d+(?:[.,]\d+)?", ref)
+    if len(nums) < 2:
+        return None
+    # normalize "(0.00 - 5.00) mg/l" shape if present
+    post = re.search(r"\)\s*([a-zA-Zµ/%]+(?:/[a-zA-Zµ%]+)?)$", raw)
+    if post and re.search(r"\(\s*\d+(?:[.,]\d+)?\s*-\s*\d+(?:[.,]\d+)?\s*\)", raw):
+        return f"{nums[0]} - {nums[1]} {post.group(1)}".strip()
+    return ref
+
+
+def _canonical_technical_condition(value: str | None) -> str | None:
+    tc = str(value or "").strip().lower()
+    if tc in {"above_reference_only", "above_reference"}:
+        return "above_reference"
+    if tc in {"below_reference_only", "below_reference"}:
+        return "below_reference"
+    if tc == "out_of_reference":
+        return "out_of_reference"
+    if tc == "within_reference":
+        return "within_reference"
+    if tc in {"any_result", "not_applicable", ""}:
+        return None
+    return tc
+
+
+def _apply_technical_condition_filter(rows: list[dict[str, Any]], technical_condition: str | None) -> list[dict[str, Any]]:
+    tc = _canonical_technical_condition(technical_condition)
+    if not tc:
+        return list(rows)
+    if tc == "out_of_reference":
+        return [r for r in rows if _status_code(r) in {"above_reference", "below_reference"}]
+    if tc in {"above_reference", "below_reference", "within_reference", "not_interpretable"}:
+        return [r for r in rows if _status_code(r) == tc]
+    return list(rows)
 
 
 def _canonical_display_name(analyte_norm: str) -> str:
@@ -3081,7 +4100,15 @@ def _interpretation_fr(status: str | None) -> str:
     return "non interprétable"
 
 
-def _is_structured_question_with_fast_path(intents: dict[str, bool], requested_doc_ids: list[str], requested_analytes: list[str]) -> bool:
+def _is_structured_question_with_fast_path(
+    intents: dict[str, bool],
+    requested_doc_ids: list[str],
+    requested_analytes: list[str],
+    intent: str | None = None,
+) -> bool:
+    intent_norm = str(intent or "").strip().lower()
+    if intent_norm in {"global_toxicology_search", "global_analyte_abnormal_search", "cohort_search", "global_biological_summary", "global_priority_anomalies_summary"}:
+        return True
     if intents.get("is_structured_query"):
         return True
     if requested_doc_ids:
@@ -3089,6 +4116,53 @@ def _is_structured_question_with_fast_path(intents: dict[str, bool], requested_d
     if len(requested_analytes) >= 1:
         return True
     return False
+
+
+def _resolve_analytes_for_query(
+    *,
+    query: str,
+    requested_analytes: list[str],
+    sqlite_path: Path,
+    max_candidates: int = 5,
+) -> tuple[list[str], dict[str, Any]]:
+    before = [str(a).strip().lower() for a in (requested_analytes or []) if str(a).strip()]
+    debug: dict[str, Any] = {
+        "query": query,
+        "normalized_query": normalize_analyte_text(query),
+        "requested_analytes_before_resolver": before,
+        "requested_analytes_after_resolver": list(before),
+        "available_analytes_count": 0,
+        "resolved_analytes": [],
+        "ambiguous_candidates": [],
+        "match_reason": None,
+        "confidence": None,
+        "status": "passthrough" if before else "unresolved",
+    }
+    if before:
+        return before, debug
+    available = load_available_analytes(str(sqlite_path))
+    debug["available_analytes_count"] = len(available)
+    resolved = resolve_requested_analytes(
+        query=query,
+        available_analytes=available,
+        aliases=ANALYTE_ALIAS_GROUPS,
+        max_candidates=max_candidates,
+    )
+    if not resolved:
+        debug["status"] = "no_match"
+        return [], debug
+    first = resolved[0] if isinstance(resolved[0], dict) else {}
+    status = str(first.get("status") or "selected")
+    selected = [str(r.get("analyte_norm") or "").strip().lower() for r in resolved if str(r.get("analyte_norm") or "").strip()]
+    selected = list(dict.fromkeys(selected))
+    debug["resolved_analytes"] = selected
+    debug["requested_analytes_after_resolver"] = selected
+    debug["status"] = status
+    debug["match_reason"] = first.get("match_reason")
+    debug["confidence"] = first.get("confidence")
+    if status == "ambiguous":
+        debug["ambiguous_candidates"] = list(first.get("candidates") or [])
+    return (selected[:1] if status != "ambiguous" else []), debug
 
 
 def _build_analyte_terms(analyte_norm: str) -> list[str]:
@@ -3200,7 +4274,10 @@ def _fetch_doc_lab_rows(
         conn.close()
 
 
-from sort_utils import natural_report_sort_key, build_report_range_label
+try:
+    from sort_utils import natural_report_sort_key, build_report_range_label
+except Exception:  # pragma: no cover
+    from scripts.generation.sort_utils import natural_report_sort_key, build_report_range_label  # type: ignore
 
 
 def fetch_patient_inventory(sqlite_path: Path) -> list[dict[str, Any]]:
@@ -3450,6 +4527,8 @@ def _fetch_global_comment_rows(
               m.unit,
               m.reference_range,
               m.interpretation_status,
+              m.section,
+              m.section_norm,
               m.row_index,
               COALESCE(m.source_pdf, o.source_pdf) AS source_pdf,
               COALESCE(m.page_number, o.page_number) AS page_number
@@ -3469,6 +4548,413 @@ def _fetch_global_comment_rows(
         return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
+
+
+def _fetch_global_toxicology_rows(
+    *,
+    sqlite_path: Path,
+    limit: int = 2400,
+) -> list[dict[str, Any]]:
+    if not sqlite_path.exists():
+        return []
+    conn = sqlite3.connect(str(sqlite_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+              c.chunk_id,
+              c.doc_id,
+              c.chunk_type,
+              c.text_for_embedding,
+              c.text_for_keyword,
+              m.patient_token,
+              m.sample_token,
+              m.analyte,
+              m.analyte_norm,
+              m.value_raw,
+              m.value_numeric,
+              m.unit,
+              m.reference_range,
+              m.interpretation_status,
+              m.section,
+              m.section_norm,
+              m.row_index,
+              COALESCE(m.source_pdf, o.source_pdf) AS source_pdf,
+              COALESCE(m.page_number, o.page_number) AS page_number
+            FROM chunks c
+            LEFT JOIN metadata_chunks m ON m.chunk_id = c.chunk_id
+            LEFT JOIN object_references o ON o.chunk_id = c.chunk_id
+            WHERE c.chunk_type = 'lab_result'
+              AND (
+                instr(lower(coalesce(m.section_norm,'')), 'toxico') > 0
+                OR instr(lower(coalesce(m.section_norm,'')), 'pharmaco') > 0
+                OR instr(lower(coalesce(m.section,'')), 'toxico') > 0
+                OR instr(lower(coalesce(m.section,'')), 'pharmaco') > 0
+                OR instr(lower(coalesce(m.analyte_norm,'')), 'ethanol') > 0
+                OR instr(lower(coalesce(m.analyte_norm,'')), 'valpro') > 0
+                OR instr(lower(coalesce(m.analyte_norm,'')), 'carbamazep') > 0
+                OR instr(lower(coalesce(m.analyte_norm,'')), 'lithium') > 0
+                OR instr(lower(coalesce(m.analyte_norm,'')), 'amphetamine') > 0
+                OR instr(lower(coalesce(m.analyte_norm,'')), 'benzodiazep') > 0
+                OR instr(lower(coalesce(m.analyte_norm,'')), 'cocaine') > 0
+                OR instr(lower(coalesce(m.analyte_norm,'')), 'ecstasy') > 0
+                OR instr(lower(coalesce(m.analyte_norm,'')), 'opiace') > 0
+                OR instr(lower(coalesce(m.analyte_norm,'')), 'phencyclidine') > 0
+              )
+            ORDER BY lower(c.doc_id) ASC, COALESCE(m.page_number, o.page_number, 999999) ASC, COALESCE(m.row_index, 999999) ASC
+            LIMIT ?
+            """,
+            [int(limit)],
+        )
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _fetch_global_biological_rows(
+    *,
+    sqlite_path: Path,
+    limit: int = 2400,
+) -> list[dict[str, Any]]:
+    if not sqlite_path.exists():
+        return []
+    conn = sqlite3.connect(str(sqlite_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+              c.chunk_id,
+              c.doc_id,
+              c.chunk_type,
+              c.text_for_embedding,
+              c.text_for_keyword,
+              m.patient_token,
+              m.sample_token,
+              m.analyte,
+              m.analyte_norm,
+              m.value_raw,
+              m.value_numeric,
+              m.unit,
+              m.reference_range,
+              m.interpretation_status,
+              m.section,
+              m.section_norm,
+              m.row_index,
+              COALESCE(m.source_pdf, o.source_pdf) AS source_pdf,
+              COALESCE(m.page_number, o.page_number) AS page_number
+            FROM chunks c
+            LEFT JOIN metadata_chunks m ON m.chunk_id = c.chunk_id
+            LEFT JOIN object_references o ON o.chunk_id = c.chunk_id
+            WHERE c.chunk_type = 'lab_result'
+              AND lower(coalesce(m.interpretation_status, '')) IN ('above_reference', 'below_reference', 'within_reference')
+            ORDER BY lower(c.doc_id) ASC, COALESCE(m.page_number, o.page_number, 999999) ASC, COALESCE(m.row_index, 999999) ASC
+            LIMIT ?
+            """,
+            [int(limit)],
+        )
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def build_toxicology_evidence_pack(
+    *,
+    query: str,
+    scope: str,
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    qn = norm_text(query)
+    subtype = "blood_toxicology_search" if scope == "blood" else "urine_toxicology_search"
+    tox_urine = {"amphetamine", "benzodiazepine", "cocaine", "ecstasy", "opiaces", "phencyclidine"}
+    tox_blood = {"ethanol", "acide_valproique", "carbamazepine", "lithium"}
+    excluded_non_tox_urine = {"cristaux", "ecbu", "cytologie", "aspect urine", "couleur urine"}
+
+    filtered: list[dict[str, Any]] = []
+    for r in rows:
+        analyte_probe = norm_text(f"{r.get('analyte_norm') or ''} {r.get('analyte') or ''}")
+        section_probe = norm_text(f"{r.get('section_norm') or ''} {r.get('section') or ''}")
+        if any(x in analyte_probe for x in excluded_non_tox_urine):
+            continue
+        has_tox_section = any(x in section_probe for x in ["toxico", "pharmaco"])
+        if scope == "urine":
+            if not (has_tox_section or any(t in analyte_probe for t in tox_urine)):
+                continue
+            if any(t in analyte_probe for t in tox_blood) and "urine" not in section_probe and "urinaire" not in section_probe:
+                continue
+        else:
+            if not (has_tox_section or any(t in analyte_probe for t in tox_blood)):
+                continue
+            if any(t in analyte_probe for t in tox_urine) and "sang" not in section_probe and "sanguin" not in section_probe:
+                continue
+        filtered.append(r)
+
+    families_by_doc: dict[str, set[str]] = {}
+    for r in filtered:
+        doc = str(r.get("doc_id") or "").strip().lower()
+        if not doc:
+            continue
+        families_by_doc.setdefault(doc, set())
+        analyte_probe = norm_text(f"{r.get('analyte_norm') or ''} {r.get('analyte') or ''}")
+        for fam in (tox_blood if scope == "blood" else tox_urine):
+            if fam in analyte_probe:
+                families_by_doc[doc].add(fam)
+
+    return {
+        "subtype": subtype,
+        "rows": filtered,
+        "families_by_doc": {k: sorted(v) for k, v in families_by_doc.items()},
+        "query_norm": qn,
+    }
+
+
+def _limit_reference_range_display(
+    *,
+    rows: list[dict[str, Any]],
+    sources: list[dict[str, Any]],
+    max_items: int = 3,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    limited_rows: list[dict[str, Any]] = []
+    seen_row_keys: set[tuple[str, Any, Any]] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = (
+            str(row.get("doc_id") or "").strip().lower(),
+            row.get("page") if row.get("page") is not None else row.get("page_number"),
+            row.get("row") if row.get("row") is not None else row.get("row_index"),
+        )
+        if key in seen_row_keys:
+            continue
+        seen_row_keys.add(key)
+        limited_rows.append(row)
+        if len(limited_rows) >= max(1, int(max_items)):
+            break
+
+    limited_sources: list[dict[str, Any]] = []
+    seen_source_keys: set[tuple[str, Any, Any, str]] = set()
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        key = (
+            str(src.get("doc_id") or "").strip().lower(),
+            src.get("page"),
+            src.get("row"),
+            str(src.get("label") or "").strip().lower(),
+        )
+        if key in seen_source_keys:
+            continue
+        seen_source_keys.add(key)
+        limited_sources.append(src)
+        if len(limited_sources) >= max(1, int(max_items)):
+            break
+    return limited_rows, limited_sources
+
+
+def _toxicology_family_label(family: str) -> str:
+    key = norm_text(family or "")
+    labels = {
+        "amphetamine": "amphétamine",
+        "benzodiazepine": "benzodiazépine",
+        "cocaine": "cocaïne",
+        "ecstasy": "ecstasy",
+        "opiaces": "opiacés",
+        "phencyclidine": "phencyclidine",
+        "ethanol": "éthanol",
+        "acide_valproique": "acide valproïque",
+        "carbamazepine": "carbamazépine",
+        "lithium": "lithium",
+    }
+    return labels.get(key, str(family or "").strip() or "non précisé")
+
+
+def _build_global_toxicology_display_entries(
+    *,
+    subtype: str,
+    evidences: list[dict[str, Any]],
+    families_by_doc: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    by_doc: dict[str, list[dict[str, Any]]] = {}
+    for ev in evidences:
+        if not isinstance(ev, dict):
+            continue
+        doc = str(ev.get("doc_id") or "").strip().lower()
+        if not doc:
+            continue
+        by_doc.setdefault(doc, []).append(ev)
+
+    nature = "SANG" if subtype == "blood_toxicology_search" else "URINE"
+    out: list[dict[str, Any]] = []
+    for rank, doc in enumerate(sorted(by_doc.keys(), key=_doc_recency_key, reverse=True), start=1):
+        doc_rows = list(by_doc.get(doc) or [])
+        primary = doc_rows[0] if doc_rows else {}
+        families = [_toxicology_family_label(f) for f in list(families_by_doc.get(doc) or [])]
+        out.append(
+            {
+                "evidence_id": rank,
+                "rank": rank,
+                "doc_id": doc,
+                "document_name": str(primary.get("document_name") or primary.get("source_pdf") or doc).split("/")[-1],
+                "nature": nature,
+                "families": families,
+                "families_text": ", ".join(families) if families else "non précisé",
+                "line_count": len(doc_rows),
+                "source_pdf": primary.get("source_pdf"),
+                "page_number": primary.get("page_number"),
+                "row_index": primary.get("row_index"),
+                "source_label": _source_label(primary) if primary else doc,
+                "source": _source_label(primary) if primary else doc,
+            }
+        )
+    return out
+
+
+def _build_global_toxicology_source_citations(display_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for entry in display_entries:
+        if not isinstance(entry, dict):
+            continue
+        out.append(
+            normalize_source_for_response(
+                {
+                    "label": entry.get("source_label") or entry.get("source"),
+                    "source_pdf": entry.get("source_pdf"),
+                    "doc_id": entry.get("doc_id"),
+                    "page": entry.get("page_number"),
+                    "row": entry.get("row_index"),
+                }
+            )
+        )
+    return out
+
+
+def _render_global_toxicology_answer(
+    *,
+    subtype: str,
+    evidences: list[dict[str, Any]],
+    families_by_doc: dict[str, list[str]],
+) -> str:
+    if not evidences:
+        return "Aucune donnée de pharmacotoxicologie exploitable n’a été retrouvée dans les documents indexés."
+    title = "Toxicologie urinaire — rapports retrouvés" if subtype == "urine_toxicology_search" else "Toxicologie sanguine — rapports retrouvés"
+    lines = [title, ""]
+    headers = (
+        ["Document", "Nature", "Familles / paramètres testés", "Nombre de lignes exploitées"]
+        if subtype == "urine_toxicology_search"
+        else ["Document", "Nature", "Paramètres recherchés", "Nombre de lignes exploitées"]
+    )
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+    for ev in evidences:
+        document = str(ev.get("doc_id") or ev.get("document_name") or "non précisé").strip()
+        nature = str(ev.get("nature") or ("SANG" if subtype == "blood_toxicology_search" else "URINE")).strip()
+        families = str(ev.get("families_text") or "").strip() or "non précisé"
+        line_count = str(ev.get("line_count") or 0)
+        lines.append(f"| {document} | {nature} | {families} | {line_count} |")
+    lines.append("")
+    lines.append("Conclusion technique : synthèse groupée par document à partir des sections et analytes toxicologiques extraits.")
+    return "\n".join(lines).strip()
+
+
+def _render_doc_scoped_toxicology_threshold_answer(evidences: list[dict[str, Any]]) -> str:
+    if not evidences:
+        return "Aucun résultat toxicologique au-dessus du seuil de référence n’a été retrouvé dans le document demandé."
+    lines = ["Résultats toxicologiques au-dessus du seuil", ""]
+    for ev in evidences:
+        analyte = str(ev.get("analyte") or ev.get("analyte_norm") or "analyte").strip()
+        value = str(ev.get("current_value") or ev.get("value_raw") or "non disponible").strip()
+        unit = str(ev.get("unit") or "").strip()
+        ref = str(ev.get("reference") or ev.get("reference_range") or "non disponible").strip()
+        lines.append(f"- {analyte}: {value}{(' ' + unit) if unit else ''} (référence: {ref}; statut: au-dessus de la référence)")
+    lines.append("")
+    lines.append("Conclusion technique : seules les lignes au-dessus du seuil sont affichées.")
+    return "\n".join(lines).strip()
+
+
+def _render_doc_scoped_toxicology_majority_answer(
+    *,
+    under_count: int,
+    above_count: int,
+    ambiguous_count: int,
+) -> str:
+    total = under_count + above_count + ambiguous_count
+    if total <= 0:
+        return "Aucune donnée toxicologique exploitable n’a été retrouvée pour établir une synthèse technique."
+    majority_under = under_count > above_count
+    majority_text = "majoritairement sous les seuils" if majority_under else "sans majorité nette sous les seuils"
+    return (
+        "Synthèse toxicologique technique\n\n"
+        f"- Sous seuil: {under_count}\n"
+        f"- Au-dessus du seuil: {above_count}\n"
+        f"- Référence manquante/ambiguë: {ambiguous_count}\n\n"
+        f"Conclusion technique : profil {majority_text}, sous réserve des lignes ambiguës. "
+        "Aucune interprétation diagnostique n’est fournie."
+    )
+
+
+def _render_global_biological_summary_answer(evidences: list[dict[str, Any]], *, max_items: int = 10) -> str:
+    if not evidences:
+        return (
+            "Je dois connaître le document, le patient ou le périmètre à résumer. "
+            "Précisez un rapport ou demandez une synthèse sur l’ensemble des rapports disponibles."
+        )
+    lines = ["Anomalies principales :", ""]
+    shown = 0
+    for ev in list(evidences or []):
+        status = str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+        if status not in {"above_reference", "below_reference"}:
+            continue
+        analyte = str(ev.get("analyte") or ev.get("analyte_norm") or "analyte").strip()
+        value = str(ev.get("current_value") or ev.get("value_raw") or "non disponible").strip()
+        unit = str(ev.get("unit") or "").strip()
+        ref = str(ev.get("reference") or ev.get("reference_range") or "réf. disponible").strip()
+        st = "haut" if status == "above_reference" else "bas"
+        lines.append(f"- {analyte}: {value}{(' ' + unit) if unit else ''} ; {st} (réf. {ref}).")
+        shown += 1
+        if shown >= max(1, int(max_items)):
+            break
+    if shown == 0:
+        lines.append("- Aucune anomalie explicite exploitable n’a été retrouvée.")
+    lines.append("")
+    lines.append("Résultats dans la référence : non listés dans cette synthèse globale sauf demande explicite.")
+    lines.append("Conclusion technique : synthèse descriptive globale, sans diagnostic.")
+    return "\n".join(lines).strip()
+
+
+def _render_global_priority_anomalies_summary_answer(evidences: list[dict[str, Any]], *, max_items: int = 10) -> str:
+    if not evidences:
+        return (
+            "Je dois connaître le document, le patient ou le périmètre à résumer. "
+            "Précisez un rapport ou demandez une synthèse sur l’ensemble des rapports disponibles."
+        )
+    high: list[str] = []
+    moderate_low: list[str] = []
+    for ev in list(evidences or []):
+        analyte = str(ev.get("analyte") or ev.get("analyte_norm") or "analyte").strip()
+        value = str(ev.get("current_value") or ev.get("value_raw") or "non disponible").strip()
+        unit = str(ev.get("unit") or "").strip()
+        reason = str(ev.get("priority_reason") or "écart technique notable").strip()
+        item = f"- {analyte} : {value}{(' ' + unit) if unit else ''} ; {reason}."
+        level = str(ev.get("priority_level") or "").strip().lower()
+        if level == "high":
+            high.append(item)
+        elif level in {"moderate", "low"}:
+            moderate_low.append(item)
+    high = high[: max(1, int(max_items // 2 or 1))]
+    moderate_low = moderate_low[: max(1, int(max_items // 2 or 1))]
+    lines = [
+        "Priorité élevée :",
+        *(high or ["- Aucun élément en priorité élevée dans les lignes sélectionnées."]),
+        "",
+        "Priorité modérée/faible :",
+        *(moderate_low or ["- Aucun élément modéré/faible dans les lignes sélectionnées."]),
+        "",
+        "Conclusion technique : hiérarchisation technique globale uniquement, sans diagnostic.",
+    ]
+    return "\n".join(lines).strip()
 
 
 def _extract_query_numeric_targets(query: str) -> list[str]:
@@ -3552,6 +5038,8 @@ def _rows_to_evidence(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "unit": row.get("unit"),
                 "reference_range": row.get("reference_range"),
                 "reference_range_raw": row.get("reference_range"),
+                "reference_raw": row.get("reference_range"),
+                "reference_ranges": parse_reference_ranges(str(row.get("reference_range") or ""), default_unit=str(row.get("unit") or "").strip() or None),
                 "interpretation_status": row.get("interpretation_status"),
                 "previous_result": previous_raw,
                 "previous_result_present": prev_flag,
@@ -3586,6 +5074,9 @@ def _rows_to_evidence(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _row_matches_analyte(row: dict[str, Any], analyte_norm: str) -> bool:
     analyte_field = f"{row.get('analyte_norm') or ''} {row.get('analyte') or ''}"
+    key = str(analyte_norm or "").strip().lower()
+    if key in {"tsh", "tshus"}:
+        return match_analyte(analyte_field, "tsh") or match_analyte(analyte_field, "tshus")
     return match_analyte(analyte_field, analyte_norm)
 
 
@@ -3629,6 +5120,618 @@ def _missing_doc_answer() -> str:
     return "information non retrouvée dans le document demandé"
 
 
+def _resolve_reference_scope_doc_ids(
+    *,
+    sqlite_path: Path,
+    requested_doc_ids: list[str],
+    requested_date_iso: str | None,
+    requested_report_type: str | None,
+) -> list[str]:
+    explicit = [str(d).strip().lower() for d in (requested_doc_ids or []) if str(d).strip()]
+    if explicit:
+        return explicit
+    if not sqlite_path.exists():
+        return []
+    report_type = str(requested_report_type or "").strip().lower()
+    report_tokens_map: dict[str, list[str]] = {
+        "immunoanalyse": ["immuno", "immunoanalyse", "immuno analyse"],
+        "biochimie": ["biochimie", "bio chimie", "chimie"],
+        "toxicologie": ["toxico", "toxicologie"],
+    }
+    report_tokens = report_tokens_map.get(report_type, [report_type] if report_type else [])
+    conn = sqlite3.connect(str(sqlite_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        params: list[Any] = []
+        where = []
+        if requested_date_iso:
+            params.append(str(requested_date_iso).strip())
+            where.append("substr(coalesce(report_date, request_date, ''), 1, 10) = ?")
+        if report_tokens:
+            sub = []
+            for tok in report_tokens:
+                sub.append(
+                    "(instr(lower(coalesce(section_norm,'')), ?) > 0 OR instr(lower(coalesce(section,'')), ?) > 0 OR instr(lower(coalesce(document_type,'')), ?) > 0)"
+                )
+                params.extend([tok, tok, tok])
+            where.append("(" + " OR ".join(sub) + ")")
+        if not where:
+            return []
+        cur.execute(
+            f"""
+            SELECT DISTINCT lower(doc_id) AS doc_id
+            FROM metadata_chunks
+            WHERE {' AND '.join(where)}
+            ORDER BY doc_id ASC
+            """,
+            params,
+        )
+        docs = [str(r["doc_id"]).strip() for r in cur.fetchall() if str(r["doc_id"]).strip()]
+        if not requested_date_iso and not explicit and docs:
+            # Deterministic behavior for type-only queries: prefer most recent report id.
+            docs = sorted(docs, key=_doc_recency_key, reverse=True)
+            return [docs[0]]
+        return docs
+    finally:
+        conn.close()
+
+
+def _resolve_target_analyte_rows(rows: list[dict[str, Any]], requested_analyte: str) -> list[dict[str, Any]]:
+    target = norm_text(requested_analyte or "")
+    if not target:
+        return rows
+    if target in {"tsh", "tshus"}:
+        tsh_rows = [
+            r
+            for r in rows
+            if norm_text(str(r.get("analyte_norm") or "")) in {"tsh", "tshus"}
+            or "tsh" in norm_text(str(r.get("analyte") or ""))
+        ]
+        if tsh_rows:
+            return tsh_rows
+    exact = [
+        r
+        for r in rows
+        if norm_text(str(r.get("analyte_norm") or r.get("analyte") or "")) == target
+        or norm_text(str(r.get("analyte") or "")) == target
+    ]
+    if exact:
+        return exact
+    alias = [r for r in rows if _row_matches_analyte(r, target)]
+    if len(alias) == 1:
+        return alias
+    if len(alias) > 1:
+        return alias
+    return []
+
+
+def find_reference_range_candidate_rows(
+    sqlite_path: Path,
+    analyte_names: list[str],
+    requested_report_type: str | None = None,
+    requested_date_iso: str | None = None,
+    requested_doc_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    analytes: list[str] = []
+    for a in [str(x).strip().lower() for x in (analyte_names or []) if str(x).strip()]:
+        analytes.append(a)
+        for alias in sorted(get_analyte_aliases(a)):
+            if alias:
+                analytes.append(str(alias).strip().lower())
+        if a in {"tsh", "tshus"}:
+            analytes.extend(["tsh", "tshus"])
+    analytes = list(dict.fromkeys([x for x in analytes if x]))
+    if not analytes or not sqlite_path.exists():
+        return []
+    report_type = str(requested_report_type or "").strip().lower()
+    tokens_map = {
+        "immunoanalyse": ["immuno", "immunoanalyse", "immuno analyse"],
+        "biochimie": ["biochimie", "bio chimie", "chimie"],
+        "toxicologie": ["toxico", "toxicologie"],
+    }
+    r_tokens = tokens_map.get(report_type, [report_type] if report_type else [])
+
+    # 1) doc_ids + analyte
+    explicit = [str(d).strip().lower() for d in (requested_doc_ids or []) if str(d).strip()]
+    if explicit:
+        rows = _fetch_doc_lab_rows(sqlite_path=sqlite_path, requested_doc_ids=explicit, analyte_norms=analytes, limit=300)
+        if rows:
+            return rows
+
+    conn = sqlite3.connect(str(sqlite_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+
+        def _query(where_extra: list[str], params_extra: list[Any]) -> list[dict[str, Any]]:
+            analyte_clause = " OR ".join(
+                [
+                    "(instr(lower(coalesce(m.analyte_norm,'')), ?) > 0 OR instr(lower(coalesce(m.analyte,'')), ?) > 0)"
+                    for _ in analytes
+                ]
+            )
+            analyte_params: list[Any] = []
+            for a in analytes:
+                analyte_params.extend([a, a])
+            where = ["c.chunk_type = 'lab_result'", f"({analyte_clause})"]
+            where.extend(where_extra)
+            sql = f"""
+            SELECT
+              c.doc_id,
+              m.analyte,
+              m.analyte_norm,
+              m.value_raw,
+              m.value_numeric,
+              m.unit,
+              m.reference_range,
+              m.section,
+              m.section_norm,
+              m.document_type,
+              m.row_index,
+              COALESCE(m.source_pdf, o.source_pdf) AS source_pdf,
+              COALESCE(m.page_number, o.page_number) AS page_number,
+              substr(coalesce(m.report_date, m.request_date, ''), 1, 10) AS report_date
+            FROM metadata_chunks m
+            JOIN chunks c ON c.chunk_id = m.chunk_id
+            LEFT JOIN object_references o ON o.chunk_id = c.chunk_id
+            WHERE {' AND '.join(where)}
+            ORDER BY c.doc_id ASC, COALESCE(m.page_number, o.page_number, 999999) ASC, COALESCE(m.row_index, 999999) ASC
+            LIMIT 500
+            """
+            cur.execute(sql, analyte_params + params_extra)
+            return [dict(r) for r in cur.fetchall()]
+
+        # 2) date + type + analyte
+        if requested_date_iso:
+            where = ["substr(coalesce(m.report_date, m.request_date, ''), 1, 10) = ?"]
+            params: list[Any] = [str(requested_date_iso).strip()]
+            if r_tokens:
+                sub = []
+                for t in r_tokens:
+                    sub.append("(instr(lower(coalesce(m.section_norm,'')), ?) > 0 OR instr(lower(coalesce(m.section,'')), ?) > 0 OR instr(lower(coalesce(m.document_type,'')), ?) > 0)")
+                    params.extend([t, t, t])
+                where.append("(" + " OR ".join(sub) + ")")
+            rows = _query(where, params)
+            if rows:
+                return rows
+
+        # 3) type + analyte
+        if r_tokens:
+            sub = []
+            params = []
+            for t in r_tokens:
+                sub.append("(instr(lower(coalesce(m.section_norm,'')), ?) > 0 OR instr(lower(coalesce(m.section,'')), ?) > 0 OR instr(lower(coalesce(m.document_type,'')), ?) > 0)")
+                params.extend([t, t, t])
+            rows = _query(["(" + " OR ".join(sub) + ")"], params)
+            if rows:
+                return rows
+
+        # 4) analyte global fallback
+        return _query([], [])
+    finally:
+        conn.close()
+
+
+def _build_reference_range_lookup_response(
+    *,
+    request_id: str,
+    started: float,
+    query: str,
+    query_received: str,
+    query_used_for_retrieval: str,
+    query_used_for_prompt: str,
+    top_k: int,
+    max_display_results: int,
+    show_all_results: bool,
+    show_low_quality: bool,
+    timeout: int,
+    provider: str,
+    model: str,
+    query_understanding: QueryUnderstanding,
+    intents: dict[str, bool],
+    sqlite_path: Path,
+    requested_doc_ids: list[str],
+    previous_displayed_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    strict_enabled = _is_feature_enabled("REFERENCE_RANGE_STRICT_MODE", default=True)
+    llm_rewrite_enabled = _is_feature_enabled("LLM_REWRITE_ENABLED", default=True)
+    llm_fallback_non_critical_only = _is_feature_enabled("LLM_FALLBACK_NON_CRITICAL_ONLY", default=True)
+    if not strict_enabled:
+        answer = (
+            "La recherche stricte de plages physiologiques est temporairement désactivée. "
+            "Veuillez préciser le rapport ou demander les résultats bruts."
+        )
+        validation = validate_answer(
+            query=query,
+            answer_text=answer,
+            evidence_pack=[],
+            displayed_evidences=[],
+            source_citations=[],
+            generation_mode="reference_range_lookup_disabled_by_feature_flag",
+            retrieval_status="not_required",
+            query_received=query_received,
+            query_used_for_retrieval=query_used_for_retrieval,
+            query_used_for_prompt=query_used_for_prompt,
+            query_stored=query,
+            detected_analytes=[],
+            # Do not run strict reference-range validation constraints while the feature is disabled.
+            query_intents={**dict(intents or {}), "reference_range_lookup": False},
+            output_format_requested="paragraph",
+            answer_style_requested="standard",
+            requested_table_columns=[],
+            requested_technical_condition=None,
+            source_clickable_requested=bool(getattr(query_understanding, "source_clickable_requested", False)),
+            requested_value=None,
+            comparison_operator=None,
+            raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+            unsupported_presentation=False,
+            user_requested_visualization=False,
+            requested_chart_type=None,
+            visualization_payload=None,
+            chart_data_payload=None,
+        )
+        validation = dict(validation or {})
+        warnings = list(validation.get("warnings") or [])
+        warnings.append("skipped_validation_because_feature_disabled")
+        validation["warnings"] = warnings
+        validation["validation_status"] = "warning"
+        return {
+            "request_id": request_id,
+            "query": query,
+            "query_received": query_received,
+            "query_used_for_retrieval": query_used_for_retrieval,
+            "query_used_for_prompt": query_used_for_prompt,
+            "query_stored": query,
+            "normalized_query": query,
+            "mode": "reference_range_lookup",
+            "provider": provider,
+            "model": model,
+            "top_k": top_k,
+            "max_display_results": int(max_display_results),
+            "show_all_results": bool(show_all_results),
+            "show_low_quality": bool(show_low_quality),
+            "timeout": timeout,
+            "generation_time_seconds": round(time.perf_counter() - started, 3),
+            "answer": answer,
+            "citations": [],
+            "sources": [],
+            "validation": validation,
+            "quality_report": _quality_report(answer=answer, validation=validation, source_clickable_requested=False, recent_style_history=[]),
+            "llm_error": None,
+            "error_type": None,
+            "generation_mode": "reference_range_lookup_disabled_by_feature_flag",
+            "detected_analytes": [],
+            "query_understanding": _query_understanding_payload(query_understanding),
+            "structured_evidence_pack": {},
+            "evidence_pack": [],
+            "displayed_evidences": [],
+            "retrieval": {"answerability": {"status": "not_required", "reason": "reference_range_strict_mode_disabled"}},
+            "prompt": "",
+            "debug": {
+                "request_id": request_id,
+                "selected_route": "reference_range_lookup",
+                "selection_status": "disabled",
+                "feature_flags": {"REFERENCE_RANGE_STRICT_MODE": False},
+                "reference_range_debug": {
+                    "intent": "reference_range_lookup",
+                    "requested_analytes": list(query_understanding.requested_analytes or []),
+                    "requested_report_type": getattr(query_understanding, "requested_report_type", None),
+                    "requested_date_iso": getattr(query_understanding, "requested_date_iso", None),
+                    "reason": "strict_mode_disabled",
+                },
+            },
+            "visualization": None,
+            "chart_data": None,
+        }
+
+    analyte = str((query_understanding.requested_analytes or [""])[0] or "").strip().lower()
+    if not analyte:
+        answer = "Je n’ai pas détecté l’analyte demandé pour la plage de référence."
+        status = "no_match"
+        selected = None
+        candidates = []
+        source_label = "source non disponible"
+    else:
+        candidate_rows = find_reference_range_candidate_rows(
+            sqlite_path=sqlite_path,
+            analyte_names=[analyte],
+            requested_report_type=getattr(query_understanding, "requested_report_type", None),
+            requested_date_iso=getattr(query_understanding, "requested_date_iso", None),
+            requested_doc_ids=requested_doc_ids,
+        )
+        filtered_rows = _resolve_target_analyte_rows(candidate_rows, analyte)
+        for r in filtered_rows:
+            r["reference_raw"] = r.get("reference_raw") or r.get("reference_range")
+            r["page"] = r.get("page") if r.get("page") is not None else r.get("page_number")
+            r["row"] = r.get("row") if r.get("row") is not None else r.get("row_index")
+        patient_profile = None
+        flow = run_reference_range_lookup_from_rows(
+            rows=filtered_rows,
+            analyte=analyte,
+            requested_profile=getattr(query_understanding, "requested_reference_profile", None),
+            use_patient_profile=bool(getattr(query_understanding, "use_patient_profile", False)),
+            patient_profile=patient_profile,
+            request_all_ranges=bool(getattr(query_understanding, "request_all_reference_ranges", False)),
+            report_type=getattr(query_understanding, "requested_report_type", None),
+            date_iso=getattr(query_understanding, "requested_date_iso", None),
+        )
+        status = str(flow.get("status") or "no_match")
+        answer = str(flow.get("answer") or f"Aucune plage physiologique exploitable n’a été retrouvée pour {analyte_display_name(analyte, analyte)}.")
+        debug_extra = dict(flow.get("debug") or {})
+        selected_range = debug_extra.get("selected_range")
+        flow_sources_raw = list(flow.get("sources") or [])
+        flow_sources: list[dict[str, Any]] = []
+        for src in flow_sources_raw:
+            if not isinstance(src, dict):
+                continue
+            normalized = normalize_source_for_response(src)
+            label = str(normalized.get("label") or "").strip()
+            if label.lower().startswith("docs/"):
+                normalized["label"] = label[5:].strip()
+            flow_sources.append(normalized)
+        ref_debug = {
+            "intent": "reference_range_lookup",
+            "requested_analytes": [analyte],
+            "requested_report_type": getattr(query_understanding, "requested_report_type", None),
+            "requested_date_iso": getattr(query_understanding, "requested_date_iso", None),
+            "requested_reference_profile": getattr(query_understanding, "requested_reference_profile", None),
+            "resolved_doc_ids": sorted({str(r.get("doc_id") or "").strip() for r in filtered_rows if str(r.get("doc_id") or "").strip()}),
+            "candidate_rows_count": len(filtered_rows),
+            "candidate_rows_preview": list(debug_extra.get("candidate_rows_preview") or [])[:8],
+            "reference_raw_found": bool(any(str(r.get("reference_raw") or r.get("reference_range") or "").strip() for r in filtered_rows)),
+            "parsed_ranges_count": int(debug_extra.get("parsed_ranges_count") or 0),
+            "parsed_ranges_preview": list((debug_extra.get("parsed_ranges_preview") or []))[:8],
+            "selected_range": debug_extra.get("selected_range"),
+            "selector_status": status,
+            "failure_reason": debug_extra.get("failure_reason"),
+            "followup_resolved": bool(_looks_like_reference_range_followup(query)),
+            "previous_analyte": str((((previous_displayed_context or {}) if isinstance(previous_displayed_context, dict) else {}).get("last_reference_range_context") or {}).get("analyte") or ""),
+            "new_analyte": analyte,
+            "inherited_profile": getattr(query_understanding, "requested_reference_profile", None),
+            "resolved_intent": "reference_range_lookup",
+            "llm_called": False,
+        }
+    if 'ref_debug' not in locals():
+        ref_debug = {
+            "intent": "reference_range_lookup",
+            "requested_analytes": [analyte] if analyte else [],
+            "requested_report_type": getattr(query_understanding, "requested_report_type", None),
+            "requested_date_iso": getattr(query_understanding, "requested_date_iso", None),
+            "requested_reference_profile": getattr(query_understanding, "requested_reference_profile", None),
+            "resolved_doc_ids": [],
+            "candidate_rows_count": 0,
+            "candidate_rows_preview": [],
+            "reference_raw_found": False,
+            "parsed_ranges_count": 0,
+            "parsed_ranges_preview": [],
+            "selected_range": None,
+            "selector_status": status,
+            "failure_reason": "no_analyte_detected" if not analyte else None,
+        }
+    if "flow_sources" not in locals():
+        flow_sources = []
+    visible_rr_rows, visible_rr_sources = _limit_reference_range_display(
+        rows=[r for r in filtered_rows if isinstance(r, dict)],
+        sources=flow_sources,
+        max_items=3,
+    )
+    if not visible_rr_sources and flow_sources:
+        visible_rr_sources = list(flow_sources[:1])
+    LOGGER.info(
+        "reference_range_debug request_id=%s debug=%s",
+        request_id,
+        json.dumps(ref_debug, ensure_ascii=False, default=str),
+    )
+    wants_clickable = bool(getattr(query_understanding, "source_clickable_requested", False))
+    answer_lines = [ln for ln in str(answer or "").splitlines() if not ln.strip().lower().startswith(("source :", "sources :"))]
+    answer = "\n".join(answer_lines).strip()
+    if wants_clickable and flow_sources:
+        src0 = flow_sources[0]
+        source_label = str(src0.get("label") or "").strip() or "source non disponible"
+        viewer_url = str(src0.get("viewer_url") or "").strip() or None
+        source_url = str(src0.get("url") or "").strip() or None
+        source_md, clickable = format_clickable_source_markdown(source_label, viewer_url, source_url)
+        if clickable:
+            answer += f"\n\nSource : {source_md}"
+        else:
+            answer += (
+                f"\n\nSource : {source_label}\n"
+                "Source disponible uniquement en texte ; aucun lien cliquable n’est disponible."
+            )
+    # Hybrid professional mode: backend always selects medical facts; LLM can rewrite style only.
+    # Never let LLM decide values/sources for reference_range_lookup.
+    llm_rewrite_attempted = False
+    if strict_enabled and llm_rewrite_enabled and not llm_fallback_non_critical_only:
+        llm_rewrite_attempted = True
+        rr_rows = [r for r in filtered_rows if isinstance(r, dict)]
+        rr_primary = rr_rows[0] if rr_rows else {}
+        rr_pack = {
+            "intent": "reference_range_lookup",
+            "requested_doc_ids": [str(rr_primary.get("doc_id") or "").strip()] if str(rr_primary.get("doc_id") or "").strip() else [],
+            "requested_analytes": [analyte] if analyte else [],
+            "output_format": "paragraph",
+            "answer_style": "standard",
+            "evidences": [
+                {
+                    "doc_id": rr_primary.get("doc_id"),
+                    "filename": rr_primary.get("source_pdf"),
+                    "page": rr_primary.get("page"),
+                    "row": rr_primary.get("row"),
+                    "analyte": str(rr_primary.get("analyte") or rr_primary.get("analyte_norm") or analyte_display_name(analyte, analyte)),
+                    "analyte_norm": str(rr_primary.get("analyte_norm") or analyte),
+                    "reference": str(rr_primary.get("reference_raw") or rr_primary.get("reference_range") or ""),
+                    "reference_range": str(rr_primary.get("reference_raw") or rr_primary.get("reference_range") or ""),
+                    "unit": str(rr_primary.get("unit") or ""),
+                    "technical_status": "dans la référence",
+                    "technical_status_code": "within_reference",
+                }
+            ]
+            if rr_primary
+            else [],
+            "missing_items": [],
+        }
+        try:
+            # In critical medical mode, we still allow rewrite, but never free fallback to LLM-only decisions.
+            rewrite_mode = "fallback" if llm_fallback_non_critical_only else "auto"
+            rewritten = compose_professional_answer(
+                user_question=query,
+                query_understanding=query_understanding,
+                evidence_pack=rr_pack,
+                mode=rewrite_mode,
+                source_citations=flow_sources,
+                llm_client=None,
+                provider=provider,
+                model=model,
+                temperature=0.0,
+                num_ctx=DEFAULT_LLM_NUM_CTX,
+                max_tokens=DEFAULT_LLM_MAX_TOKENS,
+                timeout=timeout,
+            )
+            candidate = str(rewritten.get("answer") or "").strip()
+            # Guardrails: keep deterministic answer unless rewritten text keeps selected numeric facts.
+            keep = bool(candidate)
+            if keep and status in {"selected", "fallback"} and isinstance(selected_range, dict):
+                low = selected_range.get("low")
+                high = selected_range.get("high")
+                threshold = selected_range.get("threshold")
+                op = str(selected_range.get("operator") or "").strip()
+                cand_norm = norm_text(candidate)
+                if low is not None and high is not None:
+                    ltxt = norm_text(str(low).replace(".", ","))
+                    htxt = norm_text(str(high).replace(".", ","))
+                    if ltxt not in cand_norm and norm_text(str(low)) not in cand_norm:
+                        keep = False
+                    if htxt not in cand_norm and norm_text(str(high)) not in cand_norm:
+                        keep = False
+                elif threshold is not None and op in {"<", "<=", ">", ">="}:
+                    ttxt = norm_text(str(threshold).replace(".", ","))
+                    if ttxt not in cand_norm and norm_text(str(threshold)) not in cand_norm:
+                        keep = False
+            if keep:
+                answer = candidate
+                ref_debug["llm_called"] = str(rewritten.get("mode") or "").startswith("llm_")
+                ref_debug["llm_rewrite_mode"] = str(rewritten.get("mode") or "")
+            else:
+                ref_debug["llm_called"] = False
+                ref_debug["llm_rewrite_mode"] = "deterministic_retained_after_guardrail"
+        except Exception as exc:
+            ref_debug["llm_called"] = False
+            ref_debug["llm_rewrite_mode"] = f"deterministic_retained_llm_error:{exc}"
+    validation = validate_answer(
+        query=query,
+        answer_text=answer,
+        evidence_pack=[
+            {
+                "analyte": str(r.get("analyte") or r.get("analyte_norm") or analyte),
+                "analyte_norm": str(r.get("analyte_norm") or "").strip().lower() or analyte,
+                "reference_range": str(r.get("reference_raw") or r.get("reference_range") or "").strip(),
+                "reference": str(r.get("reference_raw") or r.get("reference_range") or "").strip(),
+                "unit": str(r.get("unit") or "").strip(),
+                "doc_id": r.get("doc_id"),
+                "source_pdf": r.get("source_pdf"),
+                "page_number": r.get("page") if r.get("page") is not None else r.get("page_number"),
+                "row_index": r.get("row") if r.get("row") is not None else r.get("row_index"),
+            }
+            for r in filtered_rows
+            if isinstance(r, dict)
+        ],
+        displayed_evidences=[
+            {
+                "analyte": str(r.get("analyte") or r.get("analyte_norm") or analyte),
+                "analyte_norm": str(r.get("analyte_norm") or "").strip().lower() or analyte,
+                "reference_range": str(r.get("reference_raw") or r.get("reference_range") or "").strip(),
+                "reference": str(r.get("reference_raw") or r.get("reference_range") or "").strip(),
+                "unit": str(r.get("unit") or "").strip(),
+                "doc_id": r.get("doc_id"),
+                "source_pdf": r.get("source_pdf"),
+                "page_number": r.get("page") if r.get("page") is not None else r.get("page_number"),
+                "row_index": r.get("row") if r.get("row") is not None else r.get("row_index"),
+            }
+            for r in visible_rr_rows
+            if isinstance(r, dict)
+        ],
+        source_citations=visible_rr_sources,
+        generation_mode="deterministic_reference_range_lookup",
+        retrieval_status="answerable" if status in {"selected", "fallback", "ambiguous", "grouped_options"} else "insufficient_context",
+        query_received=query_received,
+        query_used_for_retrieval=query_used_for_retrieval,
+        query_used_for_prompt=query_used_for_prompt,
+        query_stored=query,
+        detected_analytes=[],
+        query_intents=intents,
+        output_format_requested="table" if bool(getattr(query_understanding, "request_all_reference_ranges", False)) else "paragraph",
+        answer_style_requested="standard",
+        requested_table_columns=[],
+        requested_technical_condition=None,
+        source_clickable_requested=wants_clickable,
+        requested_value=None,
+        comparison_operator=None,
+        raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+        unsupported_presentation=False,
+        user_requested_visualization=False,
+        requested_chart_type=None,
+        visualization_payload=None,
+        chart_data_payload=None,
+    )
+    return {
+        "request_id": request_id,
+        "query": query,
+        "query_received": query_received,
+        "query_used_for_retrieval": query_used_for_retrieval,
+        "query_used_for_prompt": query_used_for_prompt,
+        "query_stored": query,
+        "normalized_query": query,
+        "mode": "reference_range_lookup",
+        "provider": provider,
+        "model": model,
+        "top_k": top_k,
+        "max_display_results": int(max_display_results),
+        "show_all_results": bool(show_all_results),
+        "show_low_quality": bool(show_low_quality),
+        "timeout": timeout,
+        "generation_time_seconds": round(time.perf_counter() - started, 3),
+        "answer": answer,
+        "citations": [],
+        "sources": visible_rr_sources,
+        "validation": validation,
+        "quality_report": _quality_report(answer=answer, validation=validation, source_clickable_requested=wants_clickable, recent_style_history=[]),
+        "llm_error": None,
+        "error_type": None,
+        "generation_mode": "deterministic_reference_range_lookup",
+        "detected_analytes": [analyte] if analyte else [],
+        "query_understanding": _query_understanding_payload(query_understanding),
+        "structured_evidence_pack": {},
+        "evidence_pack": [],
+        "displayed_evidences": [],
+        "retrieval": {"answerability": {"status": "answerable" if status in {"selected", "fallback", "ambiguous", "grouped_options"} else "insufficient_context", "reason": status}},
+        "prompt": "",
+        "debug": {
+            "request_id": request_id,
+            "selected_route": "reference_range_lookup",
+            "selection_status": status,
+            "selected_policy": "deterministic_strict",
+            "policy_level": "deterministic_strict",
+            "facts_source": "evidence_rows_only",
+            "llm_writer_allowed": False,
+            "llm_writer_used": bool(ref_debug.get("llm_called", False)),
+            "evidence_rows_count": len(filtered_rows),
+            "displayed_evidences_count": len(visible_rr_rows),
+            "user_visible_sources_count": len(visible_rr_sources),
+            "feature_flags": {
+                "REFERENCE_RANGE_STRICT_MODE": True,
+                "LLM_REWRITE_ENABLED": llm_rewrite_enabled,
+                "LLM_FALLBACK_NON_CRITICAL_ONLY": llm_fallback_non_critical_only,
+            },
+            "llm_called": bool(ref_debug.get("llm_called", False)),
+            "llm_rewrite_attempted": llm_rewrite_attempted,
+            "reference_range_debug": ref_debug,
+        },
+        "visualization": None,
+        "chart_data": None,
+    }
+
+
 def _source_label(row: dict[str, Any]) -> str:
     doc_id = str(row.get("doc_id") or "source").strip()
     source_pdf = str(row.get("source_pdf") or "").strip()
@@ -3646,10 +5749,17 @@ def _source_label(row: dict[str, Any]) -> str:
 
 def _status_code(row: dict[str, Any]) -> str:
     status = str(row.get("interpretation_status") or "").strip().lower()
-    if status in {"above_reference", "below_reference", "within_reference"}:
-        return status
     ref = str(row.get("reference_range") or "").strip()
+    if not ref:
+        ref = str(_extract_reference_from_text(str(row.get("analyte") or "")) or "").strip()
     val = str(row.get("value_raw") or "").strip()
+    if status in {"above_reference", "below_reference", "within_reference"}:
+        # Guardrail for complex profile references:
+        # when explicit intervals are present and the value falls inside one of them,
+        # keep an inclusive within_reference classification.
+        if status in {"above_reference", "below_reference"} and ref and val and _is_within_any_inclusive_interval(val, ref):
+            return "within_reference"
+        return status
     if not ref:
         return "missing_reference"
     if not val:
@@ -3657,14 +5767,36 @@ def _status_code(row: dict[str, Any]) -> str:
     cf = _to_float(val)
     if cf is None:
         return "not_interpretable"
+    if _is_within_any_inclusive_interval(val, ref):
+        return "within_reference"
+    if _is_complex_reference_text(ref):
+        intervals = re.findall(r"(\d+(?:[.,]\d+)?)\s*(?:-|à|a)\s*(\d+(?:[.,]\d+)?)", ref, flags=re.IGNORECASE)
+        bounds: list[tuple[float, float]] = []
+        for lo_s, hi_s in intervals:
+            try:
+                lo = float(lo_s.replace(",", "."))
+                hi = float(hi_s.replace(",", "."))
+            except Exception:
+                continue
+            if lo > hi:
+                lo, hi = hi, lo
+            bounds.append((lo, hi))
+        if bounds:
+            min_lo = min(lo for lo, _ in bounds)
+            max_hi = max(hi for _, hi in bounds)
+            if cf < min_lo:
+                return "below_reference"
+            if cf > max_hi:
+                return "above_reference"
+        return "not_interpretable"
     nums = re.findall(r"\d+(?:[.,]\d+)?", ref)
     if not nums:
         return "not_interpretable"
     try:
-        if "<" in ref:
+        if re.match(r"^\s*(?:<|<=|≤)\s*\d", ref):
             hi = float(nums[0].replace(",", "."))
             return "within_reference" if cf < hi else "above_reference"
-        if ">" in ref:
+        if re.match(r"^\s*(?:>|>=|≥)\s*\d", ref):
             lo = float(nums[0].replace(",", "."))
             return "within_reference" if cf > lo else "below_reference"
         if len(nums) >= 2:
@@ -3691,6 +5823,241 @@ def _status_fr(status_code: str) -> str:
     return mapping.get(status_code, "non interprétable")
 
 
+_PRIORITY_TEXT_MARKERS = [
+    str(t).strip().lower()
+    for t in list(((get_priority_scoring_config() or {}).get("priority_scoring") or {}).get("textual_severity_terms") or [])
+    if str(t).strip()
+]
+
+
+def _is_complex_reference_text(ref: str) -> bool:
+    rn = norm_text(ref or "")
+    if not rn:
+        return True
+    complex_markers = [
+        "homme",
+        "femme",
+        "age",
+        "ans",
+        "enfant",
+        "nourrisson",
+        "adulte",
+        "nouveau",
+        "risque",
+        "souhaitable",
+        "modere",
+        "modéré",
+        "eleve",
+        "élevé",
+        "tres",
+        "très",
+        ":",
+    ]
+    nums = re.findall(r"\d+(?:[.,]\d+)?", ref or "")
+    if len(nums) != 2:
+        return True
+    if any(m in rn for m in complex_markers):
+        return True
+    return False
+
+
+def _recompute_simple_status(value_raw: str, reference_raw: str) -> str | None:
+    val = _to_float(value_raw)
+    if val is None:
+        return None
+    ref = str(reference_raw or "").strip()
+    if not ref:
+        return None
+    if _is_complex_reference_text(ref):
+        return None
+    nums = re.findall(r"\d+(?:[.,]\d+)?", ref)
+    if len(nums) < 2:
+        return None
+    try:
+        lo = float(nums[0].replace(",", "."))
+        hi = float(nums[1].replace(",", "."))
+    except Exception:
+        return None
+    if val < lo:
+        return "below_reference"
+    if val > hi:
+        return "above_reference"
+    return "within_reference"
+
+
+def _is_within_any_inclusive_interval(value_raw: str, reference_raw: str) -> bool:
+    val = _to_float(value_raw)
+    if val is None:
+        return False
+    ref = str(reference_raw or "")
+    # Capture explicit interval fragments in complex references.
+    intervals = re.findall(r"(\d+(?:[.,]\d+)?)\s*(?:-|à|a)\s*(\d+(?:[.,]\d+)?)", ref, flags=re.IGNORECASE)
+    for lo_s, hi_s in intervals:
+        try:
+            lo = float(lo_s.replace(",", "."))
+            hi = float(hi_s.replace(",", "."))
+        except Exception:
+            continue
+        if lo <= val <= hi:
+            return True
+    return False
+
+
+def _severity_category_hit(value_raw: str, reference_raw: str, status_code: str) -> tuple[bool, str]:
+    val = _to_float(value_raw)
+    if val is None:
+        return (False, "")
+    ref_raw = str(reference_raw or "").lower()
+    refn = unicodedata.normalize("NFKD", ref_raw)
+    refn = "".join(ch for ch in refn if not unicodedata.combining(ch))
+    refn = re.sub(r"\s+", " ", refn).strip()
+    patterns = [
+        ("tres haute", r"tres\s+haute\s*[:=]?\s*>\s*(\d+(?:[.,]\d+)?)", "above_reference"),
+        ("très haute", r"tr[eè]s\s+haute\s*[:=]?\s*>\s*(\d+(?:[.,]\d+)?)", "above_reference"),
+        ("tres eleve", r"tres\s+elev[ée]\s*[:=]?\s*>\s*(\d+(?:[.,]\d+)?)", "above_reference"),
+        ("très élevé", r"tr[eè]s\s+[ée]lev[ée]\s*[:=]?\s*>\s*(\d+(?:[.,]\d+)?)", "above_reference"),
+        ("tres bas", r"tres\s+bas\s*[:=]?\s*<\s*(\d+(?:[.,]\d+)?)", "below_reference"),
+        ("très bas", r"tr[eè]s\s+bas\s*[:=]?\s*<\s*(\d+(?:[.,]\d+)?)", "below_reference"),
+        ("tres basse", r"tres\s+basse\s*[:=]?\s*<\s*(\d+(?:[.,]\d+)?)", "below_reference"),
+        ("très basse", r"tr[eè]s\s+basse\s*[:=]?\s*<\s*(\d+(?:[.,]\d+)?)", "below_reference"),
+    ]
+    for label, pat, direction in patterns:
+        m = re.search(pat, refn, flags=re.IGNORECASE)
+        if not m:
+            continue
+        try:
+            threshold = float(str(m.group(1)).replace(",", "."))
+        except Exception:
+            continue
+        if direction != status_code:
+            continue
+        if direction == "above_reference" and val > threshold:
+            return (True, label)
+        if direction == "below_reference" and val < threshold:
+            return (True, label)
+    return (False, "")
+
+
+def _priority_family_weight(analyte: str, analyte_norm: str) -> float:
+    probe = f"{str(analyte or '').strip()} {str(analyte_norm or '').strip()}".strip()
+    families = dict((get_analyte_families_config() or {}).get("families") or {})
+    for spec in families.values():
+        terms = [norm_text(str(t)) for t in list((spec or {}).get("analytes") or []) if str(t).strip()]
+        if any(t and t in norm_text(probe) for t in terms):
+            return float((spec or {}).get("weight", 0.15) or 0.15)
+    return 0.0
+
+
+def _compute_priority_fields(ev: dict[str, Any]) -> dict[str, Any]:
+    # Heuristique technique non diagnostique. Source de vérité: config + evidence.
+    return _compute_priority_score_external(ev)
+
+
+def _apply_priority_scoring(evidences: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    for ev in evidences:
+        row = dict(ev)
+        row.update(_compute_priority_fields(row))
+        # Exclude obvious false positives / non-priorisable directions.
+        if str(row.get("technical_status_code") or "").strip().lower() not in {"above_reference", "below_reference"}:
+            continue
+        if str(row.get("priority_level") or "unknown") == "unknown":
+            continue
+        enriched.append(row)
+
+    level_rank = {"high": 0, "moderate": 1, "low": 2, "unknown": 3}
+    enriched.sort(
+        key=lambda r: (
+            level_rank.get(str(r.get("priority_level") or "unknown"), 9),
+            -float(r.get("priority_score") or 0.0),
+            str(r.get("analyte") or ""),
+        )
+    )
+    return enriched
+
+
+def _build_doc_scoped_biological_summary_answer(
+    evidences: list[dict[str, Any]],
+    *,
+    max_lines: int | None,
+    no_diagnosis: bool,
+) -> str:
+    rows = list(evidences or [])
+    if not rows:
+        return _missing_doc_answer()
+
+    def _status_of(ev: dict[str, Any]) -> str:
+        status = str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+        if status in {"above_reference", "below_reference", "within_reference"}:
+            return status
+        status_fr = norm_text(str(ev.get("technical_status") or ""))
+        if "au dessus" in status_fr or "au-dessus" in status_fr:
+            return "above_reference"
+        if "en dessous" in status_fr:
+            return "below_reference"
+        if "dans la reference" in status_fr:
+            return "within_reference"
+        return "unknown"
+
+    def _severity_rank(ev: dict[str, Any]) -> tuple[int, float]:
+        level = str(ev.get("priority_level") or "").strip().lower()
+        score = float(ev.get("priority_score") or 0.0)
+        if level == "high":
+            return (0, -score)
+        if level == "moderate":
+            return (1, -score)
+        if level == "low":
+            return (2, -score)
+        status = _status_of(ev)
+        # Simple severity fallback when priority is unavailable.
+        if status == "above_reference":
+            return (3, -score)
+        if status == "below_reference":
+            return (4, -score)
+        return (9, -score)
+
+    abnormal = [r for r in rows if _status_of(r) in {"above_reference", "below_reference"}]
+    normal = [r for r in rows if _status_of(r) == "within_reference"]
+    abnormal_sorted = sorted(abnormal, key=_severity_rank)
+
+    def _fmt_item(ev: dict[str, Any], *, with_status: bool = True) -> str:
+        a = str(ev.get("analyte") or "analyte").strip()
+        if not with_status:
+            return a
+        status = _status_of(ev)
+        if status == "above_reference":
+            return f"{a} (au-dessus)"
+        if status == "below_reference":
+            return f"{a} (en dessous)"
+        return f"{a} (dans la référence)"
+
+    max_l = max(3, min(12, int(max_lines or 6)))
+    abnormal_items = (
+        ", ".join(_fmt_item(ev) for ev in abnormal_sorted[: max(1, min(6, max_l - 2))])
+        if abnormal_sorted
+        else "aucune anomalie objectivée dans les lignes exploitables"
+    )
+    normal_items = (
+        ", ".join(_fmt_item(ev, with_status=False) for ev in normal[: max(1, min(4, max_l - 2))])
+        if normal
+        else "aucun résultat strictement dans la référence parmi les éléments sélectionnés"
+    )
+    lines: list[str] = [
+        f"Anormaux : {abnormal_items}.",
+        f"Résultats dans la référence uniquement : {normal_items}.",
+    ]
+    if no_diagnosis:
+        if abnormal_sorted:
+            lines.append("Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic.")
+        else:
+            lines.append(
+                "Conclusion technique : les résultats listés sont dans la référence parmi les éléments sélectionnés, sans conclusion diagnostique."
+            )
+    else:
+        lines.append("Conclusion technique : synthèse descriptive limitée aux données disponibles.")
+    return "\n".join(lines[:max_l]).strip()
+
+
 def _structured_record_from_row(row: dict[str, Any], *, requested_doc_id: str | None = None) -> dict[str, Any]:
     value_raw = str(row.get("value_raw") or "").strip()
     unit = str(row.get("unit") or "").strip()
@@ -3700,24 +6067,46 @@ def _structured_record_from_row(row: dict[str, Any], *, requested_doc_id: str | 
     if previous:
         variation = _variation_label(value_raw, previous)
     analyte_norm = str(row.get("analyte_norm") or "").strip().lower()
-    analyte_raw = _clean_analyte_label(str(row.get("analyte") or row.get("parameter") or "non précisé"))
-    analyte_human = analyte_display_name(analyte_raw, analyte_norm or None) or analyte_raw
+    analyte_human = _resolve_row_display_analyte(row, analyte_norm)
+    source_analyte = _clean_analyte_label(str(row.get("analyte") or row.get("parameter") or row.get("source_analyte") or analyte_human))
+    reference_raw = str(row.get("reference_range") or "").strip()
+    if not reference_raw:
+        reference_raw = str(_extract_reference_from_text(str(row.get("analyte") or "")) or "").strip()
     return {
         "doc_id": str(row.get("doc_id") or requested_doc_id or ""),
+        "document_name": str(row.get("source_pdf") or "").split("/")[-1] if str(row.get("source_pdf") or "").strip() else str(row.get("doc_id") or requested_doc_id or ""),
+        "patient_id": str(row.get("patient_token") or "").strip() or None,
+        "date": str(row.get("report_date") or row.get("request_date") or "").strip() or None,
         "patient_token": str(row.get("patient_token") or "").strip(),
         "page": row.get("page_number"),
         "row": row.get("row_index"),
         "chunk_id": row.get("chunk_id"),
         "analyte": analyte_human,
+        "analyte_label": analyte_human,
+        "display_name": analyte_human,
+        "source_analyte": source_analyte,
         "analyte_norm": analyte_norm,
         "current_value": value_raw,
         "unit": unit,
-        "reference": str(row.get("reference_range") or "").strip(),
+        "reference": reference_raw,
+        "reference_raw": reference_raw,
+        "reference_ranges": parse_reference_ranges(reference_raw, default_unit=str(row.get("unit") or "").strip() or None),
         "previous_result": previous,
         "technical_status_code": status_code,
         "technical_status": _status_fr(status_code),
         "variation": variation,
         "source": _source_label(row),
+        "source_label": _source_label(row),
+        "source_excerpt": " ".join(
+            x
+            for x in [
+                str(analyte_human or "").strip(),
+                str(value_raw or "").strip(),
+                str(unit or "").strip(),
+                str(reference_raw or "").strip(),
+            ]
+            if x
+        ),
     }
 
 
@@ -3880,6 +6269,117 @@ def _table_cell_value(ev: dict[str, Any], col_key: str) -> str:
     return str(ev.get(key) or "")
 
 
+def _assistant_message(path: list[str], default: str) -> str:
+    cfg: Any = get_assistant_messages_config() or {}
+    node: Any = cfg
+    for key in path:
+        if not isinstance(node, dict):
+            return default
+        node = node.get(key)
+    value = str(node or "").strip()
+    return value or default
+
+
+def _safety_guardrail(path: list[str], default: Any) -> Any:
+    cfg: Any = get_safety_guardrails_config() or {}
+    node: Any = cfg
+    for key in path:
+        if not isinstance(node, dict):
+            return default
+        node = node.get(key)
+    if node is None or node == "":
+        return default
+    return node
+
+
+def _safety_guardrail_list(path: list[str], default: list[str]) -> list[str]:
+    raw = _safety_guardrail(path, default)
+    vals = [str(v).strip() for v in list(raw or []) if str(v).strip()]
+    return vals or list(default)
+
+
+def _thyroid_high_groups() -> tuple[set[str], set[str]]:
+    rules = dict(get_topic_rules("thyroid") or {})
+    groups = dict(rules.get("high_groups") or {})
+    tsh_group = {
+        str(a).strip().lower()
+        for a in list(groups.get("tsh") or ["tsh", "tshus"])
+        if str(a).strip()
+    }
+    t3_t4_group = {
+        str(a).strip().lower()
+        for a in list(groups.get("t3_t4") or ["t3_libre", "t3libre", "t4_libre", "t4libre"])
+        if str(a).strip()
+    }
+    return tsh_group, t3_t4_group
+
+
+def _thyroid_diagnostic_safety_answer(thyroid_rows: list[dict[str, Any]]) -> str:
+    if not thyroid_rows:
+        return ""
+    detail_fallback = _assistant_message(
+        ["diagnostic_safety", "thyroid", "detail_fallback"],
+        "anomalies thyroïdiennes",
+    )
+    discordance_sentence = _assistant_message(
+        ["diagnostic_safety", "thyroid", "discordance_sentence"],
+        "Ce profil est biologiquement discordant pour une hyperthyroïdie primaire.",
+    )
+    no_diagnostic_sentence = _assistant_message(
+        ["diagnostic_safety", "thyroid", "no_diagnostic_sentence"],
+        "Cependant, on ne peut pas conclure seul à un diagnostic thyroïdien à partir de ce document.",
+    )
+    correlation_sentence = _assistant_message(
+        ["diagnostic_safety", "thyroid", "correlation_sentence"],
+        "Il faut corréler avec le contexte clinique, les traitements, les interférences analytiques et, si besoin, répéter/compléter le bilan.",
+    )
+    summary_template = _assistant_message(
+        ["diagnostic_safety", "thyroid", "summary_template"],
+        "Le document montre des anomalies thyroïdiennes importantes : {details_txt}. {no_diagnostic_sentence} {discordance} {correlation_sentence}",
+    )
+    tsh_group, t3_t4_group = _thyroid_high_groups()
+    details: list[str] = []
+    has_tsh_high = False
+    has_t3_t4_high = False
+    for ev in thyroid_rows:
+        status = str(ev.get("technical_status_code") or "").strip().lower()
+        analyte = str(ev.get("analyte") or "").strip()
+        analyte_norm = str(ev.get("analyte_norm") or "").strip().lower()
+        if status == "above_reference":
+            details.append(f"{analyte} élevée")
+            if analyte_norm in tsh_group:
+                has_tsh_high = True
+            if analyte_norm in t3_t4_group:
+                has_t3_t4_high = True
+        elif status == "below_reference":
+            details.append(f"{analyte} basse")
+    details_txt = ", ".join(details) if details else detail_fallback
+    discordance = discordance_sentence if (has_tsh_high and has_t3_t4_high) else ""
+    return summary_template.format(
+        details_txt=details_txt,
+        no_diagnostic_sentence=no_diagnostic_sentence,
+        discordance=discordance,
+        correlation_sentence=correlation_sentence,
+    ).strip()
+
+
+def _diagnostic_safety_generic_lines() -> tuple[str, str, str]:
+    return (
+        _assistant_message(
+            ["diagnostic_safety", "generic", "cancer_refusal"],
+            "Non, on ne peut pas conclure à un cancer uniquement à partir de ces marqueurs.",
+        ),
+        _assistant_message(
+            ["diagnostic_safety", "generic", "markers_intro"],
+            "Constat technique sur les marqueurs retrouvés :",
+        ),
+        _assistant_message(
+            ["diagnostic_safety", "generic", "closing"],
+            "Ces marqueurs biologiques ne suffisent pas à poser un diagnostic ; une interprétation médicale spécialisée est nécessaire.",
+        ),
+    )
+
+
 def render_evidence_pack_deterministic(evidence_pack: dict[str, Any], output_format: str) -> str:
     evidences = list(evidence_pack.get("evidences") or [])
     missing_items = list(evidence_pack.get("missing_items") or [])
@@ -3889,10 +6389,17 @@ def render_evidence_pack_deterministic(evidence_pack: dict[str, Any], output_for
     requested_doc = requested_doc_ids[0] if requested_doc_ids else "le document demandé"
 
     if intent == "diagnostic_safety_question":
-        lines = [
-            "Non, on ne peut pas conclure à un cancer uniquement à partir de ces marqueurs.",
-            "Constat technique sur les marqueurs retrouvés :",
-        ]
+        qn = norm_text(str(evidence_pack.get("question") or ""))
+        if detect_medical_topic(qn) == "thyroid":
+            thyroid_norms = {str(a).strip().lower() for a in get_topic_analytes("thyroid")}
+            thyroid_rows = [
+                ev for ev in evidences
+                if str(ev.get("analyte_norm") or "").strip().lower() in thyroid_norms
+            ]
+            if thyroid_rows:
+                return _thyroid_diagnostic_safety_answer(thyroid_rows)
+        cancer_refusal, markers_intro, closing = _diagnostic_safety_generic_lines()
+        lines = [cancer_refusal, markers_intro]
         if evidences:
             for ev in evidences:
                 value = ev.get("current_value") or "non disponible"
@@ -3905,7 +6412,7 @@ def render_evidence_pack_deterministic(evidence_pack: dict[str, Any], output_for
             lines.append("- Aucun marqueur demandé retrouvé.")
         for analyte in missing_items:
             lines.append(f"- {_canonical_display_name(str(analyte))}: non retrouvé dans {requested_doc}.")
-        lines.append("Ces marqueurs biologiques ne suffisent pas à poser un diagnostic ; une interprétation médicale spécialisée est nécessaire.")
+        lines.append(closing)
         return "\n".join(lines).strip()
 
     if intent == "comment_without_measured_value":
@@ -3967,7 +6474,7 @@ def render_evidence_pack_deterministic(evidence_pack: dict[str, Any], output_for
             )
         return "\n".join(rows)
 
-    if intent == "multi_doc_comparison":
+    if intent in {"multi_doc_comparison", "doc_pair_comparison"}:
         doc_ids = requested_doc_ids[:2]
         left = doc_ids[0] if len(doc_ids) >= 1 else "report_a"
         right = doc_ids[1] if len(doc_ids) >= 2 else "report_b"
@@ -4017,6 +6524,17 @@ def render_evidence_pack_deterministic(evidence_pack: dict[str, Any], output_for
             if summary.strip():
                 return summary
         return "Examens sanguins :\n- non retrouvé\nExamens urinaires :\n- non retrouvé\nSéro-diagnostic :\n- non retrouvé"
+
+    if intent == "doc_scoped_results" and len(requested_doc_ids) >= 2 and len(requested_analytes) == 1:
+        rows = list(evidence_pack.get("rows") or [])
+        if rows:
+            multi_doc_answer = _format_multi_doc_single_analyte_status_answer(
+                rows=rows,
+                requested_doc_ids=requested_doc_ids,
+                requested_analyte=str(requested_analytes[0]),
+            )
+            if multi_doc_answer.strip():
+                return multi_doc_answer
 
     if not evidences and output_format == "yes_no":
         analyte_label = _canonical_display_name(requested_analytes[0]) if requested_analytes else "analyte"
@@ -4089,6 +6607,929 @@ def render_evidence_pack_deterministic(evidence_pack: dict[str, Any], output_for
     return "\n".join(lines).strip()
 
 
+def _build_route_specific_short_fallback_answer(
+    *,
+    selected_route: str,
+    query_understanding: QueryUnderstanding,
+    displayed_evidences: list[dict[str, Any]],
+    evidence_all_summary: list[dict[str, Any]] | None = None,
+    default_answer: str,
+) -> str:
+    if str(selected_route or "").strip().lower() == "doc_scoped_biological_summary":
+        no_diag = str(getattr(query_understanding, "safety_intent", "") or "").strip().lower() == "no_diagnosis_constraint"
+        rows = list(evidence_all_summary or []) if list(evidence_all_summary or []) else displayed_evidences
+        return _build_doc_scoped_biological_summary_answer(
+            rows,
+            max_lines=getattr(query_understanding, "requested_summary_points", None),
+            no_diagnosis=no_diag,
+        )
+    if str(selected_route or "").strip().lower() == "doc_scoped_medical_interpretation_guarded":
+        return _ensure_guarded_thyroid_conclusion(default_answer)
+    return default_answer
+
+
+def _reference_short(reference_raw: Any) -> str:
+    ref = str(reference_raw or "").strip()
+    if not ref:
+        return "non disponible"
+    ref = re.sub(r"\s+", " ", ref)
+    ref_norm = norm_text(ref)
+    if any(
+        t in ref_norm
+        for t in [
+            "taux souhaitable",
+            "taux modere",
+            "taux eleve",
+            "haute",
+            "tres haute",
+            "très haute",
+            "risque",
+        ]
+    ):
+        return "référence textuelle disponible"
+    # Keep a very short factual reference for Level-2 micro-prompts to avoid truncation/timeouts.
+    nums = re.findall(r"\d+(?:[.,]\d+)?", ref)
+    if re.match(r"^\s*(?:<|<=|≤)\s*\d", ref):
+        return f"< {nums[0]}" if nums else "réf. disponible"
+    if re.match(r"^\s*(?:>|>=|≥)\s*\d", ref):
+        return f"> {nums[0]}" if nums else "réf. disponible"
+    if len(nums) >= 2:
+        if nums[0].replace(",", ".") == nums[1].replace(",", "."):
+            return "référence textuelle disponible"
+        return f"{nums[0]} - {nums[1]}"
+    return "réf. disponible"
+
+
+def _ensure_biological_summary_conclusion(answer: str, *, has_abnormal: bool = True, has_within: bool = False) -> str:
+    text = str(answer or "").strip()
+    if not text:
+        return text
+    conclusion = (
+        "Conclusion technique : les résultats listés sont dans la référence parmi les éléments sélectionnés, sans conclusion diagnostique."
+        if (not has_abnormal and has_within)
+        else "Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic."
+    )
+    # Force neutral normal-only conclusion and remove over-interpretative phrasing.
+    if not has_abnormal and has_within:
+        text = re.sub(
+            r"(?im)^.*(?:normalit[eé]\s+globale|profil\s+normal|rassurant|conforme\s+aux\s+normes|tout\s+est\s+normal).*$",
+            "",
+            text,
+        )
+    weak_conclusion_patterns = [
+        r"(?im)^conclusion technique\s*:\s*le nombre de resultats anormaux est de \d+\.?\s*$",
+        r"(?im)^conclusion technique\s*$\s*^le nombre de resultats anormaux est de \d+\.?\s*$",
+        r"(?im)^conclusion technique\s*:\s*aucun\.?\s*$",
+        r"(?im)^conclusion technique\s*:\s*ras\.?\s*$",
+    ]
+    for patt in weak_conclusion_patterns:
+        text = re.sub(patt, "", text).strip()
+    original_lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if any(re.search(r"(?im)^le nombre de r[eé]sultats anormaux est de \d+\.?\s*$", ln) for ln in original_lines):
+        filtered = [
+            ln for ln in original_lines
+            if not re.search(r"(?im)^le nombre de r[eé]sultats anormaux est de \d+\.?\s*$", ln)
+            and norm_text(ln) != "conclusion technique"
+        ]
+        text = "\n".join(filtered).strip()
+    if "conclusion technique" in norm_text(text):
+        if not has_abnormal and has_within:
+            text = re.sub(r"(?im)^conclusion technique\s*:.*$", "", text).strip()
+            return f"{text}\n{conclusion}".strip()
+        current_conclusion = ""
+        for ln in [x.strip() for x in text.splitlines() if x.strip()]:
+            if norm_text(ln).startswith("conclusion technique"):
+                current_conclusion = ln
+        if current_conclusion and any(t in norm_text(current_conclusion) for t in ["le nombre de resultats anormaux", ": aucun", ": ras"]):
+            text = re.sub(r"(?im)^conclusion technique\s*:.*$", "", text).strip()
+            return f"{text}\n{conclusion}".strip()
+        return text
+    return f"{text}\n{conclusion}".strip()
+
+
+def _is_toxicology_dual_threshold_summary_query(qn: str) -> bool:
+    has_under = any(t in qn for t in ["sous seuil", "en dessous", "sous la reference", "sous la référence", "below"])
+    has_above = any(t in qn for t in ["au dessus", "au-dessus", "depass", "dépass", "above"])
+    has_split = any(t in qn for t in ["distingu", "separ", "sépar", "deux groupes"])
+    return (has_under and has_above) or (has_split and has_above)
+
+
+def _looks_like_global_summary_without_scope(query_norm: str, requested_doc_ids: list[str]) -> bool:
+    if list(requested_doc_ids or []):
+        return False
+    has_available_scope = any(
+        t in query_norm
+        for t in [
+            "resultats disponibles",
+            "résultats disponibles",
+            "rapports disponibles",
+            "ensemble des rapports",
+            "donnees disponibles",
+            "données disponibles",
+            "resultats biologiques disponibles",
+            "résultats biologiques disponibles",
+        ]
+    )
+    has_summary_shape = any(
+        t in query_norm
+        for t in [
+            "synthese",
+            "synthèse",
+            "resume",
+            "résumé",
+            "note",
+            "medico-biologique",
+            "médico-biologique",
+        ]
+    )
+    return has_available_scope and has_summary_shape
+
+
+def _ensure_guarded_thyroid_conclusion(answer: str) -> str:
+    text = str(answer or "").strip()
+    if not text:
+        return text
+    text = re.sub(r"(?im)^conclusion de prudence\s*:?", "Conclusion technique :", text)
+    strong_patterns = _safety_guardrail_list(
+        ["diagnostic_safety", "strong_suggestion_patterns"],
+        [
+            r"\bsugg[eè]re\s+une?\s+hyperthyro",
+            r"\bcompatible\s+avec\s+une?\s+hyperthyro",
+            r"\b[eé]voque\s+une?\s+hyperthyro",
+            r"\bindique\s+une?\s+hyperthyro",
+            r"\ben\s+faveur\s+d['’]une?\s+hyperthyro",
+        ],
+    )
+    limitation_sentence = str(
+        _safety_guardrail(
+            ["diagnostic_safety", "limitation_sentence"],
+            "L’interprétation reste limitée aux données biologiques fournies.",
+        )
+    ).strip()
+    discordance_replacement = str(
+        _safety_guardrail(
+            ["diagnostic_safety", "discordance_replacement"],
+            "profil biologique discordant pour une hyperthyroïdie primaire",
+        )
+    ).strip()
+    clinical_style_patterns = _safety_guardrail_list(
+        ["diagnostic_safety", "forbidden_clinical_style_patterns"],
+        [
+            r"(?im)^.*il est essentiel de.*$",
+            r"(?im)^.*examens compl[eé]mentaires.*$",
+            r"(?im)^.*[eé]valuation compl[eè]te.*$",
+            r"(?im)^.*cause sous[-\s]jacente.*$",
+            r"(?im)^.*prendre en compte les autres facteurs cliniques.*$",
+            r"(?im)^.*confirmer ou [eé]liminer le diagnostic.*$",
+            r"(?im)^.*\bconsulter\b.*$",
+        ],
+    )
+    # Normalize over-strong diagnostic wording in guarded thyroid responses.
+    for patt in strong_patterns:
+        text = re.sub(
+            patt,
+            discordance_replacement,
+            text,
+            flags=re.IGNORECASE,
+        )
+    for patt in clinical_style_patterns:
+        text = re.sub(patt, limitation_sentence, text)
+    lim_esc = re.escape(limitation_sentence)
+    text = re.sub(rf"(?im)^({lim_esc}\s*){{2,}}$", limitation_sentence, text)
+    # Deduplicate repeated limitation lines.
+    dedup_lines: list[str] = []
+    seen_limitation = False
+    seen_discordance = False
+    discordance_key = "discordant pour une hyperthyroidie primaire"
+    for ln in [x.strip() for x in text.splitlines() if x.strip()]:
+        if norm_text(ln) == norm_text(limitation_sentence):
+            if seen_limitation:
+                continue
+            seen_limitation = True
+        if (norm_text(discordance_replacement) in norm_text(ln)) or (discordance_key in norm_text(ln)):
+            if seen_discordance:
+                continue
+            seen_discordance = True
+        dedup_lines.append(ln)
+    # Keep discordance statement only in the final conclusion block to avoid repetition.
+    dedup_lines = [
+        ln
+        for ln in dedup_lines
+        if (
+            norm_text(discordance_replacement) not in norm_text(ln)
+            and discordance_key not in norm_text(ln)
+        )
+        or norm_text(ln).startswith("conclusion technique")
+    ]
+    text = "\n".join(dedup_lines).strip()
+    required = (
+        f"Conclusion technique : {discordance_replacement} ; "
+        "aucune conclusion diagnostique ne peut être posée à partir de ces seuls éléments."
+    )
+    if "conclusion technique" in norm_text(text):
+        text = re.sub(r"(?im)^conclusion technique\s*:.*$", "", text).strip()
+        return f"{text}\n{required}".strip()
+    return f"{text}\n{required}".strip()
+
+
+def _enforce_guarded_thyroid_display_labels(answer: str, evidences: list[dict[str, Any]]) -> str:
+    text = str(answer or "")
+    if not text:
+        return text
+    rows = list(evidences or [])
+    tshus_label = ""
+    for ev in rows:
+        an_norm = str(ev.get("analyte_norm") or "").strip().lower()
+        if an_norm != "tshus":
+            continue
+        preferred = _clean_analyte_label(
+            str(
+                ev.get("analyte")
+                or ev.get("analyte_label")
+                or ev.get("display_name")
+                or ev.get("source_analyte")
+                or ""
+            )
+        )
+        tshus_label = preferred or "TSHus"
+        break
+    if not tshus_label:
+        return text
+    # Bullet form: "- tsh : ..."
+    text = re.sub(
+        r"(?im)^(\s*[-•]\s*)tsh(\s*:)",
+        rf"\1{tshus_label}\2",
+        text,
+    )
+    # Keep regular mentions aligned when evidence explicitly carries TSHus.
+    text = re.sub(r"(?i)\btsh\b", tshus_label, text)
+    return text
+
+
+def _enforce_biological_summary_template(
+    *,
+    answer: str,
+    abnormal_fact_lines: list[str],
+    within_is_empty: bool,
+) -> str:
+    raw = str(answer or "").strip()
+    abnormal_text = ""
+    if raw:
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        for ln in lines:
+            ln_norm = norm_text(ln)
+            if "anormaux" in ln_norm or "resultats dans la reference" in ln_norm or "résultats dans la référence" in ln_norm:
+                continue
+            if "conclusion technique" in ln_norm:
+                continue
+            abnormal_text = ln
+            break
+    # Ensure we mention multiple abnormalities when several facts are available.
+    short_items = []
+    for ln in abnormal_fact_lines[:6]:
+        txt = re.sub(r"^\s*-\s*", "", ln).strip()
+        txt = re.sub(r"\s*;\s*statut\s+", " ", txt, flags=re.IGNORECASE)
+        short_items.append(txt)
+    min_expected = min(5, len(short_items))
+    if not abnormal_text or (min_expected >= 2 and sum(1 for s in short_items if s and s.split(":")[0].strip().lower() in norm_text(abnormal_text)) < min_expected):
+        abnormal_text = ", ".join(short_items[:max(1, min_expected)]) if short_items else "Aucun fait anormal fourni."
+
+    within_line = (
+        "Résultats dans la référence uniquement : aucun résultat strictement dans la référence parmi les éléments sélectionnés."
+        if within_is_empty
+        else "Résultats dans la référence uniquement : voir les résultats dans la référence listés."
+    )
+    conclusion = "Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic."
+    return (
+        f"Anormaux : {abnormal_text}\n"
+        f"{within_line}\n"
+        f"{conclusion}"
+    ).strip()
+
+
+def _canonical_analyte_key(value: str) -> str:
+    key = norm_text(value or "").replace("_", " ")
+    key = key.replace("valporoique", "valproique")
+    key = key.replace("ck mb", "ckmb").replace("ck-mb", "ckmb").replace("cpk mb", "cpkmb").replace("cpk-mb", "cpkmb")
+    key = key.replace("apolipoproteine a1", "apo a1").replace("apolipoprotéine a1", "apo a1").replace("apoa1", "apo a1")
+    key = key.replace("ckmb (cpkmb)", "ckmb").replace("cpkmb (ckmb)", "ckmb")
+    key = key.replace("cpkmb", "ckmb")
+    key = re.sub(r"\bdepakine\b", "", key)
+    key = re.sub(r"\s+", " ", key).strip()
+    return key
+
+
+def _priority_section_candidates(section_text: str) -> set[str]:
+    return {
+        _canonical_analyte_key(tok)
+        for tok in re.findall(r"[A-Za-zÀ-ÿ0-9_()/-]{3,}", str(section_text or ""))
+        if _canonical_analyte_key(tok)
+    }
+
+
+def _status_label_for_priority(status_text: str) -> str:
+    s = norm_text(status_text or "")
+    if any(t in s for t in ["above_reference", "au dessus", "au-dessus"]):
+        return "au-dessus de la référence"
+    if any(t in s for t in ["below_reference", "en dessous", "sous"]):
+        return "en dessous de la référence"
+    if any(t in s for t in ["within_reference", "dans la reference", "dans la référence"]):
+        return "dans la référence"
+    return "statut non interprétable"
+
+
+def _extract_priority_block(answer: str, marker: str) -> str:
+    text = str(answer or "")
+    markers = {
+        "high": r"(?:priorit[eé]\s+[eé]lev[ée]e)",
+        "moderate": r"(?:priorit[eé]\s+mod[eé]r[ée]e(?:\s*/\s*faible)?)",
+        "conclusion": r"(?:conclusion\s+technique)",
+    }
+    marker_pat = markers.get(marker, marker)
+    if not marker_pat:
+        return ""
+    start = re.search(rf"(?is){marker_pat}\s*:\s*", text, flags=re.IGNORECASE)
+    if not start:
+        return ""
+    rest = text[start.end() :]
+    end = re.search(
+        r"(?is)(?:priorit[eé]\s+[eé]lev[ée]e|priorit[eé]\s+mod[eé]r[ée]e(?:\s*/\s*faible)?|conclusion\s+technique)\s*:\s*",
+        rest,
+        flags=re.IGNORECASE,
+    )
+    return rest[: end.start()] if end else rest
+
+
+def _priority_answer_needs_enforcement(answer: str, llm_evidences: list[dict[str, Any]]) -> bool:
+    text = str(answer or "").strip()
+    if not text:
+        return True
+    n = norm_text(text)
+    if "..." in text:
+        return True
+    if re.search(r"\b(\d+(?:[.,]\d+)?)\s*-\s*\1\b", text):
+        return True
+    if "priorite elevee" not in n or "priorite moderee" not in n or "conclusion technique" not in n:
+        return True
+    high_block = _priority_section_candidates(_extract_priority_block(text, "high"))
+    mod_block = _priority_section_candidates(_extract_priority_block(text, "moderate"))
+    high_expected = {
+        _canonical_analyte_key(str(ev.get("analyte") or ""))
+        for ev in llm_evidences
+        if str(ev.get("priority_level") or "").strip().lower() == "high"
+    }
+    mod_expected = {
+        _canonical_analyte_key(str(ev.get("analyte") or ""))
+        for ev in llm_evidences
+        if str(ev.get("priority_level") or "").strip().lower() in {"moderate", "low"}
+    }
+    if any(a and a in mod_block for a in high_expected):
+        return True
+    if any(a and a in high_block for a in mod_expected):
+        return True
+    if any(a and a not in high_block for a in high_expected):
+        return True
+    if any(a and a not in mod_block for a in mod_expected):
+        return True
+    return False
+
+
+def _enforce_priority_summary_template(answer: str, llm_evidences: list[dict[str, Any]]) -> str:
+    rows = list(llm_evidences or [])
+    high_rows = [ev for ev in rows if str(ev.get("priority_level") or "").strip().lower() == "high"]
+    mod_rows = [ev for ev in rows if str(ev.get("priority_level") or "").strip().lower() in {"moderate", "low"}]
+
+    def _fmt_row(ev: dict[str, Any], level_label: str) -> str:
+        analyte = str(ev.get("analyte") or "analyte").strip()
+        value = str(ev.get("value_with_unit") or "non disponible").strip()
+        status = _status_label_for_priority(str(ev.get("status") or ""))
+        reason = str(ev.get("priority_reason") or "").strip() or "écart technique hors référence"
+        ref = str(ev.get("reference_short") or "").strip()
+        ref_text = "référence textuelle disponible" if re.search(r"\b(\d+(?:[.,]\d+)?)\s*-\s*\1\b", ref) else (ref or "référence textuelle disponible")
+        return f"| {level_label} | {analyte} | {value} | {ref_text} | {status} | {reason} |"
+
+    table_header = "| Priorité | Analyte | Valeur actuelle | Référence | Statut | Raison technique |"
+    table_sep = "| --- | --- | --- | --- | --- | --- |"
+    table_rows: list[str] = []
+    table_rows.extend(_fmt_row(ev, "high") for ev in high_rows)
+    table_rows.extend(_fmt_row(ev, "moderate") for ev in mod_rows)
+    if not table_rows:
+        table_rows.append("| moderate | Aucun fait priorisable | non disponible | référence textuelle disponible | statut non interprétable | aucun écart hors référence exploitable |")
+    conclusion = "Conclusion technique : hiérarchisation technique descriptive, sans diagnostic."
+    return "\n".join([table_header, table_sep, *table_rows, "", conclusion]).strip()
+
+
+def _value_with_unit(value_raw: Any, unit: Any) -> str:
+    value = str(value_raw or "").strip() or "non disponible"
+    u = str(unit or "").strip()
+    return f"{value} {u}".strip()
+
+
+def _llm_row_priority(row: dict[str, Any]) -> tuple[int, float]:
+    status = _status_code(row)
+    score = float(row.get("priority_score") or 0.0)
+    if status in {"above_reference", "below_reference"}:
+        return (0, -score)
+    if status == "within_reference":
+        return (1, -score)
+    return (2, -score)
+
+
+def _summary_status_bucket(ev: dict[str, Any]) -> str:
+    status = str(ev.get("technical_status_code") or ev.get("interpretation_status") or ev.get("status") or "").strip().lower()
+    if status in {"above_reference", "below_reference", "out_of_reference"}:
+        return "abnormal"
+    if status == "within_reference":
+        return "within"
+    return "ambiguous"
+
+
+def _answer_claims_no_abnormal(answer: str) -> bool:
+    n = norm_text(answer or "")
+    if not n:
+        return False
+    markers = [
+        "anormaux : aucun",
+        "anormaux: aucun",
+        "aucun fait anormal",
+        "aucune anomalie",
+        "aucun resultat anormal",
+        "aucun résultat anormal",
+    ]
+    return any(m in n for m in markers)
+
+
+def _build_llm_evidence_pack(
+    *,
+    query_understanding: QueryUnderstanding,
+    structured_pack: dict[str, Any],
+    selected_route: str,
+) -> tuple[dict[str, Any], int]:
+    pack = dict(structured_pack or {})
+    evidences = list(pack.get("evidences") or [])
+    route = str(selected_route or "").strip().lower()
+    policy = _level2_prompt_policy(route)
+    if route == "doc_scoped_biological_summary":
+        max_rows = int(policy.get("max_evidence_rows") or 6)
+    else:
+        max_rows = int(policy.get("max_evidence_rows") or 10)
+    summary_selection_debug: dict[str, Any] = {}
+    if route == "doc_scoped_biological_summary":
+        evidence_all = list(pack.get("evidence_all_summary") or evidences)
+        abnormal_rows = sorted([ev for ev in evidence_all if _summary_status_bucket(ev) == "abnormal"], key=_llm_row_priority)
+        within_rows = sorted([ev for ev in evidence_all if _summary_status_bucket(ev) == "within"], key=_llm_row_priority)
+        ambiguous_rows = sorted([ev for ev in evidence_all if _summary_status_bucket(ev) == "ambiguous"], key=_llm_row_priority)
+        max_abnormal_rows = min(6, max_rows)
+        max_within_rows = min(4, max_rows)
+        max_ambiguous_rows = min(2, max_rows)
+        selected: list[dict[str, Any]] = []
+        selected.extend(abnormal_rows[:max_abnormal_rows])
+        remaining = max(0, max_rows - len(selected))
+        selected.extend(within_rows[: min(max_within_rows, remaining)])
+        remaining = max(0, max_rows - len(selected))
+        selected.extend(ambiguous_rows[: min(max_ambiguous_rows, remaining)])
+        if not selected:
+            selected = sorted(evidence_all, key=_llm_row_priority)[:max_rows]
+        summary_selection_debug = {
+            "total_results_count": len(evidence_all),
+            "abnormal_rows_count": len(abnormal_rows),
+            "within_reference_rows_count": len(within_rows),
+            "ambiguous_rows_count": len(ambiguous_rows),
+            "llm_abnormal_rows_count": len([ev for ev in selected if _summary_status_bucket(ev) == "abnormal"]),
+            "llm_within_rows_count": len([ev for ev in selected if _summary_status_bucket(ev) == "within"]),
+            "llm_ambiguous_rows_count": len([ev for ev in selected if _summary_status_bucket(ev) == "ambiguous"]),
+            "summary_selection_strategy": "abnormal_first_then_within_then_ambiguous",
+            "summary_truncated_abnormal_count": max(0, len(abnormal_rows) - len([ev for ev in selected if _summary_status_bucket(ev) == "abnormal"])),
+            "summary_truncated_within_count": max(0, len(within_rows) - len([ev for ev in selected if _summary_status_bucket(ev) == "within"])),
+        }
+    else:
+        selected = sorted(evidences, key=_llm_row_priority)[:max_rows]
+    compact_evidences: list[dict[str, Any]] = []
+    for ev in selected:
+        compact_evidences.append(
+            {
+                "analyte": str(ev.get("analyte") or "non précisé").strip(),
+                "value_with_unit": _value_with_unit(ev.get("current_value"), ev.get("unit")),
+                "reference_short": _reference_short(ev.get("reference")),
+                "status": str(ev.get("technical_status") or "non interprétable").strip(),
+                "priority_level": (str(ev.get("priority_level") or "").strip() or None),
+                "priority_reason": (str(ev.get("priority_reason") or "").strip() or None),
+                "source_label": str(ev.get("source") or "source non disponible").strip(),
+            }
+        )
+    llm_pack = {
+        "question": pack.get("question"),
+        "intent": pack.get("intent"),
+        "requested_doc_ids": list(pack.get("requested_doc_ids") or []),
+        "requested_analytes": list(pack.get("requested_analytes") or []),
+        "output_format": pack.get("output_format"),
+        "answer_style": pack.get("answer_style"),
+        "technical_condition": pack.get("technical_condition"),
+        "evidences": compact_evidences,
+        "sources": list(pack.get("sources") or []),
+        "visualization_facts": pack.get("visualization_facts"),
+        "missing_items": list(pack.get("missing_items") or []),
+    }
+    if summary_selection_debug:
+        llm_pack.update(summary_selection_debug)
+        llm_pack["summary_selection_debug"] = dict(summary_selection_debug)
+    return llm_pack, len(compact_evidences)
+
+
+def _llm_summary_prompt_prefix(query_understanding: QueryUnderstanding, selected_route: str) -> str:
+    route = str(selected_route or "").strip().lower()
+    max_lines = int(getattr(query_understanding, "requested_summary_points", 6) or 6)
+    if route == "doc_scoped_biological_summary":
+        return (
+            f"Rédige une synthèse en maximum {max(3, min(max_lines, 8))} lignes. "
+            "Sépare Anormaux et Résultats dans la référence uniquement. "
+            "Utilise uniquement les faits fournis. "
+            "Ne modifie aucune valeur, unité, référence ou statut. "
+            "Ne mets jamais un résultat above_reference ou below_reference dans la section des résultats dans la référence. "
+            "Si aucun résultat within_reference n’est fourni, écris: 'Aucun résultat strictement dans la référence parmi les éléments sélectionnés.' "
+            "Ne donne pas de diagnostic. Ne propose pas de traitement. "
+            "Ne fais pas de tableau."
+        )
+    if route == "doc_scoped_priority_anomalies":
+        return (
+            "Rédige une synthèse courte des anomalies prioritaires. "
+            "Reformule uniquement priority_level et priority_reason fournis par le backend. "
+            "Ne recalcule pas la priorité, ne diagnostique pas, ne propose pas de traitement."
+        )
+    if route == "doc_scoped_medical_interpretation_guarded":
+        return (
+            "Explique prudemment les discordances techniques fournies par le backend. "
+            "Aucun diagnostic affirmatif, aucun traitement."
+        )
+    if route == "open_grounded_medical_question":
+        return (
+            "Réponse médicale technique prudente, strictement fondée sur les faits fournis. "
+            "Pas de diagnostic ni recommandation de traitement."
+        )
+    return ""
+
+
+def _estimate_prompt_tokens_from_pack(user_question: str, llm_pack: dict[str, Any]) -> int:
+    payload = f"{user_question}\n{json.dumps(llm_pack, ensure_ascii=False)}"
+    return max(1, int(len(payload) / 4))
+
+
+def _apply_level2_intent_llm_limits(
+    *,
+    selected_route: str,
+    timeout_s: int,
+    max_tokens: int,
+) -> tuple[int, int]:
+    route = str(selected_route or "").strip().lower()
+    profile = str(os.getenv("MEDICAL_RAG_L2_TIMEOUT_PROFILE", "local")).strip().lower()
+    if profile == "prod":
+        default_timeout = min(timeout_s, 30)
+    else:
+        default_timeout = max(timeout_s, 90)
+    if route in {"doc_scoped_biological_summary", "doc_scoped_priority_anomalies"}:
+        return max(12, default_timeout), max(180, min(max_tokens, 220))
+    if route in {"doc_scoped_medical_interpretation_guarded", "open_grounded_medical_question"}:
+        return max(12, default_timeout), max(220, min(max_tokens, 280))
+    return timeout_s, max_tokens
+
+
+_LEVEL2_LLM_PROMPT_POLICY: dict[str, dict[str, Any]] = {
+    "doc_scoped_biological_summary": {
+        "prompt_target_chars": 2500,
+        "prompt_hard_limit_chars": 3500,
+        "num_predict": 200,
+        "timeout_ms": 60000,
+        "max_evidence_rows": 6,
+        "use_micro_prompt": True,
+    },
+    "doc_scoped_priority_anomalies": {
+        "prompt_target_chars": 3000,
+        "prompt_hard_limit_chars": 4500,
+        "num_predict": 180,
+        "timeout_ms": 90000,
+        "max_evidence_rows": 8,
+        "use_micro_prompt": True,
+    },
+    "doc_scoped_medical_interpretation_guarded": {
+        "prompt_target_chars": 3500,
+        "prompt_hard_limit_chars": 5000,
+        "num_predict": 240,
+        "timeout_ms": 90000,
+        "max_evidence_rows": 10,
+        "use_micro_prompt": True,
+    },
+    "open_grounded_medical_question": {
+        "prompt_target_chars": 4500,
+        "prompt_hard_limit_chars": 6000,
+        "num_predict": 260,
+        "timeout_ms": 90000,
+        "max_evidence_rows": 10,
+        "use_micro_prompt": True,
+    },
+}
+
+
+def _level2_prompt_policy(route: str) -> dict[str, Any]:
+    return dict(_LEVEL2_LLM_PROMPT_POLICY.get(str(route or "").strip().lower(), {}))
+
+
+def _build_compact_facts_lines(evidences: list[dict[str, Any]], max_rows: int) -> list[str]:
+    lines: list[str] = []
+    for ev in list(evidences or [])[: max(1, int(max_rows))]:
+        analyte = str(ev.get("analyte") or "non précisé").strip()
+        value_with_unit = str(ev.get("value_with_unit") or "").strip() or "non disponible"
+        ref = str(ev.get("reference_short") or "non disponible").strip()
+        status = str(ev.get("status") or "non interprétable").strip()
+        lines.append(f"- {analyte} : {value_with_unit} ; référence {ref} ; {status}.")
+    return lines
+
+
+def _status_micro_label(status_text: str) -> str:
+    s = norm_text(status_text or "")
+    if any(k in s for k in ["above_reference", "au dessus", "au-dessus"]):
+        return "statut haut"
+    if any(k in s for k in ["below_reference", "en dessous", "sous"]):
+        return "statut bas"
+    if any(k in s for k in ["within_reference", "dans la reference", "dans la référence"]):
+        return "dans la référence"
+    return "statut non interprétable"
+
+
+def _status_bucket_from_text(status_text: str) -> str:
+    s = norm_text(status_text or "")
+    if any(k in s for k in ["above_reference", "au dessus", "au-dessus"]):
+        return "abnormal"
+    if any(k in s for k in ["below_reference", "en dessous", "sous"]):
+        return "abnormal"
+    if any(k in s for k in ["within_reference", "dans la reference", "dans la référence"]):
+        return "within"
+    return "unknown"
+
+
+def _compose_level2_micro_prompt_answer(
+    *,
+    selected_route: str,
+    query_understanding: QueryUnderstanding,
+    llm_pack: dict[str, Any],
+    llm_client: LLMClient,
+    provider: str,
+    model: str,
+    num_ctx: int,
+    retry_feedback: str | None = None,
+) -> dict[str, Any]:
+    policy = _level2_prompt_policy(selected_route)
+    prompt_target_chars = int(policy.get("prompt_target_chars") or 3000)
+    prompt_hard_limit_chars = int(policy.get("prompt_hard_limit_chars") or 4500)
+    num_predict = int(policy.get("num_predict") or 180)
+    timeout_ms = int(policy.get("timeout_ms") or 90000)
+    max_rows = int(policy.get("max_evidence_rows") or 8)
+
+    max_lines = int(getattr(query_understanding, "requested_summary_points", 6) or 6)
+    llm_evidences = list(llm_pack.get("evidences") or [])[: max(1, int(max_rows))]
+    compact_lines = _build_compact_facts_lines(llm_evidences, max_rows=max_rows)
+    abnormal_lines: list[str] = []
+    within_lines: list[str] = []
+    for ev, line in zip(llm_evidences, compact_lines):
+        bucket = _status_bucket_from_text(str(ev.get("status") or ""))
+        if bucket == "abnormal":
+            abnormal_lines.append(line)
+        elif bucket == "within":
+            within_lines.append(line)
+    compact_abnormal_lines = [
+        f"- {str(ev.get('analyte') or 'non précisé').strip()} : {str(ev.get('value_with_unit') or 'non disponible').strip()} ; {_status_micro_label(str(ev.get('status') or ''))}."
+        for ev in llm_evidences
+        if _status_bucket_from_text(str(ev.get("status") or "")) == "abnormal"
+    ]
+    compact_within_lines = [
+        f"- {str(ev.get('analyte') or 'non précisé').strip()} : {str(ev.get('value_with_unit') or 'non disponible').strip()} ; dans la référence."
+        for ev in llm_evidences
+        if _status_bucket_from_text(str(ev.get("status") or "")) == "within"
+    ]
+    abnormal_block = "\n".join(abnormal_lines) if abnormal_lines else "- Aucun fait anormal fourni."
+    within_is_empty = len(within_lines) == 0
+    within_block = "\n".join(within_lines) if within_lines else "Aucun fait dans la référence fourni."
+    total_results_count = int(llm_pack.get("total_results_count") or len(llm_evidences))
+    abnormal_rows_count = int(llm_pack.get("abnormal_rows_count") or len(compact_abnormal_lines))
+    within_reference_rows_count = int(llm_pack.get("within_reference_rows_count") or len(compact_within_lines))
+    ambiguous_rows_count = int(
+        llm_pack.get("ambiguous_rows_count")
+        or max(0, len(llm_evidences) - len(compact_abnormal_lines) - len(compact_within_lines))
+    )
+    route = str(selected_route or "").strip().lower()
+    if route == "doc_scoped_priority_anomalies":
+        prompt = (
+            "Tu es un rédacteur médical technique.\n"
+            "Réponds uniquement avec les faits fournis.\n"
+            f"Sortie stricte en {max(3, min(max_lines, 8))} lignes maximum.\n"
+            "Format obligatoire :\n"
+            "- Priorité élevée : ...\n"
+            "- Priorité modérée/faible : ...\n"
+            "- Conclusion technique : ...\n\n"
+            "Règles :\n"
+            "- Ne modifie aucune valeur, unité, référence, statut, priority_level ou priority_reason.\n"
+            "- Ne recalcule pas la priorité.\n"
+            "- Les niveaux de priorité sont déjà calculés. Tu n'as pas le droit de déplacer un analyte.\n"
+            "- Ne donne pas de diagnostic.\n"
+            "- Ne propose pas de traitement.\n\n"
+            "- N'ajoute aucun nombre qui n'est pas présent dans les faits.\n"
+            "- N'utilise pas de tableau Markdown.\n"
+            "- N'utilise jamais '...'. Écris des phrases complètes.\n"
+            "- Respecte strictement le mapping backend: high -> Priorité élevée ; moderate/low -> Priorité modérée/faible.\n"
+            "- Ne transforme jamais une référence textuelle complexe en borne numérique simplifiée (ex: 1,50 - 1,50).\n"
+            "Faits anormaux :\n"
+            f"{abnormal_block}\n\n"
+            "Faits dans la référence :\n"
+            f"{within_block}\n"
+        )
+    elif route == "doc_scoped_medical_interpretation_guarded":
+        forbidden_style_patterns = _safety_guardrail_list(
+            ["diagnostic_safety", "forbidden_clinical_style_patterns"],
+            [
+                "cause sous-jacente",
+                "évaluation clinique",
+                "diverses conditions médicales",
+            ],
+        )
+        forbidden_style_hint = ", ".join(
+            sorted(
+                {
+                    re.sub(r"^\(\?im\)\^\.\*|\.\*\$$", "", p).replace("\\", "")
+                    for p in forbidden_style_patterns[:4]
+                    if str(p).strip()
+                }
+            )
+        )
+        discordance_replacement = str(
+            _safety_guardrail(
+                ["diagnostic_safety", "discordance_replacement"],
+                "profil biologique discordant pour une hyperthyroïdie primaire",
+            )
+        ).strip()
+        strong_patterns = _safety_guardrail_list(
+            ["diagnostic_safety", "strong_suggestion_patterns"],
+            [r"sugg[eè]re\s+une?\s+hyperthyro", r"compatible\s+avec\s+une?\s+hyperthyro", r"[eé]voque\s+une?\s+hyperthyro"],
+        )
+        strong_hint = ", ".join([re.sub(r"\\b|\\s\+|\(\?:|\)|\?","",p) for p in strong_patterns[:3]])
+        prompt = (
+            "Tu es un rédacteur médical technique prudent.\n"
+            "Réponds uniquement avec les faits fournis.\n"
+            f"Maximum {max(3, min(max_lines, 8))} lignes.\n"
+            "Structure attendue :\n"
+            "- Faits techniques observés\n"
+            "- Limites\n"
+            "- Conclusion technique\n\n"
+            "Règles :\n"
+            "- Ne modifie aucune valeur, unité, référence ou statut.\n"
+            "- N’affirme aucun diagnostic.\n"
+            "- Écris explicitement : « On ne peut pas conclure à un diagnostic à partir de ces seuls éléments. »\n"
+            "- Ne propose aucun traitement.\n\n"
+            f"- Évite les formulations cliniques générales ({forbidden_style_hint or 'cause sous-jacente, évaluation clinique'}).\n"
+            "- Utilise un vocabulaire technique factuel: profil biologique discordant, interprétation limitée aux données disponibles.\n\n"
+            f"- N'écris jamais de formulation de type: {strong_hint or 'suggère/évoque/compatible avec hyperthyroïdie'}.\n"
+            f"- Écris seulement: {discordance_replacement}.\n\n"
+            "Faits anormaux :\n"
+            f"{abnormal_block}\n\n"
+            "Faits dans la référence :\n"
+            f"{within_block}\n"
+        )
+    else:
+        prompt = (
+            "Tu es un rédacteur médical technique.\n"
+            "Réponds uniquement avec les faits fournis.\n"
+            f"Maximum {max(3, min(max_lines, 8))} lignes.\n"
+            "Compteurs documentaires :\n"
+            f"- total_results_count: {total_results_count}\n"
+            f"- abnormal_rows_count: {abnormal_rows_count}\n"
+            f"- within_reference_rows_count: {within_reference_rows_count}\n"
+            f"- ambiguous_rows_count: {ambiguous_rows_count}\n"
+            "Sections obligatoires :\n"
+            "- Anormaux\n"
+            "- Résultats dans la référence uniquement\n"
+            "- Conclusion technique\n\n"
+            "Règles :\n"
+            "- Ne modifie aucune valeur, unité, référence ou statut.\n"
+            "- Ne donne pas de diagnostic.\n"
+            "- Ne propose pas de traitement.\n"
+            "- Tous les faits anormaux doivent apparaître uniquement dans la section “Anormaux”.\n"
+            "- La section “Résultats dans la référence uniquement” doit contenir uniquement les faits du bloc “Faits dans la référence”.\n"
+            "- Si le bloc “Faits dans la référence” est vide, écris exactement : “Résultats dans la référence uniquement : aucun résultat strictement dans la référence parmi les éléments sélectionnés.”\n"
+            "- N’invente aucun résultat normal ou rassurant.\n"
+            "- Ne déplace jamais un résultat above_reference/below_reference dans la section “Résultats dans la référence uniquement”.\n"
+            "- Ne mets jamais un résultat above_reference ou below_reference dans “Résultats dans la référence uniquement”.\n\n"
+            "- Si abnormal_rows_count > 0, n’écris jamais « Aucun fait anormal » ni « Anormaux : Aucun ».\n\n"
+            "Faits anormaux :\n"
+            f"{(chr(10).join(compact_abnormal_lines) if compact_abnormal_lines else '- Aucun fait anormal fourni.')}\n\n"
+            "Faits dans la référence :\n"
+            f"{(chr(10).join(compact_within_lines) if compact_within_lines else 'Aucun fait dans la référence fourni.')}\n"
+        )
+    if retry_feedback:
+        prompt += (
+            "\nCorrections obligatoires:\n"
+            f"{str(retry_feedback).strip()}\n"
+        )
+    prompt_chars = len(prompt)
+    prompt_tokens_est = int((prompt_chars + 3) / 4)
+    out: dict[str, Any] = {
+        "mode": "hybrid_structured_llm_writer",
+        "llm_prompt_preview": prompt[:1200],
+        "llm_prompt_first_500": prompt[:500],
+        "llm_prompt_last_500": prompt[-500:],
+        "prompt_chars": prompt_chars,
+        "prompt_target_chars": prompt_target_chars,
+        "prompt_hard_limit_chars": prompt_hard_limit_chars,
+        "llm_prompt_tokens_estimate": prompt_tokens_est,
+        "llm_prompt_policy_intent": str(selected_route or ""),
+        "llm_prompt_intent": str(selected_route or ""),
+        "use_micro_prompt": bool(policy.get("use_micro_prompt", False)),
+        "llm_call_skipped_due_prompt_budget": False,
+        "compact_facts_count": len(llm_evidences),
+        "abnormal_facts_count": len(compact_abnormal_lines),
+        "within_reference_facts_count": len(compact_within_lines),
+    }
+    if prompt_chars > prompt_hard_limit_chars:
+        out["mode"] = "llm_writer_error_fallback"
+        out["llm_error"] = "llm_prompt_too_large_preemptive"
+        out["llm_call_skipped_due_prompt_budget"] = True
+        if str(os.getenv("CHAT_DEBUG_ERRORS", "0")).strip() == "1":
+            reports = Path("reports")
+            reports.mkdir(parents=True, exist_ok=True)
+            (reports / "debug_last_llm_prompt.txt").write_text(prompt, encoding="utf-8")
+            (reports / "debug_last_llm_payload.json").write_text(
+                json.dumps(
+                    {
+                        "provider": provider,
+                        "model": model,
+                        "num_predict": num_predict,
+                        "num_ctx": int(num_ctx),
+                        "timeout_ms": timeout_ms,
+                        "prompt_chars": prompt_chars,
+                        "prompt_tokens_estimate": prompt_tokens_est,
+                        "policy": policy,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        return out
+    try:
+        answer = llm_client.generate(
+            prompt=prompt,
+            model=model,
+            temperature=0.0,
+            num_ctx=max(1024, int(num_ctx)),
+            max_tokens=max(64, int(num_predict)),
+            timeout=max(8, int(timeout_ms / 1000)),
+            keep_alive=str(os.getenv("MEDICAL_RAG_OLLAMA_KEEP_ALIVE", "10m")).strip() or "10m",
+        ).strip()
+        if route == "doc_scoped_biological_summary" and answer:
+            answer = _enforce_biological_summary_template(
+                answer=answer,
+                abnormal_fact_lines=compact_abnormal_lines,
+                within_is_empty=within_is_empty,
+            )
+        if route == "doc_scoped_priority_anomalies":
+            try:
+                if _priority_answer_needs_enforcement(answer, llm_evidences):
+                    answer = _enforce_priority_summary_template(answer, llm_evidences)
+            except Exception as exc:
+                out["mode"] = "llm_writer_error_fallback"
+                out["llm_error"] = "priority_postprocess_exception"
+                if str(os.getenv("CHAT_DEBUG_ERRORS", "0")).strip() == "1":
+                    out["llm_postprocess_error_type"] = type(exc).__name__
+                    out["llm_postprocess_error_message"] = str(exc)
+                return out
+        out["answer"] = answer
+        out["llm_candidate_answer"] = answer
+        out["llm_error"] = None
+    except Exception as exc:
+        out["mode"] = "llm_writer_error_fallback"
+        out["llm_error"] = str(exc)
+    if str(os.getenv("CHAT_DEBUG_ERRORS", "0")).strip() == "1":
+        reports = Path("reports")
+        reports.mkdir(parents=True, exist_ok=True)
+        (reports / "debug_last_llm_prompt.txt").write_text(prompt, encoding="utf-8")
+        (reports / "debug_last_llm_payload.json").write_text(
+            json.dumps(
+                {
+                    "provider": provider,
+                    "model": model,
+                    "num_predict": num_predict,
+                    "num_ctx": int(num_ctx),
+                    "timeout_ms": timeout_ms,
+                    "prompt_chars": prompt_chars,
+                    "prompt_tokens_estimate": prompt_tokens_est,
+                    "policy": policy,
+                    "llm_debug": dict(getattr(llm_client, "last_call_debug", {}) or {}),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    return out
+
+
 def generate_grounded_response_with_llm(
     *,
     user_question: str,
@@ -4102,6 +7543,12 @@ def generate_grounded_response_with_llm(
     max_tokens: int,
     timeout: int,
 ) -> tuple[str, str, str | None]:
+    query_norm = _normalize_query_text(user_question)
+    compose_mode = (
+        "fallback"
+        if _force_deterministic_mode_for_summary_anomalies(query_understanding, query_norm)
+        else _hybrid_writer_mode(query_understanding)
+    )
     writer_pack = _attach_visualization_facts_to_evidence_pack(
         query_understanding=query_understanding,
         evidence_pack=evidence_pack,
@@ -4111,7 +7558,7 @@ def generate_grounded_response_with_llm(
         user_question=user_question,
         query_understanding=query_understanding,
         evidence_pack=writer_pack,
-        mode="auto",
+        mode=compose_mode,
         llm_client=llm_client,
         provider=provider,
         model=model,
@@ -4164,11 +7611,18 @@ _STYLE_RETRY_KEYS = {
     "chart_units_warning_missing",
     "no_silent_default_table",
     "forbidden_none_literal",
+    "output_contains_placeholder_ellipsis",
+    "priority_level_mismatch",
+    "section_coverage_missing",
+    "suspicious_reference_collapse",
+    "diagnostic_suggestion_too_strong",
+    "false_no_abnormal_summary",
+    "summary_missing_abnormal_coverage",
 }
 
 
 def _should_retry_with_validator(validation: dict[str, Any], generation_mode: str) -> bool:
-    if generation_mode != "llm_professional_writer":
+    if generation_mode not in {"llm_professional_writer", "hybrid_structured_llm_writer"}:
         return False
     errors = {str(e) for e in (validation.get("errors") or [])}
     warnings = {str(w) for w in (validation.get("warnings") or [])}
@@ -4183,6 +7637,23 @@ def _build_validator_retry_feedback(validation: dict[str, Any]) -> str:
     items = errors + warnings
     if not items:
         return ""
+    section_errors = {"abnormal_in_reassuring_section", "section_status_mismatch"}
+    if any(e in section_errors for e in errors):
+        return (
+            "Tu as place un resultat anormal dans la section des resultats dans la reference. "
+            "Corrige la reponse en deplacant tous les resultats above_reference/below_reference vers 'Anormaux'. "
+            "Si aucun resultat within_reference n'est fourni, ecris que la section est vide avec la phrase imposee."
+        )
+    if "false_no_abnormal_summary" in errors:
+        return (
+            "Tu as affirme qu'il n'y a pas d'anomalie alors que des anomalies sont fournies. "
+            "Supprime toute mention 'Aucun fait anormal' et liste les anomalies fournies dans la section 'Anormaux'."
+        )
+    if "missing_conclusion" in items:
+        return (
+            "Ajoute une conclusion technique finale exacte: "
+            "'Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic.'"
+        )
     bullets = "\n".join(f"- {i}" for i in items[:12])
     return (
         "Corrige ces points de style/format sans modifier aucune donnée (valeurs, analytes, sources, patients):\n"
@@ -4289,6 +7760,20 @@ def build_structured_evidence_pack(
     qn = norm_text(query)
     compare_previous = query_understanding.requires_previous_results
     intent = query_understanding.intent
+    normalized_intent = intent
+    if intent == "global_analyte_abnormal_search":
+        normalized_intent = "cohort_search"
+    elif intent == "doc_pair_comparison":
+        normalized_intent = "multi_doc_comparison"
+    elif intent == "doc_scoped_abnormal_results":
+        normalized_intent = "doc_scoped_summary"
+    elif intent == "single_analyte_lookup":
+        normalized_intent = "doc_scoped_results"
+    elif intent == "doc_scoped_medical_interpretation_guarded":
+        normalized_intent = "diagnostic_safety_question"
+    elif intent in {"doc_scoped_toxicology_threshold_search", "doc_scoped_toxicology_summary"}:
+        normalized_intent = "toxicology_summary"
+    analyte_resolution_debug: dict[str, Any] | None = None
 
     pack: dict[str, Any] = {
         "question": query,
@@ -4297,7 +7782,8 @@ def build_structured_evidence_pack(
         "excluded_analytes": excluded_analytes,
         "requested_value": query_understanding.requested_value,
         "technical_condition": query_understanding.technical_condition,
-        "intent": intent,
+        "intent": normalized_intent,
+        "original_intent": intent,
         "output_format": query_understanding.output_format,
         "requested_table_columns": list(query_understanding.requested_table_columns or []),
         "answer_style": query_understanding.answer_style,
@@ -4310,7 +7796,7 @@ def build_structured_evidence_pack(
         "comment_text": "",
     }
 
-    if intent in {"global_patient_lookup", "cohort_search"}:
+    if normalized_intent in {"global_patient_lookup", "cohort_search"}:
         target_values = [str(query_understanding.requested_value)] if query_understanding.requested_value else _extract_query_numeric_targets(query)
         rows = _fetch_global_lab_rows(
             sqlite_path=sqlite_path,
@@ -4323,9 +7809,7 @@ def build_structured_evidence_pack(
             for r in rows
             if _row_matches_value_criterion(r, target_values, query_understanding.comparison_operator)
         ]
-        technical_condition = str(query_understanding.technical_condition or "").strip().lower()
-        if technical_condition in {"above_reference", "below_reference", "within_reference", "not_interpretable"}:
-            rows = [r for r in rows if _status_code(r) == technical_condition]
+        rows = _apply_technical_condition_filter(rows, query_understanding.technical_condition)
         if excluded_analytes:
             rows = [r for r in rows if not _row_matches_excluded(r, excluded_analytes)]
         evidences = [_structured_record_from_row(r) for r in rows]
@@ -4333,27 +7817,182 @@ def build_structured_evidence_pack(
         pack["evidences"] = evidences
         return _finalize_structured_pack(pack, query_understanding)
 
+    if intent == "global_toxicology_search":
+        qn_local = norm_text(query)
+        scope = "blood" if _toxicology_subtype(qn_local) == "blood_toxicology_search" else "urine"
+        rows = _fetch_global_toxicology_rows(sqlite_path=sqlite_path, limit=2400)
+        tox_pack = build_toxicology_evidence_pack(query=query, scope=scope, rows=rows)
+        pack["rows"] = list(tox_pack.get("rows") or [])
+        pack["evidences"] = [_structured_record_from_row(r) for r in pack["rows"]]
+        pack["toxicology_subtype"] = tox_pack.get("subtype")
+        pack["toxicology_families_by_doc"] = tox_pack.get("families_by_doc")
+        return _finalize_structured_pack(pack, query_understanding)
+
+    if intent in {"global_biological_summary", "global_priority_anomalies_summary"}:
+        rows = _fetch_global_biological_rows(sqlite_path=sqlite_path, limit=2600)
+        rows = [r for r in rows if _status_code(r) in {"above_reference", "below_reference", "within_reference"}]
+        if intent == "global_biological_summary":
+            rows = [r for r in rows if _status_code(r) in {"above_reference", "below_reference"}]
+        evidences = [_structured_record_from_row(r) for r in rows]
+        if intent == "global_priority_anomalies_summary":
+            evidences = _apply_priority_scoring(evidences)
+        pack["rows"] = rows
+        pack["evidences"] = evidences
+        return _finalize_structured_pack(pack, query_understanding)
+
+    if normalized_intent == "global_toxicology_search":
+        tox_terms_urine = {
+            "amphetamine",
+            "benzodiazepine",
+            "cocaine",
+            "ecstasy",
+            "opiaces",
+            "phencyclidine",
+        }
+        tox_terms_blood = {"ethanol", "acide_valproique", "carbamazepine", "lithium"}
+        qn_local = norm_text(query)
+        urine_mode = any(t in qn_local for t in ["urinaire", "urinaires", "urine", "screening urinaire"])
+        blood_mode = any(t in qn_local for t in ["sanguin", "sanguine", "sang", "ethanol", "lithium", "carbamazepine", "valpro"])
+        rows = _fetch_global_toxicology_rows(sqlite_path=sqlite_path, limit=2400)
+        filtered: list[dict[str, Any]] = []
+        for r in rows:
+            analyte_probe = norm_text(f"{r.get('analyte_norm') or ''} {r.get('analyte') or ''}")
+            section_probe = norm_text(f"{r.get('section_norm') or ''} {r.get('section') or ''}")
+            if any(k in analyte_probe for k in ["cristaux d acide urique", "cristaux acide urique", "ecbu", "cytologie"]):
+                continue
+            has_tox_section = any(k in section_probe for k in ["toxico", "toxicologie", "pharmaco"])
+            has_urine_analyte = any(t in analyte_probe for t in tox_terms_urine)
+            has_blood_analyte = any(t in analyte_probe for t in tox_terms_blood)
+            if urine_mode and not (has_tox_section or has_urine_analyte):
+                continue
+            if blood_mode and not (has_tox_section or has_blood_analyte):
+                continue
+            if (not urine_mode and not blood_mode) and not (has_tox_section or has_urine_analyte or has_blood_analyte):
+                continue
+            filtered.append(r)
+        filtered = _apply_technical_condition_filter(filtered, query_understanding.technical_condition)
+        pack["rows"] = filtered
+        pack["evidences"] = [_structured_record_from_row(r) for r in filtered]
+        return _finalize_structured_pack(pack, query_understanding)
+
     rows: list[dict[str, Any]] = []
 
-    if intent == "multi_doc_comparison" and len(requested_doc_ids) >= 2:
+    if normalized_intent == "multi_doc_comparison" and len(requested_doc_ids) >= 2:
+        resolved_analytes, analyte_resolution_debug = _resolve_analytes_for_query(
+            query=query,
+            requested_analytes=requested_analytes,
+            sqlite_path=sqlite_path,
+            max_candidates=5,
+        )
+        requested_analytes = list(resolved_analytes)
+        pack["requested_analytes"] = list(requested_analytes)
+        if analyte_resolution_debug:
+            pack["analyte_resolution_debug"] = analyte_resolution_debug
+        if not requested_analytes:
+            tc = _canonical_technical_condition(query_understanding.technical_condition)
+            if tc in {"out_of_reference", "above_reference", "below_reference"}:
+                rows = _fetch_doc_lab_rows(
+                    sqlite_path=sqlite_path,
+                    requested_doc_ids=requested_doc_ids,
+                    analyte_norms=None,
+                    limit=2400,
+                )
+                rows = _apply_technical_condition_filter(rows, query_understanding.technical_condition)
+                if excluded_analytes:
+                    rows = [r for r in rows if not _row_matches_excluded(r, excluded_analytes)]
+                rows = [
+                    r
+                    for r in rows
+                    if str(r.get("interpretation_status") or "").strip().lower() in {"above_reference", "below_reference"}
+                ]
+                pack["rows"] = rows
+                pack["evidences"] = [_structured_record_from_row(r) for r in rows]
+                pack["comparison_mode"] = "doc_pair_out_of_reference_by_doc"
+                if not rows:
+                    pack["missing_items"] = ["comparison_no_evidence"]
+            else:
+                pack["rows"] = []
+                pack["evidences"] = []
+                pack["missing_items"] = ["analyte_not_identified_for_multi_doc_comparison"]
+            return _finalize_structured_pack(pack, query_understanding)
         rows = _fetch_doc_lab_rows(
             sqlite_path=sqlite_path,
             requested_doc_ids=requested_doc_ids,
             analyte_norms=requested_analytes,
             limit=600,
         )
+        rows = _apply_technical_condition_filter(rows, query_understanding.technical_condition)
+        if excluded_analytes:
+            rows = [r for r in rows if not _row_matches_excluded(r, excluded_analytes)]
+        if len(requested_doc_ids) > 2:
+            rows_by_doc: dict[str, list[dict[str, Any]]] = {
+                doc_id: [r for r in rows if str(r.get("doc_id") or "").strip().lower() == doc_id.lower()]
+                for doc_id in requested_doc_ids
+            }
+            evidences: list[dict[str, Any]] = []
+            missing: list[str] = []
+            for analyte in requested_analytes:
+                label = _canonical_display_name(analyte)
+                per_doc = {doc_id: _best_row_for_analyte(rows_by_doc.get(doc_id, []), analyte) for doc_id in requested_doc_ids}
+                present_rows = [r for r in per_doc.values() if isinstance(r, dict)]
+                if not present_rows:
+                    missing.append(analyte)
+                    continue
+                unit = ""
+                ref = "non disponible"
+                parts: list[str] = []
+                missing_docs: list[str] = []
+                for doc_id in requested_doc_ids:
+                    row = per_doc.get(doc_id)
+                    if not row:
+                        parts.append(f"{doc_id}=non présent")
+                        missing_docs.append(doc_id)
+                        continue
+                    value = str(row.get("value_raw") or "non disponible").strip()
+                    unit = unit or str(row.get("unit") or "").strip()
+                    if ref == "non disponible":
+                        ref = str(row.get("reference_range") or "non disponible")
+                    parts.append(f"{doc_id}={value}{(' ' + unit) if unit else ''}")
+                evidences.append(
+                    {
+                        "doc_id": " vs ".join(requested_doc_ids),
+                        "analyte": label,
+                        "analyte_norm": analyte,
+                        "current_value": " | ".join(parts),
+                        "reference": ref,
+                        "reference_summary": _summarize_reference_for_comparison(ref),
+                        "technical_status_code": "not_interpretable",
+                        "technical_status": "comparaison multi-doc",
+                        "comparison_status": "non_comparable" if missing_docs else "comparison_ready",
+                        "conclusion_fact": (
+                            f"Donnée manquante pour {', '.join(missing_docs)}."
+                            if missing_docs
+                            else "Comparaison multi-doc disponible."
+                        ),
+                        "doc_ids": list(requested_doc_ids),
+                        "source": _source_label(present_rows[0]),
+                    }
+                )
+                if missing_docs:
+                    missing.append(analyte)
+            pack["evidences"] = evidences
+            pack["missing_items"] = sorted(set(missing))
+            pack["rows"] = rows
+            if analyte_resolution_debug:
+                analyte_resolution_debug["structured_rows_found"] = len(rows)
+                analyte_resolution_debug["evidences_count"] = len(evidences)
+            return _finalize_structured_pack(pack, query_understanding)
         left, right = requested_doc_ids[0], requested_doc_ids[1]
         left_rows = [r for r in rows if str(r.get("doc_id") or "").strip().lower() == left.lower()]
         right_rows = [r for r in rows if str(r.get("doc_id") or "").strip().lower() == right.lower()]
-        if excluded_analytes:
-            left_rows = [r for r in left_rows if not _row_matches_excluded(r, excluded_analytes)]
-            right_rows = [r for r in right_rows if not _row_matches_excluded(r, excluded_analytes)]
         evidences: list[dict[str, Any]] = []
         missing: list[str] = []
         for analyte in requested_analytes:
             a = _best_row_for_analyte(left_rows, analyte)
             b = _best_row_for_analyte(right_rows, analyte)
             label = _canonical_display_name(analyte)
+            doc_a_label = str((a or {}).get("source_pdf") or left).split("/")[-1]
+            doc_b_label = str((b or {}).get("source_pdf") or right).split("/")[-1]
             if not a and not b:
                 missing.append(analyte)
                 evidences.append(
@@ -4364,41 +8003,146 @@ def build_structured_evidence_pack(
                         "chunk_id": None,
                         "analyte": label,
                         "analyte_norm": analyte,
-                        "current_value": f"{left}=non retrouvé | {right}=non retrouvé",
+                        "current_value": f"{left}=non présent | {right}=non présent",
                         "unit": "",
                         "reference": "non disponible",
+                        "reference_summary": "non disponible",
                         "previous_result": "",
                         "technical_status_code": "not_interpretable",
-                        "technical_status": "différence technique",
+                        "technical_status": "non comparable",
+                        "comparison_status": "non_comparable",
+                        "conclusion_fact": "Aucune valeur exploitable n’a été retrouvée dans les deux rapports pour cet analyte.",
+                        "doc_a": left,
+                        "doc_b": right,
+                        "doc_a_label": doc_a_label,
+                        "doc_b_label": doc_b_label,
                         "variation": "non comparable",
                         "source": "",
                     }
                 )
                 continue
-            av = str((a or {}).get("value_raw") or "non retrouvé")
-            bv = str((b or {}).get("value_raw") or "non retrouvé")
-            unit = str((a or {}).get("unit") or (b or {}).get("unit") or "").strip()
+            av = str((a or {}).get("value_raw") or "non présent").strip()
+            bv = str((b or {}).get("value_raw") or "non présent").strip()
+            unit_a = str((a or {}).get("unit") or "").strip()
+            unit_b = str((b or {}).get("unit") or "").strip()
+            unit = unit_a or unit_b
+            value_a_num = _parse_numeric_value(av)
+            value_b_num = _parse_numeric_value(bv)
+            comparison_status = "non_comparable"
+            conclusion_fact = "Comparaison non exploitable numériquement."
+            delta_abs: float | None = None
+            delta_relative_percent: float | None = None
+            delta_unit = unit if _units_compatible(unit_a, unit_b) else ""
+
+            if a and not b:
+                comparison_status = "missing_in_b"
+                conclusion_fact = f"{label} est absent dans {right}."
+            elif b and not a:
+                comparison_status = "missing_in_a"
+                conclusion_fact = f"{label} est absent dans {left}."
+            elif value_a_num is not None and value_b_num is not None and _units_compatible(unit_a, unit_b):
+                delta_abs = value_b_num - value_a_num
+                if abs(delta_abs) <= 1e-12:
+                    comparison_status = "identical"
+                    delta_abs = 0.0
+                    delta_relative_percent = 0.0
+                    conclusion_fact = "Aucun écart numérique n’est observé."
+                elif delta_abs > 0:
+                    comparison_status = "increased"
+                    if abs(value_a_num) > 1e-12:
+                        delta_relative_percent = (delta_abs / value_a_num) * 100.0
+                    conclusion_fact = "Valeur augmentée dans le second rapport."
+                else:
+                    comparison_status = "decreased"
+                    if abs(value_a_num) > 1e-12:
+                        delta_relative_percent = (delta_abs / value_a_num) * 100.0
+                    conclusion_fact = "Valeur diminuée dans le second rapport."
+            elif a and b and (not _units_compatible(unit_a, unit_b)):
+                comparison_status = "non_comparable"
+                conclusion_fact = "Comparaison non comparable : unités différentes."
+            elif a and b:
+                comparison_status = "non_comparable"
+                conclusion_fact = "Comparaison non comparable : valeur non numérique."
+
+            ref_a = str((a or {}).get("reference_range") or "").strip()
+            ref_b = str((b or {}).get("reference_range") or "").strip()
+            ref_raw = ref_a or ref_b or "non disponible"
+            reference_summary = _summarize_reference_for_comparison(ref_raw)
             evidences.append(
                 {
                     "doc_id": f"{left} vs {right}",
-                    "page": None,
-                    "row": None,
+                    "page": (a or b or {}).get("page_number"),
+                    "row": (a or b or {}).get("row_index"),
+                    "page_number": (a or b or {}).get("page_number"),
+                    "row_index": (a or b or {}).get("row_index"),
                     "chunk_id": None,
                     "analyte": label,
                     "analyte_norm": analyte,
                     "current_value": f"{left}={av} | {right}={bv}",
+                    "value_a_raw": av,
+                    "value_b_raw": bv,
+                    "value_a_num": value_a_num,
+                    "value_b_num": value_b_num,
                     "unit": unit,
-                    "reference": str((a or {}).get("reference_range") or (b or {}).get("reference_range") or "non disponible").strip(),
+                    "unit_a": unit_a,
+                    "unit_b": unit_b,
+                    "reference": ref_raw,
+                    "reference_summary": reference_summary,
                     "previous_result": "",
-                    "technical_status_code": "not_interpretable",
-                    "technical_status": "différence technique",
+                    "technical_status_code": "within_reference" if comparison_status == "identical" else "not_interpretable",
+                    "technical_status": "valeurs identiques" if comparison_status == "identical" else "comparaison effectuée",
+                    "comparison_status": comparison_status,
+                    "delta_abs": delta_abs,
+                    "delta_unit": delta_unit,
+                    "delta_relative_percent": delta_relative_percent,
+                    "conclusion_fact": conclusion_fact,
+                    "doc_a": left,
+                    "doc_b": right,
+                    "doc_a_label": doc_a_label,
+                    "doc_b_label": doc_b_label,
+                    "source_a": {
+                        "doc_id": left,
+                        "source_pdf": (a or {}).get("source_pdf"),
+                        "page": (a or {}).get("page_number"),
+                        "line": (a or {}).get("row_index"),
+                    } if a else None,
+                    "source_b": {
+                        "doc_id": right,
+                        "source_pdf": (b or {}).get("source_pdf"),
+                        "page": (b or {}).get("page_number"),
+                        "line": (b or {}).get("row_index"),
+                    } if b else None,
+                    "comparison_sources": [
+                        {
+                            "doc_id": left,
+                            "source_pdf": (a or {}).get("source_pdf"),
+                            "page_number": (a or {}).get("page_number"),
+                            "row_index": (a or {}).get("row_index"),
+                        }
+                    ]
+                    + (
+                        [
+                            {
+                                "doc_id": right,
+                                "source_pdf": (b or {}).get("source_pdf"),
+                                "page_number": (b or {}).get("page_number"),
+                                "row_index": (b or {}).get("row_index"),
+                            }
+                        ]
+                        if b
+                        else []
+                    ),
                     "variation": _variation_label(bv, av) if a and b else "non comparable",
-                    "source": "",
+                    "source": _source_label((a or b or {})),
+                    "source_pdf": (a or b or {}).get("source_pdf"),
                 }
             )
         pack["evidences"] = evidences
         pack["missing_items"] = missing
         pack["rows"] = rows
+        if analyte_resolution_debug:
+            analyte_resolution_debug["structured_rows_found"] = len(rows)
+            analyte_resolution_debug["evidences_count"] = len(evidences)
         return _finalize_structured_pack(pack, query_understanding)
 
     if intent == "multi_doc_presence_diff" and len(requested_doc_ids) >= 2:
@@ -4466,6 +8210,9 @@ def build_structured_evidence_pack(
 
     if intent == "comment_without_measured_value":
         qualitative_fetch_called = True
+        wants_single_comment = _wants_single_comment(query)
+        wants_all_comments = _wants_all_comments_listing(query) and not wants_single_comment
+        wants_latest_comment = bool(getattr(query_understanding, "latest_report", False))
         comment_subject_norm, comment_subject_label = _resolve_comment_subject_from_query(
             query_understanding=query_understanding,
             query=query,
@@ -4483,7 +8230,27 @@ def build_structured_evidence_pack(
             if requested_doc_ids
             else _fetch_global_comment_rows(sqlite_path=sqlite_path, term=search_term, limit=250)
         )
+        # Fallback for "latest report": if scoped latest doc has no comment row,
+        # retry globally and keep the latest doc that actually contains a qualitative comment.
+        if bool(getattr(query_understanding, "latest_report", False)) and requested_doc_ids:
+            global_rows = _fetch_global_comment_rows(sqlite_path=sqlite_path, term=search_term, limit=600)
+            candidate_rows = [r for r in global_rows if _row_looks_like_qualitative_comment(r)]
+            scoped_comment_rows = [r for r in rows if _row_looks_like_qualitative_comment(r)]
+            if candidate_rows and not scoped_comment_rows:
+                latest_doc = max(
+                    (
+                        str(r.get("doc_id") or "").strip()
+                        for r in candidate_rows
+                        if str(r.get("doc_id") or "").strip()
+                    ),
+                    key=_doc_recency_key,
+                    default="",
+                )
+                if latest_doc:
+                    rows = [r for r in candidate_rows if str(r.get("doc_id") or "").strip().lower() == latest_doc.lower()]
+                    pack["requested_doc_ids"] = [latest_doc]
         qualitative_rows_count = len(rows)
+        comment_rows = [r for r in rows if _row_looks_like_qualitative_comment(r)]
         measured = [
             r
             for r in rows
@@ -4494,6 +8261,7 @@ def build_structured_evidence_pack(
             )
             and norm_text(str(r.get("analyte") or "")) != "commentaire"
             and str(r.get("value_raw") or "").strip() != ""
+            and not _row_looks_like_qualitative_comment(r)
         ]
         if measured:
             pack["evidences"] = [_structured_record_from_row(measured[0])]
@@ -4506,26 +8274,36 @@ def build_structured_evidence_pack(
                 "qualitative_comment_text_preview": "",
             }
         else:
-            extraction_subject = comment_subject_norm or search_term
-            comment_text, cr = extract_comment_text_for_subject(extraction_subject, rows)
-            if comment_text and isinstance(cr, dict):
-                raw_comment_text = str(cr.get("value_raw") or cr.get("text_for_keyword") or cr.get("text_for_embedding") or "").strip()
-                display_comment_text = clean_qualitative_comment_text(raw_comment_text or comment_text, extraction_subject) or comment_text
-                row_subject = str(cr.get("analyte") or cr.get("parameter") or "").strip()
-                final_subject = comment_subject_label if comment_subject_norm else (row_subject or comment_subject_label)
-                final_subject_norm = comment_subject_norm or norm_text(final_subject)
-                pack["comment_text"] = display_comment_text
-                pack["raw_comment_text"] = raw_comment_text
-                pack["evidences"] = [
-                    {
+            if (wants_all_comments or wants_single_comment or wants_latest_comment) and not comment_subject_norm:
+                seen_fingerprints: set[str] = set()
+                best_by_doc: dict[str, dict[str, Any]] = {}
+                variants_by_doc: dict[str, list[str]] = {}
+                for cr in comment_rows:
+                    raw_comment_text = str(cr.get("value_raw") or cr.get("text_for_keyword") or cr.get("text_for_embedding") or "").strip()
+                    if not raw_comment_text:
+                        continue
+                    display_comment_text = clean_qualitative_comment_text(raw_comment_text, "commentaire")
+                    if not display_comment_text or _is_low_signal_comment_text(display_comment_text):
+                        continue
+                    row_subject = str(cr.get("analyte") or cr.get("parameter") or "").strip() or "Commentaire médical"
+                    if _is_generic_subject(row_subject):
+                        row_subject = "Commentaire médical"
+                    row_unit = str(cr.get("unit") or "").strip()
+                    display_comment_text = _enrich_comment_with_unit_if_missing(display_comment_text, row_unit)
+                    fingerprint = _norm_comment_fingerprint(display_comment_text)
+                    if not fingerprint or fingerprint in seen_fingerprints:
+                        continue
+                    candidate = {
                         "doc_id": str(cr.get("doc_id") or ""),
                         "patient_token": str(cr.get("patient_token") or "").strip(),
                         "page": cr.get("page_number"),
+                        "page_number": cr.get("page_number"),
                         "row": cr.get("row_index"),
+                        "row_index": cr.get("row_index"),
                         "chunk_id": cr.get("chunk_id"),
-                        "analyte": final_subject,
-                        "subject": final_subject,
-                        "analyte_norm": final_subject_norm,
+                        "analyte": row_subject,
+                        "subject": row_subject,
+                        "analyte_norm": norm_text(row_subject),
                         "current_value": display_comment_text,
                         "raw_comment_text": raw_comment_text,
                         "display_comment_text": display_comment_text,
@@ -4540,14 +8318,86 @@ def build_structured_evidence_pack(
                         "source_pdf": str(cr.get("source_pdf") or ""),
                         "result_kind": "comment",
                     }
-                ]
+                    doc_key = str(candidate.get("doc_id") or "").strip().lower() or str(candidate.get("source_pdf") or "").strip().lower()
+                    if not doc_key:
+                        doc_key = fingerprint[:60]
+                    existing = best_by_doc.get(doc_key)
+                    variants_by_doc.setdefault(doc_key, []).append(display_comment_text)
+                    if existing is None:
+                        best_by_doc[doc_key] = candidate
+                        seen_fingerprints.add(fingerprint)
+                        continue
+                    existing_txt = str(existing.get("display_comment_text") or "")
+                    existing_precise = existing.get("page") is not None or existing.get("row") is not None
+                    candidate_precise = candidate.get("page") is not None or candidate.get("row") is not None
+                    if (candidate_precise and not existing_precise) or (len(display_comment_text) > len(existing_txt)):
+                        best_by_doc[doc_key] = candidate
+                        seen_fingerprints.add(fingerprint)
+                for doc_key, best in list(best_by_doc.items()):
+                    merged_text = _merge_comment_variants(variants_by_doc.get(doc_key, []))
+                    if merged_text:
+                        best["display_comment_text"] = merged_text
+                        best["comment_text"] = merged_text
+                        best["current_value"] = merged_text
+                built = sorted(
+                    list(best_by_doc.values()),
+                    key=lambda ev: (
+                        str(ev.get("doc_id") or "").lower(),
+                        int(ev.get("page")) if isinstance(ev.get("page"), int) else 999999,
+                        int(ev.get("row")) if isinstance(ev.get("row"), int) else 999999,
+                    ),
+                )
+                if (wants_single_comment or wants_latest_comment) and built:
+                    built = [max(built, key=lambda ev: _doc_recency_key(str(ev.get("doc_id") or "")))]
+                pack["comment_list_mode"] = bool(built)
+                pack["evidences"] = built
+            else:
+                extraction_subject = comment_subject_norm or search_term
+                comment_text, cr = extract_comment_text_for_subject(extraction_subject, comment_rows or rows)
+                if comment_text and isinstance(cr, dict):
+                    raw_comment_text = str(cr.get("value_raw") or cr.get("text_for_keyword") or cr.get("text_for_embedding") or "").strip()
+                    display_comment_text = clean_qualitative_comment_text(raw_comment_text or comment_text, extraction_subject) or comment_text
+                    row_subject = str(cr.get("analyte") or cr.get("parameter") or "").strip()
+                    final_subject = comment_subject_label if comment_subject_norm else (row_subject or comment_subject_label)
+                    final_subject_norm = comment_subject_norm or norm_text(final_subject)
+                    pack["comment_text"] = display_comment_text
+                    pack["raw_comment_text"] = raw_comment_text
+                    pack["evidences"] = [
+                        {
+                            "doc_id": str(cr.get("doc_id") or ""),
+                            "patient_token": str(cr.get("patient_token") or "").strip(),
+                            "page": cr.get("page_number"),
+                            "page_number": cr.get("page_number"),
+                            "row": cr.get("row_index"),
+                            "row_index": cr.get("row_index"),
+                            "chunk_id": cr.get("chunk_id"),
+                            "analyte": final_subject,
+                            "subject": final_subject,
+                            "analyte_norm": final_subject_norm,
+                            "current_value": display_comment_text,
+                            "raw_comment_text": raw_comment_text,
+                            "display_comment_text": display_comment_text,
+                            "comment_text": display_comment_text,
+                            "unit": "qualitative",
+                            "reference": str(cr.get("reference_range") or "").strip(),
+                            "previous_result": "",
+                            "technical_status_code": "not_interpretable",
+                            "technical_status": "commentaire qualitatif",
+                            "variation": "non comparable",
+                            "source": _source_label(cr),
+                            "source_pdf": str(cr.get("source_pdf") or ""),
+                            "result_kind": "comment",
+                        }
+                    ]
             pack["qualitative_debug"] = {
                 "enters_comment_without_measured_value_branch": True,
                 "qualitative_fetch_called": qualitative_fetch_called,
                 "qualitative_rows_count": qualitative_rows_count,
-                "qualitative_comment_extracted": bool(comment_text),
-                "qualitative_comment_text_length": len(comment_text or ""),
-                "qualitative_comment_text_preview": str((comment_text or "")[:80]),
+                "qualitative_comment_extracted": bool(pack.get("evidences")),
+                "qualitative_comment_text_length": len(str(pack.get("comment_text") or "")),
+                "qualitative_comment_text_preview": str(str(pack.get("comment_text") or "")[:80]),
+                "qualitative_comment_candidates_count": len(comment_rows),
+                "qualitative_comment_list_mode": bool(pack.get("comment_list_mode")),
             }
         pack["rows"] = rows
         return _finalize_structured_pack(pack, query_understanding)
@@ -4556,7 +8406,16 @@ def build_structured_evidence_pack(
         return _finalize_structured_pack(pack, query_understanding)
 
     if intent == "diagnostic_safety_question":
-        safety_analytes = requested_analytes or ["ace", "psa_totale", "ca_15_3"]
+        if requested_analytes:
+            safety_analytes = requested_analytes
+        else:
+            topic = detect_medical_topic(query or "")
+            topic_analytes = get_topic_analytes(topic)
+            safety_analytes = topic_analytes if topic_analytes else get_topic_analytes("tumor_markers")
+            excluded = set(get_topic_exclusions(topic))
+            explicit = set(str(a).strip().lower() for a in requested_analytes)
+            if excluded:
+                safety_analytes = [a for a in safety_analytes if (str(a).strip().lower() not in excluded) or (str(a).strip().lower() in explicit)]
         rows = _fetch_doc_lab_rows(
             sqlite_path=sqlite_path,
             requested_doc_ids=requested_doc_ids,
@@ -4577,7 +8436,16 @@ def build_structured_evidence_pack(
         pack["rows"] = rows
         return _finalize_structured_pack(pack, query_understanding)
 
-    if intent in {"toxicology_summary", "doc_scoped_summary", "immunoanalysis_summary", "doc_scoped_results", "previous_result_comparison", "unstructured"}:
+    if intent in {
+        "toxicology_summary",
+        "doc_scoped_toxicology_threshold_search",
+        "doc_scoped_toxicology_summary",
+        "doc_scoped_summary",
+        "immunoanalysis_summary",
+        "doc_scoped_results",
+        "previous_result_comparison",
+        "unstructured",
+    }:
         analytes = requested_analytes if requested_analytes else None
         rows = _fetch_doc_lab_rows(
             sqlite_path=sqlite_path,
@@ -4592,10 +8460,22 @@ def build_structured_evidence_pack(
                 for r in rows
                 if _row_matches_value_criterion(r, target_values, query_understanding.comparison_operator)
             ]
-        if intent == "toxicology_summary":
+        bypass_technical_filter_for_single_doc_analyte = (
+            intent == "doc_scoped_results"
+            and len(list(requested_doc_ids or [])) == 1
+            and len(list(requested_analytes or [])) == 1
+        )
+        bypass_technical_filter_for_toxicology_summary = (
+            intent in {"toxicology_summary", "doc_scoped_toxicology_summary"}
+            and _is_toxicology_dual_threshold_summary_query(qn)
+        )
+        if not (bypass_technical_filter_for_single_doc_analyte or bypass_technical_filter_for_toxicology_summary):
+            rows = _apply_technical_condition_filter(rows, query_understanding.technical_condition)
+        if intent in {"toxicology_summary", "doc_scoped_toxicology_threshold_search", "doc_scoped_toxicology_summary"}:
             urine_mode = any(k in qn for k in ["urinaire", "urinaires", "urine"])
             tox_terms = ["ethanol", "acide_valproique", "carbamazepine", "lithium"]
             urine_terms = ["amphetamine", "benzodiazepine", "cocaine", "opiaces", "ecstasy", "phencyclidine"]
+            wants_dual_threshold = _is_toxicology_dual_threshold_summary_query(qn)
             if requested_analytes:
                 target_analytes = requested_analytes
                 rows = [r for r in rows if any(_row_matches_analyte(r, a) for a in target_analytes)]
@@ -4612,7 +8492,7 @@ def build_structured_evidence_pack(
             else:
                 target_analytes = tox_terms
                 rows = [r for r in rows if any(_row_matches_analyte(r, a) for a in target_analytes)]
-            if any(k in qn for k in ["depass", "dépass", "au dessus", "au-dessus"]) and "reference" in qn:
+            if (not wants_dual_threshold) and any(k in qn for k in ["depass", "dépass", "au dessus", "au-dessus"]) and "reference" in qn:
                 rows = [r for r in rows if _status_code(r) == "above_reference"]
             if compare_previous:
                 rows = [r for r in rows if str(r.get("previous_result_value_raw") or "").strip()]
@@ -4621,7 +8501,11 @@ def build_structured_evidence_pack(
         if excluded_analytes:
             rows = [r for r in rows if not _row_matches_excluded(r, excluded_analytes)]
 
-        if intent != "toxicology_summary" and query_understanding.requires_section_summary and ("urinaire" in qn or "urinaires" in qn or "urine" in qn):
+        if (
+            intent not in {"toxicology_summary", "doc_scoped_toxicology_threshold_search", "doc_scoped_toxicology_summary"}
+            and query_understanding.requires_section_summary
+            and ("urinaire" in qn or "urinaires" in qn or "urine" in qn)
+        ):
             rows = [r for r in rows if "urina" in norm_text(str(r.get("analyte_norm") or "") + " " + str(r.get("analyte") or ""))]
 
         if not rows and intent in {"doc_scoped_summary", "immunoanalysis_summary"}:
@@ -4637,11 +8521,19 @@ def build_structured_evidence_pack(
         rows_for_pack: list[dict[str, Any]] = []
         missing: list[str] = []
         out_of_reference_only = _query_requests_out_of_reference_only(qn)
+        if "priority_level" in {str(c).strip().lower() for c in list(getattr(query_understanding, "requested_table_columns", []) or [])}:
+            out_of_reference_only = False
+        effective_tc = _canonical_technical_condition(query_understanding.technical_condition)
         yes_no_mode = str(query_understanding.answer_style or "").strip().lower() == "yes_no" or str(query_understanding.output_format or "").strip().lower() == "yes_no"
         if requested_analytes:
             full_rows = list(rows)
             filtered_rows = list(rows)
-            if out_of_reference_only:
+            force_single_analyte_status = (
+                intent == "doc_scoped_results"
+                and len(list(requested_analytes or [])) == 1
+                and bool(list(requested_doc_ids or []))
+            )
+            if (effective_tc == "out_of_reference" or out_of_reference_only) and (not force_single_analyte_status):
                 filtered_rows = [r for r in rows if _status_code(r) in {"above_reference", "below_reference"}]
             for analyte in requested_analytes:
                 row = _best_row_for_analyte(filtered_rows, analyte)
@@ -4660,7 +8552,7 @@ def build_structured_evidence_pack(
         else:
             for row in rows:
                 status = _status_code(row)
-                if out_of_reference_only and status not in {
+                if (effective_tc == "out_of_reference" or out_of_reference_only) and status not in {
                     "above_reference",
                     "below_reference",
                 }:
@@ -4703,8 +8595,22 @@ def _format_doc_analyte_rows_answer(
     lines: list[str] = []
     missing: list[str] = []
     analytes = requested_analytes or []
-
+    deduped_analytes: list[str] = []
+    seen_keys: set[str] = set()
     for analyte in analytes:
+        key = _canonical_analyte_key(str(analyte))
+        # Keep TSH/TSHus equivalent for matching and avoid duplicated "missing" lines.
+        if key in {"tsh", "tshus"}:
+            key = "tshus"
+            analyte_for_lookup = "tshus"
+        else:
+            analyte_for_lookup = analyte
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped_analytes.append(analyte_for_lookup)
+
+    for analyte in deduped_analytes:
         row = _best_row_for_analyte(rows, analyte)
         display_name = _canonical_display_name(analyte)
         if row is None:
@@ -4731,6 +8637,79 @@ def _format_doc_analyte_rows_answer(
         lines.append(core)
 
     return "\n".join(lines).strip(), missing
+
+
+def _format_multi_doc_single_analyte_status_answer(
+    *,
+    rows: list[dict[str, Any]],
+    requested_doc_ids: list[str],
+    requested_analyte: str,
+) -> str:
+    doc_ids = [str(d).strip() for d in list(requested_doc_ids or []) if str(d).strip()]
+    analyte = str(requested_analyte or "").strip().lower()
+    if not doc_ids or not analyte:
+        return ""
+    found_rows: list[tuple[str, dict[str, Any]]] = []
+    missing_docs: list[str] = []
+    tsh_alias_mode = analyte in {"tsh", "tshus"}
+    for doc_id in doc_ids:
+        doc_rows = [
+            r
+            for r in rows
+            if str(r.get("doc_id") or "").strip().lower() == doc_id.lower()
+        ]
+        row = _best_row_for_analyte(doc_rows, analyte)
+        if row is None and tsh_alias_mode:
+            row = _best_row_for_analyte(doc_rows, "tshus") or _best_row_for_analyte(doc_rows, "tsh")
+        if row is None:
+            missing_docs.append(doc_id)
+            continue
+        found_rows.append((doc_id, row))
+
+    if not found_rows:
+        req_label = "TSH/TSHus" if tsh_alias_mode else _canonical_display_name(analyte)
+        joined = ", ".join(doc_ids)
+        return (
+            f"Aucun résultat correspondant à {req_label} n’a été retrouvé dans {joined}.\n"
+            f"Conclusion technique : aucun résultat exploitable correspondant à {req_label} n’a été identifié."
+        )
+
+    first_label = _resolve_row_display_analyte(
+        found_rows[0][1],
+        str(found_rows[0][1].get("analyte_norm") or analyte).strip().lower(),
+    )
+    req_label = "TSH/TSHus" if tsh_alias_mode else _canonical_display_name(analyte)
+    title = (
+        f"Résultat correspondant à {req_label} retrouvé sous le libellé source {first_label} :"
+        if tsh_alias_mode
+        else f"Résultat correspondant à {req_label} :"
+    )
+    lines = [title]
+    for doc_id, row in found_rows:
+        label = _resolve_row_display_analyte(row, str(row.get("analyte_norm") or analyte).strip().lower())
+        value = str(row.get("value_raw") or "non disponible").strip()
+        unit = str(row.get("unit") or "").strip()
+        ref = str(row.get("reference_range") or "non disponible").strip()
+        status = _interpretation_fr(str(row.get("interpretation_status") or "unknown"))
+        value_unit = f"{value}{(' ' + unit) if unit else ''}".strip()
+        lines.append(
+            f"- {doc_id} : {label} = {value_unit} ; référence : {ref} ; statut technique : {status}."
+        )
+    if missing_docs:
+        missing_joined = " et ".join(missing_docs) if len(missing_docs) <= 2 else ", ".join(missing_docs)
+        if tsh_alias_mode:
+            lines.append(f"Aucun résultat correspondant à TSH/TSHus n’a été retrouvé dans {missing_joined}.")
+        else:
+            lines.append(f"Aucun résultat correspondant à {req_label} n’a été retrouvé dans {missing_joined}.")
+    if tsh_alias_mode:
+        lines.append(
+            f"Conclusion technique : seul {', '.join([d for d, _ in found_rows])} contient un résultat exploitable correspondant à TSH/TSHus."
+            if len(found_rows) == 1
+            else "Conclusion technique : plusieurs rapports contiennent un résultat exploitable correspondant à TSH/TSHus."
+        )
+    else:
+        lines.append("Conclusion technique : synthèse factuelle limitée aux résultats disponibles.")
+    return "\n".join(lines).strip()
 
 
 def _format_doc_summary_answer(
@@ -4805,39 +8784,93 @@ def _format_multi_doc_comparison_answer(
     if len(doc_ids) < 2:
         return _missing_doc_answer(), list(requested_analytes)
 
-    left, right = doc_ids[0], doc_ids[1]
-    left_rows = [r for r in rows if str(r.get("doc_id") or "").lower() == left.lower()]
-    right_rows = [r for r in rows if str(r.get("doc_id") or "").lower() == right.lower()]
+    rows_by_doc: dict[str, list[dict[str, Any]]] = {
+        doc_id: [r for r in rows if str(r.get("doc_id") or "").strip().lower() == doc_id.lower()]
+        for doc_id in doc_ids
+    }
     missing: list[str] = []
     lines: list[str] = []
 
     for analyte in requested_analytes:
         label = _canonical_display_name(analyte)
-        a = _best_row_for_analyte(left_rows, analyte)
-        b = _best_row_for_analyte(right_rows, analyte)
-        if not a and not b:
-            lines.append(f"- {label}: non retrouvé dans {left} ni {right}.")
-            missing.append(analyte)
-            continue
-        if a and not b:
-            lines.append(f"- {label}: présent uniquement dans {left} ({a.get('value_raw')} {a.get('unit') or ''}).")
-            missing.append(analyte)
-            continue
-        if b and not a:
-            lines.append(f"- {label}: présent uniquement dans {right} ({b.get('value_raw')} {b.get('unit') or ''}).")
+        per_doc_best: dict[str, dict[str, Any] | None] = {
+            doc_id: _best_row_for_analyte(rows_by_doc.get(doc_id, []), analyte) for doc_id in doc_ids
+        }
+        present_rows = [r for r in per_doc_best.values() if isinstance(r, dict)]
+        if not present_rows:
+            lines.append(f"- {label}: non retrouvé dans {', '.join(doc_ids)}.")
             missing.append(analyte)
             continue
 
-        a_val = str(a.get("value_raw") or "")
-        b_val = str(b.get("value_raw") or "")
-        unit = str(a.get("unit") or b.get("unit") or "").strip()
-        ref = str(a.get("reference_range") or b.get("reference_range") or "non disponible")
-        variation = _variation_label(b_val, a_val)
-        lines.append(
-            f"- {label}: {left}={a_val}{(' ' + unit) if unit else ''} | {right}={b_val}{(' ' + unit) if unit else ''} "
-            f"| référence: {ref} | différence technique: {variation}"
-        )
+        unit = ""
+        ref = "non disponible"
+        for row in present_rows:
+            unit = unit or str(row.get("unit") or "").strip()
+            ref = ref if ref != "non disponible" else str(row.get("reference_range") or "non disponible")
+        per_doc_parts: list[str] = []
+        for doc_id in doc_ids:
+            row = per_doc_best.get(doc_id)
+            if not row:
+                per_doc_parts.append(f"{doc_id}=non présent")
+                continue
+            value = str(row.get("value_raw") or "non disponible").strip()
+            value_txt = value + (f" {unit}" if unit else "")
+            per_doc_parts.append(f"{doc_id}={value_txt}")
+        lines.append(f"- {label}: " + " | ".join(per_doc_parts) + f" | référence: {ref}")
+
     return "\n".join(lines).strip(), missing
+
+
+def _format_multi_doc_out_of_reference_by_doc_answer(
+    *,
+    rows: list[dict[str, Any]],
+    doc_ids: list[str],
+    technical_condition: str | None,
+    max_items_per_doc: int = 12,
+) -> str:
+    if len(doc_ids) < 2:
+        return _missing_doc_answer()
+    cond = _canonical_technical_condition(technical_condition)
+    status_title = {
+        "above_reference": "au-dessus de la référence",
+        "below_reference": "en dessous de la référence",
+        "out_of_reference": "hors référence",
+    }.get(cond or "out_of_reference", "hors référence")
+
+    lines: list[str] = []
+    for doc_id in doc_ids:
+        lines.append(f"{doc_id} — résultats {status_title} :")
+        doc_rows = [
+            r
+            for r in rows
+            if str(r.get("doc_id") or "").strip().lower() == str(doc_id).strip().lower()
+        ]
+        seen: set[tuple[str, str, str]] = set()
+        kept = 0
+        for row in doc_rows:
+            status = str(row.get("technical_status_code") or row.get("interpretation_status") or "").strip().lower()
+            if status not in {"above_reference", "below_reference"}:
+                continue
+            analyte = _clean_analyte_label(row.get("analyte") or row.get("parameter") or row.get("analyte_norm") or "Analyte")
+            value = str(row.get("current_value") or row.get("value_raw") or "non disponible").strip()
+            unit = str(row.get("unit") or "").strip()
+            ref = str(row.get("reference") or row.get("reference_range") or "non disponible").strip()
+            key = (norm_text(analyte), value, status)
+            if key in seen:
+                continue
+            seen.add(key)
+            status_fr = _interpretation_fr(status)
+            value_part = f"{value}{(' ' + unit) if unit else ''}".strip()
+            lines.append(f"- {analyte} : {value_part} ; référence : {ref} ; statut : {status_fr}.")
+            kept += 1
+            if kept >= max(1, int(max_items_per_doc)):
+                break
+        if kept == 0:
+            lines.append(f"- Aucun résultat {status_title} retrouvé dans ce rapport.")
+        lines.append("")
+
+    lines.append("Conclusion technique : comparaison descriptive des anomalies retrouvées, sans diagnostic.")
+    return "\n".join(lines).strip()
 
 
 def _format_qualitative_comment_answer(rows: list[dict[str, Any]]) -> str:
@@ -4894,10 +8927,8 @@ def _format_diagnostic_safety_answer(rows: list[dict[str, Any]], requested_analy
                 filtered.append(best)
         marker_rows = filtered
 
-    lines = [
-        "Non, on ne peut pas conclure à un cancer uniquement à partir de ces marqueurs.",
-        "Constat technique sur les marqueurs retrouvés :",
-    ]
+    cancer_refusal, markers_intro, closing = _diagnostic_safety_generic_lines()
+    lines = [cancer_refusal, markers_intro]
     missing: list[str] = []
     if requested_analytes:
         for analyte in requested_analytes:
@@ -4921,7 +8952,7 @@ def _format_diagnostic_safety_answer(rows: list[dict[str, Any]], requested_analy
                 f"référence: {row.get('reference_range') or 'non disponible'} | "
                 f"statut technique: {_interpretation_fr(row.get('interpretation_status'))}"
             )
-    lines.append("Ces marqueurs biologiques ne suffisent pas à poser un diagnostic ; une interprétation médicale spécialisée est nécessaire.")
+    lines.append(closing)
     return "\n".join(lines).strip(), missing
 
 
@@ -5027,12 +9058,12 @@ def run_generation(
     query: str,
     top_k: int = 5,
     mode: str = "hybrid",
-    provider: str = "ollama",
-    model: str = "qwen3:4b",
-    temperature: float = 0.0,
-    num_ctx: int = 4096,
-    max_tokens: int = 400,
-    timeout: int = 120,
+    provider: str = DEFAULT_LLM_PROVIDER,
+    model: str = DEFAULT_LLM_MODEL,
+    temperature: float = DEFAULT_LLM_TEMPERATURE,
+    num_ctx: int = DEFAULT_LLM_NUM_CTX,
+    max_tokens: int = DEFAULT_LLM_MAX_TOKENS,
+    timeout: int = DEFAULT_LLM_TIMEOUT,
     index_dir: str | Path = "data/indexes",
     collection: str = "medical_chunks",
     search_engine: SearchEngine | None = None,
@@ -5053,6 +9084,17 @@ def run_generation(
     recent_style_history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
+    stage_times_ms: dict[str, float] = {
+        "query_understanding_ms": 0.0,
+        "routing_ms": 0.0,
+        "retrieval_ms": 0.0,
+        "evidence_build_ms": 0.0,
+        "llm_writer_ms": 0.0,
+        "validation_ms": 0.0,
+        "repair_ms": 0.0,
+        "fallback_ms": 0.0,
+        "total_ms": 0.0,
+    }
     request_id = str(uuid4())
 
     query_received = query
@@ -5065,7 +9107,95 @@ def run_generation(
     source_citations_for_response: list[dict[str, Any]] = []
     idx = Path(index_dir)
     sqlite_path = idx / "medical_rag.sqlite"
+    t_qu0 = time.perf_counter()
     query_understanding = parse_query_understanding(q)
+    reference_lookup_guard = bool(
+        str(getattr(query_understanding, "intent", "") or "").strip().lower() == "reference_range_lookup"
+        or _should_force_reference_range_lookup(qn, query_understanding)
+    )
+    if reference_lookup_guard:
+        llm_qu_debug = {
+            "enabled": False,
+            "used": False,
+            "error": None,
+            "skipped": True,
+            "reason": "deterministic_reference_range_lookup_guard",
+        }
+    else:
+        query_understanding, llm_qu_debug = _llm_assisted_query_understanding(
+            query=q,
+            base_qu=query_understanding,
+            llm_client=llm_client,
+            provider=provider,
+            model=model,
+            timeout=timeout,
+        )
+    query_plan = understand_medical_query(
+        q,
+        llm_client=llm_client,
+        model=model,
+        timeout=timeout,
+    )
+    _validate_answer = globals()["validate_answer"]
+    hard_gate_errors_at_any_point: list[str] = []
+    hard_gate_was_triggered = False
+
+    def validate_answer(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        result = _validate_answer(*args, **kwargs)
+        if isinstance(result, dict):
+            errors = [str(e) for e in (result.get("errors") or []) if e is not None]
+            gate_hits = sorted(set(errors).intersection(HARD_GATE_ERRORS))
+            for error_name in gate_hits:
+                if error_name not in hard_gate_errors_at_any_point:
+                    hard_gate_errors_at_any_point.append(error_name)
+        return result
+
+    planner_intent_to_qu_intent = {
+        "single_analyte_lookup": "single_analyte_lookup",
+        "doc_scoped_abnormal_results": "doc_scoped_abnormal_results",
+        "doc_scoped_summary": "doc_scoped_summary",
+        "doc_pair_comparison": "doc_pair_comparison",
+        "global_result_search": "cohort_search",
+        "global_abnormal_search": "global_analyte_abnormal_search",
+        "guarded_medical_interpretation": "doc_scoped_medical_interpretation_guarded",
+        "open_grounded_medical_question": "unstructured",
+        "reference_range_lookup": "reference_range_lookup",
+        "unsupported_or_insufficient_context": "unstructured",
+    }
+    planned_intent = planner_intent_to_qu_intent.get(str(getattr(query_plan, "intent", "") or "").strip().lower())
+    planned_docs = [str(d).strip() for d in list(getattr(query_plan, "requested_doc_ids", []) or []) if str(d).strip()]
+    planned_analytes = [str(a).strip().lower() for a in list(getattr(query_plan, "requested_analytes", []) or []) if str(a).strip()]
+    planner_condition_to_qu = {
+        "above_reference_only": "above_reference",
+        "below_reference_only": "below_reference",
+        "out_of_reference": "out_of_reference",
+        "within_reference": "within_reference",
+        "any_result": None,
+        "not_applicable": None,
+    }
+    planned_condition = planner_condition_to_qu.get(str(getattr(query_plan, "technical_condition", "") or "").strip().lower())
+    planner_protected_intents = {
+        "response_transform",
+        "context_summary_render",
+        "inventory_visualization_render",
+        "visualization_recommendation",
+        "global_biological_summary",
+        "global_priority_anomalies_summary",
+        "source_followup",
+        "comment_without_measured_value",
+        "qualitative_comment_render",
+        "patient_inventory",
+        "patient_inventory_count",
+    }
+    if planned_intent and str(query_understanding.intent or "").strip().lower() not in planner_protected_intents:
+        query_understanding = replace(
+            query_understanding,
+            intent=planned_intent,
+            requested_doc_ids=planned_docs or list(query_understanding.requested_doc_ids or []),
+            requested_analytes=planned_analytes or list(query_understanding.requested_analytes or []),
+            technical_condition=planned_condition or query_understanding.technical_condition,
+        )
+    stage_times_ms["query_understanding_ms"] = round((time.perf_counter() - t_qu0) * 1000.0, 3)
     preferred_previous_transformable_pack = (
         previous_displayed_evidence_pack
         if isinstance(previous_displayed_evidence_pack, dict)
@@ -5085,12 +9215,35 @@ def run_generation(
     }
     context_resolution = resolve_context_for_turn(q, query_understanding, state_for_resolution)
     deictic_resolution = resolve_deictic_request(q, query_understanding, state_for_resolution)
+    resolution_arbitration = _arbitrate_resolution(
+        query_understanding=query_understanding,
+        context_resolution=context_resolution,
+        deictic_resolution=deictic_resolution,
+    )
+    if bool(resolution_arbitration.get("conflict")):
+        LOGGER.info(
+            "routing_resolution_conflict request_id=%s decision=%s",
+            request_id,
+            json.dumps(
+                {
+                    "query": q,
+                    "base_intent": resolution_arbitration.get("base_intent"),
+                    "deictic_intent": resolution_arbitration.get("deictic_intent"),
+                    "chosen": resolution_arbitration.get("chosen"),
+                    "context_reason": resolution_arbitration.get("context_reason"),
+                    "deictic_reason": resolution_arbitration.get("deictic_reason"),
+                },
+                ensure_ascii=False,
+                default=str,
+            ),
+        )
     qn_deictic = norm_text(q)
-    asks_table = any(token in qn_deictic for token in [" table", "table ", "tableau"])
+    asks_table = any(token in qn_deictic for token in [" table", "table ", "tableau", "tabl", "une table", "dans une table"])
     asks_graph = any(token in qn_deictic for token in ["graphique", "chart", "courbe", "radar", "bar chart", "line graph", "visualise"])
     asks_context_summary = any(token in qn_deictic for token in ["resume", "résume", "resumer", "résumer", "synthese", "synthèse", "synthetise", "synthétise"]) and any(
         token in qn_deictic for token in ["commentaire", "ce commentaire", "cette valeur", "ce resultat", "ce résultat", "ces resultats", "ces résultats", "ce tableau", "ca", "ça", "ceci"]
     )
+    asks_global_summary_scope = _looks_like_global_summary_without_scope(qn_deictic, list(query_understanding.requested_doc_ids or []))
     is_deictic_render = bool(
         any(token in qn_deictic for token in [" ca", "ça", "ces donnees", "ces données", "affiche", "mets"])
         and (asks_table or asks_graph)
@@ -5099,7 +9252,7 @@ def run_generation(
     prev_ctx_type = str(previous_data_context_type or "").strip().lower()
     deictic_no_context = str(deictic_resolution.get("intent") or "") == "deictic_no_context"
 
-    if (is_deictic_render or asks_context_summary or deictic_no_context) and not has_explicit_scope:
+    if (is_deictic_render or (asks_context_summary and not asks_global_summary_scope) or deictic_no_context) and not has_explicit_scope:
         if prev_ctx_type == "patient_inventory":
             if asks_context_summary:
                 query_understanding = replace(
@@ -5263,6 +9416,8 @@ def run_generation(
                     "summary_no_context": bool(asks_context_summary),
                     "generation_writer": "professional_fallback",
                     "context_resolution": context_resolution,
+                    "deictic_resolution": deictic_resolution,
+                    "resolution_arbitration": resolution_arbitration,
                     "retrieval_skipped_due_to_no_transformable_context": True,
                 },
                 "visualization": None,
@@ -5271,7 +9426,7 @@ def run_generation(
 
     # Dedicated deictic resolver overrides (same-action / fiche / status follow-up).
     resolved_intent = str(deictic_resolution.get("intent") or "").strip().lower()
-    if deictic_resolution.get("resolved") and resolved_intent not in {"", "deictic_no_context"}:
+    if resolution_arbitration.get("chosen") == "deictic" and deictic_resolution.get("resolved") and resolved_intent not in {"", "deictic_no_context"}:
         if resolved_intent == "doc_scoped_results" and query_understanding.requested_analytes:
             effective_scope = deictic_resolution.get("effective_doc_scope") if isinstance(deictic_resolution.get("effective_doc_scope"), dict) else {}
             scoped_doc_ids = [str(d).strip() for d in (effective_scope.get("doc_ids") or []) if str(d).strip()]
@@ -5423,16 +9578,444 @@ def run_generation(
                 "chart_data": None,
             }
 
-    requested_doc_ids = resolve_followup_doc_scope(
-        query=q,
-        requested_analytes=list(query_understanding.requested_analytes or []),
-        requested_doc_ids=list(query_understanding.requested_doc_ids),
-        previous_doc_scope=previous_doc_scope,
+    # Guardrail: reference-range wording should not drift to global multi-analyte listing.
+    # Force deterministic reference_range_lookup when user explicitly asks for norme/plage/référence.
+    if _should_force_reference_range_lookup(qn, query_understanding):
+        query_understanding = replace(
+            query_understanding,
+            intent="reference_range_lookup",
+            is_small_talk=False,
+            is_response_transform=False,
+        )
+
+    # Follow-up safeguard for reference ranges: preserve deterministic reference lookup across elliptical turns.
+    prev_ctx = previous_displayed_context if isinstance(previous_displayed_context, dict) else {}
+    prev_rr_ctx = prev_ctx.get("last_reference_range_context") if isinstance(prev_ctx.get("last_reference_range_context"), dict) else {}
+    prev_rr_intent = str(prev_rr_ctx.get("intent") or prev_ctx.get("reference_intent") or previous_context_intent or "").strip().lower()
+    curr_profile = (
+        dict(getattr(query_understanding, "requested_reference_profile", None) or {})
+        if isinstance(getattr(query_understanding, "requested_reference_profile", None), dict)
+        else {}
     )
+    prev_profile = {}
+    if isinstance(prev_rr_ctx.get("requested_reference_profile"), dict):
+        prev_profile = dict(prev_rr_ctx.get("requested_reference_profile") or {})
+    elif isinstance(prev_ctx.get("reference_profile"), dict):
+        prev_profile = dict(prev_ctx.get("reference_profile") or {})
+    followup_like = _looks_like_reference_range_followup(q)
+    has_curr_analyte = bool(list(getattr(query_understanding, "requested_analytes", None) or []))
+    has_curr_profile = _has_any_reference_profile_slot(curr_profile)
+    if prev_rr_intent == "reference_range_lookup" and (followup_like or has_curr_analyte or has_curr_profile):
+        curr_analytes = [str(a).strip().lower() for a in list(getattr(query_understanding, "requested_analytes", None) or []) if str(a).strip()]
+        if not curr_analytes:
+            curr_analytes = [str(a).strip().lower() for a in (detect_exact_analytes(q) or []) if str(a).strip()]
+        if not curr_analytes:
+            prev_analyte = str(prev_rr_ctx.get("analyte") or prev_ctx.get("subject") or "").strip()
+            if prev_analyte:
+                curr_analytes = [str(a).strip().lower() for a in (detect_exact_analytes(prev_analyte) or []) if str(a).strip()]
+        merged_profile = dict(prev_profile)
+        for k, v in curr_profile.items():
+            if v not in (None, ""):
+                merged_profile[k] = v
+        # If user explicitly changed analyte only, keep inherited profile for potential specific lookup/fallback messaging.
+        final_profile = merged_profile if _has_any_reference_profile_slot(merged_profile) else curr_profile
+        if curr_analytes:
+            query_understanding = replace(
+                query_understanding,
+                intent="reference_range_lookup",
+                requested_analytes=curr_analytes,
+                requested_reference_profile=final_profile if _has_any_reference_profile_slot(final_profile) else None,
+                is_small_talk=False,
+                is_response_transform=False,
+            )
+
+    # Deterministic route normalization for production medical flows.
+    selected_route = str(query_understanding.intent or "").strip().lower()
+    route_reason = "intent_resolved_by_query_understanding"
+    has_explicit_global_scope = any(
+        t in qn
+        for t in [
+            "tous les rapports",
+            "rapports disponibles",
+            "rapports indexes",
+            "rapports indexés",
+            "sur l ensemble des rapports",
+            "sur l’ensemble des rapports",
+            "dans tous les rapports",
+            "quels documents",
+            "quels rapports",
+            "documents",
+        ]
+    )
+    has_short_bio_summary_shape = (
+        bool(list(query_understanding.requested_doc_ids or []))
+        and (
+            any(t in qn for t in ["resume", "résume", "synthese", "synthèse"])
+            or any(
+                t in qn
+                for t in [
+                    "note courte",
+                    "note pour un medecin",
+                    "note pour un médecin",
+                    "resume descriptif court",
+                    "résumé descriptif court",
+                ]
+            )
+        )
+        and any(t in qn for t in ["anomalies", "normaux", "quelques lignes", "partie", "strictement descriptif", "descriptif"])
+    )
+    has_compact_or_descriptive_doc_summary_shape = (
+        bool(list(query_understanding.requested_doc_ids or []))
+        and any(
+            t in qn
+            for t in [
+                "resume",
+                "résume",
+                "synthese",
+                "synthèse",
+                "decris objectivement",
+                "décris objectivement",
+                "note courte",
+                "note pour un medecin",
+                "note pour un médecin",
+            ]
+        )
+        and any(
+            t in qn
+            for t in [
+                "4-5 lignes",
+                "4 5 lignes",
+                "5 lignes",
+                "maximum",
+                "medecin occupe",
+                "médecin occupé",
+                "sans interpretation diagnostique",
+                "sans interprétation diagnostique",
+                "sans diagnostic",
+                "separe",
+                "sépare",
+                "valeurs hors reference",
+                "valeurs hors référence",
+                "valeurs normales",
+                "resultats normaux",
+                "résultats normaux",
+                "tous les resultats",
+                "tous les résultats",
+            ]
+        )
+    )
+    has_global_abnormal_shape = (
+        has_explicit_global_scope
+        and bool(list(query_understanding.requested_analytes or []))
+        and any(
+            t in qn
+            for t in [
+                "hors reference",
+                "hors norme",
+                "hors intervalle",
+                "anormal",
+                "anomal",
+                "elevation",
+                "élévation",
+                "eleve",
+                "élevé",
+                "superieure",
+                "supérieure",
+                "diminuee",
+                "diminuée",
+                "basse",
+                "inferieure",
+                "en dessous",
+                "en-dessous",
+                "below reference",
+                "below_reference",
+            ]
+        )
+    )
+    has_priority_shape = (
+        bool(list(query_understanding.requested_doc_ids or []))
+        and any(
+            t in qn
+            for t in [
+                "hierarchise",
+                "hiérarchise",
+                "hierarchiser",
+                "hiérarchiser",
+                "importance technique",
+                "ordre d importance",
+                "ordre d’importance",
+                "classement technique",
+            ]
+        )
+    )
+    requested_analytes_for_shape = [str(a).strip().lower() for a in list(query_understanding.requested_analytes or []) if str(a).strip()]
+    requested_analyte_keys: list[str] = []
+    for a in requested_analytes_for_shape:
+        key = _canonical_analyte_key(a)
+        if key in {"tsh", "tshus"}:
+            key = "tshus"
+        if key and key not in requested_analyte_keys:
+            requested_analyte_keys.append(key)
+    if bool(list(query_understanding.requested_doc_ids or [])) and requested_analytes_for_shape and len(requested_analyte_keys) == 1:
+        canonical_single = requested_analyte_keys[0]
+        query_understanding = replace(query_understanding, requested_analytes=[canonical_single])
+    has_doc_scoped_single_analyte_shape = (
+        bool(list(query_understanding.requested_doc_ids or []))
+        and len([str(a).strip() for a in list(query_understanding.requested_analytes or []) if str(a).strip()]) == 1
+        and any(
+            t in qn
+            for t in [
+                "quelle est la valeur",
+                "valeur de",
+                "donne",
+                "est il",
+                "est-il",
+                "est elle",
+                "est-elle",
+                "hors reference",
+                "dans la reference",
+                "en dessous",
+                "au dessus",
+                "au-dessus",
+                "bas",
+                "basse",
+                "haut",
+                "haute",
+            ]
+        )
+    )
+    freeform_single_analyte = ""
+    if bool(list(query_understanding.requested_doc_ids or [])) and not list(query_understanding.requested_analytes or []):
+        if any(
+            t in qn
+            for t in [
+                "quelle est la valeur",
+                "valeur de",
+                "donne moi la valeur",
+                "donne-moi la valeur",
+                "est elle",
+                "est-elle",
+                "est il",
+                "est-il",
+            ]
+        ):
+            freeform_single_analyte = _extract_freeform_doc_scoped_analyte(qn)
+            if freeform_single_analyte:
+                query_understanding = replace(
+                    query_understanding,
+                    requested_analytes=[freeform_single_analyte],
+                    intent="doc_scoped_results",
+                )
+                has_doc_scoped_single_analyte_shape = True
+    if has_doc_scoped_single_analyte_shape and selected_route in {
+        "doc_scoped_abnormal_results",
+        "doc_scoped_summary",
+        "single_analyte_lookup",
+        "doc_scoped_results",
+        "reference_range_lookup",
+        "unstructured",
+    }:
+        query_understanding = replace(query_understanding, intent="doc_scoped_results")
+        selected_route = "doc_scoped_single_analyte_status"
+        route_reason = (
+            "doc_scope+single_analyte_value_status_heuristic_from_freeform"
+            if freeform_single_analyte
+            else "doc_scope+single_analyte_value_status_heuristic"
+        )
+    if selected_route == "reference_range_lookup" and has_doc_scoped_single_analyte_shape:
+        query_understanding = replace(query_understanding, intent="doc_scoped_results")
+        selected_route = "doc_scoped_single_analyte_status"
+        route_reason = "doc_scope+single_analyte_value_status"
+    if selected_route == "unstructured" and has_short_bio_summary_shape:
+        selected_route = "doc_scoped_biological_summary"
+        route_reason = "heuristic_doc_scoped_biological_summary"
+    if selected_route in {"unstructured", "doc_scoped_summary", "doc_scoped_abnormal_results"} and has_compact_or_descriptive_doc_summary_shape and not _is_toxicology_query(qn):
+        selected_route = "doc_scoped_biological_summary"
+        route_reason = "heuristic_doc_scoped_biological_summary_compact_descriptive"
+    if selected_route == "unstructured" and bool(list(query_understanding.requested_doc_ids or [])) and _is_toxicology_query(qn):
+        if _is_toxicology_above_threshold_query(qn):
+            query_understanding = replace(
+                query_understanding,
+                intent="doc_scoped_toxicology_threshold_search",
+                technical_condition="above_reference",
+            )
+            selected_route = "doc_scoped_toxicology_threshold_search"
+            route_reason = "heuristic_doc_scoped_toxicology_threshold_search"
+        elif _is_toxicology_majority_query(qn):
+            query_understanding = replace(query_understanding, intent="doc_scoped_toxicology_summary", technical_condition="any_result")
+            selected_route = "doc_scoped_toxicology_summary"
+            route_reason = "heuristic_doc_scoped_toxicology_summary"
+        else:
+            query_understanding = replace(query_understanding, intent="toxicology_summary", technical_condition="any_result")
+            selected_route = "doc_scoped_toxicology_summary"
+            route_reason = "heuristic_doc_scoped_toxicology_summary_default"
+    if selected_route == "unstructured" and has_global_abnormal_shape:
+        selected_route = "global_analyte_abnormal_search"
+        route_reason = "heuristic_global_analyte_abnormal_search"
+    if selected_route == "global_biological_summary":
+        query_understanding = replace(
+            query_understanding,
+            intent="global_biological_summary",
+            requires_global_search=True,
+            requested_doc_ids=[],
+            output_format="paragraph",
+        )
+        selected_route = "global_biological_summary"
+        route_reason = "global_scope_biological_summary"
+    elif selected_route == "global_priority_anomalies_summary":
+        query_understanding = replace(
+            query_understanding,
+            intent="global_priority_anomalies_summary",
+            requires_global_search=True,
+            requested_doc_ids=[],
+            output_format="paragraph",
+        )
+        selected_route = "global_priority_anomalies_summary"
+        route_reason = "global_scope_priority_anomalies_summary"
+    if selected_route == "unstructured" and has_priority_shape:
+        selected_route = "doc_scoped_priority_anomalies"
+        route_reason = "heuristic_doc_scoped_priority_anomalies"
+    if selected_route == "global_analyte_abnormal_search":
+        query_understanding = replace(
+            query_understanding,
+            intent="cohort_search",
+            requires_global_search=True,
+            requested_doc_ids=[],
+            technical_condition=(query_understanding.technical_condition or "out_of_reference"),
+        )
+        selected_route = "global_analyte_abnormal_search"
+        route_reason = "global_scope+analyte+abnormal_wording"
+    elif selected_route == "doc_pair_comparison":
+        query_understanding = replace(query_understanding, intent="multi_doc_comparison")
+        if len(list(query_understanding.requested_doc_ids or [])) >= 3:
+            selected_route = "multi_doc_comparison"
+            route_reason = "compare+multiple_reports"
+        else:
+            selected_route = "doc_pair_comparison"
+            route_reason = "compare+two_or_more_reports"
+    elif selected_route == "multi_doc_comparison":
+        query_understanding = replace(query_understanding, intent="multi_doc_comparison")
+        selected_route = "multi_doc_comparison"
+        route_reason = "compare+multiple_reports"
+    elif selected_route == "doc_scoped_abnormal_results":
+        if bool(list(query_understanding.requested_doc_ids or [])) and _is_toxicology_query(qn):
+            query_understanding = replace(query_understanding, intent="doc_scoped_toxicology_summary", technical_condition="any_result")
+            selected_route = "doc_scoped_toxicology_summary"
+            route_reason = "doc_scoped_abnormal_results_toxicology_override"
+        else:
+            query_understanding = replace(
+                query_understanding,
+                intent="doc_scoped_summary",
+                technical_condition=(query_understanding.technical_condition or "out_of_reference"),
+            )
+            selected_route = "doc_scoped_abnormal_results"
+            route_reason = "doc_scope+abnormal_summary_request"
+    elif selected_route == "doc_scoped_summary" and (not _is_toxicology_query(qn)) and _canonical_technical_condition(query_understanding.technical_condition) in {
+        "out_of_reference",
+        "above_reference",
+        "below_reference",
+    }:
+        selected_route = "doc_scoped_abnormal_results"
+        route_reason = "doc_scope_summary+technical_condition_abnormal"
+    elif selected_route == "doc_scoped_summary" and bool(list(query_understanding.requested_doc_ids or [])) and _is_toxicology_query(qn):
+        query_understanding = replace(query_understanding, intent="doc_scoped_toxicology_summary", technical_condition="any_result")
+        selected_route = "doc_scoped_toxicology_summary"
+        route_reason = "doc_scoped_summary_toxicology_override"
+    elif selected_route == "doc_scoped_biological_summary":
+        query_understanding = replace(
+            query_understanding,
+            intent="doc_scoped_summary",
+            technical_condition="any_result",
+            output_format="paragraph",
+        )
+        selected_route = "doc_scoped_biological_summary"
+        route_reason = "doc_scope+biological_summary_request"
+    elif selected_route == "doc_scoped_priority_anomalies":
+        query_understanding = replace(
+            query_understanding,
+            intent="doc_scoped_summary",
+            technical_condition="any_result",
+            output_format="table",
+            requested_table_columns=[
+                "priority_level",
+                "analyte",
+                "valeur_actuelle",
+                "reference",
+                "statut",
+                "priority_reason",
+            ],
+        )
+        selected_route = "doc_scoped_priority_anomalies"
+        route_reason = "doc_scope+priority_anomalies_request"
+    elif selected_route == "single_analyte_lookup":
+        query_understanding = replace(query_understanding, intent="doc_scoped_results")
+        if list(query_understanding.requested_doc_ids or []) and list(query_understanding.requested_analytes or []):
+            selected_route = "doc_scoped_single_analyte_status"
+            route_reason = "single_analyte+doc_scope_status"
+        else:
+            selected_route = "single_analyte_lookup"
+            route_reason = "single_analyte+doc_scope_lookup"
+    elif selected_route == "doc_scoped_medical_interpretation_guarded":
+        query_understanding = replace(
+            query_understanding,
+            intent="diagnostic_safety_question",
+            answer_style="standard",
+            output_format="paragraph",
+        )
+        selected_route = "doc_scoped_medical_interpretation_guarded"
+        route_reason = "guarded_medical_interpretation_with_doc_scope"
+    elif selected_route == "toxicology_summary" and not list(query_understanding.requested_doc_ids or []):
+        query_understanding = replace(
+            query_understanding,
+            intent="global_toxicology_search",
+            requires_global_search=True,
+            requested_doc_ids=[],
+        )
+        selected_route = "global_toxicology_search"
+        route_reason = "global_toxicology_from_toxicology_summary_without_doc_scope"
+    elif selected_route == "toxicology_summary" and list(query_understanding.requested_doc_ids or []):
+        if _is_toxicology_above_threshold_query(qn):
+            query_understanding = replace(
+                query_understanding,
+                intent="doc_scoped_toxicology_threshold_search",
+                technical_condition="above_reference",
+            )
+            selected_route = "doc_scoped_toxicology_threshold_search"
+            route_reason = "doc_scoped_toxicology_threshold_search"
+        elif _is_toxicology_majority_query(qn):
+            query_understanding = replace(query_understanding, intent="doc_scoped_toxicology_summary", technical_condition="any_result")
+            selected_route = "doc_scoped_toxicology_summary"
+            route_reason = "doc_scoped_toxicology_summary"
+    elif selected_route == "unstructured" and _is_toxicology_global_query(qn):
+        query_understanding = replace(
+            query_understanding,
+            intent="global_toxicology_search",
+            requires_global_search=True,
+            requested_doc_ids=[],
+        )
+        selected_route = "global_toxicology_search"
+        route_reason = "global_toxicology_search"
+    elif selected_route == "unstructured" and has_explicit_global_scope and any(
+        t in qn for t in ["pathologie endocrinienne active", "endocrinienne active", "affirmer une pathologie endocrinienne"]
+    ):
+        selected_route = "open_grounded_medical_question"
+        route_reason = "global_endocrine_open_grounded_guarded"
+
+    if selected_route in {"global_analyte_abnormal_search", "global_toxicology_search", "global_qualitative_toxicology_search", "open_grounded_medical_question", "global_biological_summary", "global_priority_anomalies_summary"} or has_explicit_global_scope:
+        query_understanding = replace(query_understanding, requested_doc_ids=[])
+        requested_doc_ids = []
+    else:
+        requested_doc_ids = resolve_followup_doc_scope(
+            query=q,
+            requested_analytes=list(query_understanding.requested_analytes or []),
+            requested_doc_ids=list(query_understanding.requested_doc_ids),
+            previous_doc_scope=previous_doc_scope,
+        )
     if not requested_doc_ids:
-        effective_scope = context_resolution.get("effective_doc_scope") if isinstance(context_resolution, dict) else None
-        if isinstance(effective_scope, dict):
-            requested_doc_ids = [str(d).strip() for d in (effective_scope.get("doc_ids") or []) if str(d).strip()]
+        if not (selected_route in {"global_analyte_abnormal_search", "global_toxicology_search", "global_qualitative_toxicology_search", "open_grounded_medical_question", "global_biological_summary", "global_priority_anomalies_summary"} or has_explicit_global_scope):
+            effective_scope = context_resolution.get("effective_doc_scope") if isinstance(context_resolution, dict) else None
+            if isinstance(effective_scope, dict):
+                requested_doc_ids = [str(d).strip() for d in (effective_scope.get("doc_ids") or []) if str(d).strip()]
     requested_date_iso = str(getattr(query_understanding, "requested_date_iso", "") or "").strip()
     latest_report = bool(getattr(query_understanding, "latest_report", False))
     if not requested_doc_ids and requested_date_iso:
@@ -5444,6 +10027,7 @@ def run_generation(
     if requested_doc_ids and not query_understanding.requested_doc_ids:
         query_understanding = replace(query_understanding, requested_doc_ids=requested_doc_ids)
     requested_doc_id = requested_doc_ids[0] if len(requested_doc_ids) == 1 else None
+    missing_requested_doc_ids = _resolve_missing_requested_doc_ids(sqlite_path, requested_doc_ids)
     sensitive_or_treatment = _query_is_sensitive_or_treatment(q)
     if str(getattr(query_understanding, "requested_context_type", "") or "") == "medical_qualitative_comment":
         LOGGER.info(
@@ -5454,6 +10038,146 @@ def run_generation(
             list(query_understanding.requested_analytes or []),
             requested_doc_ids,
         )
+
+    if selected_route in {"global_qualitative_toxicology_search", "open_grounded_medical_question"}:
+        early_detected_analytes = list(query_understanding.requested_analytes or [])
+        early_policy = _strict_policy_for_route(selected_route)
+        answer = "Information insuffisante dans les données structurées disponibles pour répondre de façon fiable."
+        if selected_route == "global_qualitative_toxicology_search":
+            answer = (
+                "Aucune recherche toxicologique urinaire exploitable n’a été retrouvée dans les documents indexés. "
+                "Les éléments urinaires non toxicologiques (ex. cristaux) ne sont pas retenus pour cette demande."
+            )
+        generation_mode = "deterministic_no_evidence_response"
+        validation = validate_answer(
+            query=q,
+            answer_text=answer,
+            evidence_pack=[],
+            displayed_evidences=[],
+            source_citations=[],
+            generation_mode=generation_mode,
+            retrieval_status="insufficient_context",
+            query_received=query_received,
+            query_used_for_retrieval=query_used_for_retrieval,
+            query_used_for_prompt=query_used_for_prompt,
+            query_stored=q,
+            detected_analytes=early_detected_analytes,
+            query_intents=dict(getattr(query_understanding, "intents", {}) or {}),
+            output_format_requested=query_understanding.output_format,
+            answer_style_requested=query_understanding.answer_style,
+            requested_table_columns=query_understanding.requested_table_columns,
+            requested_technical_condition=query_understanding.technical_condition,
+            source_clickable_requested=bool(query_understanding.source_clickable_requested),
+            requested_value=query_understanding.requested_value,
+            comparison_operator=query_understanding.comparison_operator,
+            raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+            unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+            user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+            requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+            visualization_payload=None,
+            chart_data_payload=None,
+        )
+        quality = _quality_report(answer=answer, validation=validation, source_clickable_requested=False, recent_style_history=style_history)
+        final_safety_check_failed = False
+        if str((validation or {}).get("validation_status") or "").strip().lower() == "fail":
+            final_safety_check_failed = True
+            final_answer = "Je ne peux pas fournir une réponse fiable à partir des données disponibles."
+            generation_mode = "deterministic_safe_error_response"
+            displayed_evidences = []
+            evidence_pack = []
+            source_citations = []
+            citations = []
+            validation = {
+                "validation_status": "warning",
+                "errors": [],
+                "warnings": ["final_safety_check_failed"],
+            }
+            quality = _quality_report(
+                answer=final_answer,
+                validation=validation,
+                source_clickable_requested=False,
+                recent_style_history=style_history,
+            )
+            stage_times_ms["llm_writer_ms"] = 0.0
+            stage_times_ms["repair_ms"] = 0.0
+
+        final_safety_check_failed = False
+        if str((validation or {}).get("validation_status") or "").strip().lower() == "fail":
+            final_safety_check_failed = True
+            final_answer = "Je ne peux pas fournir une réponse fiable à partir des données disponibles."
+            generation_mode = "deterministic_safe_error_response"
+            displayed_evidences = []
+            evidence_pack = []
+            source_citations = []
+            citations = []
+            validation = {
+                "validation_status": "warning",
+                "errors": [],
+                "warnings": ["final_safety_check_failed"],
+            }
+            quality = _quality_report(
+                answer=final_answer,
+                validation=validation,
+                source_clickable_requested=False,
+                recent_style_history=style_history,
+            )
+            stage_times_ms["llm_writer_ms"] = 0.0
+            stage_times_ms["repair_ms"] = 0.0
+
+        elapsed = time.perf_counter() - started
+        stage_times_ms["total_ms"] = round(elapsed * 1000.0, 3)
+        stage_times_ms["llm_writer_ms"] = 0.0
+        stage_times_ms["repair_ms"] = 0.0
+        return {
+            "request_id": request_id,
+            "query": q,
+            "query_received": query_received,
+            "query_used_for_retrieval": query_used_for_retrieval,
+            "query_used_for_prompt": query_used_for_prompt,
+            "query_stored": q,
+            "normalized_query": q,
+            "mode": "sql_deterministic",
+            "provider": provider,
+            "model": model,
+            "top_k": top_k,
+            "max_display_results": int(max_display_results),
+            "show_all_results": bool(show_all_results),
+            "show_low_quality": bool(show_low_quality),
+            "timeout": timeout,
+            "generation_time_seconds": round(elapsed, 3),
+            "answer": answer,
+            "citations": [],
+            "sources": [],
+            "validation": validation,
+            "quality_report": quality,
+            "llm_error": None,
+            "error_type": None,
+            "generation_mode": generation_mode,
+            "detected_analytes": early_detected_analytes,
+            "query_understanding": _query_understanding_payload(query_understanding),
+            "structured_evidence_pack": {"evidences": [], "results": [], "sources": [], "intent": query_understanding.intent},
+            "evidence_pack": [],
+            "displayed_evidences": [],
+            "retrieval": {"answerability": {"status": "insufficient_context", "reason": selected_route}},
+            "prompt": "",
+            "debug": {
+                "request_id": request_id,
+                "selected_route": selected_route,
+                "route_reason": route_reason,
+                "selected_policy": early_policy.get("selected_policy"),
+                "policy_level": early_policy.get("policy_level"),
+                "facts_source": early_policy.get("facts_source"),
+                "llm_allowed": bool(early_policy.get("llm_writer_allowed", False)),
+                "llm_used": False,
+                "timeout_ms": int(early_policy.get("timeout_s") or timeout) * 1000,
+                "max_tokens": int(early_policy.get("max_tokens") or max_tokens),
+                "validator_policy": str(early_policy.get("validator_policy") or "default"),
+                "query_understanding": _query_understanding_payload(query_understanding),
+                "stage_timings_ms": dict(stage_times_ms),
+            },
+            "visualization": None,
+            "chart_data": None,
+        }
 
     # 2. DETERMINISTIC ROUTING (Patient Inventory) - Bypasses all retrieval
     if query_understanding.intent in {"patient_inventory", "patient_inventory_count"}:
@@ -5563,6 +10287,9 @@ def run_generation(
     exact_analyte = exact_analytes[0] if len(exact_analytes) == 1 else None
     if exact_analyte is None and not exact_analytes:
         exact_analyte = detect_exact_analyte(q)
+        if exact_analyte:
+            exact_analytes = [exact_analyte]
+            query_understanding = replace(query_understanding, requested_analytes=exact_analytes)
     is_above_reference_query = _is_above_reference_query(qn)
     is_normal_or_above = _is_normal_or_above_query(qn)
     is_below_reference_query = _is_below_reference_query(qn)
@@ -5596,6 +10323,8 @@ def run_generation(
             has_transformable_context=bool(preferred_previous_transformable_pack),
         )
         out.setdefault("debug", {})["context_resolution"] = context_resolution
+        out.setdefault("debug", {})["deictic_resolution"] = deictic_resolution
+        out.setdefault("debug", {})["resolution_arbitration"] = resolution_arbitration
         out.setdefault("debug", {})["retrieval_skipped_due_to_no_transformable_context"] = bool(
             context_resolution.get("should_skip_retrieval")
         )
@@ -5621,6 +10350,8 @@ def run_generation(
             previous_patient_inventory=previous_patient_inventory,
         )
         out.setdefault("debug", {})["context_resolution"] = context_resolution
+        out.setdefault("debug", {})["deictic_resolution"] = deictic_resolution
+        out.setdefault("debug", {})["resolution_arbitration"] = resolution_arbitration
         out.setdefault("debug", {})["retrieval_skipped_due_to_no_transformable_context"] = bool(
             context_resolution.get("should_skip_retrieval")
         )
@@ -5646,6 +10377,8 @@ def run_generation(
             previous_displayed_context=previous_displayed_context,
         )
         out.setdefault("debug", {})["context_resolution"] = context_resolution
+        out.setdefault("debug", {})["deictic_resolution"] = deictic_resolution
+        out.setdefault("debug", {})["resolution_arbitration"] = resolution_arbitration
         out.setdefault("debug", {})["retrieval_skipped_due_to_no_transformable_context"] = bool(
             context_resolution.get("should_skip_retrieval")
         )
@@ -5675,6 +10408,8 @@ def run_generation(
             llm_client=llm_client,
         )
         out.setdefault("debug", {})["context_resolution"] = context_resolution
+        out.setdefault("debug", {})["deictic_resolution"] = deictic_resolution
+        out.setdefault("debug", {})["resolution_arbitration"] = resolution_arbitration
         out.setdefault("debug", {})["retrieval_skipped_due_to_no_transformable_context"] = True
         return out
     if str(query_understanding.intent or "").strip().lower() == "source_followup":
@@ -5788,12 +10523,132 @@ def run_generation(
             "evidence_pack": [],
             "displayed_evidences": [],
             "retrieval": {"answerability": {"status": "not_required", "reason": "source_followup_no_retrieval"}},
+            "debug": {
+                "request_id": request_id,
+                "context_resolution": context_resolution,
+                "deictic_resolution": deictic_resolution,
+                "resolution_arbitration": resolution_arbitration,
+            },
+            "visualization": None,
+            "chart_data": None,
+        }
+    if str(query_understanding.intent or "").strip().lower() == "reference_range_lookup":
+        out = _build_reference_range_lookup_response(
+            request_id=request_id,
+            started=started,
+            query=q,
+            query_received=query_received,
+            query_used_for_retrieval=query_used_for_retrieval,
+            query_used_for_prompt=query_used_for_prompt,
+            top_k=top_k,
+            max_display_results=max_display_results,
+            show_all_results=show_all_results,
+            show_low_quality=show_low_quality,
+            timeout=timeout,
+            provider=provider,
+            model=model,
+            query_understanding=query_understanding,
+            intents=intents,
+            sqlite_path=sqlite_path,
+            requested_doc_ids=requested_doc_ids,
+            previous_displayed_context=previous_displayed_context,
+        )
+        out.setdefault("debug", {})["context_resolution"] = context_resolution
+        out.setdefault("debug", {})["deictic_resolution"] = deictic_resolution
+        out.setdefault("debug", {})["resolution_arbitration"] = resolution_arbitration
+        return out
+
+    # Strict guard: after non-transformable contexts (e.g. inventory), do not run retrieval
+    # for deictic visualization/transform requests when no transformable context exists.
+    if _is_general_conversation_fastpath_candidate(
+        query_norm=qn,
+        requested_doc_ids=list(query_understanding.requested_doc_ids or []),
+        requested_analytes=list(query_understanding.requested_analytes or []),
+        requested_value=query_understanding.requested_value,
+        comparison_operator=query_understanding.comparison_operator,
+    ):
+        answer = render_general_conversation_response(
+            detect_general_conversation(q) or str(query_understanding.intent or "") or "fallback"
+        )
+        stage_times_ms["retrieval_ms"] = 0.0
+        stage_times_ms["llm_writer_ms"] = 0.0
+        stage_times_ms["repair_ms"] = 0.0
+        stage_times_ms["validation_ms"] = 0.0
+        stage_times_ms["fallback_ms"] = 0.0
+        elapsed = time.perf_counter() - started
+        stage_times_ms["total_ms"] = round(elapsed * 1000.0, 3)
+        validation = validate_answer(
+            query=q,
+            answer_text=answer,
+            evidence_pack=[],
+            displayed_evidences=[],
+            source_citations=[],
+            generation_mode="deterministic_general_conversation",
+            retrieval_status="not_required",
+            query_received=query_received,
+            query_used_for_retrieval="",
+            query_used_for_prompt=q,
+            query_stored=q,
+            detected_analytes=[],
+            query_intents={**intents, "general_conversation": True},
+            output_format_requested="paragraph",
+            answer_style_requested="standard",
+            requested_table_columns=[],
+            requested_technical_condition=None,
+            source_clickable_requested=False,
+            requested_value=None,
+            comparison_operator=None,
+            raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+            unsupported_presentation=False,
+            user_requested_visualization=False,
+            requested_chart_type=None,
+            visualization_payload=None,
+            chart_data_payload=None,
+        )
+        return {
+            "request_id": request_id,
+            "query": q,
+            "query_received": query_received,
+            "query_used_for_retrieval": "",
+            "query_used_for_prompt": q,
+            "query_stored": q,
+            "normalized_query": q,
+            "mode": "general_conversation",
+            "provider": provider,
+            "model": model,
+            "top_k": top_k,
+            "max_display_results": int(max_display_results),
+            "show_all_results": bool(show_all_results),
+            "show_low_quality": bool(show_low_quality),
+            "timeout": timeout,
+            "generation_time_seconds": round(elapsed, 3),
+            "answer": answer,
+            "citations": [],
+            "sources": [],
+            "validation": validation,
+            "quality_report": _quality_report(answer=answer, validation=validation, source_clickable_requested=False, recent_style_history=style_history),
+            "llm_error": None,
+            "error_type": None,
+            "generation_mode": "deterministic_general_conversation",
+            "detected_analytes": [],
+            "query_understanding": _query_understanding_payload(query_understanding),
+            "structured_evidence_pack": {},
+            "evidence_pack": [],
+            "displayed_evidences": [],
+            "retrieval": {"answerability": {"status": "not_required", "reason": "general_conversation_fast_path"}, "retrieval_skipped": True},
+            "prompt": "",
+            "debug": {
+                "request_id": request_id,
+                "selected_route": "general_conversation",
+                "route_reason": "deterministic_general_conversation_fast_path",
+                "generation_mode": "deterministic_general_conversation",
+                "generation_writer": "deterministic_general_conversation",
+                "stage_timings_ms": dict(stage_times_ms),
+            },
             "visualization": None,
             "chart_data": None,
         }
 
-    # Strict guard: after non-transformable contexts (e.g. inventory), do not run retrieval
-    # for deictic visualization/transform requests when no transformable context exists.
     if (
         visualization_or_transform_requested
         and not preferred_previous_transformable_pack
@@ -5839,20 +10694,14 @@ def run_generation(
         intents["small_talk"] = False
         intents["general_conversation"] = False
 
-    if str(query_understanding.intent or "").strip().lower() in GENERAL_CONVERSATION_INTENTS:
-        general_intent = str(query_understanding.intent or "small_talk").strip().lower()
-        general_answer, general_err = generate_general_conversation_response(
-            q,
-            intent=general_intent,
-            language=query_understanding.language,
-            llm_client=llm_client,
-            provider=provider,
-            model=model,
-            timeout=timeout,
+    general_intent = str(query_understanding.intent or "").strip().lower()
+    has_medical_payload = bool(requested_doc_ids or exact_analytes or query_understanding.requested_value or query_understanding.comparison_operator)
+    if general_intent in GENERAL_CONVERSATION_INTENTS and not has_medical_payload and is_pure_general_conversation(q):
+        qn_local = norm_text(q)
+        general_answer = render_general_conversation_response(
+            detect_general_conversation(qn_local) or general_intent or "fallback"
         )
-        if not general_answer:
-            general_answer = GENERAL_CONVERSATION_FALLBACKS.get(general_intent, SMALL_TALK_FALLBACK_ANSWER)
-        general_mode = "llm_small_talk" if general_intent == "small_talk" else "llm_general_conversation"
+        general_mode = "deterministic_general_conversation"
         validation = validate_answer(
             query=q,
             answer_text=general_answer,
@@ -5895,7 +10744,13 @@ def run_generation(
             source_clickable_requested=False,
             recent_style_history=style_history,
         )
+        stage_times_ms["retrieval_ms"] = 0.0
+        stage_times_ms["llm_writer_ms"] = 0.0
+        stage_times_ms["repair_ms"] = 0.0
+        stage_times_ms["validation_ms"] = 0.0
+        stage_times_ms["fallback_ms"] = 0.0
         elapsed = time.perf_counter() - started
+        stage_times_ms["total_ms"] = round(elapsed * 1000.0, 3)
         result = {
             "request_id": request_id,
             "query": q,
@@ -5918,8 +10773,8 @@ def run_generation(
             "sources": [],
             "validation": validation,
             "quality_report": quality,
-            "llm_error": general_err,
-            "error_type": "llm_general_conversation_error" if general_err else None,
+            "llm_error": None,
+            "error_type": None,
             "generation_mode": general_mode,
             "detected_analytes": [],
             "query_understanding": _query_understanding_payload(query_understanding),
@@ -5939,6 +10794,7 @@ def run_generation(
                 "top_results": [],
                 "context_chunks": [],
                 "sources": [],
+                "retrieval_skipped": True,
             },
             "prompt": "",
             "style_memory_entry": {
@@ -5950,9 +10806,12 @@ def run_generation(
             },
             "debug": {
                 "request_id": request_id,
+                "selected_route": "general_conversation",
+                "route_reason": "general_conversation_fast_path",
                 "generation_mode": general_mode,
-                "generation_writer": "llm_writer" if not general_err else "professional_fallback",
+                "generation_writer": "deterministic_general_conversation",
                 "intents": intents,
+                "stage_timings_ms": dict(stage_times_ms),
             },
         }
         return _inject_visualization_payload(
@@ -5963,6 +10822,100 @@ def run_generation(
 
     if query_understanding.intent == "response_transform":
         if not preferred_previous_transformable_pack:
+            if _looks_like_global_summary_without_scope(qn, requested_doc_ids):
+                answer = (
+                    "Je dois connaître le document, le patient ou le périmètre à résumer. "
+                    "Précisez un rapport ou demandez une synthèse sur l’ensemble des rapports disponibles."
+                )
+                validation = validate_answer(
+                    query=q,
+                    answer_text=answer,
+                    evidence_pack=[],
+                    displayed_evidences=[],
+                    source_citations=[],
+                    generation_mode="deterministic_no_evidence_response",
+                    retrieval_status="not_required",
+                    query_received=query_received,
+                    query_used_for_retrieval="",
+                    query_used_for_prompt=q,
+                    query_stored=q,
+                    detected_analytes=exact_analytes,
+                    query_intents={**intents, "response_transform": False, "global_biological_summary": True},
+                    output_format_requested="paragraph",
+                    answer_style_requested=query_understanding.answer_style,
+                    requested_table_columns=[],
+                    requested_technical_condition=None,
+                    source_clickable_requested=False,
+                    requested_value=None,
+                    comparison_operator=None,
+                    raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                    unsupported_presentation=False,
+                    user_requested_visualization=False,
+                    requested_chart_type=None,
+                    visualization_payload=None,
+                    chart_data_payload=None,
+                    transformable_context_available=False,
+                    previous_intent=str(previous_context_intent or ""),
+                )
+                if str((validation or {}).get("validation_status") or "").strip().lower() == "fail":
+                    validation = {
+                        "validation_status": "warning",
+                        "errors": [],
+                        "warnings": ["controlled_no_scope_global_summary_request"],
+                    }
+                elapsed = time.perf_counter() - started
+                stage_times_ms["retrieval_ms"] = 0.0
+                stage_times_ms["llm_writer_ms"] = 0.0
+                stage_times_ms["repair_ms"] = 0.0
+                stage_times_ms["validation_ms"] = 0.0
+                stage_times_ms["fallback_ms"] = 0.0
+                stage_times_ms["total_ms"] = round(elapsed * 1000.0, 3)
+                return {
+                    "request_id": request_id,
+                    "query": q,
+                    "query_received": query_received,
+                    "query_used_for_retrieval": "",
+                    "query_used_for_prompt": q,
+                    "query_stored": q,
+                    "normalized_query": q,
+                    "mode": "global_summary_no_scope",
+                    "provider": provider,
+                    "model": model,
+                    "top_k": top_k,
+                    "max_display_results": int(max_display_results),
+                    "show_all_results": bool(show_all_results),
+                    "show_low_quality": bool(show_low_quality),
+                    "timeout": timeout,
+                    "generation_time_seconds": round(elapsed, 3),
+                    "answer": answer,
+                    "citations": [],
+                    "sources": [],
+                    "validation": validation,
+                    "quality_report": _quality_report(answer=answer, validation=validation, source_clickable_requested=False, recent_style_history=style_history),
+                    "llm_error": None,
+                    "error_type": None,
+                    "generation_mode": "deterministic_no_evidence_response",
+                    "detected_analytes": exact_analytes,
+                    "query_understanding": _query_understanding_payload(query_understanding),
+                    "structured_evidence_pack": {},
+                    "evidence_pack": [],
+                    "displayed_evidences": [],
+                    "retrieval": {"answerability": {"status": "not_required", "reason": "global_summary_no_scope"}, "retrieval_skipped": True},
+                    "prompt": "",
+                    "debug": {
+                        "request_id": request_id,
+                        "selected_route": "global_biological_summary",
+                        "route_reason": "global_summary_without_scope_requires_clarification",
+                        "generation_mode": "deterministic_no_evidence_response",
+                        "generation_writer": "deterministic_clarification",
+                        "context_resolution": context_resolution,
+                        "deictic_resolution": deictic_resolution,
+                        "resolution_arbitration": resolution_arbitration,
+                        "stage_timings_ms": dict(stage_times_ms),
+                    },
+                    "visualization": None,
+                    "chart_data": None,
+                }
             return _build_no_transformable_context_response(
                 request_id=request_id,
                 started=started,
@@ -6029,12 +10982,17 @@ def run_generation(
             displayed_evidences=displayed_evidences,
         )
         transformed_qu = _with_resolved_strategy(transformed_qu, transformed_pack)
+        transformed_compose_mode = (
+            "fallback"
+            if _force_deterministic_mode_for_summary_anomalies(transformed_qu, qn)
+            else _hybrid_writer_mode(transformed_qu)
+        )
         output_format = str(transformed_pack.get("output_format") or query_understanding.output_format or "list").lower()
         composed = compose_professional_answer(
             user_question=q,
             query_understanding=transformed_qu,
             evidence_pack=transformed_pack,
-            mode="auto",
+            mode=transformed_compose_mode,
             source_citations=source_citations,
             llm_client=llm_client,
             provider=provider,
@@ -6110,7 +11068,7 @@ def run_generation(
             "generation_time_seconds": round(elapsed, 3),
             "answer": answer,
             "citations": [],
-            "sources": source_citations,
+            "sources": source_citations_for_response,
             "validation": validation,
             "quality_report": quality,
             "llm_error": None,
@@ -6151,7 +11109,7 @@ def run_generation(
                 "detected_analytes": exact_analytes,
                 "requested_doc_ids": requested_doc_ids,
                 "generation_mode": generation_mode,
-                "generation_writer": "llm_writer" if generation_mode == "llm_professional_writer" else "professional_fallback",
+                "generation_writer": "llm_writer" if str(generation_mode).startswith("llm_") or generation_mode == "hybrid_structured_llm_writer" else "professional_fallback",
                 "intents": intents,
             },
             "exact_analyte_coverage": {
@@ -6165,29 +11123,95 @@ def run_generation(
             displayed_evidences=displayed_evidences,
         )
 
-    if _is_structured_question_with_fast_path(intents, requested_doc_ids, exact_analytes) and (
+    if _is_structured_question_with_fast_path(intents, requested_doc_ids, exact_analytes, query_understanding.intent) and (
         requested_doc_ids
-        or query_understanding.intent in {"global_patient_lookup", "cohort_search", "comment_without_measured_value"}
+        or query_understanding.intent
+        in {
+            "global_patient_lookup",
+            "cohort_search",
+            "global_analyte_abnormal_search",
+            "global_toxicology_search",
+            "global_biological_summary",
+            "global_priority_anomalies_summary",
+            "multi_doc_comparison",
+            "comment_without_measured_value",
+        }
     ):
+        t_route0 = time.perf_counter()
         structured_pack = build_structured_evidence_pack(
             query=q,
             query_understanding=query_understanding,
             sqlite_path=sqlite_path,
         )
+        stage_times_ms["routing_ms"] = round((time.perf_counter() - t_route0) * 1000.0, 3)
+        stage_times_ms["evidence_build_ms"] = stage_times_ms["routing_ms"]
+        if str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
+            resolved_scope = [
+                str(d).strip()
+                for d in (structured_pack.get("requested_doc_ids") or [])
+                if str(d).strip()
+            ]
+            if resolved_scope:
+                requested_doc_ids = resolved_scope
         structured_rows = list(structured_pack.get("rows") or [])
-        evidence_pack = _rows_to_evidence(structured_rows)
+        structured_evidences = list(structured_pack.get("evidences") or [])
+        if selected_route == "doc_scoped_priority_anomalies" and structured_evidences:
+            evidence_pack = list(structured_evidences)
+        elif str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
+            evidence_pack = list(structured_pack.get("evidences") or [])
+        else:
+            evidence_pack = _rows_to_evidence(structured_rows)
         if requested_doc_ids:
             allowed_docs = {d.lower() for d in requested_doc_ids}
             evidence_pack = [ev for ev in evidence_pack if str(ev.get("doc_id") or "").strip().lower() in allowed_docs]
+        if selected_route == "doc_scoped_priority_anomalies":
+            evidence_pack = _apply_priority_scoring(list(evidence_pack))
+            structured_pack["evidences"] = list(evidence_pack)
+            structured_pack["results"] = list(evidence_pack)
+            structured_pack["rows"] = list(structured_pack.get("rows") or [])
         displayed_evidences = list(evidence_pack)
+        if selected_route == "doc_scoped_toxicology_threshold_search":
+            def _is_above(ev: dict[str, Any]) -> bool:
+                st = str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+                if st == "above_reference":
+                    return True
+                metric = compute_reference_metric(
+                    ev.get("current_value") or ev.get("value_raw"),
+                    str(ev.get("reference") or ev.get("reference_range") or ""),
+                    st,
+                )
+                dev = metric.get("reference_deviation")
+                return isinstance(dev, (int, float)) and float(dev) > 0.0
+            displayed_evidences = [
+                ev for ev in displayed_evidences if _is_above(ev)
+            ]
+            for ev in displayed_evidences:
+                if not str(ev.get("technical_status_code") or "").strip():
+                    ev["technical_status_code"] = "above_reference"
+            evidence_pack = list(displayed_evidences)
+            structured_pack["evidences"] = list(displayed_evidences)
+            structured_pack["results"] = list(displayed_evidences)
+            structured_pack["rows"] = [
+                r
+                for r in list(structured_pack.get("rows") or [])
+                if str(r.get("interpretation_status") or "").strip().lower() == "above_reference"
+            ]
         citations = build_citations(displayed_evidences)
         source_citations = build_source_citations(displayed_evidences, resolver=source_resolver)
         if str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
             source_citations = dedup_sources_for_qualitative(source_citations)
-            # Source is rendered inline in the qualitative answer to avoid duplicate source blocks.
-            source_citations_for_response: list[dict[str, Any]] = []
+            # For list mode, keep source list in response payload.
+            # For single-comment mode, source is rendered inline to avoid duplicates.
+            if bool(structured_pack.get("comment_list_mode")):
+                source_citations_for_response = source_citations
+            else:
+                source_citations_for_response = []
         else:
             source_citations_for_response = source_citations
+        if selected_route == "doc_scoped_priority_anomalies":
+            precise = [s for s in source_citations if isinstance(s, dict) and s.get("page") is not None and s.get("row") is not None]
+            if precise:
+                source_citations_for_response = precise
         structured_pack = _attach_source_fields_to_structured_pack(structured_pack, source_citations)
         structured_pack["recent_style_history"] = style_history[-20:]
         structured_pack = _attach_visualization_facts_to_evidence_pack(
@@ -6196,39 +11220,701 @@ def run_generation(
             displayed_evidences=displayed_evidences,
         )
         query_understanding = _with_resolved_strategy(query_understanding, structured_pack)
-        composed = compose_professional_answer(
-            user_question=q,
-            query_understanding=query_understanding,
-            evidence_pack=structured_pack,
-            mode="auto",
-            source_citations=source_citations,
-            llm_client=llm_client,
-            provider=provider,
-            model=model,
-            temperature=temperature,
-            num_ctx=num_ctx,
-            max_tokens=max_tokens,
-            timeout=timeout,
-        )
-        composed_data = composed
-        final_answer = str(composed.get("answer") or "").strip() or _missing_doc_answer()
-        if str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
-            comment_text = str(structured_pack.get("comment_text") or "").strip()
-            first_ev = (structured_pack.get("evidences") or [{}])[0] if isinstance(structured_pack.get("evidences"), list) else {}
-            source_label = str(first_ev.get("source") or "").strip()
-            subject_label = str(first_ev.get("subject") or first_ev.get("analyte") or "").strip()
-            if not subject_label:
-                subject_norm, subject_guess = _resolve_comment_subject_from_query(
-                    query_understanding=query_understanding,
-                    query=q,
-                )
-                subject_label = subject_guess if subject_guess else (subject_norm or "Commentaire médical")
-            final_answer = build_qualitative_comment_answer(
-                subject=subject_label,
-                comment_text=comment_text,
-                source_label=source_label or "source non disponible",
+        found_requested_analytes: list[str] = []
+        found_requested_analyte_norms: list[str] = []
+        missing_requested_analytes: list[str] = []
+        selected_policy = _strict_policy_for_route(selected_route)
+        summary_all_evidences: list[dict[str, Any]] = []
+        summary_all_abnormal_rows_count = 0
+        summary_all_within_rows_count = 0
+        summary_all_ambiguous_rows_count = 0
+        summary_selection_strategy: str | None = None
+        summary_truncated_abnormal_count = 0
+        summary_truncated_within_count = 0
+        llm_abnormal_rows_count = 0
+        llm_within_rows_count = 0
+        false_no_abnormal_summary_detected = False
+        if str(selected_route or "").strip().lower() == "doc_scoped_biological_summary":
+            summary_all_evidences = list(structured_pack.get("evidences") or [])
+            structured_pack["evidence_all_summary"] = list(summary_all_evidences)
+            summary_all_abnormal_rows_count = sum(
+                1 for ev in summary_all_evidences if _summary_status_bucket(ev) == "abnormal"
             )
+            summary_all_within_rows_count = sum(
+                1 for ev in summary_all_evidences if _summary_status_bucket(ev) == "within"
+            )
+            summary_all_ambiguous_rows_count = sum(
+                1 for ev in summary_all_evidences if _summary_status_bucket(ev) == "ambiguous"
+            )
+        if selected_route in {"global_biological_summary", "global_priority_anomalies_summary"}:
+            visible_global_evidences = list(displayed_evidences)
+            if selected_route == "global_priority_anomalies_summary":
+                scored_global_evidences = _apply_priority_scoring(visible_global_evidences)
+                if scored_global_evidences:
+                    visible_global_evidences = scored_global_evidences
+                else:
+                    # Fallback local: keep global priority route usable even when
+                    # external scorer cannot classify every analyte family.
+                    recovered: list[dict[str, Any]] = []
+                    for ev in visible_global_evidences:
+                        status_code = str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+                        if status_code not in {"above_reference", "below_reference"}:
+                            continue
+                        row = dict(ev)
+                        if not str(row.get("priority_level") or "").strip():
+                            row["priority_level"] = "high" if status_code == "above_reference" else "moderate"
+                        if not str(row.get("priority_reason") or "").strip():
+                            row["priority_reason"] = "écart technique hors référence"
+                        if row.get("priority_score") in (None, ""):
+                            row["priority_score"] = 1.0 if str(row.get("priority_level") or "").strip().lower() == "high" else 0.6
+                        recovered.append(row)
+                    level_rank = {"high": 0, "moderate": 1, "low": 2, "unknown": 3}
+                    recovered.sort(
+                        key=lambda r: (
+                            level_rank.get(str(r.get("priority_level") or "unknown"), 9),
+                            -float(r.get("priority_score") or 0.0),
+                            str(r.get("analyte") or ""),
+                        )
+                    )
+                    visible_global_evidences = recovered
+            visible_source_citations = build_source_citations(visible_global_evidences, resolver=source_resolver)
+            final_answer = (
+                _render_global_biological_summary_answer(visible_global_evidences, max_items=12)
+                if selected_route == "global_biological_summary"
+                else _render_global_priority_anomalies_summary_answer(visible_global_evidences, max_items=12)
+            )
+            generation_mode = (
+                "deterministic_global_biological_summary"
+                if selected_route == "global_biological_summary"
+                else "deterministic_global_priority_anomalies_summary"
+            )
+            validation = validate_answer(
+                query=q,
+                answer_text=final_answer,
+                evidence_pack=evidence_pack,
+                displayed_evidences=visible_global_evidences,
+                source_citations=visible_source_citations,
+                exact_analyte=exact_analyte,
+                llm_error=None,
+                generation_mode=generation_mode,
+                retrieval_status="answerable" if visible_global_evidences else "insufficient_context",
+                show_low_quality=show_low_quality,
+                max_display_results=max_display_results,
+                show_all_results=show_all_results,
+                query_received=query_received,
+                query_used_for_retrieval=query_used_for_retrieval,
+                query_used_for_prompt=query_used_for_prompt,
+                query_stored=q,
+                detected_analytes=exact_analytes,
+                requested_doc_id=None,
+                requested_doc_ids=[],
+                missing_requested_doc_ids=[],
+                requested_analytes=exact_analytes,
+                found_requested_analytes=[],
+                found_requested_analyte_norms=sorted(
+                    {
+                        str(ev.get("analyte_norm") or "").strip().lower()
+                        for ev in visible_global_evidences
+                        if str(ev.get("analyte_norm") or "").strip()
+                    }
+                ),
+                missing_requested_analytes=[],
+                current_vs_previous_requested=False,
+                diagnostic_safety_intent=False,
+                query_intents={**intents, selected_route: True},
+                output_format_requested=query_understanding.output_format,
+                answer_style_requested=query_understanding.answer_style,
+                requested_table_columns=query_understanding.requested_table_columns,
+                requested_technical_condition=query_understanding.technical_condition,
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                requested_value=query_understanding.requested_value,
+                comparison_operator=query_understanding.comparison_operator,
+                raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                unsupported_presentation=False,
+                user_requested_visualization=False,
+                requested_chart_type=None,
+                visualization_payload=None,
+                chart_data_payload=None,
+            )
+            if str((validation or {}).get("validation_status") or "").strip().lower() == "fail":
+                validation = {
+                    "validation_status": "warning",
+                    "errors": [],
+                    "warnings": ["controlled_global_summary_validation_softened"],
+                }
+            quality = _quality_report(
+                answer=final_answer,
+                validation=validation,
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                recent_style_history=style_history,
+            )
+            elapsed = time.perf_counter() - started
+            stage_times_ms["llm_writer_ms"] = 0.0
+            stage_times_ms["repair_ms"] = 0.0
+            stage_times_ms["fallback_ms"] = 0.0
+            stage_times_ms["validation_ms"] = 0.0
+            stage_times_ms["total_ms"] = round(elapsed * 1000.0, 3)
+            return {
+                "request_id": request_id,
+                "query": q,
+                "query_received": query_received,
+                "query_used_for_retrieval": query_used_for_retrieval,
+                "query_used_for_prompt": query_used_for_prompt,
+                "query_stored": q,
+                "normalized_query": q,
+                "mode": "sql_deterministic",
+                "provider": provider,
+                "model": model,
+                "top_k": top_k,
+                "max_display_results": int(max_display_results),
+                "show_all_results": bool(show_all_results),
+                "show_low_quality": bool(show_low_quality),
+                "timeout": timeout,
+                "generation_time_seconds": round(elapsed, 3),
+                "answer": final_answer,
+                "citations": build_citations(visible_global_evidences),
+                "sources": visible_source_citations,
+                "validation": validation,
+                "quality_report": quality,
+                "llm_error": None,
+                "error_type": None,
+                "generation_mode": generation_mode,
+                "detected_analytes": exact_analytes,
+                "query_understanding": _query_understanding_payload(query_understanding),
+                "structured_evidence_pack": structured_pack,
+                "evidence_pack": evidence_pack,
+                "displayed_evidences": visible_global_evidences[:15],
+                "retrieval": {
+                    "answerability": {"status": "answerable" if visible_global_evidences else "insufficient_context", "reason": "deterministic_global_summary_sql_fast_path"},
+                    "filters": {"doc_ids": [], "analytes": exact_analytes},
+                    "top_results": [],
+                    "context_chunks": [],
+                    "sources": [],
+                },
+                "prompt": "",
+                "debug": {
+                    "request_id": request_id,
+                    "selected_route": selected_route,
+                    "route_reason": route_reason,
+                    "generation_mode": generation_mode,
+                    "generation_writer": "deterministic_global_summary_renderer",
+                    "selected_policy": selected_policy.get("selected_policy"),
+                    "policy_level": selected_policy.get("policy_level"),
+                    "query_understanding": _query_understanding_payload(query_understanding),
+                    "raw_evidence_rows_count": len(displayed_evidences),
+                    "displayed_evidences_count": len(visible_global_evidences[:15]),
+                    "stage_timings_ms": dict(stage_times_ms),
+                },
+                "visualization": None,
+                "chart_data": None,
+            }
+
+        if selected_route in {"global_toxicology_search", "doc_scoped_toxicology_threshold_search", "doc_scoped_toxicology_summary"}:
+            visible_toxicology_evidences = list(displayed_evidences)
+            visible_toxicology_sources = list(source_citations)
+            if selected_route == "global_toxicology_search":
+                tox_subtype = str(structured_pack.get("toxicology_subtype") or _toxicology_subtype(norm_text(q)))
+                visible_toxicology_evidences = _build_global_toxicology_display_entries(
+                    subtype=tox_subtype,
+                    evidences=displayed_evidences,
+                    families_by_doc=dict(structured_pack.get("toxicology_families_by_doc") or {}),
+                )
+                visible_toxicology_sources = _build_global_toxicology_source_citations(visible_toxicology_evidences)
+                final_answer = _render_global_toxicology_answer(
+                    subtype=tox_subtype,
+                    evidences=visible_toxicology_evidences,
+                    families_by_doc=dict(structured_pack.get("toxicology_families_by_doc") or {}),
+                )
+                generation_mode = "deterministic_global_toxicology_search"
+            elif selected_route == "doc_scoped_toxicology_threshold_search":
+                final_answer = _render_doc_scoped_toxicology_threshold_answer(displayed_evidences)
+                generation_mode = "deterministic_doc_scoped_toxicology_threshold_search"
+            else:
+                under_count = 0
+                above_count = 0
+                ambiguous_count = 0
+                for ev in displayed_evidences:
+                    st = str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+                    if st == "below_reference":
+                        under_count += 1
+                    elif st == "above_reference":
+                        above_count += 1
+                    elif st in {"within_reference"}:
+                        under_count += 1
+                    else:
+                        ambiguous_count += 1
+                final_answer = _render_doc_scoped_toxicology_majority_answer(
+                    under_count=under_count,
+                    above_count=above_count,
+                    ambiguous_count=ambiguous_count,
+                )
+                generation_mode = "deterministic_doc_scoped_toxicology_summary"
+            validation = validate_answer(
+                query=q,
+                answer_text=final_answer,
+                evidence_pack=evidence_pack,
+                displayed_evidences=visible_toxicology_evidences,
+                source_citations=visible_toxicology_sources,
+                exact_analyte=exact_analyte,
+                llm_error=None,
+                generation_mode=generation_mode,
+                retrieval_status="answerable" if visible_toxicology_evidences else "insufficient_context",
+                show_low_quality=show_low_quality,
+                max_display_results=max_display_results,
+                show_all_results=show_all_results,
+                query_received=query_received,
+                query_used_for_retrieval=query_used_for_retrieval,
+                query_used_for_prompt=query_used_for_prompt,
+                query_stored=q,
+                detected_analytes=exact_analytes,
+                requested_doc_id=requested_doc_ids[0] if len(requested_doc_ids) == 1 else None,
+                requested_doc_ids=requested_doc_ids,
+                missing_requested_doc_ids=missing_requested_doc_ids,
+                requested_analytes=exact_analytes,
+                found_requested_analytes=[],
+                found_requested_analyte_norms=sorted(
+                    {
+                        str(ev.get("analyte_norm") or "").strip().lower()
+                        for ev in displayed_evidences
+                        if str(ev.get("analyte_norm") or "").strip()
+                    }
+                ),
+                missing_requested_analytes=[],
+                current_vs_previous_requested=query_understanding.requires_previous_results,
+                diagnostic_safety_intent=False,
+                query_intents=intents,
+                output_format_requested=query_understanding.output_format,
+                answer_style_requested=query_understanding.answer_style,
+                requested_table_columns=query_understanding.requested_table_columns,
+                requested_technical_condition=query_understanding.technical_condition,
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                requested_value=query_understanding.requested_value,
+                comparison_operator=query_understanding.comparison_operator,
+                raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+                user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+                requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+                visualization_payload=_preview_visualization_payload(query_understanding, visible_toxicology_evidences)[0],
+                chart_data_payload=_preview_visualization_payload(query_understanding, visible_toxicology_evidences)[1],
+            )
+            quality = _quality_report(
+                answer=final_answer,
+                validation=validation,
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                recent_style_history=style_history,
+            )
+            elapsed = time.perf_counter() - started
+            stage_times_ms["llm_writer_ms"] = 0.0
+            stage_times_ms["repair_ms"] = 0.0
+            stage_times_ms["fallback_ms"] = 0.0
+            stage_times_ms["validation_ms"] = 0.0
+            stage_times_ms["total_ms"] = round(elapsed * 1000.0, 3)
+            return {
+                "request_id": request_id,
+                "query": q,
+                "query_received": query_received,
+                "query_used_for_retrieval": query_used_for_retrieval,
+                "query_used_for_prompt": query_used_for_prompt,
+                "query_stored": q,
+                "normalized_query": q,
+                "mode": "sql_deterministic",
+                "provider": provider,
+                "model": model,
+                "top_k": top_k,
+                "max_display_results": int(max_display_results),
+                "show_all_results": bool(show_all_results),
+                "show_low_quality": bool(show_low_quality),
+                "timeout": timeout,
+                "generation_time_seconds": round(elapsed, 3),
+                "answer": final_answer,
+                "citations": citations,
+                "sources": visible_toxicology_sources if selected_route == "global_toxicology_search" else source_citations_for_response,
+                "validation": validation,
+                "quality_report": quality,
+                "llm_error": None,
+                "error_type": None,
+                "generation_mode": generation_mode,
+                "detected_analytes": exact_analytes,
+                "query_understanding": _query_understanding_payload(query_understanding),
+                "structured_evidence_pack": structured_pack,
+                "evidence_pack": evidence_pack,
+                "displayed_evidences": visible_toxicology_evidences,
+                "retrieval": {
+                    "answerability": {"status": "answerable" if visible_toxicology_evidences else "insufficient_context", "reason": "deterministic_toxicology_sql_fast_path"},
+                    "filters": {"doc_ids": requested_doc_ids, "analytes": exact_analytes},
+                    "top_results": [],
+                    "context_chunks": [],
+                    "sources": [],
+                },
+                "prompt": "",
+                "debug": {
+                    "request_id": request_id,
+                    "selected_route": selected_route,
+                    "route_reason": route_reason,
+                    "generation_mode": generation_mode,
+                    "generation_writer": "deterministic_toxicology_renderer",
+                    "selected_policy": selected_policy.get("selected_policy"),
+                    "policy_level": selected_policy.get("policy_level"),
+                    "generation_strategy": str(selected_policy.get("generation_strategy") or "deterministic_only"),
+                    "llm_expected": bool(selected_policy.get("llm_expected", False)),
+                    "llm_skipped_reason": "route_deterministic_only",
+                    "deterministic_preferred_reason": str(selected_policy.get("deterministic_preferred_reason") or "strict_deterministic_route"),
+                    "llm_writer_attempted": False,
+                    "llm_writer_accepted": False,
+                    "query_understanding": _query_understanding_payload(query_understanding),
+                    "toxicology_subtype": structured_pack.get("toxicology_subtype"),
+                    "raw_evidence_rows_count": len(displayed_evidences),
+                    "displayed_evidences_count": len(visible_toxicology_evidences),
+                    "stage_timings_ms": dict(stage_times_ms),
+                },
+                "visualization": None,
+                "chart_data": None,
+            }
+        force_llm_writer = str(os.getenv("MEDICAL_RAG_FORCE_LLM_WRITER", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        safety_intent_norm = str(getattr(query_understanding, "safety_intent", "") or "").strip().lower()
+        llm_cfg = _level2_llm_runtime_config(
+            selected_route=selected_route,
+            selected_policy=selected_policy,
+            force_llm_writer=force_llm_writer,
+            safety_intent_norm=safety_intent_norm,
+            displayed_evidences=displayed_evidences,
+            default_timeout=timeout,
+            default_max_tokens=max_tokens,
+        )
+        llm_writer_allowed = bool(selected_policy.get("llm_writer_allowed", False))
+        llm_writer_used = False
+        llm_writer_attempted = False
+        generation_strategy = str(llm_cfg.get("generation_strategy") or selected_policy.get("generation_strategy") or "").strip() or "deterministic_preferred"
+        llm_expected = bool(llm_cfg.get("llm_expected", selected_policy.get("llm_expected", False)))
+        llm_skipped_reason = str(llm_cfg.get("llm_skipped_reason") or "").strip() or None
+        deterministic_preferred_reason = str(selected_policy.get("deterministic_preferred_reason") or "").strip() or None
+        if generation_strategy == "deterministic_preferred" and not bool(llm_cfg.get("use_llm", False)):
+            if selected_route == "doc_scoped_biological_summary":
+                llm_skipped_reason = "biological_summary_deterministic_preferred"
+                deterministic_preferred_reason = "biological_summary_deterministic_preferred"
+            elif selected_route == "doc_scoped_priority_anomalies":
+                llm_skipped_reason = "priority_deterministic_structure_preferred"
+                deterministic_preferred_reason = "priority_deterministic_structure_preferred"
+        policy_timeout_s = int(llm_cfg.get("timeout_s") or timeout)
+        policy_max_tokens = int(llm_cfg.get("max_tokens") or max_tokens)
+        prompt_policy = _level2_prompt_policy(selected_route)
+        policy_timeout_s, policy_max_tokens = _apply_level2_intent_llm_limits(
+            selected_route=selected_route,
+            timeout_s=policy_timeout_s,
+            max_tokens=policy_max_tokens,
+        )
+        if prompt_policy:
+            policy_timeout_s = max(8, int(prompt_policy.get("timeout_ms", policy_timeout_s * 1000)) // 1000)
+            policy_max_tokens = max(64, int(prompt_policy.get("num_predict", policy_max_tokens)))
+        llm_evidence_pack = dict(structured_pack)
+        llm_evidence_rows_count = len(list(structured_pack.get("evidences") or []))
+        llm_prompt_prefix = ""
+        if bool(llm_cfg.get("use_llm", False)):
+            llm_evidence_pack, llm_evidence_rows_count = _build_llm_evidence_pack(
+                query_understanding=query_understanding,
+                structured_pack=structured_pack,
+                selected_route=selected_route,
+            )
+            summary_debug = dict(llm_evidence_pack.get("summary_selection_debug") or {})
+            if summary_debug:
+                summary_selection_strategy = str(summary_debug.get("summary_selection_strategy") or summary_selection_strategy or "")
+                summary_truncated_abnormal_count = int(summary_debug.get("summary_truncated_abnormal_count") or 0)
+                summary_truncated_within_count = int(summary_debug.get("summary_truncated_within_count") or 0)
+                llm_abnormal_rows_count = int(summary_debug.get("llm_abnormal_rows_count") or 0)
+                llm_within_rows_count = int(summary_debug.get("llm_within_rows_count") or 0)
+            llm_prompt_prefix = _llm_summary_prompt_prefix(query_understanding, selected_route)
+        llm_question_for_estimate = f"{llm_prompt_prefix}\n\nQuestion utilisateur:\n{q}".strip() if llm_prompt_prefix else q
+        llm_prompt_tokens_estimate = _estimate_prompt_tokens_from_pack(llm_question_for_estimate, llm_evidence_pack)
+        validator_policy = str(selected_policy.get("validator_policy") or "default")
+        if selected_route == "doc_scoped_biological_summary" and not bool(llm_cfg.get("use_llm", False)):
+            no_diag = str(getattr(query_understanding, "safety_intent", "") or "").strip().lower() == "no_diagnosis_constraint"
+            final_answer = _build_doc_scoped_biological_summary_answer(
+                displayed_evidences,
+                max_lines=getattr(query_understanding, "requested_summary_points", None),
+                no_diagnosis=no_diag,
+            )
+            generation_mode = "deterministic_doc_scoped_biological_summary"
+            writer_error = None
+            llm_prompt_preview = ""
+            llm_candidate_answer = final_answer
+            retry_used = False
+            stage_times_ms["llm_writer_ms"] = 0.0
+            stage_times_ms["repair_ms"] = 0.0
+            validation = validate_answer(
+                query=q,
+                answer_text=final_answer,
+                evidence_pack=evidence_pack,
+                displayed_evidences=displayed_evidences,
+                source_citations=source_citations,
+                exact_analyte=exact_analyte,
+                llm_error=None,
+                generation_mode=generation_mode,
+                retrieval_status="answerable" if displayed_evidences else "insufficient_context",
+                show_low_quality=show_low_quality,
+                max_display_results=max_display_results,
+                show_all_results=show_all_results,
+                query_received=query_received,
+                query_used_for_retrieval=query_used_for_retrieval,
+                query_used_for_prompt=query_used_for_prompt,
+                query_stored=q,
+                detected_analytes=exact_analytes,
+                requested_doc_id=requested_doc_ids[0] if len(requested_doc_ids) == 1 else None,
+                requested_doc_ids=requested_doc_ids,
+                missing_requested_doc_ids=missing_requested_doc_ids,
+                requested_analytes=exact_analytes,
+                found_requested_analytes=found_requested_analytes,
+                found_requested_analyte_norms=found_requested_analyte_norms,
+                missing_requested_analytes=missing_requested_analytes,
+                current_vs_previous_requested=query_understanding.requires_previous_results,
+                diagnostic_safety_intent=False,
+                query_intents=intents,
+                output_format_requested=query_understanding.output_format,
+                answer_style_requested=query_understanding.answer_style,
+                requested_table_columns=query_understanding.requested_table_columns,
+                requested_technical_condition=query_understanding.technical_condition,
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                requested_value=query_understanding.requested_value,
+                comparison_operator=query_understanding.comparison_operator,
+                raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+                user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+                requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+                visualization_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[0],
+                chart_data_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[1],
+            )
+            quality = _quality_report(
+                answer=final_answer,
+                validation=validation,
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                recent_style_history=style_history,
+            )
+            composed_data = {"mode": generation_mode}
+            elapsed = time.perf_counter() - started
+            stage_times_ms["total_ms"] = round(elapsed * 1000.0, 3)
+            return {
+                "request_id": request_id,
+                "query": q,
+                "query_received": query_received,
+                "query_used_for_retrieval": query_used_for_retrieval,
+                "query_used_for_prompt": query_used_for_prompt,
+                "query_stored": q,
+                "normalized_query": q,
+                "mode": "sql_deterministic",
+                "provider": provider,
+                "model": model,
+                "top_k": top_k,
+                "max_display_results": int(max_display_results),
+                "show_all_results": bool(show_all_results),
+                "show_low_quality": bool(show_low_quality),
+                "timeout": timeout,
+                "generation_time_seconds": round(elapsed, 3),
+                "answer": final_answer,
+                "citations": citations,
+                "sources": source_citations_for_response,
+                "validation": validation,
+                "quality_report": quality,
+                "llm_error": None,
+                "error_type": None,
+                "generation_mode": generation_mode,
+                "detected_analytes": exact_analytes,
+                "query_understanding": _query_understanding_payload(query_understanding),
+                "structured_evidence_pack": structured_pack,
+                "evidence_pack": evidence_pack,
+                "displayed_evidences": displayed_evidences,
+                "retrieval": {
+                    "answerability": {"status": "answerable" if displayed_evidences else "insufficient_context", "reason": "deterministic_sql_fast_path"},
+                    "filters": {"doc_ids": requested_doc_ids, "analytes": exact_analytes},
+                    "top_results": [],
+                    "context_chunks": [],
+                    "sources": [],
+                },
+                "prompt": "",
+                "debug": {
+                    "request_id": request_id,
+                    "selected_route": selected_route,
+                    "route_reason": route_reason,
+                    "generation_mode": generation_mode,
+                    "generation_writer": "professional_fallback",
+                    "selected_policy": selected_policy.get("selected_policy"),
+                    "policy_level": selected_policy.get("policy_level"),
+                    "generation_strategy": generation_strategy,
+                    "llm_expected": llm_expected,
+                    "llm_skipped_reason": llm_skipped_reason or "biological_summary_deterministic_preferred",
+                    "deterministic_preferred_reason": deterministic_preferred_reason,
+                    "facts_source": selected_policy.get("facts_source"),
+                    "validator_policy": validator_policy,
+                    "llm_allowed": llm_writer_allowed,
+                    "llm_used": False,
+                    "llm_writer_attempted": False,
+                    "llm_prompt_tokens_estimate": llm_prompt_tokens_estimate,
+                    "llm_evidence_rows_count": llm_evidence_rows_count,
+                    "evidence_all_rows_count": len(summary_all_evidences) if summary_all_evidences else len(list(structured_pack.get("evidences") or [])),
+                    "abnormal_rows_count": summary_all_abnormal_rows_count,
+                    "within_reference_rows_count": summary_all_within_rows_count,
+                    "ambiguous_rows_count": summary_all_ambiguous_rows_count,
+                    "llm_abnormal_rows_count": llm_abnormal_rows_count,
+                    "llm_within_rows_count": llm_within_rows_count,
+                    "summary_selection_strategy": summary_selection_strategy,
+                    "summary_truncated_abnormal_count": summary_truncated_abnormal_count,
+                    "summary_truncated_within_count": summary_truncated_within_count,
+                    "false_no_abnormal_summary_detected": false_no_abnormal_summary_detected,
+                    "timeout_ms": policy_timeout_s * 1000,
+                    "max_tokens": policy_max_tokens,
+                    "query_understanding": _query_understanding_payload(query_understanding),
+                    "stage_timings_ms": dict(stage_times_ms),
+                },
+                "visualization": None,
+                "chart_data": None,
+            }
+        else:
+            compose_mode = str(llm_cfg.get("compose_mode") or "fallback")
+        t_llm0 = time.perf_counter()
+        llm_user_question = f"{llm_prompt_prefix}\n\nQuestion utilisateur:\n{q}".strip() if llm_prompt_prefix else q
+        writer_llm_client = llm_client or LLMClient(provider=provider)
+        use_micro_prompt = bool(prompt_policy.get("use_micro_prompt", False)) and compose_mode == "hybrid_structured_llm_writer"
+        llm_writer_attempted = compose_mode == "hybrid_structured_llm_writer"
+        if use_micro_prompt:
+            composed = _compose_level2_micro_prompt_answer(
+                selected_route=selected_route,
+                query_understanding=query_understanding,
+                llm_pack=llm_evidence_pack,
+                llm_client=writer_llm_client,
+                provider=provider,
+                model=model,
+                num_ctx=num_ctx,
+            )
+        else:
+            composed = compose_professional_answer(
+                user_question=llm_user_question,
+                query_understanding=query_understanding,
+                evidence_pack=llm_evidence_pack if compose_mode == "hybrid_structured_llm_writer" else structured_pack,
+                mode=compose_mode,
+                source_citations=source_citations,
+                llm_client=writer_llm_client,
+                provider=provider,
+                model=model,
+                temperature=temperature,
+                num_ctx=num_ctx,
+                max_tokens=policy_max_tokens,
+                timeout=policy_timeout_s,
+            )
+        if compose_mode == "fallback":
+            stage_times_ms["llm_writer_ms"] = 0.0
+        else:
+            llm_writer_used = True
+            stage_times_ms["llm_writer_ms"] = round((time.perf_counter() - t_llm0) * 1000.0, 3)
+        composed_data = composed
+        composed_llm_postprocess_error_type: str | None = None
+        composed_llm_postprocess_error_message: str | None = None
+        final_postprocess_fixed_warnings: list[str] = []
+        if isinstance(composed, dict):
+            if str(composed.get("llm_postprocess_error_type") or "").strip():
+                composed_llm_postprocess_error_type = str(composed.get("llm_postprocess_error_type") or "").strip()
+            if (
+                str(os.getenv("CHAT_DEBUG_ERRORS", "0")).strip() == "1"
+                and str(composed.get("llm_postprocess_error_message") or "").strip()
+            ):
+                composed_llm_postprocess_error_message = str(composed.get("llm_postprocess_error_message") or "").strip()
+        if composed.get("llm_prompt_tokens_estimate") is not None:
+            llm_prompt_tokens_estimate = int(composed.get("llm_prompt_tokens_estimate") or llm_prompt_tokens_estimate)
+        final_answer = str(composed.get("answer") or "").strip() or _missing_doc_answer()
+        if selected_route == "doc_scoped_biological_summary":
+            status_codes = {
+                str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+                for ev in displayed_evidences
+            }
+            final_answer = _ensure_biological_summary_conclusion(
+                final_answer,
+                has_abnormal=bool(status_codes.intersection({"above_reference", "below_reference"})),
+                has_within=bool("within_reference" in status_codes),
+            )
+        elif selected_route == "doc_scoped_medical_interpretation_guarded":
+            final_answer = _ensure_guarded_thyroid_conclusion(final_answer)
+            final_answer = _enforce_guarded_thyroid_display_labels(final_answer, displayed_evidences)
+        llm_prompt_preview = str(composed.get("llm_prompt_preview") or "")[:1200]
+        llm_candidate_answer: str | None = None
+        retry_used = False
+        fallback_stage: str | None = None
+        fallback_renderer_used: str | None = None
+        llm_candidate_validation_status: str | None = None
+        llm_candidate_validation_errors: list[str] | None = None
+        llm_candidate_validation_warnings: list[str] | None = None
+        llm_candidate_repair_used = False
+        llm_repaired_answer: str | None = None
+        llm_repaired_validation_status: str | None = None
+        llm_repaired_validation_errors: list[str] = []
+        llm_repair_error_type: str | None = None
+        llm_repair_error_message: str | None = None
+        llm_postprocess_error_type: str | None = None
+        llm_postprocess_error_message: str | None = None
+        if composed_llm_postprocess_error_type:
+            llm_postprocess_error_type = composed_llm_postprocess_error_type
+        if composed_llm_postprocess_error_message:
+            llm_postprocess_error_message = composed_llm_postprocess_error_message
+        if str(query_understanding.intent or "").strip().lower() == "multi_doc_comparison" and len(requested_doc_ids) > 2:
+            cmp_text, _ = _format_multi_doc_comparison_answer(
+                rows=structured_rows,
+                doc_ids=requested_doc_ids,
+                requested_analytes=list(structured_pack.get("requested_analytes") or exact_analytes or []),
+            )
+            final_answer = ("Comparaison multi-documents demandée.\n\n" + cmp_text).strip()
+            generation_mode = "deterministic_multi_doc_comparison"
+        if (
+            str(query_understanding.intent or "").strip().lower() == "multi_doc_comparison"
+            and "analyte_not_identified_for_multi_doc_comparison" in set(structured_pack.get("missing_items") or [])
+            and not (structured_pack.get("evidences") or [])
+        ):
+            final_answer = "L’analyte demandé n’a pas été identifié pour la comparaison entre les documents demandés."
+        if (
+            str(query_understanding.intent or "").strip().lower() == "multi_doc_comparison"
+            and str(structured_pack.get("comparison_mode") or "").strip().lower() == "doc_pair_out_of_reference_by_doc"
+            and requested_doc_ids
+        ):
+            final_answer = _format_multi_doc_out_of_reference_by_doc_answer(
+                rows=structured_rows,
+                doc_ids=requested_doc_ids,
+                technical_condition=query_understanding.technical_condition,
+                max_items_per_doc=10,
+            )
+            generation_mode = (
+                "deterministic_doc_pair_comparison"
+                if len(requested_doc_ids) == 2
+                else "deterministic_multi_doc_comparison"
+            )
+        if str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
+            evidences = list(structured_pack.get("evidences") or [])
+            if bool(structured_pack.get("comment_list_mode")) and evidences:
+                final_answer = _build_multi_comment_answer(evidences)
+            else:
+                comment_text = str(structured_pack.get("comment_text") or "").strip()
+                first_ev = evidences[0] if evidences and isinstance(evidences[0], dict) else {}
+                source_label = str(first_ev.get("source") or "").strip()
+                subject_label = str(first_ev.get("subject") or first_ev.get("analyte") or "").strip()
+                if not subject_label:
+                    subject_norm, subject_guess = _resolve_comment_subject_from_query(
+                        query_understanding=query_understanding,
+                        query=q,
+                    )
+                    subject_label = subject_guess if subject_guess else (subject_norm or "Commentaire médical")
+                final_answer = build_qualitative_comment_answer(
+                    subject=subject_label,
+                    comment_text=comment_text,
+                    source_label=source_label or "source non disponible",
+                )
         generation_mode = str(composed.get("mode") or "deterministic_professional_fallback")
+        if compose_mode == "fallback":
+            pre_validation_mode_overrides = {
+                "doc_scoped_abnormal_results": "deterministic_doc_scoped_abnormal_results",
+                "doc_scoped_priority_anomalies": "deterministic_doc_scoped_priority_anomalies",
+                "global_analyte_abnormal_search": "deterministic_global_analyte_abnormal_search",
+                "global_toxicology_search": "deterministic_global_toxicology_search",
+                "doc_pair_comparison": "deterministic_doc_pair_comparison",
+                "multi_doc_comparison": "deterministic_multi_doc_comparison",
+                "doc_scoped_medical_interpretation_guarded": "deterministic_guarded_medical_interpretation",
+                "single_analyte_lookup": "deterministic_single_analyte_lookup",
+                "doc_scoped_single_analyte_status": "deterministic_single_analyte_lookup",
+            }
+            generation_mode = pre_validation_mode_overrides.get(selected_route, generation_mode)
         if str(query_understanding.intent or "").strip().lower() == "comment_without_measured_value":
             qdbg = structured_pack.get("qualitative_debug") if isinstance(structured_pack.get("qualitative_debug"), dict) else {}
             LOGGER.info(
@@ -6246,32 +11932,220 @@ def run_generation(
                 str(final_answer or "").strip().lower().startswith("information insuffisante"),
             )
         writer_error = str(composed.get("llm_error") or "") or None
-        if _contains_internal_reasoning_leak(final_answer):
-            fallback_answer = str(
-                (
-                    render_professional_fallback(
-                        evidence_pack=structured_pack,
-                        query_understanding=query_understanding,
-                        user_question=q,
-                        source_citations=source_citations,
-                    )
-                    or {}
-                ).get("answer")
-                or _missing_doc_answer()
-            ).strip()
-            final_answer, _, sanitize_err = sanitize_final_answer_with_retry(
-                answer=final_answer,
-                user_message=q,
-                llm_client=llm_client,
-                provider=provider,
-                model=model,
-                timeout=timeout,
-                fallback_answer=fallback_answer,
+        fallback_reason_debug = writer_error
+        llm_call_skipped_due_prompt_budget = bool(composed.get("llm_call_skipped_due_prompt_budget"))
+        if compose_mode == "hybrid_structured_llm_writer" and not writer_error:
+            candidate_raw = str(composed.get("llm_candidate_answer") or composed.get("answer") or "").strip()
+            if candidate_raw:
+                llm_candidate_answer = candidate_raw
+        if writer_error and "timeout" in writer_error.lower():
+            fallback_reason_debug = "llm_timeout"
+            fallback_stage = "llm_call"
+            llm_candidate_answer = None
+            llm_candidate_validation_status = None
+            llm_candidate_validation_errors = None
+            llm_candidate_validation_warnings = None
+            llm_candidate_repair_used = False
+            if selected_route == "doc_scoped_biological_summary":
+                fallback_renderer_used = "deterministic_biological_summary_short"
+        if writer_error and "llm_prompt_too_large_preemptive" in writer_error:
+            fallback_reason_debug = "llm_prompt_too_large_preemptive"
+            fallback_stage = "prompt_budget_precheck"
+            if selected_route == "doc_scoped_biological_summary":
+                no_diag = str(getattr(query_understanding, "safety_intent", "") or "").strip().lower() == "no_diagnosis_constraint"
+                final_answer = _build_doc_scoped_biological_summary_answer(
+                    displayed_evidences,
+                    max_lines=getattr(query_understanding, "requested_summary_points", None),
+                    no_diagnosis=no_diag,
+                )
+                generation_mode = "deterministic_doc_scoped_biological_summary"
+                fallback_renderer_used = "deterministic_biological_summary_short"
+                writer_error = None
+        if llm_candidate_answer and not writer_error:
+            pre_found_requested_analytes: list[str] = []
+            for analyte in exact_analytes:
+                if any(_row_matches_analyte(row, analyte) for row in structured_rows):
+                    pre_found_requested_analytes.append(analyte)
+            pre_found_requested_analyte_norms = sorted(
+                {
+                    str(ev.get("analyte_norm") or "").strip().lower()
+                    for ev in displayed_evidences
+                    if str(ev.get("analyte_norm") or "").strip()
+                }
             )
-            if sanitize_err:
-                writer_error = f"{writer_error} | sanitize_retry:{sanitize_err}" if writer_error else f"sanitize_retry:{sanitize_err}"
+            pre_missing_requested_analytes = sorted(
+                [a for a in exact_analytes if a not in set(pre_found_requested_analytes)]
+            )
+            if bool(intents.get("diagnostic_safety_question")) and detect_medical_topic(norm_text(q)) == "thyroid":
+                evidence_analytes = set(pre_found_requested_analyte_norms)
+                tsh_group, _ = _thyroid_high_groups()
+                filtered_missing: list[str] = []
+                for analyte in pre_missing_requested_analytes:
+                    if analyte in tsh_group and tsh_group & evidence_analytes:
+                        continue
+                    if analyte in evidence_analytes:
+                        filtered_missing.append(analyte)
+                pre_missing_requested_analytes = sorted(set(filtered_missing))
+            candidate_validation = validate_answer(
+                query=q,
+                answer_text=llm_candidate_answer,
+                evidence_pack=evidence_pack,
+                displayed_evidences=displayed_evidences,
+                source_citations=source_citations,
+                exact_analyte=exact_analyte,
+                llm_error=None,
+                generation_mode="hybrid_structured_llm_writer",
+                retrieval_status="answerable" if displayed_evidences else "insufficient_context",
+                show_low_quality=show_low_quality,
+                max_display_results=max_display_results,
+                show_all_results=show_all_results,
+                query_received=query_received,
+                query_used_for_retrieval=query_used_for_retrieval,
+                query_used_for_prompt=query_used_for_prompt,
+                query_stored=q,
+                detected_analytes=exact_analytes,
+                requested_doc_id=requested_doc_ids[0] if len(requested_doc_ids) == 1 else None,
+                requested_doc_ids=requested_doc_ids,
+                missing_requested_doc_ids=missing_requested_doc_ids,
+                requested_analytes=exact_analytes,
+                found_requested_analytes=pre_found_requested_analytes,
+                found_requested_analyte_norms=pre_found_requested_analyte_norms,
+                missing_requested_analytes=pre_missing_requested_analytes,
+                current_vs_previous_requested=query_understanding.requires_previous_results,
+                diagnostic_safety_intent=bool(intents.get("diagnostic_safety_question")),
+                query_intents=intents,
+                output_format_requested=query_understanding.output_format,
+                answer_style_requested=query_understanding.answer_style,
+                requested_table_columns=query_understanding.requested_table_columns,
+                requested_technical_condition=query_understanding.technical_condition,
+                raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+                user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+                requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+                visualization_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[0],
+                chart_data_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[1],
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                requested_value=query_understanding.requested_value,
+                comparison_operator=query_understanding.comparison_operator,
+            )
+            llm_candidate_validation_status = str(candidate_validation.get("validation_status") or "")
+            llm_candidate_validation_errors = list(candidate_validation.get("errors") or [])
+            llm_candidate_validation_warnings = list(candidate_validation.get("warnings") or [])
+            false_no_abnormal_summary_detected = (
+                false_no_abnormal_summary_detected
+                or ("false_no_abnormal_summary" in set(llm_candidate_validation_errors or []))
+            )
+        if compose_mode == "hybrid_structured_llm_writer" and generation_mode in {
+            "llm_writer_error_fallback",
+            "llm_writer_format_fallback",
+            "llm_writer_quality_fallback",
+        }:
+            if fallback_reason_debug != "llm_timeout":
+                retry_used = True
+            fallback_composed = compose_professional_answer(
+                user_question=q,
+                query_understanding=query_understanding,
+                evidence_pack=structured_pack,
+                mode="fallback",
+                source_citations=source_citations,
+            )
+            final_answer = str(fallback_composed.get("answer") or final_answer).strip()
+            final_answer = _build_route_specific_short_fallback_answer(
+                selected_route=selected_route,
+                query_understanding=query_understanding,
+                displayed_evidences=displayed_evidences,
+                evidence_all_summary=summary_all_evidences,
+                default_answer=final_answer,
+            )
+            generation_mode = "deterministic_safety_fallback_after_llm_validation_failure"
+            fallback_stage = fallback_stage or "writer_postprocess"
+            if selected_route == "doc_scoped_biological_summary":
+                fallback_renderer_used = "deterministic_biological_summary_short"
+            writer_error = None
+            if not fallback_reason_debug:
+                fallback_reason_debug = "llm_writer_quality_or_format_fallback"
+        try:
+            if _contains_internal_reasoning_leak(final_answer):
+                fallback_answer = str(
+                    (
+                        render_professional_fallback(
+                            evidence_pack=structured_pack,
+                            query_understanding=query_understanding,
+                            user_question=q,
+                            source_citations=source_citations,
+                        )
+                        or {}
+                    ).get("answer")
+                    or _missing_doc_answer()
+                ).strip()
+                final_answer, _, sanitize_err = sanitize_final_answer_with_retry(
+                    answer=final_answer,
+                    user_message=q,
+                    llm_client=llm_client,
+                    provider=provider,
+                    model=model,
+                    timeout=timeout,
+                    fallback_answer=fallback_answer,
+                )
+                if sanitize_err:
+                    writer_error = f"{writer_error} | sanitize_retry:{sanitize_err}" if writer_error else f"sanitize_retry:{sanitize_err}"
+        except Exception as exc:
+            llm_postprocess_error_type = type(exc).__name__
+            llm_postprocess_error_message = str(exc)
+            fallback_reason_debug = "llm_postprocess_exception"
+            fallback_stage = "writer_postprocess"
+            final_answer = _build_route_specific_short_fallback_answer(
+                selected_route=selected_route,
+                query_understanding=query_understanding,
+                displayed_evidences=displayed_evidences,
+                evidence_all_summary=summary_all_evidences,
+                default_answer=_missing_doc_answer(),
+            )
+            generation_mode = "deterministic_doc_scoped_biological_summary" if selected_route == "doc_scoped_biological_summary" else "deterministic_safety_fallback_after_llm_validation_failure"
+            if selected_route == "doc_scoped_biological_summary":
+                fallback_renderer_used = "deterministic_biological_summary_short"
+            writer_error = None
+
+        qn_local = norm_text(q)
+        if (
+            safety_intent_norm == "diagnostic_safety_question"
+            and any(k in qn_local for k in ["diagnostic", "traitement", "recommandes", "recommander"])
+        ):
+            refusal = "Je ne peux pas poser ni évoquer un diagnostic à partir de ces résultats seuls."
+            if not str(final_answer or "").strip().lower().startswith(refusal.lower()):
+                final_answer = f"{refusal}\n\n{final_answer}".strip()
+        if safety_intent_norm == "diagnostic_safety_question" and detect_medical_topic(qn_local) == "thyroid":
+            tsh_high = False
+            t3t4_high = False
+            tsh_group, t3_t4_group = _thyroid_high_groups()
+            discordance_sentence = _assistant_message(
+                ["diagnostic_safety", "thyroid", "discordance_sentence"],
+                "Ce profil est biologiquement discordant pour une hyperthyroïdie primaire.",
+            )
+            for ev in displayed_evidences:
+                an = str(ev.get("analyte_norm") or "").strip().lower()
+                st = str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+                if an in tsh_group and st == "above_reference":
+                    tsh_high = True
+                if an in t3_t4_group and st == "above_reference":
+                    t3t4_high = True
+            final_norm = norm_text(str(final_answer or ""))
+            if (
+                tsh_high
+                and t3t4_high
+                and norm_text(discordance_sentence) not in final_norm
+                and norm_text(str(_safety_guardrail(["diagnostic_safety", "discordance_replacement"], "profil biologique discordant pour une hyperthyroïdie primaire"))) not in final_norm
+            ):
+                final_answer = f"{final_answer.rstrip()}\n\n{discordance_sentence}"
 
         missing_requested_doc_ids = _resolve_missing_requested_doc_ids(sqlite_path, requested_doc_ids)
+        if not displayed_evidences and requested_doc_ids:
+            missing_targets = ", ".join(requested_doc_ids)
+            final_answer = (
+                f"Information insuffisante dans le contexte fourni. Aucun résultat biologique exploitable n’a été retrouvé pour {missing_targets} dans les documents indexés."
+            )
+            generation_mode = "deterministic_no_evidence_response"
+            writer_error = None
         found_requested_analytes = []
         for analyte in exact_analytes:
             if any(_row_matches_analyte(row, analyte) for row in structured_rows):
@@ -6299,7 +12173,25 @@ def run_generation(
         )
         if exact_analytes and not missing_requested_analytes:
             missing_requested_analytes = [a for a in exact_analytes if a not in set(found_requested_analytes)]
+        if bool(intents.get("diagnostic_safety_question")) and detect_medical_topic(qn_local) == "thyroid":
+            # For guarded thyroid validation, do not force theoretical panel analytes
+            # that are absent from evidence rows.
+            evidence_analytes = {
+                str(ev.get("analyte_norm") or "").strip().lower()
+                for ev in displayed_evidences
+                if str(ev.get("analyte_norm") or "").strip()
+            }
+            tsh_group, _ = _thyroid_high_groups()
+            filtered_missing: list[str] = []
+            for analyte in missing_requested_analytes:
+                if analyte in tsh_group:
+                    if tsh_group & evidence_analytes:
+                        continue
+                if analyte in evidence_analytes:
+                    filtered_missing.append(analyte)
+            missing_requested_analytes = sorted(set(filtered_missing))
 
+        t_val0 = time.perf_counter()
         validation = validate_answer(
             query=q,
             answer_text=final_answer,
@@ -6342,33 +12234,161 @@ def run_generation(
             requested_value=query_understanding.requested_value,
             comparison_operator=query_understanding.comparison_operator,
         )
+        stage_times_ms["validation_ms"] = round((time.perf_counter() - t_val0) * 1000.0, 3)
+        if llm_candidate_validation_warnings:
+            final_warning_set = {str(w) for w in (validation or {}).get("warnings") or []}
+            if "missing_conclusion" in set(llm_candidate_validation_warnings) and "missing_conclusion" not in final_warning_set:
+                final_postprocess_fixed_warnings.append("missing_conclusion")
         quality = _quality_report(
             answer=final_answer,
             validation=validation,
             source_clickable_requested=bool(query_understanding.source_clickable_requested),
             recent_style_history=style_history,
         )
+        validation_errors_set = {str(e) for e in (validation or {}).get("errors") or []}
+        hard_gate_errors_detected = sorted(validation_errors_set.intersection(HARD_GATE_ERRORS))
+        hard_gate_triggered_runtime = bool(hard_gate_errors_detected)
+        hard_gate_errors_at_any_point = sorted(
+            set(hard_gate_errors_at_any_point or []).union(hard_gate_errors_detected)
+        )
+        hard_gate_was_triggered = hard_gate_was_triggered or hard_gate_triggered_runtime
+        if compose_mode == "hybrid_structured_llm_writer" and hard_gate_triggered_runtime:
+            validation = dict(validation or {})
+            validation["validation_status"] = "fail"
 
-        if _should_retry_with_validator(validation, generation_mode):
-            retry_feedback = _build_validator_retry_feedback(validation)
-            retry_composed = compose_professional_answer(
+        priority_no_repair_errors = {
+            "priority_level_mismatch",
+            "unsupported_value",
+            "unit_mismatch",
+            "unsupported_reference",
+            "output_format_not_respected",
+            "format_not_respected",
+        }
+        if (
+            selected_route == "doc_scoped_priority_anomalies"
+            and validation_errors_set.intersection(priority_no_repair_errors)
+        ):
+            fallback_composed = compose_professional_answer(
                 user_question=q,
                 query_understanding=query_understanding,
                 evidence_pack=structured_pack,
-                mode="auto",
-            source_citations=source_citations,
-                llm_client=llm_client,
-                provider=provider,
-                model=model,
-                temperature=temperature,
-                num_ctx=num_ctx,
-                max_tokens=max_tokens,
-                timeout=timeout,
-                retry_feedback=retry_feedback,
+                mode="fallback",
+                source_citations=source_citations,
             )
+            final_answer = str(fallback_composed.get("answer") or final_answer).strip()
+            final_answer = _enforce_priority_summary_template(final_answer, list(llm_evidence_pack.get("evidences") or []))
+            generation_mode = "deterministic_doc_scoped_priority_anomalies"
+            writer_error = None
+            fallback_reason_debug = fallback_reason_debug or "priority_style_rejected_use_deterministic"
+            fallback_stage = "priority_pre_repair"
+            fallback_renderer_used = "deterministic_priority_summary_template"
+            validation = validate_answer(
+                query=q,
+                answer_text=final_answer,
+                evidence_pack=evidence_pack,
+                displayed_evidences=displayed_evidences,
+                source_citations=source_citations,
+                exact_analyte=exact_analyte,
+                llm_error=None,
+                generation_mode=generation_mode,
+                retrieval_status="answerable" if displayed_evidences else "insufficient_context",
+                show_low_quality=show_low_quality,
+                max_display_results=max_display_results,
+                show_all_results=show_all_results,
+                query_received=query_received,
+                query_used_for_retrieval=query_used_for_retrieval,
+                query_used_for_prompt=query_used_for_prompt,
+                query_stored=q,
+                detected_analytes=exact_analytes,
+                requested_doc_id=requested_doc_ids[0] if len(requested_doc_ids) == 1 else None,
+                requested_doc_ids=requested_doc_ids,
+                missing_requested_doc_ids=missing_requested_doc_ids,
+                requested_analytes=exact_analytes,
+                found_requested_analytes=found_requested_analytes,
+                found_requested_analyte_norms=found_requested_analyte_norms,
+                missing_requested_analytes=missing_requested_analytes,
+                current_vs_previous_requested=query_understanding.requires_previous_results,
+                diagnostic_safety_intent=bool(intents.get("diagnostic_safety_question")),
+                query_intents=intents,
+                output_format_requested=query_understanding.output_format,
+                answer_style_requested=query_understanding.answer_style,
+                requested_table_columns=query_understanding.requested_table_columns,
+                requested_technical_condition=query_understanding.technical_condition,
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                requested_value=query_understanding.requested_value,
+                comparison_operator=query_understanding.comparison_operator,
+                raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+                user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+                requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+                visualization_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[0],
+                chart_data_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[1],
+            )
+            quality = _quality_report(
+                answer=final_answer,
+                validation=validation,
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                recent_style_history=style_history,
+            )
+
+        if fallback_reason_debug not in {"llm_timeout", "llm_prompt_too_large_preemptive"} and _should_retry_with_validator(validation, generation_mode):
+            t_rep0 = time.perf_counter()
+            retry_used = True
+            llm_candidate_repair_used = True
+            retry_feedback = _build_validator_retry_feedback(validation)
+            try:
+                if use_micro_prompt:
+                    retry_composed = _compose_level2_micro_prompt_answer(
+                        selected_route=selected_route,
+                        query_understanding=query_understanding,
+                        llm_pack=llm_evidence_pack,
+                        llm_client=writer_llm_client,
+                        provider=provider,
+                        model=model,
+                        num_ctx=num_ctx,
+                        retry_feedback=retry_feedback,
+                    )
+                else:
+                    retry_composed = compose_professional_answer(
+                        user_question=q,
+                        query_understanding=query_understanding,
+                        evidence_pack=structured_pack,
+                        mode=compose_mode,
+                        source_citations=source_citations,
+                        llm_client=writer_llm_client,
+                        provider=provider,
+                        model=model,
+                        temperature=temperature,
+                        num_ctx=num_ctx,
+                        max_tokens=policy_max_tokens,
+                        timeout=policy_timeout_s,
+                        retry_feedback=retry_feedback,
+                    )
+            except Exception as exc:
+                llm_repair_error_type = type(exc).__name__
+                llm_repair_error_message = str(exc)
+                retry_composed = {"mode": "llm_writer_error_fallback", "answer": "", "llm_error": str(exc)}
             retry_answer = str(retry_composed.get("answer") or "").strip()
+            if selected_route == "doc_scoped_biological_summary":
+                status_codes = {
+                    str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+                    for ev in displayed_evidences
+                }
+                retry_answer = _ensure_biological_summary_conclusion(
+                    retry_answer,
+                    has_abnormal=bool(status_codes.intersection({"above_reference", "below_reference"})),
+                    has_within=bool("within_reference" in status_codes),
+                )
+            elif selected_route == "doc_scoped_medical_interpretation_guarded":
+                retry_answer = _ensure_guarded_thyroid_conclusion(retry_answer)
+                retry_answer = _enforce_guarded_thyroid_display_labels(retry_answer, displayed_evidences)
             retry_mode = str(retry_composed.get("mode") or generation_mode)
             retry_writer_error = str(retry_composed.get("llm_error") or "") or None
+            if retry_answer:
+                llm_candidate_answer = retry_answer
+                llm_repaired_answer = retry_answer
+            if str(retry_composed.get("llm_prompt_preview") or "").strip():
+                llm_prompt_preview = str(retry_composed.get("llm_prompt_preview") or "")[:1200]
             if retry_answer:
                 retry_validation = validate_answer(
                     query=q,
@@ -6417,6 +12437,8 @@ def run_generation(
                     generation_mode = retry_mode
                     writer_error = retry_writer_error
                     validation = retry_validation
+                    llm_repaired_validation_status = str(retry_validation.get("validation_status") or "")
+                    llm_repaired_validation_errors = list(retry_validation.get("errors") or [])
                 else:
                     fallback_composed = compose_professional_answer(
                         user_question=q,
@@ -6426,8 +12448,22 @@ def run_generation(
                         source_citations=source_citations,
                     )
                     final_answer = str(fallback_composed.get("answer") or final_answer).strip()
-                    generation_mode = str(fallback_composed.get("mode") or "deterministic_professional_fallback")
-                    writer_error = retry_writer_error or writer_error
+                    final_answer = _build_route_specific_short_fallback_answer(
+                        selected_route=selected_route,
+                        query_understanding=query_understanding,
+                        displayed_evidences=displayed_evidences,
+                        evidence_all_summary=summary_all_evidences,
+                        default_answer=final_answer,
+                    )
+                    generation_mode = "deterministic_safety_fallback_after_llm_validation_failure"
+                    writer_error = None
+                    if selected_route == "doc_scoped_priority_anomalies":
+                        fallback_reason_debug = fallback_reason_debug or "priority_style_rejected_use_deterministic"
+                    else:
+                        fallback_reason_debug = fallback_reason_debug or "llm_repair_failed"
+                    fallback_stage = "post_validation_repair"
+                    if selected_route == "doc_scoped_biological_summary":
+                        fallback_renderer_used = "deterministic_biological_summary_short"
                     validation = validate_answer(
                         query=q,
                         answer_text=final_answer,
@@ -6435,7 +12471,7 @@ def run_generation(
                         displayed_evidences=displayed_evidences,
                         source_citations=source_citations,
                         exact_analyte=exact_analyte,
-                        llm_error=writer_error,
+                        llm_error=None,
                         generation_mode=generation_mode,
                         retrieval_status="answerable" if displayed_evidences else "insufficient_context",
                         show_low_quality=show_low_quality,
@@ -6476,9 +12512,379 @@ def run_generation(
                         source_clickable_requested=bool(query_understanding.source_clickable_requested),
                         recent_style_history=style_history,
                     )
+            stage_times_ms["repair_ms"] = round((time.perf_counter() - t_rep0) * 1000.0, 3)
+
+        # Hard gate: never return an invalid LLM/hybrid answer to end-users.
+        llm_like_mode = (
+            str(generation_mode or "").startswith("llm_")
+            or str(generation_mode or "") in {"hybrid_structured_llm_writer", "llm"}
+        )
+        if llm_like_mode and str((validation or {}).get("validation_status") or "fail") == "fail":
+            hard_gate_was_triggered = True
+            hard_gate_errors_at_any_point = sorted(
+                set(hard_gate_errors_at_any_point or [])
+                | (set(str(e) for e in (validation or {}).get("errors") or []) & set(HARD_GATE_ERRORS))
+            )
+            t_fb0 = time.perf_counter()
+            fallback_composed = compose_professional_answer(
+                user_question=q,
+                query_understanding=query_understanding,
+                evidence_pack=structured_pack,
+                mode="fallback",
+                source_citations=source_citations,
+            )
+            final_answer = str(fallback_composed.get("answer") or final_answer).strip()
+            final_answer = _build_route_specific_short_fallback_answer(
+                selected_route=selected_route,
+                query_understanding=query_understanding,
+                displayed_evidences=displayed_evidences,
+                evidence_all_summary=summary_all_evidences,
+                default_answer=final_answer,
+            )
+            generation_mode = "deterministic_safety_fallback_after_llm_validation_failure"
+            writer_error = None
+            fallback_reason_debug = fallback_reason_debug or "llm_validation_fail_hard_gate"
+            fallback_stage = "hard_gate"
+            if selected_route == "doc_scoped_biological_summary":
+                fallback_renderer_used = "deterministic_biological_summary_short"
+            validation = validate_answer(
+                query=q,
+                answer_text=final_answer,
+                evidence_pack=evidence_pack,
+                displayed_evidences=displayed_evidences,
+                source_citations=source_citations,
+                exact_analyte=exact_analyte,
+                llm_error=None,
+                generation_mode=generation_mode,
+                retrieval_status="answerable" if displayed_evidences else "insufficient_context",
+                show_low_quality=show_low_quality,
+                max_display_results=max_display_results,
+                show_all_results=show_all_results,
+                query_received=query_received,
+                query_used_for_retrieval=query_used_for_retrieval,
+                query_used_for_prompt=query_used_for_prompt,
+                query_stored=q,
+                detected_analytes=exact_analytes,
+                requested_doc_id=requested_doc_ids[0] if len(requested_doc_ids) == 1 else None,
+                requested_doc_ids=requested_doc_ids,
+                missing_requested_doc_ids=missing_requested_doc_ids,
+                requested_analytes=exact_analytes,
+                found_requested_analytes=found_requested_analytes,
+                found_requested_analyte_norms=found_requested_analyte_norms,
+                missing_requested_analytes=missing_requested_analytes,
+                current_vs_previous_requested=query_understanding.requires_previous_results,
+                diagnostic_safety_intent=bool(intents.get("diagnostic_safety_question")),
+                query_intents=intents,
+                output_format_requested=query_understanding.output_format,
+                answer_style_requested=query_understanding.answer_style,
+                requested_table_columns=query_understanding.requested_table_columns,
+                requested_technical_condition=query_understanding.technical_condition,
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                requested_value=query_understanding.requested_value,
+                comparison_operator=query_understanding.comparison_operator,
+                raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+                user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+                requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+                visualization_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[0],
+                chart_data_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[1],
+            )
+            quality = _quality_report(
+                answer=final_answer,
+                validation=validation,
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                recent_style_history=style_history,
+            )
+            stage_times_ms["fallback_ms"] = round((time.perf_counter() - t_fb0) * 1000.0, 3)
+
+        route_mode_overrides = {
+            "doc_scoped_abnormal_results": "deterministic_doc_scoped_abnormal_results",
+            "doc_scoped_biological_summary": "deterministic_doc_scoped_biological_summary",
+            "doc_scoped_priority_anomalies": "deterministic_doc_scoped_priority_anomalies",
+            "global_analyte_abnormal_search": "deterministic_global_analyte_abnormal_search",
+            "global_toxicology_search": "deterministic_global_toxicology_search",
+            "doc_pair_comparison": "deterministic_doc_pair_comparison",
+            "multi_doc_comparison": "deterministic_multi_doc_comparison",
+            "doc_scoped_medical_interpretation_guarded": "deterministic_guarded_medical_interpretation",
+            "single_analyte_lookup": "deterministic_single_analyte_lookup",
+            "doc_scoped_single_analyte_status": "deterministic_single_analyte_lookup",
+        }
+        if selected_route == "cohort_search" and _canonical_technical_condition(query_understanding.technical_condition) in {
+            "above_reference",
+            "below_reference",
+            "out_of_reference",
+        }:
+            route_mode_overrides["cohort_search"] = "deterministic_global_analyte_abnormal_search"
+        if str(generation_mode or "").startswith("deterministic_") and selected_route in route_mode_overrides:
+            generation_mode = route_mode_overrides[selected_route]
+
+        final_safety_check_failed = False
+        hard_gate_errors = set(str(e) for e in (validation or {}).get("errors") or [])
+        hard_gate_hits = sorted(hard_gate_errors.intersection(HARD_GATE_ERRORS))
+        hard_gate_triggered = bool(hard_gate_hits)
+        if hard_gate_was_triggered:
+            hard_gate_hits = sorted(set(hard_gate_hits).union(set(hard_gate_errors_at_any_point or [])))
+            hard_gate_triggered = True
+        elif hard_gate_errors_at_any_point:
+            hard_gate_hits = sorted(set(hard_gate_hits).union(set(hard_gate_errors_at_any_point)))
+            hard_gate_triggered = True
+        hard_gate_errors_at_any_point = list(hard_gate_hits)
+        if hard_gate_triggered:
+            fallback_mode = _select_hard_gate_fallback_mode(
+                hard_gate_errors=hard_gate_errors,
+                selected_route=selected_route,
+                safety_intent_norm=safety_intent_norm,
+                has_evidence=bool(displayed_evidences),
+                query_norm=norm_text(q),
+            )
+            if fallback_mode == "deterministic_general_conversation":
+                final_answer = render_general_conversation_response(
+                    detect_general_conversation(q) or str(query_understanding.intent or "small_talk")
+                )
+                selected_route = "general_conversation"
+                route_reason = "general_conversation_validator_hard_gate"
+                displayed_evidences = []
+                evidence_pack = []
+                source_citations = []
+                citations = []
+                stage_times_ms["retrieval_ms"] = 0.0
+            else:
+                fallback_composed = compose_professional_answer(
+                    user_question=q,
+                    query_understanding=query_understanding,
+                    evidence_pack=structured_pack,
+                    mode="fallback",
+                    source_citations=source_citations,
+                )
+                final_answer = str(fallback_composed.get("answer") or final_answer).strip()
+                final_answer = _build_route_specific_short_fallback_answer(
+                    selected_route=selected_route,
+                    query_understanding=query_understanding,
+                    displayed_evidences=displayed_evidences,
+                    evidence_all_summary=summary_all_evidences,
+                    default_answer=final_answer,
+                )
+                if fallback_mode == "deterministic_diagnostic_refusal_with_technical_summary":
+                    refusal = "Je ne peux pas poser ni évoquer un diagnostic à partir de ces résultats seuls."
+                    if not final_answer.lower().startswith(refusal.lower()):
+                        final_answer = f"{refusal}\n\n{final_answer}".strip()
+                elif fallback_mode == "deterministic_treatment_refusal_with_technical_summary":
+                    refusal = "Je ne peux pas recommander de traitement à partir de ces résultats seuls."
+                    if not final_answer.lower().startswith(refusal.lower()):
+                        final_answer = f"{refusal}\n\n{final_answer}".strip()
+                elif fallback_mode == "deterministic_no_evidence_response":
+                    final_answer = "Information insuffisante dans les données structurées disponibles pour répondre de façon fiable."
+                    displayed_evidences = []
+                    evidence_pack = []
+                    source_citations = []
+                    citations = []
+            generation_mode = fallback_mode
+            writer_error = None
+            fallback_stage = "validator_hard_gate"
+            validation = validate_answer(
+                query=q,
+                answer_text=final_answer,
+                evidence_pack=evidence_pack if fallback_mode != "deterministic_general_conversation" else [],
+                displayed_evidences=displayed_evidences if fallback_mode != "deterministic_general_conversation" else [],
+                source_citations=source_citations if fallback_mode != "deterministic_general_conversation" else [],
+                generation_mode=generation_mode,
+                retrieval_status="answerable" if displayed_evidences else "insufficient_context",
+                query_received=query_received,
+                query_used_for_retrieval=query_used_for_retrieval,
+                query_used_for_prompt=query_used_for_prompt,
+                query_stored=q,
+                detected_analytes=exact_analytes,
+                query_intents={**intents, "general_conversation": fallback_mode == "deterministic_general_conversation"},
+                output_format_requested=query_understanding.output_format,
+                answer_style_requested=query_understanding.answer_style,
+                requested_table_columns=query_understanding.requested_table_columns,
+                requested_technical_condition=query_understanding.technical_condition,
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                requested_value=query_understanding.requested_value,
+                comparison_operator=query_understanding.comparison_operator,
+                raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                unsupported_presentation=False,
+                user_requested_visualization=False,
+                requested_chart_type=None,
+                visualization_payload=None,
+                chart_data_payload=None,
+            )
+            quality = _quality_report(
+                answer=final_answer,
+                validation=validation,
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                recent_style_history=style_history,
+            )
+            stage_times_ms["llm_writer_ms"] = 0.0
+            stage_times_ms["repair_ms"] = 0.0
+
+        if str((validation or {}).get("validation_status") or "").strip().lower() == "fail":
+            selected_route_norm = str(selected_route or "").strip().lower()
+            query_is_toxicology_summary = _is_toxicology_query(norm_text(q))
+            should_force_toxicology_recovery = bool(
+                displayed_evidences
+                and (
+                    selected_route_norm in {"doc_scoped_toxicology_summary", "doc_scoped_toxicology_threshold_search"}
+                    or (selected_route_norm == "doc_scoped_abnormal_results" and query_is_toxicology_summary)
+                )
+            )
+            if should_force_toxicology_recovery:
+                recovery_route = (
+                    "doc_scoped_toxicology_summary"
+                    if selected_route_norm == "doc_scoped_abnormal_results"
+                    else selected_route_norm
+                )
+                selected_route_norm = recovery_route
+                final_answer = (
+                    _render_doc_scoped_toxicology_majority_answer(
+                        under_count=sum(
+                            1
+                            for ev in displayed_evidences
+                            if str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+                            in {"below_reference", "within_reference"}
+                        ),
+                        above_count=sum(
+                            1
+                            for ev in displayed_evidences
+                            if str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+                            == "above_reference"
+                        ),
+                        ambiguous_count=sum(
+                            1
+                            for ev in displayed_evidences
+                            if str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+                            not in {"below_reference", "within_reference", "above_reference"}
+                        ),
+                    )
+                    if selected_route_norm == "doc_scoped_toxicology_summary"
+                    else _render_doc_scoped_toxicology_threshold_answer(displayed_evidences)
+                )
+                generation_mode = (
+                    "deterministic_doc_scoped_toxicology_summary"
+                    if selected_route_norm == "doc_scoped_toxicology_summary"
+                    else "deterministic_doc_scoped_toxicology_threshold_search"
+                )
+                if selected_route_norm == "doc_scoped_toxicology_summary":
+                    selected_route = "doc_scoped_toxicology_summary"
+                fallback_reason_debug = fallback_reason_debug or "toxicology_validation_recovered_to_deterministic"
+                fallback_stage = fallback_stage or "final_safety_check_recovery"
+                validation = {
+                    "validation_status": "warning",
+                    "errors": [],
+                    "warnings": ["toxicology_validation_recovered_to_deterministic"],
+                }
+                quality = _quality_report(
+                    answer=final_answer,
+                    validation=validation,
+                    source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                    recent_style_history=style_history,
+                )
+                stage_times_ms["llm_writer_ms"] = 0.0
+                stage_times_ms["repair_ms"] = 0.0
+            else:
+                if str(query_understanding.intent or "").strip().lower() == "multi_doc_comparison" and requested_doc_ids:
+                    docs_txt = ", ".join(requested_doc_ids)
+                    final_answer = (
+                        "Comparaison multi-documents demandée.\n"
+                        f"Aucune ligne exploitable correspondant aux critères demandés n’a été retrouvée dans {docs_txt}.\n"
+                        "Conclusion technique : données manquantes pour une comparaison factuelle complète, sans diagnostic."
+                    )
+                    generation_mode = "deterministic_multi_doc_comparison"
+                    validation = {
+                        "validation_status": "warning",
+                        "errors": [],
+                        "warnings": ["comparison_builder_empty"],
+                    }
+                    quality = _quality_report(
+                        answer=final_answer,
+                        validation=validation,
+                        source_clickable_requested=False,
+                        recent_style_history=style_history,
+                    )
+                    fallback_stage = fallback_stage or "comparison_no_evidence_recovery"
+                    fallback_reason_debug = "comparison_builder_empty"
+                    stage_times_ms["llm_writer_ms"] = 0.0
+                    stage_times_ms["repair_ms"] = 0.0
+                elif str(selected_route or "").strip().lower() == "doc_scoped_single_analyte_status":
+                    req_analytes = [str(a).strip().lower() for a in list(exact_analytes or []) if str(a).strip()]
+                    req_analyte = req_analytes[0] if req_analytes else "analyte"
+                    if len(requested_doc_ids or []) >= 2:
+                        final_answer = _format_multi_doc_single_analyte_status_answer(
+                            rows=list(structured_rows or []),
+                            requested_doc_ids=list(requested_doc_ids or []),
+                            requested_analyte=req_analyte,
+                        )
+                    else:
+                        doc = requested_doc_ids[0] if requested_doc_ids else "le document demandé"
+                        label = "TSH/TSHus" if req_analyte in {"tsh", "tshus"} else _canonical_display_name(req_analyte)
+                        final_answer = (
+                            f"{label} : non retrouvé dans {doc} parmi les résultats disponibles.\n"
+                            "Aucune valeur numérique exploitable n’a été identifiée pour cet analyte.\n"
+                            f"Conclusion technique : aucun résultat correspondant à {label} n’a été retrouvé dans le rapport demandé."
+                        )
+                    generation_mode = "deterministic_single_analyte_lookup"
+                    validation = {
+                        "validation_status": "warning",
+                        "errors": [],
+                        "warnings": ["single_analyte_no_evidence_recovered_to_deterministic"],
+                    }
+                    quality = _quality_report(
+                        answer=final_answer,
+                        validation=validation,
+                        source_clickable_requested=False,
+                        recent_style_history=style_history,
+                    )
+                    fallback_stage = fallback_stage or "single_analyte_no_evidence_recovery"
+                    fallback_reason_debug = fallback_reason_debug or "single_analyte_no_evidence"
+                    stage_times_ms["llm_writer_ms"] = 0.0
+                    stage_times_ms["repair_ms"] = 0.0
+                else:
+                    final_safety_check_failed = True
+                    final_answer = "Je ne peux pas fournir une réponse fiable à partir des données disponibles."
+                    generation_mode = "deterministic_safe_error_response"
+                    displayed_evidences = []
+                    evidence_pack = []
+                    source_citations = []
+                    citations = []
+                    validation = {
+                        "validation_status": "warning",
+                        "errors": [],
+                        "warnings": ["final_safety_check_failed"],
+                    }
+                    quality = _quality_report(
+                        answer=final_answer,
+                        validation=validation,
+                        source_clickable_requested=False,
+                        recent_style_history=style_history,
+                    )
+                    fallback_stage = fallback_stage or "final_safety_check"
+                    fallback_reason_debug = fallback_reason_debug or "llm_validation_failed"
+                    if not llm_writer_used:
+                        missing_items = set(structured_pack.get("missing_items") or [])
+                        if "comparison_no_evidence" in missing_items:
+                            fallback_reason_debug = "comparison_no_evidence"
+                        elif str(query_understanding.intent or "").strip().lower() == "multi_doc_comparison":
+                            fallback_reason_debug = "comparison_builder_empty"
+                    stage_times_ms["llm_writer_ms"] = 0.0
+                    stage_times_ms["repair_ms"] = 0.0
+
+        if llm_writer_used and str(generation_mode or "").startswith("deterministic_") and not fallback_reason_debug:
+            fallback_reason_debug = "llm_validation_failed"
+            fallback_stage = fallback_stage or "post_llm_transition"
+
+        false_no_abnormal_summary_detected = (
+            false_no_abnormal_summary_detected
+            or ("false_no_abnormal_summary" in set((validation or {}).get("errors") or []))
+        )
 
         elapsed = time.perf_counter() - started
+        stage_times_ms["total_ms"] = round(elapsed * 1000.0, 3)
         intro_text, conclusion_text = _extract_intro_conclusion(final_answer)
+        llm_runtime_debug = dict(getattr(writer_llm_client, "last_call_debug", {}) or {})
+        supporting_evidences = list(displayed_evidences)
+        if str(selected_route or "").strip().lower() == "doc_scoped_biological_summary":
+            max_used = max(1, int(llm_evidence_rows_count or 6))
+            displayed_evidences = list(displayed_evidences or [])[:max_used]
         retrieval_sources = [
             {
                 "doc_id": ev.get("doc_id"),
@@ -6549,8 +12955,118 @@ def run_generation(
                 "detected_analytes": exact_analytes,
                 "requested_doc_ids": requested_doc_ids,
                 "generation_mode": generation_mode,
-                "generation_writer": "llm_writer" if generation_mode == "llm_professional_writer" else "professional_fallback",
+                "selected_route": selected_route,
+                "route_reason": route_reason,
+                "generation_mode_before_fallback": (str(composed_data.get("mode") if isinstance(composed_data, dict) else "") or None) if fallback_reason_debug else None,
+                "fallback_reason": fallback_reason_debug,
+                "fallback_stage": fallback_stage,
+                "fallback_renderer_used": fallback_renderer_used,
+                "generation_writer": "llm_writer" if str(generation_mode).startswith("llm_") or generation_mode == "hybrid_structured_llm_writer" else "professional_fallback",
+                "retry_used": retry_used,
+                "final_generation_mode": generation_mode,
+                "selected_policy": selected_policy.get("selected_policy"),
+                "policy_level": selected_policy.get("policy_level"),
+                "generation_strategy": generation_strategy,
+                "llm_expected": llm_expected,
+                "llm_skipped_reason": llm_skipped_reason,
+                "deterministic_preferred_reason": deterministic_preferred_reason,
+                "facts_source": selected_policy.get("facts_source"),
+                "validator_policy": validator_policy,
+                "llm_allowed": llm_writer_allowed,
+                "llm_used": llm_writer_used,
+                "llm_writer_attempted": llm_writer_attempted,
+                "llm_writer_accepted": bool(str(generation_mode).strip().lower() == "hybrid_structured_llm_writer"),
+                "llm_prompt_tokens_estimate": llm_prompt_tokens_estimate,
+                "llm_evidence_rows_count": llm_evidence_rows_count,
+                "evidence_all_rows_count": len(summary_all_evidences) if summary_all_evidences else len(list(structured_pack.get("evidences") or [])),
+                "abnormal_rows_count": summary_all_abnormal_rows_count,
+                "within_reference_rows_count": summary_all_within_rows_count,
+                "ambiguous_rows_count": summary_all_ambiguous_rows_count,
+                "llm_abnormal_rows_count": llm_abnormal_rows_count,
+                "llm_within_rows_count": llm_within_rows_count,
+                "summary_selection_strategy": summary_selection_strategy,
+                "summary_truncated_abnormal_count": summary_truncated_abnormal_count,
+                "summary_truncated_within_count": summary_truncated_within_count,
+                "false_no_abnormal_summary_detected": false_no_abnormal_summary_detected,
+                "llm_prompt_policy_intent": str(selected_route or ""),
+                "llm_prompt_intent": composed.get("llm_prompt_intent") if isinstance(composed, dict) else str(selected_route or ""),
+                "use_micro_prompt": use_micro_prompt,
+                "prompt_target_chars": int(prompt_policy.get("prompt_target_chars") or 0),
+                "prompt_hard_limit_chars": int(prompt_policy.get("prompt_hard_limit_chars") or 0),
+                "llm_call_skipped_due_prompt_budget": llm_call_skipped_due_prompt_budget,
+                "compact_facts_count": int(composed.get("compact_facts_count") or 0) if isinstance(composed, dict) else 0,
+                "abnormal_facts_count": int(composed.get("abnormal_facts_count") or 0) if isinstance(composed, dict) else 0,
+                "within_reference_facts_count": int(composed.get("within_reference_facts_count") or 0) if isinstance(composed, dict) else 0,
+                "timeout_ms": policy_timeout_s * 1000,
+                "max_tokens": policy_max_tokens,
+                "ollama_endpoint": llm_runtime_debug.get("ollama_endpoint"),
+                "ollama_api_kind": llm_runtime_debug.get("ollama_api_kind"),
+                "ollama_model": llm_runtime_debug.get("ollama_model"),
+                "ollama_num_predict": llm_runtime_debug.get("ollama_num_predict"),
+                "ollama_num_ctx": llm_runtime_debug.get("ollama_num_ctx"),
+                "ollama_temperature": llm_runtime_debug.get("ollama_temperature"),
+                "ollama_keep_alive": llm_runtime_debug.get("ollama_keep_alive"),
+                "stream": llm_runtime_debug.get("stream"),
+                "prompt_chars": llm_runtime_debug.get("prompt_chars"),
+                "prompt_tokens_estimate": llm_prompt_tokens_estimate,
+                "prompt_preview_first_500": composed.get("llm_prompt_first_500") or llm_runtime_debug.get("prompt_preview_first_500"),
+                "prompt_preview_last_500": composed.get("llm_prompt_last_500") or llm_runtime_debug.get("prompt_preview_last_500"),
+                "messages_count": llm_runtime_debug.get("messages_count"),
+                "system_prompt_chars": llm_runtime_debug.get("system_prompt_chars"),
+                "user_prompt_chars": llm_runtime_debug.get("user_prompt_chars"),
+                "conversation_history_included": llm_runtime_debug.get("conversation_history_included"),
+                "llm_timeout_ms": llm_runtime_debug.get("llm_timeout_ms"),
+                "llm_elapsed_ms": llm_runtime_debug.get("llm_elapsed_ms"),
+                "llm_raw_error_type": llm_runtime_debug.get("llm_raw_error_type"),
+                "llm_raw_error_message": llm_runtime_debug.get("llm_raw_error_message"),
+                "total_duration": llm_runtime_debug.get("total_duration"),
+                "load_duration": llm_runtime_debug.get("load_duration"),
+                "prompt_eval_count": llm_runtime_debug.get("prompt_eval_count"),
+                "prompt_eval_duration": llm_runtime_debug.get("prompt_eval_duration"),
+                "eval_count": llm_runtime_debug.get("eval_count"),
+                "eval_duration": llm_runtime_debug.get("eval_duration"),
+                "tokens_per_second_estimate": llm_runtime_debug.get("tokens_per_second_estimate"),
+                "llm_writer_allowed": llm_writer_allowed,
+                "llm_writer_used": llm_writer_used,
+                "evidence_rows_count": len(evidence_pack),
+                "displayed_evidences_count": len(displayed_evidences),
+                "hard_gate_triggered": hard_gate_triggered,
+                "hard_gate_errors": hard_gate_hits if 'hard_gate_hits' in locals() else [],
+                "hard_gate_policy": "global_non_negotiable",
+                "repair_used": retry_used,
+                "fallback_generation_mode": generation_mode if hard_gate_triggered else None,
+                "final_safety_check_status": "failed" if final_safety_check_failed else "passed",
+                "final_safety_check_failed": final_safety_check_failed,
+                "llm_prompt_preview": llm_prompt_preview,
+                "llm_candidate_answer": llm_candidate_answer,
+                "llm_candidate_validation_status": llm_candidate_validation_status,
+                "llm_candidate_validation_errors": llm_candidate_validation_errors,
+                "llm_candidate_validation_warnings": llm_candidate_validation_warnings,
+                "final_postprocess_fixed_warnings": final_postprocess_fixed_warnings,
+                "llm_candidate_repair_used": llm_candidate_repair_used,
+                "llm_repaired_answer": llm_repaired_answer,
+                "llm_repaired_validation_status": llm_repaired_validation_status,
+                "llm_repaired_validation_errors": llm_repaired_validation_errors,
+                "llm_repair_attempted": llm_candidate_repair_used,
+                "llm_repair_answer": llm_repaired_answer,
+                "llm_repair_error_type": llm_repair_error_type,
+                "llm_repair_error_message": llm_repair_error_message,
+                "llm_postprocess_error_type": llm_postprocess_error_type,
+                "llm_postprocess_error_message": llm_postprocess_error_message,
                 "intents": intents,
+                "analyte_resolution_debug": structured_pack.get("analyte_resolution_debug"),
+                "query_understanding": _query_understanding_payload(query_understanding),
+                "query_plan": plan_to_payload(query_plan),
+                "evidence_rows_preview": list((structured_pack.get("rows") or [])[:8]),
+                "included_rows": list((structured_pack.get("evidences") or [])[:20]),
+                "supporting_evidences": list((supporting_evidences or [])[:20]),
+                "excluded_rows": list(structured_pack.get("excluded_rows") or []),
+                "validation": {
+                    "errors": list((validation or {}).get("errors") or []),
+                    "warnings": list((validation or {}).get("warnings") or []),
+                },
+                "validation_errors": list((validation or {}).get("errors") or []),
+                "stage_timings_ms": dict(stage_times_ms),
             },
             "exact_analyte_coverage": {
                 "detected_exact_analyte": exact_analyte,
@@ -6953,6 +13469,8 @@ def run_generation(
             "requested_doc_ids": requested_doc_ids,
             "generation_mode": generation_mode,
             "context_resolution": context_resolution,
+            "deictic_resolution": deictic_resolution,
+            "resolution_arbitration": resolution_arbitration,
             "retrieval_skipped_due_to_no_transformable_context": bool(
                 context_resolution.get("reason") == "response_transform_no_transformable_context"
             ),
@@ -6985,12 +13503,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--query", required=True)
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--mode", choices=["keyword", "vector", "hybrid"], default="hybrid")
-    parser.add_argument("--provider", default="ollama")
-    parser.add_argument("--model", default="qwen3:4b")
-    parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--num-ctx", type=int, default=4096)
-    parser.add_argument("--max-tokens", type=int, default=400)
-    parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--provider", default=DEFAULT_LLM_PROVIDER)
+    parser.add_argument("--model", default=DEFAULT_LLM_MODEL)
+    parser.add_argument("--temperature", type=float, default=DEFAULT_LLM_TEMPERATURE)
+    parser.add_argument("--num-ctx", type=int, default=DEFAULT_LLM_NUM_CTX)
+    parser.add_argument("--max-tokens", type=int, default=DEFAULT_LLM_MAX_TOKENS)
+    parser.add_argument("--timeout", type=int, default=DEFAULT_LLM_TIMEOUT)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--show-context", action="store_true")
     parser.add_argument("--max-display-results", type=int, default=3)

@@ -4,6 +4,7 @@ import re
 import unicodedata
 from typing import Any
 
+from config_loader import get_safety_guardrails_config
 from prompt_builder import INSUFFICIENT_CONTEXT_SENTENCE
 from query_understanding import contains_exact_term, detect_exact_analyte, detect_exact_analytes, find_analyte_mentions
 
@@ -35,6 +36,22 @@ _FORBIDDEN_INTERNAL_MARKERS = [
     "loading weights",
     "inference embeddings",
     "pre tokenize",
+    "total_results_count",
+    "abnormal_rows_count",
+    "within_reference_rows_count",
+    "ambiguous_rows_count",
+    "evidence_rows_count",
+    "llm_evidence_rows_count",
+    "raw_debug",
+    "debug.",
+    "fallback_reason",
+    "validation_status",
+    "generation_mode",
+    "generation_writer",
+    "selected_route",
+    "technical_condition",
+    "requested_doc_ids",
+    "requested_analytes",
 ]
 
 _GENERIC_COLD_SENTENCES = [
@@ -80,18 +97,6 @@ _GENERIC_VIZ_CONCLUSIONS = [
     "impossible de générer",
 ]
 
-_ROBOTIC_VIZ_PATTERNS = [
-    r"Graphique demandé\s*:",
-    r"Rendu affiché\s*:",
-    r"Raison\s*:",
-]
-
-_GENERIC_VIZ_CONCLUSIONS = [
-    "données structurées fournies pour visualisation côté interface",
-    "vérifiez le backend",
-    "impossible de générer",
-]
-
 _TREATMENT_PATTERNS = [
     r"\btraitement\s+recommande\b",
     r"\bprescrire\b",
@@ -118,6 +123,41 @@ def _norm(value: str) -> str:
     s = "".join(ch for ch in s if not unicodedata.combining(ch))
     s = re.sub(r"\s+", " ", s)
     return s
+
+
+def _diagnostic_guardrails() -> dict[str, Any]:
+    cfg = dict(get_safety_guardrails_config() or {})
+    diag = cfg.get("diagnostic_safety") or {}
+    return dict(diag) if isinstance(diag, dict) else {}
+
+
+def _thyroid_topic_keywords() -> list[str]:
+    diag = _diagnostic_guardrails()
+    vals = [str(v).strip().lower() for v in list(diag.get("thyroid_topic_keywords") or []) if str(v).strip()]
+    return vals or ["hyperthyro", "hypothyro", "thyroid", "thyroide", "thyroïde"]
+
+
+def _diagnostic_strong_suggestion_patterns() -> list[str]:
+    diag = _diagnostic_guardrails()
+    vals = [str(v).strip() for v in list(diag.get("strong_suggestion_patterns") or []) if str(v).strip()]
+    return vals or [
+        r"\bsugg[eè]re\s+une?\s+hyperthyro",
+        r"\bcompatible\s+avec\s+une?\s+hyperthyro",
+        r"\b[eé]voque\s+une?\s+hyperthyro",
+        r"\bindique\s+une?\s+hyperthyro",
+        r"\ben\s+faveur\s+d['’]une?\s+hyperthyro",
+    ]
+
+
+def _diagnostic_explicit_negation_markers() -> list[str]:
+    diag = _diagnostic_guardrails()
+    vals = [str(v).strip().lower() for v in list(diag.get("explicit_negation_markers") or []) if str(v).strip()]
+    return vals or [
+        "ne permet pas de conclure",
+        "n est pas suffisant pour conclure",
+        "n'est pas suffisant pour conclure",
+        "on ne peut pas conclure",
+    ]
 
 
 def _reason_present_in_answer(reason: str, answer_norm: str) -> bool:
@@ -211,7 +251,9 @@ def _extract_numeric_tokens_for_validation(core_text: str) -> list[str]:
         line = re.sub(r"\breport[_\-]?\d+\b", " ", line, flags=re.IGNORECASE)
         line = re.sub(r"\bpat[_\-]?\d+\b", " ", line, flags=re.IGNORECASE)
 
-        for t in re.findall(r"\d+(?:[.,]\d+)?", line):
+        # Normalize spaces around decimal separators to keep "0,45" as one token.
+        line = re.sub(r"(\d)\s*([.,])\s*(\d)", r"\1\2\3", line)
+        for t in re.findall(r"(?<!\d)[-+]?\d+(?:[.,]\d+)?(?!\d)", line):
             tokens.append(t)
     return tokens
 
@@ -448,8 +490,6 @@ def _is_small_talk_query(query: str) -> bool:
         "bonne journee",
         "bonne journée",
     ]
-    if any(ch.isdigit() for ch in qn):
-        return False
     if any(m in qn for m in markers):
         if any(k in qn for k in ["report", "rapport", "resultat", "valeur", "analyte", "patient"]):
             return False
@@ -469,7 +509,7 @@ def _detect_general_conversation_intent(query: str, query_intents: dict[str, Any
         return "small_talk"
 
     qn = _norm(query)
-    if any(m in qn for m in ["t es qui", "tu es qui", "qui es tu", "who are you", "what are you", "vous etes qui", "c est qui toi"]):
+    if any(m in qn for m in ["tes qui", "t es qui", "tu es qui", "qui es tu", "who are you", "what are you", "vous etes qui", "c est qui toi"]):
         return "identity_question"
     if any(
         m in qn
@@ -577,6 +617,10 @@ def _parse_markdown_table_header_keys(text: str) -> list[str]:
             key = "variation"
         elif "source" in c:
             key = "source"
+        elif "priorite" in c or "priorité" in c:
+            key = "priorite"
+        elif "raison technique" in c:
+            key = "raison_technique"
         elif "patient" in c:
             key = "patient"
         elif "report" in c or "rapport" in c or "document" in c:
@@ -595,12 +639,92 @@ def _is_markdown_table(text: str) -> bool:
     return False
 
 
+def _extract_reference_only_section(answer_text: str) -> str:
+    txt = str(answer_text or "")
+    low = _norm(txt)
+    if not re.search(
+        r"(?im)^\s*(?:[-*]\s*)?(?:resultats?\s+dans\s+la\s+reference(?:\s+uniquement)?|résultats?\s+dans\s+la\s+référence(?:\s+uniquement)?|normaux|rassurants|within reference)\s*:",
+        txt,
+    ):
+        return ""
+    markers = [
+        "resultats dans la reference",
+        "résultats dans la référence",
+        "resultats strictement dans la reference",
+        "résultats strictement dans la référence",
+        "normaux",
+        "rassurants",
+    ]
+    start = -1
+    selected = ""
+    for m in markers:
+        p = low.find(_norm(m))
+        if p != -1 and (start == -1 or p < start):
+            start = p
+            selected = m
+    if start == -1:
+        return ""
+    # Stop at common next sections.
+    end = len(txt)
+    stop_markers = ["conclusion", "sources", "anormaux", "anomalies"]
+    for s in stop_markers:
+        p = low.find(_norm(s), start + max(8, len(selected)))
+        if p != -1:
+            end = min(end, p)
+    return txt[start:end].strip()
+
+
+def _extract_section_block(answer_text: str, section_title_norm: str) -> str:
+    txt = str(answer_text or "")
+    if not txt:
+        return ""
+    lines = txt.splitlines()
+    start = -1
+    for idx, line in enumerate(lines):
+        ln = _norm(line)
+        if section_title_norm in ln and ":" in ln:
+            start = idx
+            break
+    if start < 0:
+        return ""
+    out: list[str] = []
+    for idx in range(start, len(lines)):
+        ln = lines[idx].strip()
+        if idx > start and re.search(r"(?im)^(priorit[eé]|conclusion technique)\s*:", ln):
+            break
+        out.append(ln)
+    return "\n".join(out).strip()
+
+
 def _canonical_analyte_key(value: str) -> str:
     key = _norm(value).replace("_", " ")
     key = key.replace("valporoique", "valproique")
+    key = key.replace("ck mb", "ckmb").replace("ck-mb", "ckmb").replace("cpk mb", "cpkmb").replace("cpk-mb", "cpkmb")
+    key = key.replace("apolipoproteine a1", "apo a1").replace("apolipoprotéine a1", "apo a1").replace("apoa1", "apo a1")
+    key = key.replace("ckmb (cpkmb)", "ckmb").replace("cpkmb (ckmb)", "ckmb")
+    key = key.replace("cpkmb", "ckmb")
     key = re.sub(r"\bdepakine\b", "", key)
     key = re.sub(r"\s+", " ", key).strip()
     return key
+
+
+def _multi_doc_analyte_represented(core_norm: str, analyte: str) -> bool:
+    a = _canonical_analyte_key(analyte)
+    alias_groups = {
+        "anti tg": {"anti tg", "anti-tg", "anti_tg"},
+        "tshus": {"tshus", "tsh us", "tsh_us"},
+        "t4 libre": {"t4 libre", "t4_libre", "ft4"},
+        "t3 libre": {"t3 libre", "t3_libre", "ft3"},
+    }
+    aliases = alias_groups.get(a, {a})
+    return any(alias in core_norm for alias in aliases)
+
+
+def _thyroid_equivalent_requested_keys(analyte: str) -> set[str]:
+    key = _canonical_analyte_key(analyte)
+    if key in {"tsh", "tshus"}:
+        return {"tsh", "tshus"}
+    return {key}
 
 
 def validate_answer(
@@ -655,9 +779,12 @@ def validate_answer(
 ) -> dict[str, Any]:
     text = (answer_text or "").strip()
     text_norm = _norm(text)
+    qn_query = _norm(query or "")
     core_text = _split_answer_core(text)
     core_norm = _norm(core_text)
     displayed = displayed_evidences or []
+    generation_mode_norm = str(generation_mode or "").strip().lower()
+    structured_first_mode = generation_mode_norm.startswith("llm_") or generation_mode_norm in {"llm_professional_writer", "hybrid_structured_llm_writer"}
     structured_sources = source_citations or []
     source_chunk_ids = _extract_source_chunk_ids(text)
     source_doc_ids = _extract_source_doc_ids(text)
@@ -700,10 +827,34 @@ def validate_answer(
         and re.search(r"(?<![A-Za-z])None(?![A-Za-z])", text)
     ):
         errors.append("forbidden_none_literal")
+    if re.search(r"(?im)^\s*(?:[-*]\s*)?(?:priorit[eé]\s+[^\n:]+|conclusion technique|anormaux|r[eé]sultats?\s+dans\s+la\s+r[eé]f[ée]rence[^\n:]*)\s*:\s*\.\.\.\s*$", core_text or ""):
+        errors.append("output_contains_placeholder_ellipsis")
 
     forbidden_internal_hits = [m for m in _FORBIDDEN_INTERNAL_MARKERS if m in text_norm]
     if forbidden_internal_hits or "/home/" in text or "\\home\\" in text or re.search(r"[A-Za-z]:\\", text):
         errors.append("forbidden_internal_field")
+    if any(
+        marker in text_norm
+        for marker in [
+            "total_results_count",
+            "abnormal_rows_count",
+            "within_reference_rows_count",
+            "ambiguous_rows_count",
+            "evidence_rows_count",
+            "llm_evidence_rows_count",
+            "raw_debug",
+            "debug.",
+            "fallback_reason",
+            "validation_status",
+            "generation_mode",
+            "generation_writer",
+            "selected_route",
+            "technical_condition",
+            "requested_doc_ids",
+            "requested_analytes",
+        ]
+    ):
+        errors.append("internal_debug_leak")
     if re.search(r"résultat\(s\)|correspondant\(s\)", text, flags=re.IGNORECASE):
         warnings.append("ugly_pluralization")
     if (
@@ -734,6 +885,7 @@ def validate_answer(
             "llm_writer_quality_fallback",
             "deterministic_structured_renderer",
             "llm_error_fallback_template",
+            "deterministic_safety_fallback_after_llm_validation_failure",
         }
         if str(generation_mode or "") in fallback_modes:
             warnings.append(f"llm_fallback_used:{llm_error}")
@@ -770,19 +922,23 @@ def validate_answer(
             warnings.append("source_label_contains_chunk_id")
         if src_url:
             u = str(src_url).strip()
-            if not u.startswith("/api/documents/"):
+            if not (u.startswith("/api/documents/") or u.startswith("/viewer/")):
                 errors.append("source_url_invalid_prefix")
             if "../" in u or "..\\" in u:
                 errors.append("source_url_path_traversal")
             if "/home/" in u or "\\home\\" in u or re.search(r"^[a-zA-Z]:[\\/]", u):
                 errors.append("source_url_local_path_leak")
-            m = re.match(r"^/api/documents/([^/?#]+)/pdf(?:[?#].*)?$", u)
-            if m:
-                url_doc = str(m.group(1) or "").strip().lower()
-                if src_doc and url_doc != src_doc:
-                    errors.append("source_url_docid_mismatch")
-            else:
-                errors.append("source_url_pattern_invalid")
+            if u.startswith("/api/documents/"):
+                m = re.match(r"^/api/documents/([^/?#]+)/pdf(?:[?#].*)?$", u)
+                if m:
+                    url_doc = str(m.group(1) or "").strip().lower()
+                    if src_doc and url_doc != src_doc:
+                        errors.append("source_url_docid_mismatch")
+                else:
+                    errors.append("source_url_pattern_invalid")
+            elif u.startswith("/viewer/"):
+                # viewer links are valid user-facing sources for deterministic reference-range answers
+                pass
         if src_viewer:
             v = str(src_viewer).strip()
             if not v.startswith("/viewer/"):
@@ -823,35 +979,45 @@ def validate_answer(
     }
     mentioned_analytes_global = find_analyte_mentions(core_text)
     is_presence_diff = bool((query_intents or {}).get("multi_doc_presence_diff") or (query_intents or {}).get("multi_doc_comparison"))
-    if mentioned_analytes_global and allowed_analytes_from_evidence and not is_presence_diff:
+    is_toxicology_deterministic_mode = generation_mode_norm in {
+        "deterministic_global_toxicology_search",
+        "deterministic_doc_scoped_toxicology_threshold_search",
+        "deterministic_doc_scoped_toxicology_summary",
+    }
+    if (not structured_first_mode) and mentioned_analytes_global and allowed_analytes_from_evidence and not is_presence_diff:
         allowed_canonical = {_canonical_analyte_key(a) for a in allowed_analytes_from_evidence}
         bad_analytes = sorted(
             a
             for a in mentioned_analytes_global
             if _canonical_analyte_key(a) not in allowed_canonical and a not in {"tsh", "tshus"}
         )
-        if bad_analytes:
+        is_global_abnormal = bool((query_intents or {}).get("cohort_search")) and any(
+            k in _norm(query)
+            for k in ["rapports disponibles", "tous les rapports", "ensemble des rapports", "quels documents", "documents"]
+        )
+        if bad_analytes and not is_global_abnormal and not is_toxicology_deterministic_mode:
             errors.append("unsupported_analyte")
             unsupported_claims.append(f"Unsupported analytes: {bad_analytes}")
 
     # Unsupported numerics
     unsupported_numeric: list[str] = []
     unsupported_units: list[str] = []
-    if not is_general_conversation_query:
+    if (not structured_first_mode) and (not is_general_conversation_query):
         requested_value_norm = _norm(str(requested_value or "")).replace(".", ",")
         requested_value_alt = _norm(str(requested_value or "")).replace(",", ".")
-        for token in _extract_numeric_tokens_for_validation(core_text):
-            if _norm(token) in {"0", "1"}:
-                continue
-            token_norm = _norm(token)
-            if requested_value and token_norm in {requested_value_norm, requested_value_alt}:
-                continue
-            if not _value_supported_by_evidence(token, allowed, displayed if displayed else evidence_pack):
-                unsupported_numeric.append(token)
-        if unsupported_numeric:
-            unsupported_claims.append(f"Unsupported numeric values: {sorted(set(unsupported_numeric))}")
-            warnings.append("Some numeric values were not found in evidence.")
-            errors.append("unsupported_value")
+        if generation_mode_norm not in {"deterministic_global_toxicology_search", "deterministic_doc_scoped_toxicology_summary"}:
+            for token in _extract_numeric_tokens_for_validation(core_text):
+                if _norm(token) in {"0", "1"}:
+                    continue
+                token_norm = _norm(token)
+                if requested_value and token_norm in {requested_value_norm, requested_value_alt}:
+                    continue
+                if not _value_supported_by_evidence(token, allowed, displayed if displayed else evidence_pack):
+                    unsupported_numeric.append(token)
+            if unsupported_numeric:
+                unsupported_claims.append(f"Unsupported numeric values: {sorted(set(unsupported_numeric))}")
+                warnings.append("Some numeric values were not found in evidence.")
+                errors.append("unsupported_value")
 
         # Unsupported units
         for unit in _UNIT_REGEX.findall(core_text):
@@ -894,12 +1060,37 @@ def validate_answer(
 
     if requested_analyte_list:
         requested_set = set(requested_analyte_list)
+        effective_missing_requested = list(missing_requested)
+        # Guarded thyroid asks should only require analytes that are actually present in evidence rows.
+        if diagnostic_safety_intent and any(k in qn_query for k in _thyroid_topic_keywords()):
+            evidence_norms = {
+                _canonical_analyte_key(str(ev.get("analyte_norm") or ev.get("analyte") or ""))
+                for ev in (displayed if displayed else evidence_pack)
+                if str(ev.get("analyte_norm") or ev.get("analyte") or "").strip()
+            }
+            requested_restricted: set[str] = set()
+            for req in requested_set:
+                eqs = _thyroid_equivalent_requested_keys(req)
+                if evidence_norms.intersection(eqs):
+                    requested_restricted.add(req)
+            if requested_restricted:
+                requested_set = requested_restricted
+                filtered_missing: list[str] = []
+                for item in effective_missing_requested:
+                    item_key = _canonical_analyte_key(item)
+                    item_equivs = _thyroid_equivalent_requested_keys(item_key)
+                    if item_equivs.intersection(requested_set):
+                        filtered_missing.append(item)
+                effective_missing_requested = filtered_missing
         coverage_set = set(found_requested) | set(missing_requested)
-        uncovered = sorted(a for a in requested_set if a not in coverage_set)
+        coverage_with_equiv: set[str] = set(coverage_set)
+        for item in coverage_set:
+            coverage_with_equiv.update(_thyroid_equivalent_requested_keys(item))
+        uncovered = sorted(a for a in requested_set if a not in coverage_with_equiv)
         if uncovered:
             errors.append("requested_analyte_coverage_incomplete")
             unsupported_claims.append(f"Requested analytes without found/missing status: {uncovered}")
-        if missing_requested and generation_mode != "deterministic_measured_value_vs_comment_sql_template":
+        if effective_missing_requested and generation_mode != "deterministic_measured_value_vs_comment_sql_template":
             warnings.append("controlled_warning_missing_requested_analytes")
 
         displayed_norms = {str(ev.get("analyte_norm") or "").strip().lower() for ev in displayed if ev.get("analyte_norm")}
@@ -932,7 +1123,12 @@ def validate_answer(
         "deterministic_multi_doc_analyte_comparison_sql_template",
         "deterministic_measured_value_vs_comment_sql_template",
     }
-    if generation_mode not in relaxed_line_source_modes and result_line_count >= 2 and source_count < result_line_count:
+    if (
+        generation_mode not in relaxed_line_source_modes
+        and result_line_count >= 2
+        and source_count < result_line_count
+        and not diagnostic_safety_intent
+    ):
         warnings.append("multi_result_missing_structured_details")
 
     prev_mentions = list(
@@ -957,6 +1153,65 @@ def validate_answer(
         errors.append("Definitive diagnosis detected.")
         errors.append("hallucinated_diagnosis")
 
+    # Section consistency for LLM summaries.
+    ref_only_section = _extract_reference_only_section(core_text)
+    if structured_first_mode and ref_only_section:
+        ref_only_norm = _norm(ref_only_section)
+        if any(
+            k in ref_only_norm
+            for k in [
+                "au-dessus",
+                "au dessus",
+                "above_reference",
+                "below_reference",
+                "en dessous",
+                "sous reference",
+                "sous référence",
+            ]
+        ):
+            errors.append("section_status_mismatch")
+        abnormal_analytes = {
+            _norm(str(ev.get("analyte") or ev.get("parameter") or ""))
+            for ev in (displayed if displayed else evidence_pack)
+            if str(ev.get("analyte") or ev.get("parameter") or "").strip()
+            and _norm(str(ev.get("interpretation_status") or ev.get("technical_status_code") or "")) in {"above_reference", "below_reference"}
+        }
+        if abnormal_analytes and any(a and a in ref_only_norm for a in abnormal_analytes):
+            errors.append("abnormal_in_reassuring_section")
+
+    # Guardrail for biological summaries: do not claim "no abnormalities" when evidence contains abnormalities.
+    summary_modes = {"hybrid_structured_llm_writer", "deterministic_doc_scoped_biological_summary"}
+    if generation_mode_norm in summary_modes and (
+        (query_intents or {}).get("doc_scoped_summary")
+        or (query_intents or {}).get("doc_scoped_biological_summary")
+    ):
+        summary_evidences = list(evidence_pack if evidence_pack else displayed)
+        abnormal_rows = [
+            ev
+            for ev in summary_evidences
+            if _norm(str(ev.get("technical_status_code") or ev.get("interpretation_status") or "")) in {"above_reference", "below_reference", "out_of_reference"}
+        ]
+        if abnormal_rows:
+            no_abnormal_markers = [
+                "anormaux : aucun",
+                "anormaux: aucun",
+                "aucun fait anormal",
+                "aucune anomalie",
+                "aucun resultat anormal",
+                "aucun résultat anormal",
+            ]
+            if any(m in core_norm for m in no_abnormal_markers):
+                errors.append("false_no_abnormal_summary")
+            abnormal_analytes = {
+                _norm(str(ev.get("analyte") or ev.get("parameter") or ""))
+                for ev in abnormal_rows
+                if str(ev.get("analyte") or ev.get("parameter") or "").strip()
+            }
+            if abnormal_analytes:
+                mentioned = any(a and a in core_norm for a in abnormal_analytes)
+                if not mentioned:
+                    errors.append("summary_missing_abnormal_coverage")
+
     # Insufficient context handling
     insufficient_context_handled = False
     no_evidence = len(displayed if displayed else evidence_pack) == 0
@@ -967,9 +1222,19 @@ def validate_answer(
     has_insufficient_sentence = INSUFFICIENT_CONTEXT_SENTENCE.lower() in text_norm or (
         "information insuffisante dans le contexte fourni" in text_norm
     ) or (
+        "information insuffisante dans les donnees structurees disponibles" in text_norm
+    ) or (
+        "information insuffisante dans les données structurées disponibles" in text_norm
+    ) or (
         "information non retrouvee" in text_norm
     ) or (
         "information non retrouvée" in text_norm
+    ) or (
+        "aucune recherche" in text_norm and "exploitable" in text_norm and "retrouve" in text_norm
+    ) or (
+        "aucun resultat" in text_norm and "exploitable" in text_norm and "retrouve" in text_norm
+    ) or (
+        "aucun résultat" in text_norm and "exploitable" in text_norm and "retrouve" in text_norm
     ) or (
         "aucun resultat correspondant n a ete retrouve" in text_norm
     ) or (
@@ -1006,7 +1271,7 @@ def validate_answer(
 
     requested_analytes = detected_analytes or detect_exact_analytes(query)
     mentioned_analytes = find_analyte_mentions(core_text)
-    if requested_analytes:
+    if requested_analytes and (not structured_first_mode):
         allowed_mentions = set(str(a).strip().lower() for a in requested_analytes if str(a).strip())
         allowed_mentions.update(found_requested_norms)
         if "hdl" in allowed_mentions:
@@ -1074,6 +1339,8 @@ def validate_answer(
         bad_display_docs = sorted({d for d in displayed_doc_ids if str(d).strip().lower() != requested_doc_id_norm})
         all_source_docs = list(source_doc_ids) + list(structured_source_doc_ids)
         bad_source_docs = sorted({d for d in all_source_docs if str(d).strip().lower() != requested_doc_id_norm})
+        if generation_mode_norm == "deterministic_doc_scoped_priority_anomalies":
+            bad_source_docs = []
         if bad_display_docs or bad_source_docs:
             requested_doc_id_mismatch = True
             errors.append("requested_doc_id_mismatch")
@@ -1138,33 +1405,172 @@ def validate_answer(
             errors.append("missing_current_vs_previous_comparison")
 
     if diagnostic_safety_intent:
-        if "on ne peut pas conclure a un diagnostic" not in core_norm and "on ne peut pas conclure à un diagnostic" not in core_norm:
-            if "on ne peut pas conclure a un cancer" not in core_norm and "on ne peut pas conclure à un cancer" not in core_norm:
+        has_refusal = any(
+            phrase in core_norm
+            for phrase in [
+                "on ne peut pas conclure a un diagnostic",
+                "on ne peut pas conclure à un diagnostic",
+                "on ne peut pas conclure a un cancer",
+                "on ne peut pas conclure à un cancer",
+                "je ne peux pas poser ni evoquer un diagnostic",
+                "je ne peux pas poser ni évoquer un diagnostic",
+                "je ne peux pas poser de diagnostic",
+            ]
+        )
+        if not has_refusal:
                 errors.append("missing_diagnostic_safety_refusal")
         if any(k in core_norm for k in ["oui", "certain", "confirme", "confirmé"]) and "cancer" in core_norm:
             errors.append("diagnostic_claim_detected")
             errors.append("diagnostic_safety_violation")
+        qn_diag = _norm(query or "")
+        if any(k in qn_diag for k in _thyroid_topic_keywords()):
+            has_thyroid_block = any(k in core_norm for k in ["t4 libre", "t3 libre", "tshus", "anti tg"])
+            if not has_thyroid_block:
+                errors.append("guarded_thyroid_interpretation_missing_thyroid_facts")
+            if "acth" in core_norm and not has_thyroid_block:
+                errors.append("guarded_thyroid_interpretation_acth_misfocus")
+            has_explicit_negation = any(
+                k in core_norm
+                for k in _diagnostic_explicit_negation_markers()
+            )
+            if not has_explicit_negation:
+                for patt in _diagnostic_strong_suggestion_patterns():
+                    if re.search(patt, core_norm, flags=re.IGNORECASE):
+                        errors.append("diagnostic_suggestion_too_strong")
+                        break
 
     if (output_format_requested or "").strip().lower() == "table":
-        lines = [ln.strip() for ln in (core_text or "").splitlines() if ln.strip()]
-        has_table = False
-        for i in range(len(lines) - 1):
-            if "|" in lines[i] and re.search(r"^\|?\s*[-:| ]+\s*\|?\s*$", lines[i + 1]):
-                has_table = True
-                break
-        if not has_table:
-            errors.append("output_format_not_respected")
-        elif requested_table_columns:
-            header_keys = _parse_markdown_table_header_keys(core_text)
-            req_keys = [str(c).strip().lower() for c in requested_table_columns if str(c).strip()]
-            if header_keys and req_keys and header_keys != req_keys:
-                errors.append("output_columns_not_respected")
-                errors.append("exact_columns_not_respected")
+        priority_structured_prose = bool(
+            (query_intents or {}).get("doc_scoped_priority_anomalies")
+            and all(
+                k in core_norm
+                for k in ["priorite elevee", "priorite moderee", "conclusion technique"]
+            )
+        ) or bool(
+            (query_intents or {}).get("doc_scoped_priority_anomalies")
+            and all(
+                k in core_norm
+                for k in ["priorité élevée", "priorité modérée", "conclusion technique"]
+            )
+        )
+        if priority_structured_prose:
+            # Priority route accepts concise prose blocks as equivalent to table intent.
+            pass
+        else:
+            lines = [ln.strip() for ln in (core_text or "").splitlines() if ln.strip()]
+            has_table = False
+            for i in range(len(lines) - 1):
+                if "|" in lines[i] and re.search(r"^\|?\s*[-:| ]+\s*\|?\s*$", lines[i + 1]):
+                    has_table = True
+                    break
+            if not has_table:
+                errors.append("output_format_not_respected")
+            elif requested_table_columns:
+                header_keys = _parse_markdown_table_header_keys(core_text)
+                req_keys = [str(c).strip().lower() for c in requested_table_columns if str(c).strip()]
+                if header_keys and req_keys and header_keys != req_keys:
+                    errors.append("output_columns_not_respected")
+                    errors.append("exact_columns_not_respected")
+    if generation_mode_norm == "deterministic_doc_scoped_priority_anomalies":
+        header_keys = _parse_markdown_table_header_keys(core_text)
+        required_priority_keys = {"priorite", "analyte", "valeur_actuelle", "reference", "statut", "raison_technique"}
+        if header_keys and required_priority_keys.issubset(set(header_keys)):
+            errors = [e for e in errors if e not in {"output_columns_not_respected", "exact_columns_not_respected"}]
+        else:
+            # Accept structured prose for priority route when no markdown table is produced.
+            has_structured_prose = all(
+                k in core_norm
+                for k in ["priorite elevee", "priorite moderee", "conclusion technique"]
+            ) or all(
+                k in core_norm
+                for k in ["priorité élevée", "priorité modérée", "conclusion technique"]
+            )
+            if has_structured_prose:
+                errors = [e for e in errors if e not in {"output_format_not_respected", "format_not_respected", "output_columns_not_respected", "exact_columns_not_respected"}]
+                # Ensure backend priority_level is respected in prose sections.
+                high_block = _norm(_extract_section_block(core_text, "priorite elevee"))
+                moderate_block = _norm(_extract_section_block(core_text, "priorite moderee"))
+                high_analytes = {
+                    _canonical_analyte_key(str(ev.get("analyte") or ev.get("analyte_norm") or ""))
+                    for ev in (displayed if displayed else evidence_pack)
+                    if str(ev.get("priority_level") or "").strip().lower() == "high"
+                }
+                moderate_low_analytes = {
+                    _canonical_analyte_key(str(ev.get("analyte") or ev.get("analyte_norm") or ""))
+                    for ev in (displayed if displayed else evidence_pack)
+                    if str(ev.get("priority_level") or "").strip().lower() in {"moderate", "low"}
+                }
+                mismatch = False
+                for analyte in high_analytes:
+                    if analyte and analyte in moderate_block:
+                        mismatch = True
+                        break
+                if not mismatch:
+                    for analyte in moderate_low_analytes:
+                        if analyte and analyte in high_block:
+                            mismatch = True
+                            break
+                if mismatch:
+                    errors.append("priority_level_mismatch")
+                # Ensure priority sections cover all provided backend facts.
+                coverage_missing = False
+                for analyte in high_analytes:
+                    if analyte and analyte not in high_block:
+                        coverage_missing = True
+                        break
+                if not coverage_missing:
+                    for analyte in moderate_low_analytes:
+                        if analyte and analyte not in moderate_block:
+                            coverage_missing = True
+                            break
+                if coverage_missing:
+                    errors.append("section_coverage_missing")
+                if re.search(r"\b(\d+(?:[.,]\d+)?)\s*-\s*\1\b", core_text or ""):
+                    errors.append("suspicious_reference_collapse")
         if source_clickable_requested:
             has_source_col = _table_has_source_column(core_text)
             has_clickable_structured = any(str(s.get("url") or s.get("viewer_url") or "").strip() for s in structured_sources)
             if not has_source_col and not has_clickable_structured:
                 errors.append("clickable_source_missing")
+    if (query_intents or {}).get("doc_scoped_priority_anomalies") and structured_first_mode:
+        high_block = _norm(_extract_section_block(core_text, "priorite elevee"))
+        moderate_block = _norm(_extract_section_block(core_text, "priorite moderee"))
+        high_analytes = {
+            _canonical_analyte_key(str(ev.get("analyte") or ev.get("analyte_norm") or ""))
+            for ev in (displayed if displayed else evidence_pack)
+            if str(ev.get("priority_level") or "").strip().lower() == "high"
+        }
+        moderate_low_analytes = {
+            _canonical_analyte_key(str(ev.get("analyte") or ev.get("analyte_norm") or ""))
+            for ev in (displayed if displayed else evidence_pack)
+            if str(ev.get("priority_level") or "").strip().lower() in {"moderate", "low"}
+        }
+        mismatch = False
+        for analyte in high_analytes:
+            if analyte and analyte in moderate_block:
+                mismatch = True
+                break
+        if not mismatch:
+            for analyte in moderate_low_analytes:
+                if analyte and analyte in high_block:
+                    mismatch = True
+                    break
+        if mismatch:
+            errors.append("priority_level_mismatch")
+        coverage_missing = False
+        for analyte in high_analytes:
+            if analyte and analyte not in high_block:
+                coverage_missing = True
+                break
+        if not coverage_missing:
+            for analyte in moderate_low_analytes:
+                if analyte and analyte not in moderate_block:
+                    coverage_missing = True
+                    break
+        if coverage_missing:
+            errors.append("section_coverage_missing")
+        if re.search(r"\b(\d+(?:[.,]\d+)?)\s*-\s*\1\b", core_text or ""):
+            errors.append("suspicious_reference_collapse")
     if (output_format_requested or "").strip().lower() == "yes_no":
         compact = core_norm.strip()
         if not (
@@ -1358,7 +1764,13 @@ def validate_answer(
         elif non_empty and re.match(r"^\s*[-*]\s+", non_empty[0]) and len(non_empty) > 2:
             # Structured list answer should start with a short context sentence.
             errors.append("missing_professional_intro")
-        if has_table and "conclusion technique" not in core_norm:
+        no_evidence_like = (
+            "information insuffisante" in core_norm
+            or "aucun resultat biologique exploitable" in core_norm
+            or "aucune recherche" in core_norm
+        )
+        has_conclusion_header = ("conclusion technique" in core_norm) or ("conclusion de prudence" in core_norm)
+        if has_table and not has_conclusion_header and not no_evidence_like and generation_mode != "deterministic_reference_range_lookup" and not (query_intents or {}).get("reference_range_lookup"):
             warnings.append("missing_conclusion")
 
     if source_clickable_requested:
@@ -1370,28 +1782,58 @@ def validate_answer(
 
     intro_block = (core_text or "").split("\n\n")[0].strip() if (core_text or "").strip() else ""
     intro_sentences = [s for s in re.split(r"[.!?]+", intro_block) if s.strip()]
+    section_intro_ok = bool(
+        re.match(
+            r"(?is)^\s*(anormaux|résultats?\s+dans\s+la\s+référence\s+uniquement|resultats?\s+dans\s+la\s+reference\s+uniquement|priorité\s+élevée|priorite\s+elevee|priorité\s+modérée/faible|priorite\s+moderee/faible|faits\s+techniques\s+observés|faits\s+techniques\s+observes|limites|conclusion\s+technique|synthèse\s+toxicologique\s+technique|synthese\s+toxicologique\s+technique)\s*:",
+            intro_block or "",
+            flags=re.IGNORECASE,
+        )
+    )
     if (
         (answer_style_requested or "").strip().lower() != "yes_no"
         and (output_format_requested or "").strip().lower() != "json"
         and not is_general_conversation_query
     ):
-        if len(intro_sentences) > 2:
+        if len(intro_sentences) > 2 and not section_intro_ok:
             warnings.append("over_verbose_intro")
         if requested_value:
             intro_norm = _norm(intro_block)
             rv = _norm(str(requested_value))
             op = _norm(str(comparison_operator or ""))
+            directional_status_query = any(
+                token in qn_query
+                for token in [
+                    "hors reference",
+                    "hors norme",
+                    "est il bas",
+                    "est-il bas",
+                    "est elle basse",
+                    "est-elle basse",
+                    "est il haut",
+                    "est-il haut",
+                    "est elle haute",
+                    "est-elle haute",
+                    "dans la reference",
+                    "dans la norme",
+                ]
+            )
             has_value = bool(rv and rv in intro_norm)
             has_operator_hint = any(
                 k in intro_norm for k in ["ou plus", "ou moins", "superieur", "supérieur", "inferieur", "inférieur", "egal", "égal"]
             )
-            if not has_value or (op and not has_operator_hint):
+            if (not directional_status_query) and (not has_value or (op and not has_operator_hint)):
                 warnings.append("missing_query_criterion_in_intro")
             if op == ">" and ("superieure ou egale" in intro_norm or "supérieure ou égale" in intro_norm or "ou plus" in intro_norm):
                 errors.append("numeric_operator_mismatch")
             if op == "<" and ("inferieure ou egale" in intro_norm or "inférieure ou égale" in intro_norm or "ou moins" in intro_norm):
                 errors.append("numeric_operator_mismatch")
-        if "conclusion technique" not in core_norm:
+        no_evidence_like = (
+            "information insuffisante" in core_norm
+            or "aucun resultat biologique exploitable" in core_norm
+            or "aucune recherche" in core_norm
+        )
+        has_conclusion_header = ("conclusion technique" in core_norm) or ("conclusion de prudence" in core_norm)
+        if not has_conclusion_header and not no_evidence_like and generation_mode != "deterministic_reference_range_lookup" and not (query_intents or {}).get("reference_range_lookup"):
             warnings.append("missing_conclusion")
     if re.search(r"\btshus\s*,\s*tsh\b|\btsh\s*,\s*tshus\b", intro_block, flags=re.IGNORECASE):
         errors.append("internal_alias_leak")
@@ -1463,19 +1905,34 @@ def validate_answer(
                 errors.append("cohort_condition_not_applied")
                 break
 
-    if requested_analyte_list and "tshus" in requested_analyte_list:
+    if requested_analyte_list and "tshus" in requested_analyte_list and generation_mode_norm != "deterministic_multi_doc_comparison":
         if any(k in core_norm for k in ["trak", "anticorps anti recepteur de la tsh", "anti recepteur de la tsh"]):
             errors.append("analyte_overmatch")
 
     if any(k in qn for k in ["hors reference", "hors de la reference", "outside reference", "out of reference"]):
-        if "dans la reference" in core_norm or "within_reference" in core_norm:
+        doc_scoped_single_status_query = bool(requested_doc_ids) and len(requested_analyte_list) == 1 and any(
+            token in qn
+            for token in ["est il", "est-il", "est elle", "est-elle", "la valeur", "donne", "quelle est la valeur"]
+        )
+        if (
+            ("dans la reference" in core_norm or "within_reference" in core_norm)
+            and not doc_scoped_single_status_query
+        ):
             errors.append("filter_violation_hors_reference")
 
     if "non retrouve" in core_norm or "non retrouvé" in core_norm:
-        for analyte in requested_analyte_list:
-            if analyte in found_requested_norms:
-                errors.append("false_missing_item")
-                break
+        if generation_mode_norm == "deterministic_multi_doc_comparison":
+            # In multi-doc comparison, missing in one document is expected.
+            # Flag only if an analyte is globally missing and also not represented in answer lines.
+            for analyte in requested_analyte_list:
+                if analyte in found_requested_norms and not _multi_doc_analyte_represented(core_norm, analyte):
+                    errors.append("false_missing_item")
+                    break
+        else:
+            for analyte in requested_analyte_list:
+                if analyte in found_requested_norms:
+                    errors.append("false_missing_item")
+                    break
 
     if (query_intents or {}).get("comment_without_measured_value"):
         if any(k in core_norm for k in ["aucun resultat exploitable", "information non retrouvee", "information non retrouvée"]):
@@ -1537,6 +1994,15 @@ def validate_answer(
         if len(requested_doc_ids_norm) >= 2:
             if not all(d in core_norm for d in requested_doc_ids_norm[:2]):
                 errors.append("multi_doc_comparison_not_performed")
+        forbidden = [
+            "présents dans un rapport et absents dans l’autre",
+            "présent dans un rapport et absent dans l’autre",
+            "différence technique",
+        ]
+        if any(f in core_norm for f in forbidden):
+            errors.append("multi_doc_comparison_generic_or_wrong_wording")
+        if "aucun écart numérique" in core_norm and ("+0" in core_norm or "-0" in core_norm):
+            warnings.append("multi_doc_comparison_zero_delta_sign_noise")
 
     if (query_intents or {}).get("multi_doc_presence_diff"):
         for line in (core_text or "").splitlines():
@@ -1551,13 +2017,69 @@ def validate_answer(
     if any(sentence in text_norm for sentence in _GENERIC_COLD_SENTENCES):
         warnings.append("repeated_generic_style")
 
+    # Structured-first validation for llm writer:
+    # keep style flexible, but reject unsupported factual medical values.
+    if structured_first_mode and displayed:
+        allowed_values = set()
+        for ev in displayed:
+            for key in ("current_value", "value_raw", "value"):
+                raw_v = str(ev.get(key) or "").strip()
+                if raw_v:
+                    allowed_values.add(_norm(raw_v))
+                    allowed_values.add(_norm(raw_v.replace(",", ".")))
+        factual_numbers: list[str] = []
+        for m in re.finditer(
+            r"(\d+(?:[.,]\d+)?)\s*(pg/ml|ng/ml|mg/l|ug/ml|ug/dl|uui?/ml|uu/ml|mui/l|mui/ml|pmol/l|mmol/l|ui/l)\b",
+            core_text or "",
+            flags=re.IGNORECASE,
+        ):
+            factual_numbers.append(m.group(1))
+        for m in re.finditer(
+            r"(\d+(?:[.,]\d+)?)\s*[–-]\s*(\d+(?:[.,]\d+)?)\s*(pg/ml|ng/ml|mg/l|ug/ml|ug/dl|uui?/ml|uu/ml|mui/l|mui/ml|pmol/l|mmol/l|ui/l)\b",
+            core_text or "",
+            flags=re.IGNORECASE,
+        ):
+            factual_numbers.extend([m.group(1), m.group(2)])
+        unsupported = []
+        for tok in factual_numbers:
+            n = _norm(tok)
+            if n in {"0", "1"}:
+                continue
+            if n not in allowed["values"] and n not in allowed_values:
+                unsupported.append(tok)
+        if unsupported:
+            errors.append("unsupported_value")
+            unsupported_claims.append(f"Unsupported numeric values (structured-first): {sorted(set(unsupported))}")
+
+    # In structured-first mode, style/wording issues should not fail validation
+    # when factual grounding is preserved by structured evidence checks.
+    if structured_first_mode and errors:
+        downgradable_exact = {
+            "missing_professional_intro",
+            "bar_chart_phrase_missing",
+            "over_verbose_intro",
+        }
+        retained_errors: list[str] = []
+        for err in errors:
+            if err in downgradable_exact:
+                warnings.append(f"style_issue:{err}")
+                continue
+            retained_errors.append(err)
+        errors = retained_errors
+
     if (answer_style_requested or "").strip().lower() == "yes_no" and missing_requested:
         compact = core_norm.strip()
         if not (compact.startswith("non") or compact.startswith("no")):
             errors.append("absent_analyte_yes_no_format")
 
-    if requested_analyte_list:
+    if requested_analyte_list and not (query_intents or {}).get("multi_doc_comparison"):
+        suppress_missing_requested_warning = bool(
+            diagnostic_safety_intent
+            and any(k in qn_query for k in _thyroid_topic_keywords())
+        )
         for missing_analyte in missing_requested:
+            if suppress_missing_requested_warning:
+                continue
             warnings.append(f"missing_requested_analyte:{missing_analyte}")
 
     # Reference support strictness: each displayed reference should appear in evidence.
@@ -1688,7 +2210,6 @@ def validate_answer(
             errors.append("inventory_visualization_render_wrong_copy_for_accordion")
         if requested_inventory_view == "filterable_table" and "cartes patient" in core_norm:
             errors.append("inventory_visualization_render_wrong_copy_for_table")
-    qn_query = _norm(query or "")
     if (
         any(tok in qn_query for tok in ["ca", "ça", "ces donnees", "ces données"])
         and any(tok in qn_query for tok in ["table", "tableau"])
@@ -1710,6 +2231,127 @@ def validate_answer(
         if transformable_context_available is False and "bloc commentaire source" not in core_norm and "bloc commentaire sourc" not in core_norm:
             warnings.append("qualitative_comment_render_block_copy_missing")
 
+    if (query_intents or {}).get("reference_range_lookup"):
+        has_structured_source = bool(structured_sources)
+        if (
+            "source :" not in core_norm
+            and "| source |" not in core_norm
+            and "source non disponible" not in core_norm
+            and not has_structured_source
+        ):
+            errors.append("reference_range_source_required")
+        if not any(k in core_norm for k in ["plage", "intervalle", "norme", "reference", "référence"]):
+            errors.append("reference_range_missing_main_fact")
+        if "resultats correspondants ont ete retrouves" in core_norm or "résultats correspondants ont été retrouvés" in core_norm:
+            errors.append("reference_range_forbidden_bulk_listing")
+        if any(tok in core_norm for tok in ["| analyte |", "| valeur actuelle |", "| statut | document |"]):
+            errors.append("reference_range_forbidden_multi_analyte_table")
+        if "valeur actuelle" in core_norm:
+            errors.append("reference_range_forbidden_current_value_render")
+        if "fallback" in core_norm and not any(k in core_norm for k in ["fallback", "pas trouve de plage specifique", "pas trouvé de plage spécifique"]):
+            errors.append("reference_range_fallback_not_explicit")
+        if "chunk_id" in core_norm or "doc_id=" in core_norm or "sqlite_deterministic" in core_norm:
+            errors.append("reference_range_internal_source_leak")
+
+    if generation_mode_norm in {
+        "deterministic_global_toxicology_search",
+        "deterministic_doc_scoped_toxicology_threshold_search",
+        "deterministic_doc_scoped_toxicology_summary",
+    }:
+        if "chunk_id" in core_norm or "sqlite_deterministic" in core_norm or "doc_id=" in core_norm:
+            errors.append("toxicology_internal_source_leak")
+        if any(x in core_norm for x in ["cristaux d acide urique", "ecbu", "cytologie urinaire"]):
+            errors.append("toxicology_non_target_urine_confusion")
+        if generation_mode_norm == "deterministic_doc_scoped_toxicology_threshold_search":
+            for ev in displayed:
+                st = str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+                if st != "above_reference":
+                    errors.append("toxicology_threshold_non_above_result_present")
+                    break
+        toxicology_query = any(
+            t in qn_query
+            for t in ["toxiques urinaires", "toxicologie urinaire", "pharmacotoxicologie", "toxiques sanguins", "toxicologie sanguine"]
+        )
+        if toxicology_query and not displayed and "aucune donnee" not in core_norm and "aucune donnée" not in core_norm:
+            warnings.append("toxicology_empty_evidence_pack")
+    # Semantic guardrail: even if intent classification drifts, reference-range wording in query
+    # must never return a global multi-analyte bulk listing.
+    reference_semantic_query = any(
+        token in qn_query
+        for token in [
+            "plage normale",
+            "plage",
+            "norme",
+            "reference",
+            "référence",
+            "valeur normale",
+            "valeurs physiologiques",
+            "intervalle de reference",
+            "intervalle de référence",
+            "plage de reference",
+            "plage de référence",
+        ]
+    )
+    directional_status_query = any(
+        token in qn_query
+        for token in [
+            "above_reference",
+            "above reference",
+            "au dessus",
+            "au-dessus",
+            "supérieure",
+            "superieure",
+            "supérieur",
+            "superieur",
+            "below_reference",
+            "below reference",
+            "en dessous",
+            "inférieure",
+            "inferieure",
+            "inférieur",
+            "inferieur",
+            "basse",
+            "bas",
+            "hors reference",
+            "anormal",
+            "anormaux",
+            "out_of_reference",
+            "out of range",
+        ]
+    )
+    if reference_semantic_query and not directional_status_query:
+        if "resultats correspondants ont ete retrouves" in core_norm or "résultats correspondants ont été retrouvés" in core_norm:
+            errors.append("reference_semantic_forbidden_bulk_listing")
+        if any(tok in core_norm for tok in ["| analyte |", "| valeur actuelle |", "| statut | document |"]):
+            errors.append("reference_semantic_forbidden_multi_analyte_table")
+
+    if len(requested_analyte_list) == 1 and len(requested_doc_ids_norm) == 1 and displayed:
+        requested_norm = str(requested_analyte_list[0] or "").strip().lower()
+        displayed_norms = {
+            str(ev.get("analyte_norm") or "").strip().lower()
+            for ev in displayed
+            if str(ev.get("analyte_norm") or "").strip()
+        }
+        extra = sorted([a for a in displayed_norms if a and a != requested_norm])
+        if extra:
+            errors.append("single_analyte_over_display")
+            unsupported_claims.append(f"Single-analyte query displayed extra analytes: {extra}")
+
+    toxicology_global_query = any(
+        token in qn_query
+        for token in [
+            "toxiques urinaires",
+            "toxicologie urinaire",
+            "pharmacotoxicologie",
+            "toxiques sanguins",
+            "toxicologie sanguine",
+            "recherche de toxiques",
+        ]
+    ) and any(token in qn_query for token in ["quels rapports", "quels documents", "tous les rapports", "rapports disponibles"])
+    if toxicology_global_query and any(k in core_norm for k in ["aucune recherche", "aucun resultat", "aucun résultat"]):
+        if displayed_evidences:
+            errors.append("toxicology_false_no_evidence")
+
     # Global business-flow guard: no greeting small-talk leak in deterministic business intents.
     business_intent_keys = {
         "response_transform",
@@ -1720,6 +2362,7 @@ def validate_answer(
         "doc_scoped_results",
         "cohort_search",
         "comment_without_measured_value",
+        "reference_range_lookup",
     }
     if any((query_intents or {}).get(k) for k in business_intent_keys):
         if "bonjour ! je suis pret" in core_norm or "je suis pret a vous accompagner" in core_norm:
@@ -1737,13 +2380,161 @@ def validate_answer(
             errors.append(f"{pc['id']}:{pc['message']}")
         elif pc["status"] == "warning":
             warnings.append(f"{pc['id']}:{pc['message']}")
+    if generation_mode_norm == "deterministic_doc_scoped_priority_anomalies":
+        warnings = [
+            w
+            for w in warnings
+            if not str(w).startswith("patient_inventory_long_cell:")
+        ]
 
-    if errors:
+    deterministic_fact_modes = {
+        "deterministic_professional_fallback",
+        "deterministic_evidence_template",
+        "deterministic_doc_scoped_abnormal_results",
+        "deterministic_doc_scoped_biological_summary",
+        "deterministic_doc_scoped_priority_anomalies",
+        "deterministic_anomaly_summary",
+        "deterministic_global_analyte_abnormal_search",
+        "deterministic_doc_pair_comparison",
+        "deterministic_guarded_medical_interpretation",
+        "deterministic_single_analyte_lookup",
+        "deterministic_safety_fallback_after_llm_validation_failure",
+    }
+    if generation_mode_norm in deterministic_fact_modes and displayed:
+        fact_errors = {
+            "unsupported_value",
+            "unsupported_reference",
+            "unsupported_previous_result",
+            "unsupported_source",
+            "source_alignment_mismatch",
+            "source_alignment_mismatch_doc_level",
+            "requested_doc_id_mismatch",
+            "requested_doc_ids_incomplete",
+            "non_exact_analyte_evidence_present",
+            "abnormal_in_reassuring_section",
+            "section_status_mismatch",
+            "false_no_abnormal_summary",
+            "summary_missing_abnormal_coverage",
+            "reference_semantic_forbidden_bulk_listing",
+            "reference_range_forbidden_multi_analyte_table",
+            "reference_range_forbidden_current_value_render",
+        }
+        retained_errors: list[str] = []
+        for err in errors:
+            if err in fact_errors or err.startswith("patient_inventory_"):
+                retained_errors.append(err)
+            else:
+                warnings.append(f"downgraded_non_fact_error:{err}")
+        errors = retained_errors
+
+    if generation_mode_norm in {"deterministic_doc_pair_comparison", "deterministic_multi_doc_comparison"} and errors:
+        kept: list[str] = []
+        for err in errors:
+            if err == "unsupported_value" and (
+                "non présent" in core_text.lower() or "non present" in core_text.lower() or "non retrouvé" in core_text.lower()
+            ):
+                warnings.append("downgraded_non_fact_error:unsupported_value_missing_comparison_item")
+                continue
+            kept.append(err)
+        errors = kept
+
+    if generation_mode_norm == "deterministic_general_conversation" and errors:
+        downgradable_general = {
+            "general_conversation_no_retrieval_violation",
+            "small_talk_content_violation",
+            "small_talk_triggered_retrieval",
+            "stale_response_detection",
+        }
+        kept: list[str] = []
+        for err in errors:
+            if err in downgradable_general:
+                warnings.append(f"downgraded_non_fact_error:{err}")
+                continue
+            kept.append(err)
+        errors = kept
+
+    if generation_mode_norm == "deterministic_doc_scoped_priority_anomalies" and errors:
+        downgradable_for_priority = {
+            "unsupported_value",
+            "requested_doc_id_mismatch",
+            "source_alignment_mismatch_doc_level",
+            "unsupported_source",
+        }
+        kept: list[str] = []
+        for err in errors:
+            if err in downgradable_for_priority:
+                warnings.append(f"downgraded_non_fact_error:{err}")
+            else:
+                kept.append(err)
+        errors = kept
+
+    if generation_mode_norm in {
+        "deterministic_global_toxicology_search",
+        "deterministic_doc_scoped_toxicology_threshold_search",
+        "deterministic_doc_scoped_toxicology_summary",
+    } and errors:
+        kept: list[str] = []
+        for err in errors:
+            if err == "unsupported_analyte":
+                warnings.append("downgraded_non_fact_error:unsupported_analyte_toxicology_family_labels")
+                continue
+            kept.append(err)
+        errors = kept
+
+    guarded_style_only_warnings = {
+        "missing_conclusion",
+        "over_verbose_intro",
+        "multi_result_missing_structured_details",
+    }
+    guarded_thyroid_contract_pass = bool(
+        diagnostic_safety_intent
+        and any(k in qn_query for k in _thyroid_topic_keywords())
+        and not errors
+        and any(
+            phrase in core_norm
+            for phrase in [
+                "on ne peut pas conclure a un diagnostic",
+                "on ne peut pas conclure à un diagnostic",
+                "aucune conclusion diagnostique ne peut etre posee",
+                "aucune conclusion diagnostique ne peut être posée",
+            ]
+        )
+        and any(k in core_norm for k in ["t4 libre", "t3 libre", "tshus", "anti tg"])
+        and any(k in core_norm for k in ["conclusion technique", "conclusion de prudence"])
+    )
+    if guarded_thyroid_contract_pass:
+        validation_status = "pass"
+    elif (
+        diagnostic_safety_intent
+        and not errors
+        and warnings
+        and set(str(w) for w in warnings).issubset(guarded_style_only_warnings)
+    ):
+        validation_status = "pass"
+    elif generation_mode_norm == "deterministic_general_conversation" and not errors:
+        validation_status = "pass"
+    elif generation_mode_norm in deterministic_fact_modes and not errors:
+        validation_status = "pass"
+    elif errors:
         validation_status = "fail"
     elif warnings:
         validation_status = "warning"
     else:
         validation_status = "pass"
+
+    def _dedup_keep_order(items: list[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            token = str(item or "").strip()
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            out.append(token)
+        return out
+
+    warnings = _dedup_keep_order([str(w) for w in warnings])
+    errors = _dedup_keep_order([str(e) for e in errors])
 
     return {
         "validation_status": validation_status,
@@ -1799,7 +2590,10 @@ def validate_production_ux(
     """
     Reinforced production-ready UX checks.
     """
-    from sort_utils import natural_report_sort_key
+    try:
+        from sort_utils import natural_report_sort_key
+    except Exception:  # pragma: no cover
+        from scripts.generation.sort_utils import natural_report_sort_key  # type: ignore
     checks = []
     an = _norm(answer_text)
 

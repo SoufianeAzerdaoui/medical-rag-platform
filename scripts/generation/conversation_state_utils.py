@@ -39,6 +39,7 @@ class ConversationState(TypedDict, total=False):
     last_inventory_view: dict[str, Any] | None
     last_qualitative_view: dict[str, Any] | None
     last_displayed_context: dict[str, Any] | None
+    last_reference_range_context: dict[str, Any] | None
     recent_turns: list[dict[str, Any]]
     created_at: str
     updated_at: str
@@ -154,6 +155,7 @@ def create_empty_conversation_state(conversation_id: str) -> ConversationState:
         "last_inventory_view": None,
         "last_qualitative_view": None,
         "last_displayed_context": None,
+        "last_reference_range_context": None,
         "recent_turns": [],
         "created_at": now,
         "updated_at": now,
@@ -483,6 +485,28 @@ def update_conversation_state_reducer(
             ev0 = rows[0]
         displayed_ctx["subject"] = str(ev0.get("analyte") or ev0.get("parameter") or "")
         displayed_ctx["allowed_renders"] = ["chart", "table", "list"]
+    if intent == "reference_range_lookup" and isinstance(qu, dict):
+        requested = list(qu.get("requested_analytes") or [])
+        rr_analyte = str(requested[0]).strip() if requested else ""
+        rr_profile = (
+            dict(qu.get("requested_reference_profile") or {})
+            if isinstance(qu.get("requested_reference_profile"), dict)
+            else {}
+        )
+        if requested:
+            displayed_ctx["subject"] = str(requested[0]).strip()
+        displayed_ctx["reference_profile"] = rr_profile or None
+        displayed_ctx["reference_intent"] = "reference_range_lookup"
+        displayed_ctx["last_reference_range_context"] = {
+            "intent": "reference_range_lookup",
+            "analyte": rr_analyte or str(displayed_ctx.get("subject") or "").strip() or None,
+            "requested_reference_profile": rr_profile,
+            "doc_scope": dict(out.get("last_doc_scope") or {}) if isinstance(out.get("last_doc_scope"), dict) else None,
+            "status": intent,
+            "report_type": str(qu.get("requested_report_type") or "").strip() or None,
+            "date_iso": str(qu.get("requested_date_iso") or "").strip() or None,
+        }
+        out["last_reference_range_context"] = dict(displayed_ctx["last_reference_range_context"])
     elif displayed_ctx["context_type"] == "patient_inventory":
         displayed_ctx["allowed_renders"] = ["patient_cards", "report_accordion", "filterable_table", "document_timeline"]
         displayed_ctx["is_transformable_numeric"] = False

@@ -11,6 +11,7 @@ if str(GENERATION_SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(GENERATION_SCRIPT_ROOT))
 
 from query_understanding import (
+    build_intent_arbitration_debug,
     detect_exact_analytes,
     detect_query_intents,
     detect_requested_doc_ids,
@@ -194,6 +195,12 @@ class TestQueryUnderstanding(unittest.TestCase):
         self.assertEqual(qu.intent, "response_transform")
         self.assertEqual(qu.response_strategy, "transform_previous_response")
 
+    def test_direct_analyte_result_request_is_not_transform(self) -> None:
+        qu = parse_query_understanding("donne moi le resultat de AMH")
+        self.assertEqual(qu.intent, "doc_scoped_results")
+        self.assertIn("amh", qu.requested_analytes)
+        self.assertFalse(qu.is_response_transform)
+
     def test_excluded_analytes_detection(self) -> None:
         qu = parse_query_understanding(
             "Quels patients ont une TSHus au-dessus de la référence ? N’inclus pas TRAK, Anti-TG, ni anticorps anti-récepteur de la TSH."
@@ -243,6 +250,29 @@ class TestQueryUnderstanding(unittest.TestCase):
         qu = parse_query_understanding("montre le commentaire sur la troponine")
         self.assertEqual(qu.requested_context_type, "medical_qualitative_comment")
 
+    def test_qualitative_comment_without_analyte_intent(self) -> None:
+        qu = parse_query_understanding("montre le commentaire")
+        self.assertEqual(qu.intent, "comment_without_measured_value")
+        self.assertTrue(bool(qu.intents.get("comment_without_measured_value")))
+
+    def test_list_all_comments_intent(self) -> None:
+        qu = parse_query_understanding("liste moi tous les commentaires existants")
+        self.assertEqual(qu.intent, "comment_without_measured_value")
+        self.assertTrue(bool(qu.intents.get("comment_without_measured_value")))
+
+    def test_latest_report_comment_intent(self) -> None:
+        qu = parse_query_understanding("liste moi le commentaire du dernier rapport")
+        self.assertEqual(qu.intent, "comment_without_measured_value")
+        self.assertTrue(qu.latest_report)
+
+    def test_single_comment_intent(self) -> None:
+        qu = parse_query_understanding("liste une seule commentaire")
+        self.assertEqual(qu.intent, "comment_without_measured_value")
+
+    def test_single_comment_implicit_intent(self) -> None:
+        qu = parse_query_understanding("liste une commentaire")
+        self.assertEqual(qu.intent, "comment_without_measured_value")
+
     def test_qualitative_comment_render_intent(self) -> None:
         qu = parse_query_understanding("ok affiche ce commentaire dans un bloc commentaire sourcé")
         self.assertEqual(qu.intent, "qualitative_comment_render")
@@ -288,6 +318,148 @@ class TestQueryUnderstanding(unittest.TestCase):
     def test_clickable_source_detection_extended_markers(self) -> None:
         qu = parse_query_understanding("affiche ce commentaire dans un tableau texte avec source cliquable et ouvrir PDF")
         self.assertTrue(qu.source_clickable_requested)
+
+    def test_reference_range_lookup_male_over_60(self) -> None:
+        qu = parse_query_understanding("Dans le rapport d'immunoanalyse du 19/07/2024, quelle est la plage normale de la PTH intacte ?")
+        self.assertEqual(qu.intent, "reference_range_lookup")
+        self.assertIn("pth", "".join(qu.requested_analytes))
+        self.assertEqual(qu.requested_date_iso, "2024-07-19")
+        self.assertEqual(qu.requested_report_type, "immunoanalyse")
+
+    def test_reference_range_lookup_infant_population(self) -> None:
+        qu = parse_query_understanding("valeurs physiologiques calcium nourrisson")
+        self.assertEqual(qu.intent, "reference_range_lookup")
+        self.assertEqual((qu.requested_reference_profile or {}).get("population"), "infant")
+
+    def test_reference_range_lookup_female(self) -> None:
+        qu = parse_query_understanding("Dans le rapport d'immunoanalyse du 19/07/2024, quelle est la norme AMH pour une femme de 25–29 ans ?")
+        self.assertEqual(qu.intent, "reference_range_lookup")
+        self.assertIn("amh", qu.requested_analytes)
+        self.assertEqual((qu.requested_reference_profile or {}).get("sex"), "female")
+        self.assertEqual((qu.requested_reference_profile or {}).get("age_min"), 25.0)
+        self.assertEqual((qu.requested_reference_profile or {}).get("age_max"), 29.0)
+        self.assertEqual((qu.requested_reference_profile or {}).get("age_unit"), "years")
+
+    def test_reference_range_lookup_use_patient_profile(self) -> None:
+        qu = parse_query_understanding("calcium pour ce patient")
+        self.assertEqual(qu.intent, "reference_range_lookup")
+        self.assertTrue(qu.use_patient_profile)
+
+    def test_reference_range_lookup_request_all_ranges(self) -> None:
+        qu = parse_query_understanding("donne toutes les plages du calcium")
+        self.assertEqual(qu.intent, "reference_range_lookup")
+        self.assertTrue(qu.request_all_reference_ranges)
+
+    def test_reference_range_lookup_report_type_biochimie(self) -> None:
+        qu = parse_query_understanding("Dans le rapport de biochimie, quelle est la plage normale du Calcium pour Homme > 60 ans ?")
+        self.assertEqual(qu.intent, "reference_range_lookup")
+        self.assertEqual(qu.requested_report_type, "biochimie")
+
+    def test_reference_range_lookup_cycled_female_population_without_age(self) -> None:
+        qu = parse_query_understanding("et la plage de AMH pour femme cyclée J2-J4")
+        self.assertEqual(qu.intent, "reference_range_lookup")
+        self.assertIn("amh", qu.requested_analytes)
+        profile = qu.requested_reference_profile or {}
+        self.assertEqual(profile.get("sex"), "female")
+        self.assertEqual(profile.get("population"), "cycled_female_j2_j4")
+        self.assertIsNone(profile.get("age_min"))
+        self.assertIsNone(profile.get("age_max"))
+
+    def test_reference_range_lookup_haptoglobine_femme(self) -> None:
+        qu = parse_query_understanding("Quelle est la plage normale de l’haptoglobine chez la femme ?")
+        self.assertEqual(qu.intent, "reference_range_lookup")
+        self.assertIn("haptoglobine", qu.requested_analytes)
+        profile = qu.requested_reference_profile or {}
+        self.assertEqual(profile.get("sex"), "female")
+        self.assertIsNone(profile.get("age_min"))
+
+    def test_reference_range_lookup_haptoglobine_femme_over_60(self) -> None:
+        qu = parse_query_understanding("Quelle est la plage normale de l’haptoglobine chez la femme de plus de 60 ans ?")
+        self.assertEqual(qu.intent, "reference_range_lookup")
+        self.assertIn("haptoglobine", qu.requested_analytes)
+        profile = qu.requested_reference_profile or {}
+        self.assertEqual(profile.get("sex"), "female")
+        self.assertEqual(profile.get("age_operator"), ">")
+        self.assertEqual(profile.get("age"), 60.0)
+        self.assertEqual(profile.get("age_unit"), "years")
+
+    def test_reference_range_lookup_pal_homme(self) -> None:
+        qu = parse_query_understanding("Quelle est la norme de la phosphatase alcaline chez l’homme ?")
+        self.assertEqual(qu.intent, "reference_range_lookup")
+        self.assertIn("phosphatase_alcaline", qu.requested_analytes)
+        profile = qu.requested_reference_profile or {}
+        self.assertEqual(profile.get("sex"), "male")
+
+    def test_reference_range_lookup_pal_homme_12_15(self) -> None:
+        qu = parse_query_understanding("Quelle est la norme de la phosphatase alcaline chez l’homme de 12 à 15 ans ?")
+        self.assertEqual(qu.intent, "reference_range_lookup")
+        self.assertIn("phosphatase_alcaline", qu.requested_analytes)
+        profile = qu.requested_reference_profile or {}
+        self.assertEqual(profile.get("sex"), "male")
+        self.assertEqual(profile.get("age_min"), 12.0)
+        self.assertEqual(profile.get("age_max"), 15.0)
+        self.assertEqual(profile.get("age_unit"), "years")
+
+    def test_multi_doc_comparison_glycemie_glucose_detected(self) -> None:
+        qu = parse_query_understanding("Compare les résultats de la Glycémie (Glucose) entre le report 10 et le report 12.")
+        self.assertEqual(qu.intent, "doc_pair_comparison")
+        self.assertIn("report_10", qu.requested_doc_ids)
+        self.assertIn("report_12", qu.requested_doc_ids)
+        self.assertIn("glucose", qu.requested_analytes)
+
+    def test_doc_scoped_out_of_range_not_misrouted_to_comment(self) -> None:
+        qu = parse_query_understanding(
+            "Dans report (19), quels résultats sont hors référence ? Donne paramètre, valeur, référence, statut technique above_reference/below_reference. Ne donne aucune interprétation médicale."
+        )
+        self.assertEqual(qu.requested_doc_ids, ["report_19"])
+        self.assertEqual(qu.technical_condition, "out_of_reference")
+        self.assertNotEqual(qu.intent, "comment_without_measured_value")
+        self.assertEqual(qu.intent, "doc_scoped_abnormal_results")
+
+    def test_doc_scoped_summary_keeps_primary_intent_with_safety_constraint(self) -> None:
+        qu = parse_query_understanding(
+            "Résume uniquement les anomalies biologiques du report (16), sans poser de diagnostic."
+        )
+        self.assertEqual(qu.requested_doc_ids, ["report_16"])
+        self.assertEqual(qu.intent, "doc_scoped_abnormal_results")
+        self.assertEqual(qu.safety_intent, "no_diagnosis_constraint")
+
+    def test_pure_diagnostic_question_without_data_scope(self) -> None:
+        qu = parse_query_understanding("Peut-on conclure à un cancer avec ces marqueurs ?")
+        self.assertEqual(qu.intent, "diagnostic_safety_question")
+
+    def test_intent_arbitration_debug_for_doc_summary_with_safety(self) -> None:
+        qu = parse_query_understanding("Résume uniquement les anomalies biologiques du report (16), sans poser de diagnostic.")
+        arb = build_intent_arbitration_debug(qu)
+        self.assertEqual(arb.get("winner"), "doc_scoped_abnormal_results")
+        self.assertIn("doc_scoped_abnormal_results", list(arb.get("candidate_intents") or []))
+        self.assertEqual(arb.get("safety_intent"), "no_diagnosis_constraint")
+        self.assertTrue(str(arb.get("reason") or "").strip())
+
+    def test_global_analyte_abnormal_search_priority(self) -> None:
+        qu = parse_query_understanding(
+            "Dans tous les rapports disponibles, quels documents contiennent une insuline hors référence ? Donne le document, la valeur, la référence et le statut."
+        )
+        self.assertEqual(qu.intent, "global_analyte_abnormal_search")
+        self.assertIn("insuline", qu.requested_analytes)
+        self.assertEqual(qu.technical_condition, "out_of_reference")
+
+    def test_doc_scoped_medical_interpretation_guarded(self) -> None:
+        qu = parse_query_understanding("Est-ce que le report (16) permet de conclure à une hyperthyroïdie ?")
+        self.assertEqual(qu.intent, "doc_scoped_medical_interpretation_guarded")
+        self.assertEqual(qu.requested_doc_ids, ["report_16"])
+
+    def test_multi_doc_comparison_three_docs_not_doc_pair(self) -> None:
+        qu = parse_query_understanding(
+            "Compare les reports 16, 19 et 31 sur l’insuline et le bilan thyroïdien, en précisant les données manquantes."
+        )
+        self.assertEqual(qu.intent, "multi_doc_comparison")
+        self.assertEqual(qu.requested_doc_ids, ["report_16", "report_19", "report_31"])
+
+    def test_doc_scoped_priority_anomalies_intent(self) -> None:
+        qu = parse_query_understanding("Dans report (10), liste les anomalies importantes par ordre de priorité technique.")
+        self.assertEqual(qu.intent, "doc_scoped_priority_anomalies")
+        self.assertEqual(qu.requested_doc_ids, ["report_10"])
 
 
 if __name__ == "__main__":

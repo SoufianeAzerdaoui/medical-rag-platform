@@ -106,11 +106,43 @@ def build_source_citations(
     pdf_resolver = resolver or DocPdfResolver()
 
     for ev in evidence_pack:
+        comparison_sources = ev.get("comparison_sources")
+        if isinstance(comparison_sources, list) and comparison_sources:
+            for src in comparison_sources:
+                doc_id = str(src.get("doc_id") or "").strip()
+                if not doc_id:
+                    continue
+                page = _safe_int(src.get("page_number") if src.get("page_number") is not None else src.get("page"))
+                row = _safe_int(src.get("row_index") if src.get("row_index") is not None else src.get("row"))
+                dedupe_key = (doc_id.lower(), page, row)
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                source_pdf_hint = src.get("source_pdf")
+                resolved = pdf_resolver.resolve_pdf_for_doc_id(doc_id, str(source_pdf_hint) if source_pdf_hint else None)
+                filename = resolved.filename if resolved else None
+                page_url = build_source_url(doc_id, page) if resolved and resolved.pdf_path else None
+                viewer_url = build_viewer_url(doc_id, page) if resolved and resolved.pdf_path else None
+                raw_sources.append(
+                    {
+                        "doc_id": doc_id,
+                        "filename": filename,
+                        "source_pdf": filename,
+                        "page": page,
+                        "line": row,
+                        "row": row,
+                        "label": _build_label(filename=filename, doc_id=doc_id, page=page, row=row),
+                        "url": page_url,
+                        "source_url": page_url,
+                        "viewer_url": viewer_url,
+                    }
+                )
+
         doc_id = str(ev.get("doc_id") or "").strip()
         if not doc_id:
             continue
-        page = _safe_int(ev.get("page_number"))
-        row = _safe_int(ev.get("row_index"))
+        page = _safe_int(ev.get("page_number") if ev.get("page_number") is not None else ev.get("page"))
+        row = _safe_int(ev.get("row_index") if ev.get("row_index") is not None else ev.get("row"))
         dedupe_key = (doc_id.lower(), page, row)
         if dedupe_key in seen:
             continue

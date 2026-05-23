@@ -24,11 +24,13 @@ from backend.models import (
     ConversationCreateRequest,
     ConversationItem,
     DocumentItem,
+    FeatureFlagItemResponse,
+    FeatureFlagUpdateRequest,
     LogoutResponse,
     MessageItemResponse,
     UserResponse,
 )
-from backend.services import auth_service, conversation_service, message_service
+from backend.services import auth_service, conversation_service, feature_flag_service, message_service
 from backend.services.chat_service import process_chat
 from backend.services.conversation_state_store import (
     ConversationStateService,
@@ -154,6 +156,23 @@ def _to_user_response(user_row: dict[str, Any]) -> UserResponse:
 
 
 _init_auth_db()
+feature_flag_service.ensure_feature_flags_seeded()
+LOGGER.info(
+    "startup_config feature_flag_admin_api_enabled=%s admin_emails_count=%s",
+    bool(config.ENABLE_FEATURE_FLAG_ADMIN_API),
+    len(tuple(config.ADMIN_EMAILS or ())),
+)
+
+
+def _require_feature_flag_admin(current_user: dict[str, Any]) -> None:
+    if not config.ENABLE_FEATURE_FLAG_ADMIN_API:
+        raise HTTPException(status_code=403, detail="Feature flag admin API is disabled.")
+    admin_emails = set(config.ADMIN_EMAILS)
+    if not admin_emails:
+        return
+    user_email = _normalize_email(str(current_user.get("email") or ""))
+    if user_email not in admin_emails:
+        raise HTTPException(status_code=403, detail="Forbidden")
 
 
 @app.get("/health")
@@ -283,6 +302,30 @@ def documents() -> list[DocumentItem]:
         conn.close()
 
     return out
+
+
+@app.get("/feature-flags", response_model=list[FeatureFlagItemResponse])
+def get_feature_flags(current_user: dict[str, Any] = Depends(get_current_user)) -> list[FeatureFlagItemResponse]:
+    _require_feature_flag_admin(current_user)
+    return [FeatureFlagItemResponse(**flag) for flag in feature_flag_service.list_feature_flags()]
+
+
+@app.patch("/feature-flags/{flag_name}", response_model=FeatureFlagItemResponse)
+def patch_feature_flag(
+    flag_name: str,
+    payload: FeatureFlagUpdateRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> FeatureFlagItemResponse:
+    _require_feature_flag_admin(current_user)
+    feature_flag_service.set_feature_flag(
+        name=str(flag_name),
+        enabled=bool(payload.enabled),
+        updated_by=str(current_user.get("email") or ""),
+    )
+    flags = {f["name"]: f for f in feature_flag_service.list_feature_flags()}
+    if str(flag_name) not in flags:
+        raise HTTPException(status_code=404, detail="Feature flag not found")
+    return FeatureFlagItemResponse(**flags[str(flag_name)])
 
 
 @app.get("/api/documents/{doc_id}/pdf")

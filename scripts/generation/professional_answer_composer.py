@@ -1,61 +1,80 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any
 
 from llm_client import LLMClient, LLMClientError
+from model_settings import (
+    DEFAULT_LLM_MODEL,
+    DEFAULT_LLM_NUM_CTX,
+    DEFAULT_LLM_PROVIDER,
+    DEFAULT_LLM_TEMPERATURE,
+)
 from query_understanding import QueryUnderstanding, analyte_display_name, norm_text
 
 
-PROFESSIONAL_WRITER_SYSTEM_PROMPT = """Tu es un rédacteur médical technique dans un système RAG.
-Tu dois produire une réponse professionnelle, naturelle et concise à partir de l’evidence_pack fourni.
-L’evidence_pack est la seule source de vérité.
-Tu n’as pas le droit d’inventer, modifier ou compléter une valeur, une unité, une référence, un patient, un document, un résultat antérieur, une source ou un diagnostic.
-Tu ne dois jamais utiliser ta connaissance générale pour ajouter des faits médicaux.
-Tu dois respecter strictement l’intention et le format demandé par l’utilisateur.
+PROFESSIONAL_WRITER_SYSTEM_PROMPT = """Tu es un rédacteur médical technique intégré à un système RAG.
 
-Règles de style :
-- Avant de répondre, organise la réponse en interne, mais ne produis jamais cette organisation. La sortie doit contenir uniquement la réponse finale.
-- Si la question est un small talk, réponds naturellement sans source et sans donnée médicale.
-- Ne commence pas directement par un tableau, sauf si l’utilisateur demande uniquement un tableau.
-- Ajoute une courte introduction utile, adaptée à la question.
-- L’introduction doit mentionner le vrai critère recherché, pas une phrase générique.
+Mission :
+Rédiger une réponse professionnelle, naturelle et concise à partir des faits fournis par le backend.
+
+Source de vérité :
+- L’evidence_pack est la seule source autorisée.
+- Tu ne dois jamais inventer, modifier ou compléter une valeur, une unité, une référence, un patient, un document, un résultat antérieur, une source ou un diagnostic.
+- Tu ne dois jamais utiliser ta connaissance générale pour ajouter des faits médicaux.
+- Si une information n’est pas dans l’evidence_pack, indique qu’elle n’est pas disponible.
+
+Rôle exact :
+- Le backend sélectionne les valeurs, les références, les sources, les statuts, les tableaux et les visualisations.
+- Tu reformules uniquement.
+- Tu ne choisis jamais une valeur, une plage physiologique, un résultat antérieur, une source ou un diagnostic.
+- Tu ne sélectionnes jamais des lignes toi-même et tu ne recalcules jamais une valeur, un écart ou un statut.
+- Tu reformules uniquement les lignes déjà fournies dans results (et results_locked quand présent).
+- Tu ne rajoutes aucune ligne au tableau.
+- Tu ne supprimes aucune ligne importante fournie dans results, sauf si l’utilisateur demande explicitement un filtre.
+
+Style :
+- Réponds en français clair, professionnel et concis.
+- Ne sois pas verbeux.
 - Ne répète pas toujours la même phrase d’introduction.
+- L’introduction doit être spécifique à la question.
+- Ne commence pas directement par un tableau sauf si l’utilisateur demande uniquement un tableau.
 - N’affiche jamais les aliases internes comme “tshus, tsh”.
 - Utilise les noms humains des analytes depuis results[].analyte.
 - Gère correctement le singulier/pluriel.
-- N’écris jamais “résultat(s)” ou “correspondant(s)”.
-- Si un seul résultat est trouvé, écris “Un seul résultat correspondant a été retrouvé.”
-- Si plusieurs résultats sont trouvés, écris “X résultats correspondants ont été retrouvés.”
-- Si aucun résultat est trouvé, écris “Aucun résultat correspondant n’a été retrouvé.”
-- Si la question contient un critère de valeur, mentionne ce critère dans l’introduction.
-- Si la question demande des sources cliquables, inclure une colonne Source ou afficher des sources cliquables sous la réponse.
-- Ajoute une conclusion technique courte quand elle apporte de la valeur.
-- Ne sois pas verbeux.
-- Ne donne jamais de diagnostic si la question est médicale/diagnostique.
+- Évite les formulations mécaniques.
+- Si un comptage est utile, formule-le naturellement selon la question.
+- Ne donne jamais de diagnostic médical.
 
-Règles de format :
+Formats :
 - Si output_format = table, produis un tableau Markdown propre.
-- Si output_format = chart, respecte la demande de visualisation de l’utilisateur.
-- Si le type demandé est disponible et adapté, présente-le directement.
-- Si le type demandé n’est pas disponible ou pas adapté, tu dois nommer clairement la visualisation demandée, expliquer la limite, indiquer l’alternative affichée et pourquoi elle est plus fiable.
-- Tu ne dois jamais remplacer silencieusement un format demandé par un autre.
-- N’emploie pas de terme interne comme “chart type” ou “rendu chart”.
-- Utilise des termes humains : graphique en barres, courbe, graphique radar, heatmap, nuage de points.
-- Si source_clickable_requested = true, le tableau doit inclure une colonne Source avec le label source.
-- Si output_format = json ou answer_style = strict_json, retourne uniquement JSON valide, sans texte autour.
-- Si answer_style = yes_no, commence par Oui/Non ou Yes/No puis donne valeur, référence et source.
-- Pour les sources, utilise source_label.
-- N’affiche jamais chunk_id, path local, request_id ou logs techniques.
-- Ne génère jamais de code HTML, JavaScript ou Python à exécuter.
+- Si output_format = json ou answer_style = strict_json, retourne uniquement du JSON valide, sans texte autour.
+- Utilise Oui/Non uniquement si answer_style = yes_no est explicitement défini par le backend.
+- Si output_format = chart, respecte la visualisation demandée ou explique clairement pourquoi une alternative est utilisée.
 
-Règles de grounding :
+Sources :
+- Utilise uniquement les sources fournies par le backend.
+- Pour les sources, utilise source_label.
+- Si source_clickable_requested = true et viewer_url/source_url est disponible, affiche la source en Markdown : [source_label](viewer_url ou source_url).
+- Si source_clickable_requested = true mais aucun lien n’est disponible, affiche source_label en texte simple et indique que la source est disponible uniquement en texte.
+- Ne jamais inventer d’URL.
+- N’affiche jamais chunk_id, path local, request_id ou logs techniques.
+
+Grounding :
 - Tous les analytes affichés doivent exister dans results.
 - Toutes les valeurs affichées doivent exister dans results.
 - Toutes les sources affichées doivent exister dans results.
-- Ne rajoute aucune ligne au tableau.
-- Ne supprime aucune ligne importante fournie dans results, sauf si l’utilisateur demande un filtre."""
+- Ne modifie jamais les décimales, unités ou intervalles.
+- Ne transforme jamais une valeur mesurée en plage de référence, ni l’inverse.
+- Si une information semble manquante, dis qu’elle est non disponible ; n’infère pas.
+
+Sécurité :
+- Ne donne pas de diagnostic.
+- Si la question demande une interprétation médicale, limite-toi à une interprétation technique fondée sur les références fournies.
+- Si le contexte est insuffisant, dis-le clairement.
+"""
 
 
 PROFESSIONAL_WRITER_VISUALIZATION_RULES = """
@@ -68,18 +87,33 @@ Règles de formulation visualisation :
   2) explique pourquoi une alternative (ex: graphique en barres) est utilisée ;
   3) lie cette explication aux contraintes des données (ex: unités différentes, pas de série temporelle).
 - INTERDICTION ABSOLUE : ne jamais inclure de labels de données concaténés (ex: INSULINET4LIBRE, TSHusT3) ou de pourcentages d'écarts (ex: 600%) dans ton texte d'introduction. Ces éléments seront rendus séparément par l'interface graphique.
+- Ne modifie jamais les valeurs de visualization_facts.
 - Ton texte doit être fluide, comme un expert s'adressant à un utilisateur.
 """
 
 
+def _llm_quality_guard_disabled() -> bool:
+    v = str(os.getenv("MEDICAL_RAG_DISABLE_LLM_QUALITY_GUARD", "false")).strip().lower()
+    return v in {"1", "true", "yes", "on"}
+
+
 _COLD_CONCLUSIONS = {
-    "Les résultats ci-dessus sont strictement extraits des données indexées.",
+    "Ces éléments proviennent uniquement des données indexées.",
+    "L’interprétation reste limitée aux informations présentes dans les rapports indexés.",
+    "Les valeurs affichées sont issues des données extraites et sourcées.",
 }
 
 
 def _safe_str(value: Any, default: str = "") -> str:
     text = str(value or "").strip()
     return text if text else default
+
+
+def _strip_html(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = re.sub(r"(?is)<[^>]+>", " ", str(text))
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def _safe_int(value: Any) -> int | None:
@@ -218,10 +252,18 @@ def humanize_condition(query_understanding: QueryUnderstanding, evidence_pack: d
 def format_result_count(n: int) -> str:
     count = max(0, int(n))
     if count == 0:
-        return "Aucun résultat correspondant n’a été retrouvé."
+        return "Aucun résultat exploitable n’a été retrouvé."
     if count == 1:
-        return "Un seul résultat correspondant a été retrouvé."
-    return f"{count} résultats correspondants ont été retrouvés."
+        return "Une valeur exploitable a été retrouvée."
+    return f"{count} valeurs exploitables ont été retrouvées."
+
+
+def _should_show_count_line(intent: str, presentation: str, evidences: list[dict[str, Any]]) -> bool:
+    if not evidences:
+        return False
+    if presentation in {"json", "yes_no", "paragraph", "chart"}:
+        return False
+    return intent in {"cohort_search", "global_patient_lookup", "doc_scoped_summary", "immunoanalysis_summary", "toxicology_summary"}
 
 
 def select_intro_template(intent: str, query_understanding: QueryUnderstanding, evidence_pack: dict[str, Any]) -> str:
@@ -251,19 +293,28 @@ def select_intro_template(intent: str, query_understanding: QueryUnderstanding, 
         return _pick_variant(
             seed,
             [
-                f"Dans {doc_scope}, j’ai vérifié les résultats demandés à partir des données extraites du rapport.",
-                f"J’ai consulté {doc_scope} pour extraire les valeurs demandées.",
-                f"Les résultats suivants proviennent uniquement de {doc_scope}.",
+                f"Dans {doc_scope}, les valeurs demandées ont été extraites.",
+                f"Voici les mesures demandées dans {doc_scope}.",
+                f"Les données ci-dessous proviennent de {doc_scope}.",
             ],
         )
 
-    if intent in {"multi_doc_comparison", "multi_doc_presence_diff"}:
+    if intent in {"multi_doc_comparison", "doc_pair_comparison"}:
         return _pick_variant(
             seed,
             [
-                "J’ai comparé les deux rapports demandés afin d’identifier les différences techniques.",
+                "Comparaison des valeurs demandées entre les deux rapports.",
+                "Voici la comparaison chiffrée entre les deux documents demandés.",
+                "Les écarts ci-dessous sont calculés à partir des valeurs extraites des deux rapports.",
+            ],
+        )
+
+    if intent == "multi_doc_presence_diff":
+        return _pick_variant(
+            seed,
+            [
                 "Voici les éléments présents dans un rapport et absents dans l’autre.",
-                "La comparaison ci-dessous se limite aux données structurées extraites des deux documents.",
+                "La comparaison ci-dessous se concentre sur la présence/absence entre les deux documents.",
             ],
         )
 
@@ -290,8 +341,8 @@ def select_intro_template(intent: str, query_understanding: QueryUnderstanding, 
     return _pick_variant(
         seed,
         [
-            "J’ai vérifié les données retrouvées pour répondre de manière sourcée.",
-            "Voici la synthèse des éléments techniques disponibles pour votre demande.",
+            "Voici les éléments techniques disponibles pour votre demande.",
+            "Les informations ci-dessous proviennent des données extraites et sourcées.",
         ],
     )
 
@@ -368,6 +419,8 @@ def choose_presentation_format(query_understanding: QueryUnderstanding, evidence
         return "table"
     if output_format == "chart":
         return "chart"
+    if query_understanding.intent in {"multi_doc_comparison", "doc_pair_comparison"}:
+        return "table"
     if query_understanding.intent in {"cohort_search", "global_patient_lookup"}:
         return "table"
     if output_format == "table" or requested_cols:
@@ -499,8 +552,27 @@ def _source_lines(source_citations: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
+def _build_sources_block(
+    source_citations: list[dict[str, Any]],
+    *,
+    clickable_requested: bool = False,
+) -> str:
+    lines = _source_lines(source_citations)
+    if not lines:
+        return ""
+    block = "Sources :\n" + "\n".join(lines)
+    has_clickable = any(("](" in ln and "[" in ln) for ln in lines)
+    if clickable_requested and not has_clickable:
+        block += "\n\nSource disponible uniquement en texte ; aucun lien cliquable n’est disponible."
+    return block
+
+
 def build_short_conclusion(intent: str, evidence_pack: dict[str, Any], safety_intent: str | None) -> str | None:
-    if safety_intent or intent == "diagnostic_safety_question":
+    # Only force the diagnostic-refusal wording when the intent is explicitly
+    # a diagnostic safety question. A generic safety_intent like
+    # "no_diagnosis_constraint" (user asked "sans diagnostic") should not
+    # trigger the stronger refusal phrasing — prefer the neutral summary.
+    if intent == "diagnostic_safety_question" or safety_intent == "diagnostic_safety_question":
         return "Conclusion technique : aucune conclusion diagnostique ne peut être tirée uniquement de ces résultats."
 
     evidences = list(evidence_pack.get("evidences") or evidence_pack.get("results") or [])
@@ -511,13 +583,25 @@ def build_short_conclusion(intent: str, evidence_pack: dict[str, Any], safety_in
     status = _safe_str(first.get("technical_status_code")).lower()
     analyte = _display_analyte(first) or "l’analyte"
     if len(evidences) == 1:
+        if intent in {"multi_doc_comparison", "doc_pair_comparison"}:
+            cmp_status = _safe_str(first.get("comparison_status")).lower()
+            analyte_cmp = (_display_analyte(first) or "analyte").lower()
+            if cmp_status == "identical":
+                return f"Conclusion technique : aucun écart numérique n’est observé pour le {analyte_cmp}."
+            if cmp_status == "increased":
+                return f"Conclusion technique : le {analyte_cmp} est plus élevé dans le second rapport."
+            if cmp_status == "decreased":
+                return f"Conclusion technique : le {analyte_cmp} est plus bas dans le second rapport."
+            if cmp_status in {"missing_in_a", "missing_in_b"}:
+                return "Conclusion technique : la comparaison est partielle car une valeur manque dans l’un des deux rapports."
+            return "Conclusion technique : la comparaison reste non exploitable numériquement."
         if status == "above_reference":
             return f"Conclusion technique : {analyte} est au-dessus de l’intervalle de référence indiqué."
         if status == "below_reference":
             return f"Conclusion technique : {analyte} est en dessous de l’intervalle de référence indiqué."
         if status == "within_reference":
-            return "Conclusion technique : le résultat retrouvé respecte le critère demandé."
-        return "Conclusion technique : le résultat affiché correspond strictement aux données extraites."
+            return "Conclusion technique : la valeur est dans l’intervalle de référence indiqué."
+        return None
 
     options_by_intent: dict[str, list[str]] = {
         "cohort_search": [
@@ -525,11 +609,15 @@ def build_short_conclusion(intent: str, evidence_pack: dict[str, Any], safety_in
             "Conclusion technique : ces résultats sont basés uniquement sur les données extraites et les sources citées.",
         ],
         "multi_doc_comparison": [
-            "Conclusion technique : la comparaison repose uniquement sur les valeurs retrouvées dans les documents demandés.",
-            "Conclusion technique : les écarts indiqués reflètent uniquement les mesures disponibles dans les rapports comparés.",
+            "Conclusion technique : aucun écart numérique n’est observé lorsque les deux valeurs sont identiques.",
+            "Conclusion technique : la comparaison met en évidence un écart chiffré entre les deux rapports.",
+        ],
+        "doc_pair_comparison": [
+            "Conclusion technique : aucun écart numérique n’est observé lorsque les deux valeurs sont identiques.",
+            "Conclusion technique : la comparaison met en évidence un écart chiffré entre les deux rapports.",
         ],
         "multi_doc_presence_diff": [
-            "Conclusion technique : la présence/absence ci-dessus correspond strictement aux données extraites de chaque rapport.",
+            "Conclusion technique : la présence/absence reflète les données extraites de chaque rapport.",
         ],
         "doc_scoped_results": [
             "Conclusion technique : ces résultats proviennent uniquement du document demandé.",
@@ -584,6 +672,7 @@ def _writer_intent(intent: str) -> str:
         "doc_scoped_results": "doc_scoped_query",
         "previous_result_comparison": "comparison",
         "multi_doc_comparison": "comparison",
+        "doc_pair_comparison": "comparison",
         "multi_doc_presence_diff": "comparison",
         "doc_scoped_summary": "section_summary",
         "immunoanalysis_summary": "section_summary",
@@ -618,7 +707,7 @@ def _normalized_writer_result(ev: dict[str, Any]) -> dict[str, Any]:
     analyte_raw = _safe_str(ev.get("analyte"))
     analyte_human = analyte_display_name(analyte_raw or analyte_norm, analyte_norm or None) or analyte_raw
 
-    source_label = _safe_str(ev.get("source_label"))
+    source_label = _strip_html(_safe_str(ev.get("source_label")))
     if not source_label:
         source_label = format_source_label(
             {
@@ -628,6 +717,8 @@ def _normalized_writer_result(ev: dict[str, Any]) -> dict[str, Any]:
                 "row": ev.get("row"),
             }
         )
+    value = _strip_html(_safe_str(ev.get("current_value") or ev.get("value_raw")))
+    reference = _strip_html(_safe_str(ev.get("reference") or ev.get("reference_range")))
     return {
         "patient": _safe_str(ev.get("patient_token") or ev.get("patient")),
         "doc_id": _safe_str(ev.get("doc_id")),
@@ -636,15 +727,27 @@ def _normalized_writer_result(ev: dict[str, Any]) -> dict[str, Any]:
         "row": _safe_int(ev.get("row")),
         "analyte": analyte_human,
         "analyte_norm": analyte_norm,
-        "value": _safe_str(ev.get("current_value") or ev.get("value_raw")),
+        "value": value,
         "unit": _safe_str(ev.get("unit")),
-        "reference": _safe_str(ev.get("reference") or ev.get("reference_range")),
+        "reference": reference,
         "status": status,
         "previous_result": ev.get("previous_result"),
         "variation": ev.get("variation"),
         "source_label": source_label,
         "source_url": _safe_str(ev.get("source_url")),
         "viewer_url": _safe_str(ev.get("viewer_url")),
+    }
+
+
+def _llm_locked_result_row(result: dict[str, Any]) -> dict[str, Any]:
+    """Strict row contract sent to LLM writer: facts only, no rendering/HTML payload."""
+    return {
+        "analyte": _strip_html(_safe_str(result.get("analyte"), "non précisé")),
+        "value": _strip_html(_safe_str(result.get("value"), "non disponible")),
+        "unit": _strip_html(_safe_str(result.get("unit"))),
+        "reference": _strip_html(_safe_str(result.get("reference"), "non disponible")),
+        "status": _strip_html(_safe_str(result.get("status"), "non interprétable")),
+        "source_label": _strip_html(_safe_str(result.get("source_label"), "source non disponible")),
     }
 
 
@@ -656,7 +759,8 @@ def build_writer_evidence_pack(
     source_citations: list[dict[str, Any]],
 ) -> dict[str, Any]:
     presentation = getattr(query_understanding, "presentation_intent", None)
-    results = [_normalized_writer_result(ev) for ev in (evidence_pack.get("evidences") or evidence_pack.get("results") or [])]
+    results_full = [_normalized_writer_result(ev) for ev in (evidence_pack.get("evidences") or evidence_pack.get("results") or [])]
+    results_locked = [_llm_locked_result_row(r) for r in results_full]
     recent_style_history = list(evidence_pack.get("recent_style_history") or [])
     constraints = {
         "requested_doc_ids": list(query_understanding.requested_doc_ids or []),
@@ -713,7 +817,8 @@ def build_writer_evidence_pack(
             "raw_format_phrase": visualization_facts.get("raw_format_phrase"),
         },
         "constraints": constraints,
-        "results": results,
+        "results": results_locked,
+        "results_locked": results_locked,
         "missing_items": list(evidence_pack.get("missing_items") or []),
         "sources": deduplicate_sources(source_citations or []),
         "response_brief": {
@@ -763,6 +868,10 @@ def _build_content_table(
             "patient": "Patient",
             "report": "Report",
             "document": "Document",
+            "priorite": "Priorité",
+            "priority_level": "Priorité",
+            "priority_score": "Score priorité",
+            "priority_reason": "Raison technique",
             "analyte": "Analyte",
             "valeur_actuelle": "Valeur actuelle",
             "valeur": "Valeur actuelle",
@@ -782,6 +891,9 @@ def _build_content_table(
                         "Patient": _safe_str(ev.get("patient_token"), "non disponible"),
                         "Report": _safe_str(ev.get("doc_id")),
                         "Document": _safe_str(ev.get("comparison_side") or ev.get("doc_id")),
+                        "Priorité": _safe_str(ev.get("priority_level"), "unknown"),
+                        "Score priorité": _safe_str(ev.get("priority_score"), "0"),
+                        "Raison technique": _safe_str(ev.get("priority_reason"), "non disponible"),
                         "Analyte": _display_analyte(ev),
                         "Valeur actuelle": (
                             _safe_str(ev.get("current_value"), "non disponible")
@@ -796,6 +908,63 @@ def _build_content_table(
                     }
                 )
             return _table(columns, normalized_rows)
+
+    if intent in {"multi_doc_comparison", "doc_pair_comparison"}:
+        def _render_comparison_value(raw_value: str, unit: str) -> str:
+            value_norm = _safe_str(raw_value).strip().lower()
+            if value_norm in {"non présent", "non present", "non disponible", "non retrouvé", "non retrouve"}:
+                return "non présent" if "présent" in value_norm or "present" in value_norm else "non disponible"
+            return (raw_value + (f" {unit}" if unit else "")).strip()
+
+        rows = []
+        for ev in evidences:
+            analyte = _display_analyte(ev)
+            doc_a = _safe_str(ev.get("doc_a"), "report A")
+            doc_b = _safe_str(ev.get("doc_b"), "report B")
+            value_a = _safe_str(ev.get("value_a_raw") or ev.get("value_a"), "non disponible")
+            value_b = _safe_str(ev.get("value_b_raw") or ev.get("value_b"), "non disponible")
+            unit_a = _safe_str(ev.get("unit_a") or ev.get("unit"))
+            unit_b = _safe_str(ev.get("unit_b") or ev.get("unit"))
+            status = _safe_str(ev.get("comparison_status")).lower()
+            delta_abs = ev.get("delta_abs")
+            delta_unit = _safe_str(ev.get("delta_unit") or ev.get("unit"))
+            if status == "identical":
+                delta_label = f"0{(' ' + delta_unit) if delta_unit else ''}"
+                conclusion = "Valeurs identiques"
+            elif status == "increased":
+                if isinstance(delta_abs, (int, float)):
+                    delta_label = f"+{delta_abs:g}{(' ' + delta_unit) if delta_unit else ''}"
+                else:
+                    delta_label = "augmentation"
+                conclusion = "Augmentation"
+            elif status == "decreased":
+                if isinstance(delta_abs, (int, float)):
+                    delta_label = f"{delta_abs:g}{(' ' + delta_unit) if delta_unit else ''}"
+                else:
+                    delta_label = "diminution"
+                conclusion = "Diminution"
+            elif status == "missing_in_a":
+                delta_label = "non calculable"
+                conclusion = f"Absent dans {doc_a}"
+            elif status == "missing_in_b":
+                delta_label = "non calculable"
+                conclusion = f"Absent dans {doc_b}"
+            else:
+                delta_label = "non comparable"
+                conclusion = "Non comparable"
+            rows.append(
+                {
+                    "Analyte": analyte,
+                    doc_a: _render_comparison_value(value_a, unit_a),
+                    doc_b: _render_comparison_value(value_b, unit_b),
+                    "Écart": delta_label,
+                    "Référence": _safe_str(ev.get("reference_summary") or ev.get("reference") or "non disponible"),
+                    "Conclusion": conclusion,
+                }
+            )
+        if rows:
+            columns = list(rows[0].keys())
+            return _table(columns, rows)
 
     if intent in {"cohort_search", "global_patient_lookup"}:
         rows = [
@@ -926,6 +1095,138 @@ def _build_paragraph(evidences: list[dict[str, Any]], query: str) -> str:
         _safe_str(primary.get("reference")),
     )
     return f"{yn} — {body}"
+
+
+def _extract_doc_values_from_current_value(current_value: str) -> tuple[tuple[str, str] | None, tuple[str, str] | None]:
+    txt = _safe_str(current_value)
+    m = re.findall(r"([A-Za-z0-9_()\- ]+)\s*=\s*([^|]+)", txt)
+    if len(m) >= 2:
+        left = (m[0][0].strip(), m[0][1].strip())
+        right = (m[1][0].strip(), m[1][1].strip())
+        return left, right
+    return None, None
+
+
+def _to_float_local(v: str) -> float | None:
+    try:
+        return float(str(v).replace(",", ".").strip())
+    except Exception:
+        return None
+
+
+def _build_multi_doc_comparison_narrative(evidences: list[dict[str, Any]]) -> str:
+    if not evidences:
+        return "Aucun résultat exploitable."
+    lines: list[str] = []
+    for ev in evidences:
+        analyte = _display_analyte(ev).lower()
+        unit = _safe_str(ev.get("unit"))
+        comparison_status = _safe_str(ev.get("comparison_status")).lower()
+        doc_a = _safe_str(ev.get("doc_a"))
+        doc_b = _safe_str(ev.get("doc_b"))
+        val_a = _safe_str(ev.get("value_a"))
+        val_b = _safe_str(ev.get("value_b"))
+        if not (doc_a and doc_b and val_a and val_b):
+            left, right = _extract_doc_values_from_current_value(_safe_str(ev.get("current_value")))
+            if left and right:
+                doc_a, val_a = left
+                doc_b, val_b = right
+        if not (doc_a and doc_b and val_a and val_b):
+            lines.append(
+                f"Pour {analyte}, les données ne permettent pas une comparaison numérique fiable."
+            )
+            continue
+        f_a = _to_float_local(val_a)
+        f_b = _to_float_local(val_b)
+        unit_suffix = f" {unit}" if unit else ""
+        if comparison_status == "missing_in_a":
+            lines.append(f"Pour {analyte}, la valeur est absente dans {doc_a}.")
+            continue
+        if comparison_status == "missing_in_b":
+            lines.append(f"Pour {analyte}, la valeur est absente dans {doc_b}.")
+            continue
+
+        if f_a is not None and f_b is not None:
+            if comparison_status == "identical" or abs(f_a - f_b) <= 1e-12:
+                lines.append(
+                    f"Le {analyte} présente la même valeur dans les deux rapports : "
+                    f"{val_a}{unit_suffix} dans {doc_a} et {val_b}{unit_suffix} dans {doc_b}. "
+                    "Aucun écart numérique n’est observé."
+                )
+            else:
+                delta = f_b - f_a
+                if comparison_status == "increased":
+                    trend = "plus élevé"
+                elif comparison_status == "decreased":
+                    trend = "plus faible"
+                else:
+                    trend = "plus élevé" if delta > 0 else "plus faible"
+                signed_delta = f"{delta:g}"
+                lines.append(
+                    f"Le {analyte} est {trend} dans {doc_b} que dans {doc_a} : "
+                    f"{val_b}{unit_suffix} contre {val_a}{unit_suffix}, soit un écart de {signed_delta}{unit_suffix}."
+                )
+        else:
+            lines.append(
+                f"Pour {analyte}, comparaison non numérique : {doc_a}={val_a}{unit_suffix} ; {doc_b}={val_b}{unit_suffix}."
+            )
+    return "\n".join(lines).strip()
+
+
+def _extract_locked_facts(evidences: list[dict[str, Any]]) -> dict[str, set[str]]:
+    analytes: set[str] = set()
+    values: set[str] = set()
+    refs: set[str] = set()
+    sources: set[str] = set()
+    for ev in evidences:
+        analyte = _safe_str(_display_analyte(ev))
+        if analyte:
+            analytes.add(norm_text(analyte))
+        current_value = _safe_str(ev.get("current_value") or ev.get("value_raw"))
+        if current_value:
+            values.add(current_value.replace(",", "."))
+        reference = _safe_str(ev.get("reference") or ev.get("reference_range"))
+        if reference:
+            refs.add(reference.replace(",", "."))
+        src = _safe_str(ev.get("source_label"))
+        if not src:
+            src = format_source_label(
+                {
+                    "filename": ev.get("filename"),
+                    "doc_id": ev.get("doc_id"),
+                    "page": ev.get("page"),
+                    "row": ev.get("row"),
+                }
+            )
+        if src:
+            sources.add(norm_text(src))
+    return {"analytes": analytes, "values": values, "references": refs, "sources": sources}
+
+
+def _llm_writer_preserves_facts(
+    *,
+    llm_answer: str,
+    evidences: list[dict[str, Any]],
+    source_citations: list[dict[str, Any]],
+) -> tuple[bool, str | None]:
+    if not llm_answer.strip():
+        return False, "empty_llm_answer"
+    locked = _extract_locked_facts(evidences)
+    llm_norm = norm_text(llm_answer)
+    llm_numeric = llm_answer.replace(",", ".")
+    for analyte in sorted(locked["analytes"]):
+        if analyte and analyte not in llm_norm:
+            return False, "llm_missing_analyte"
+    for val in sorted(locked["values"]):
+        if val and val not in llm_numeric:
+            return False, "llm_modified_values"
+    # Source labels must be preserved only when sources are displayed.
+    if source_citations:
+        for src in deduplicate_sources(source_citations):
+            label = norm_text(_safe_str(src.get("label")))
+            if label and label not in llm_norm:
+                return False, "llm_missing_source_label"
+    return True, None
 
 
 def _build_chart_explanation(
@@ -1104,9 +1405,12 @@ def render_professional_fallback(
                 answer = f"{prefix} — {analyte}: {value_text} (référence: {reference})."
             else:
                 answer = f"{analyte}: {value_text} (référence: {reference})."
-        src_lines = _source_lines(source_citations or [])
-        if src_lines:
-            answer = answer.rstrip() + "\n\nSources :\n" + "\n".join(src_lines)
+        source_block = _build_sources_block(
+            source_citations or [],
+            clickable_requested=bool(getattr(query_understanding, "source_clickable_requested", False)),
+        )
+        if source_block:
+            answer = answer.rstrip() + "\n\n" + source_block
         return {
             "intro": "",
             "content_type": "yes_no",
@@ -1137,9 +1441,12 @@ def render_professional_fallback(
             answer_parts.append("Données utilisées")
         answer_parts.append(content)
         answer = "\n\n".join([p for p in answer_parts if p.strip()])
-        src_lines = _source_lines(source_citations or [])
-        if src_lines:
-            answer = answer.rstrip() + "\n\nSources :\n" + "\n".join(src_lines)
+        source_block = _build_sources_block(
+            source_citations or [],
+            clickable_requested=bool(getattr(query_understanding, "source_clickable_requested", False)),
+        )
+        if source_block:
+            answer = answer.rstrip() + "\n\n" + source_block
         return {
             "intro": chart_intro,
             "content_type": "chart",
@@ -1153,7 +1460,7 @@ def render_professional_fallback(
         }
 
     intro = build_professional_intro(query_understanding, evidence_pack)
-    count_line = format_result_count(len(evidences))
+    count_line = format_result_count(len(evidences)) if _should_show_count_line(intent, presentation, evidences) else ""
 
     include_previous = bool(query_understanding.requires_previous_results)
     requested_docs = [d for d in (query_understanding.requested_doc_ids or []) if str(d).strip()]
@@ -1165,6 +1472,18 @@ def render_professional_fallback(
             "- Aucun analyte distinct retrouvé.\n\n"
             f"Présents uniquement dans {doc_b} :\n"
             "- Aucun analyte distinct retrouvé."
+        )
+    elif intent in {"multi_doc_comparison", "doc_pair_comparison"}:
+        content = (
+            _build_content_table(
+                intent,
+                evidences,
+                include_previous=False,
+                requested_columns=query_understanding.requested_table_columns,
+                source_clickable_requested=bool(getattr(query_understanding, "source_clickable_requested", False)),
+            )
+            if evidences
+            else "Aucun résultat exploitable."
         )
     elif presentation == "table":
         content = (
@@ -1183,7 +1502,7 @@ def render_professional_fallback(
     else:
         content = _build_paragraph(evidences[:1], user_question)
 
-    if missing_items and presentation != "yes_no":
+    if missing_items and presentation != "yes_no" and intent not in {"multi_doc_comparison", "doc_pair_comparison"}:
         doc_scope = ", ".join(query_understanding.requested_doc_ids or ["le document demandé"])
         miss = "\n".join(f"- {_canonical_analyte_display(str(m))}: non retrouvé dans {doc_scope}." for m in missing_items)
         content = content.rstrip() + "\n\nÉléments non retrouvés :\n" + miss
@@ -1194,10 +1513,13 @@ def render_professional_fallback(
     parts = [p for p in [intro.strip(), count_line.strip(), content.strip(), (conclusion or "").strip()] if p]
     answer = "\n\n".join(parts)
 
-    src_lines = _source_lines(source_citations or [])
+    source_block = _build_sources_block(
+        source_citations or [],
+        clickable_requested=bool(getattr(query_understanding, "source_clickable_requested", False)),
+    )
     has_source_column_in_table = presentation == "table" and bool(re.search(r"(?im)^\|\s*.*\bsource\b.*\|$", content or ""))
-    if src_lines and not has_source_column_in_table:
-        answer = answer.rstrip() + "\n\nSources :\n" + "\n".join(src_lines)
+    if source_block and not has_source_column_in_table:
+        answer = answer.rstrip() + "\n\n" + source_block
 
     return {
         "intro": intro.strip(),
@@ -1221,8 +1543,8 @@ def compose_visualization_answer(
     query_understanding: QueryUnderstanding,
     evidence_pack: dict[str, Any],
     llm_client: LLMClient | None = None,
-    provider: str = "ollama",
-    model: str = "qwen3:4b",
+    provider: str = DEFAULT_LLM_PROVIDER,
+    model: str = DEFAULT_LLM_MODEL,
 ) -> dict[str, Any]:
     """ Specialized composer for visualization requests to ensure clean separation. """
     viz_facts = dict(evidence_pack.get("visualization_facts") or {})
@@ -1372,10 +1694,10 @@ def compose_professional_answer(
     *,
     source_citations: list[dict[str, Any]] | None = None,
     llm_client: LLMClient | None = None,
-    provider: str = "ollama",
-    model: str = "qwen3:4b",
-    temperature: float = 0.0,
-    num_ctx: int = 4096,
+    provider: str = DEFAULT_LLM_PROVIDER,
+    model: str = DEFAULT_LLM_MODEL,
+    temperature: float = DEFAULT_LLM_TEMPERATURE,
+    num_ctx: int = DEFAULT_LLM_NUM_CTX,
     max_tokens: int = 420,
     timeout: int = 18,
     retry_feedback: str | None = None,
@@ -1388,6 +1710,12 @@ def compose_professional_answer(
     )
 
     if mode == "fallback":
+        return fallback
+
+    critical_deterministic_intents = {
+        "reference_range_lookup",
+    }
+    if str(getattr(query_understanding, "intent", "")).strip().lower() in critical_deterministic_intents:
         return fallback
 
     if bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)):
@@ -1423,6 +1751,10 @@ def compose_professional_answer(
 
     prompt = (
         f"{PROFESSIONAL_WRITER_SYSTEM_PROMPT}\n\n{PROFESSIONAL_WRITER_VISUALIZATION_RULES}\n\n"
+        "RÈGLE STRICTE: reformule uniquement les facts de results_locked.\n"
+        "INTERDIT: ajouter/supprimer/modifier analyte, valeur, unité, référence, statut ou source.\n"
+        "INTERDIT: recalculer, diagnostiquer, proposer un traitement, utiliser un résultat antérieur comme valeur actuelle.\n"
+        "Si une donnée manque, écrire 'non présent' ou 'non disponible'.\n"
         "Sortie attendue: réponse finale uniquement.\n"
         "/no_think\n\n"
         "Question utilisateur:\n"
@@ -1445,27 +1777,34 @@ def compose_professional_answer(
             temperature=0.0 if temperature is None else min(float(temperature), 0.2),
             num_ctx=max(2048, int(num_ctx)),
             max_tokens=max(180, min(int(max_tokens), 520)),
-            timeout=max(6, min(int(timeout), 30)),
-            keep_alive="5m",
+            timeout=max(6, int(timeout)),
+            keep_alive=str(os.getenv("MEDICAL_RAG_OLLAMA_KEEP_ALIVE", "10m")).strip() or "10m",
         ).strip()
         if not llm_answer:
             out = dict(fallback)
             out["llm_error"] = "empty_llm_answer"
+            out["llm_prompt_preview"] = prompt[:1200]
             return out
 
-        if re.search(r"\brésultat\(s\)|\bcorrespondant\(s\)", llm_answer, flags=re.IGNORECASE):
+        guard_disabled = _llm_quality_guard_disabled()
+
+        if (not guard_disabled) and re.search(r"\brésultat\(s\)|\bcorrespondant\(s\)", llm_answer, flags=re.IGNORECASE):
             out = dict(fallback)
             out["mode"] = "llm_writer_quality_fallback"
             out["llm_error"] = "ugly_pluralization"
+            out["llm_prompt_preview"] = prompt[:1200]
+            out["llm_candidate_answer"] = llm_answer
             return out
-        if re.search(r"\bchart\b", norm_text(llm_answer), flags=re.IGNORECASE):
+        if (not guard_disabled) and re.search(r"\bchart\b", norm_text(llm_answer), flags=re.IGNORECASE):
             out = dict(fallback)
             out["mode"] = "llm_writer_quality_fallback"
             out["llm_error"] = "internal_chart_term_visible"
+            out["llm_prompt_preview"] = prompt[:1200]
+            out["llm_candidate_answer"] = llm_answer
             return out
 
         viz = dict(compact_pack.get("visualization_facts") or {})
-        if bool(viz.get("fallback_used")):
+        if (not guard_disabled) and bool(viz.get("fallback_used")):
             requested_label = _safe_str(viz.get("requested_label")).lower()
             rendered_label = _safe_str(viz.get("rendered_label")).lower()
             fallback_reason = _safe_str(viz.get("fallback_reason")).lower()
@@ -1474,25 +1813,48 @@ def compose_professional_answer(
                 out = dict(fallback)
                 out["mode"] = "llm_writer_quality_fallback"
                 out["llm_error"] = "requested_visualization_not_respected"
+                out["llm_prompt_preview"] = prompt[:1200]
+                out["llm_candidate_answer"] = llm_answer
                 return out
             if rendered_label and norm_text(rendered_label) not in ans_norm:
                 out = dict(fallback)
                 out["mode"] = "llm_writer_quality_fallback"
                 out["llm_error"] = "rendered_visualization_not_mentioned"
+                out["llm_prompt_preview"] = prompt[:1200]
+                out["llm_candidate_answer"] = llm_answer
                 return out
             if fallback_reason:
                 key_terms = [tok for tok in re.findall(r"[a-zA-ZÀ-ÿ]{5,}", fallback_reason) if tok not in {"dans", "pour", "avec", "encore"}]
                 if key_terms and not any(norm_text(term) in ans_norm for term in key_terms[:4]):
                     out = dict(fallback)
                     out["mode"] = "llm_writer_quality_fallback"
-                    out["llm_error"] = "fallback_reason_missing"
-                    return out
+                out["llm_error"] = "fallback_reason_missing"
+                out["llm_prompt_preview"] = prompt[:1200]
+                out["llm_candidate_answer"] = llm_answer
+                return out
+
+        if not guard_disabled:
+            preserves_facts, fact_error = _llm_writer_preserves_facts(
+                llm_answer=llm_answer,
+                evidences=evidences,
+                source_citations=source_citations or [],
+            )
+            if not preserves_facts:
+                out = dict(fallback)
+                out["mode"] = "llm_writer_quality_fallback"
+                out["llm_error"] = fact_error or "llm_modified_facts"
+                out["llm_prompt_preview"] = prompt[:1200]
+                out["llm_candidate_answer"] = llm_answer
+                return out
 
         has_source_col = bool(re.search(r"(?im)^\|\s*.*\bsource\b.*\|$", llm_answer or ""))
         if "sources" not in llm_answer.lower() and not has_source_col:
-            src_lines = _source_lines(source_citations or [])
-            if src_lines:
-                llm_answer = llm_answer.rstrip() + "\n\nSources :\n" + "\n".join(src_lines)
+            source_block = _build_sources_block(
+                source_citations or [],
+                clickable_requested=bool(getattr(query_understanding, "source_clickable_requested", False)),
+            )
+            if source_block:
+                llm_answer = llm_answer.rstrip() + "\n\n" + source_block
 
         return {
             "intro": "",
@@ -1506,11 +1868,14 @@ def compose_professional_answer(
                 "strict_json": False,
             },
             "answer": llm_answer,
-            "mode": "llm_professional_writer",
-            "llm_error": None,
+            "mode": "hybrid_structured_llm_writer" if mode == "hybrid_structured_llm_writer" else "llm_professional_writer",
+            "llm_error": "quality_guard_disabled_debug_mode" if guard_disabled else None,
+            "llm_prompt_preview": prompt[:1200],
+            "llm_candidate_answer": llm_answer,
         }
     except LLMClientError as exc:
         out = dict(fallback)
         out["mode"] = "llm_writer_error_fallback"
         out["llm_error"] = str(exc)
+        out["llm_prompt_preview"] = prompt[:1200]
         return out

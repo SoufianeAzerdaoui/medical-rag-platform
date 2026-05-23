@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
 import traceback
+import unicodedata
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -11,6 +14,20 @@ from backend.models import ChatRequest, ChatResponse, SourceItem
 from backend.services import conversation_service, message_service
 from backend.services.conversation_state_store import ConversationStateService, transformable_context
 from scripts.generation.source_normalization import dedup_normalized_sources
+from scripts.generation.model_settings import (
+    DEFAULT_LLM_MAX_TOKENS,
+    DEFAULT_LLM_MODEL,
+    DEFAULT_LLM_NUM_CTX,
+    DEFAULT_LLM_PROVIDER,
+    DEFAULT_LLM_TEMPERATURE,
+    DEFAULT_LLM_TIMEOUT,
+)
+
+
+def _debug_or_devtest_enabled() -> bool:
+    if str(os.getenv("CHAT_DEBUG_ERRORS", "")).strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    return str(os.getenv("APP_ENV", "")).strip().lower() in {"dev", "development", "test", "local"}
 
 
 def to_source_items(result: dict[str, Any]) -> list[SourceItem]:
@@ -84,6 +101,118 @@ def confidence_from_result(result: dict[str, Any]) -> float | None:
     return None
 
 
+def _dedup_keep_order(items: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        key = str(item or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _canonicalize_analyte_token(value: str) -> str:
+    s = str(value or "").strip().lower()
+    if not s:
+        return ""
+    s = s.replace("µ", "u")
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"[^a-z0-9_\s-]", " ", s)
+    s = re.sub(r"[\s-]+", "_", s).strip("_")
+    return s
+
+
+def _canonicalize_analytes(values: list[str] | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in list(values or []):
+        key = _canonicalize_analyte_token(str(raw))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _stage_timings_from_generation(generation: dict[str, Any]) -> dict[str, float | None]:
+    base = {
+        "query_understanding_ms": 0.0,
+        "routing_ms": 0.0,
+        "retrieval_ms": 0.0,
+        "evidence_build_ms": 0.0,
+        "llm_writer_ms": 0.0,
+        "validation_ms": 0.0,
+        "repair_ms": 0.0,
+        "fallback_ms": 0.0,
+        "total_ms": 0.0,
+    }
+    debug = generation.get("debug") if isinstance(generation.get("debug"), dict) else {}
+    raw = debug.get("stage_timings_ms") if isinstance(debug.get("stage_timings_ms"), dict) else {}
+    for key in base:
+        value = raw.get(key)
+        try:
+            base[key] = float(value) if value is not None else 0.0
+        except Exception:
+            base[key] = 0.0
+    if (not base.get("total_ms")) and generation.get("generation_time_seconds") is not None:
+        try:
+            base["total_ms"] = round(float(generation.get("generation_time_seconds") or 0.0) * 1000.0, 3)
+        except Exception:
+            base["total_ms"] = 0.0
+    return base
+
+
+def _normalize_displayed_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
+    doc_id = str(row.get("doc_id") or row.get("documentId") or "").strip()
+    document_name = str(row.get("document_name") or row.get("documentName") or row.get("filename") or row.get("source_pdf") or "").strip()
+    page = row.get("page_number", row.get("page"))
+    row_no = row.get("row_index", row.get("row", row.get("line")))
+    analyte = str(row.get("analyte") or "").strip()
+    value = str(row.get("current_value") or row.get("value_raw") or row.get("value") or "").strip()
+    unit = str(row.get("unit") or "").strip()
+    reference = str(row.get("reference") or row.get("reference_range") or "").strip()
+    status = str(row.get("technical_status_code") or row.get("interpretation_status") or row.get("status") or "").strip()
+    source_label = str(
+        row.get("source_label")
+        or row.get("label")
+        or row.get("source")
+        or row.get("text_excerpt")
+        or ""
+    ).strip()
+    source_excerpt = str(row.get("source_excerpt") or row.get("text_excerpt") or source_label).strip()
+    out: dict[str, Any] = {
+        "doc_id": doc_id or None,
+        "document_name": document_name or None,
+        "page": int(page) if isinstance(page, int) else page,
+        "row": int(row_no) if isinstance(row_no, int) else row_no,
+        "analyte": analyte or None,
+        "value": value or None,
+        "unit": unit or None,
+        "reference": reference or None,
+        "status": status or None,
+        "source_label": source_label or None,
+        "source_excerpt": source_excerpt or None,
+    }
+    return out
+
+
+def _resolve_displayed_evidences(generation: dict[str, Any]) -> list[dict[str, Any]]:
+    direct = generation.get("displayed_evidences")
+    if isinstance(direct, list) and direct:
+        return [_normalize_displayed_evidence_row(r if isinstance(r, dict) else {}) for r in direct]
+    debug = generation.get("debug") if isinstance(generation.get("debug"), dict) else {}
+    included = debug.get("included_rows")
+    if isinstance(included, list) and included:
+        return [_normalize_displayed_evidence_row(r if isinstance(r, dict) else {}) for r in included]
+    preview = debug.get("evidence_rows_preview")
+    if isinstance(preview, list) and preview:
+        return [_normalize_displayed_evidence_row(r if isinstance(r, dict) else {}) for r in preview]
+    return []
+
+
 def process_chat(
     *,
     payload: ChatRequest,
@@ -138,16 +267,19 @@ def process_chat(
         )
 
         query = f"{payload.message} doc_id {payload.document_id}" if payload.document_id else payload.message
+        requested_model_override = str(payload.llm_model_override or "").strip() or None
+        allow_model_override = _debug_or_devtest_enabled()
+        model_for_request = requested_model_override if (allow_model_override and requested_model_override) else DEFAULT_LLM_MODEL
         generation = run_generation(
             query=query,
             top_k=5,
             mode="hybrid",
-            provider="ollama",
-            model="qwen3:4b",
-            temperature=0.0,
-            num_ctx=4096,
-            max_tokens=600,
-            timeout=120,
+            provider=DEFAULT_LLM_PROVIDER,
+            model=model_for_request,
+            temperature=DEFAULT_LLM_TEMPERATURE,
+            num_ctx=DEFAULT_LLM_NUM_CTX,
+            max_tokens=max(600, DEFAULT_LLM_MAX_TOKENS),
+            timeout=DEFAULT_LLM_TIMEOUT,
             index_dir="data/indexes",
             collection="medical_chunks",
             previous_structured_evidence_pack=transformable,
@@ -248,6 +380,71 @@ def process_chat(
 
         sources = to_source_items(generation)
         document_ids = sorted({item.documentId for item in sources if item.documentId})
+        validation = generation.get("validation") if isinstance(generation.get("validation"), dict) else {}
+        validation_warnings = _dedup_keep_order([str(w) for w in (validation.get("warnings") or []) if str(w).strip()])
+        validation_errors = _dedup_keep_order([str(e) for e in (validation.get("errors") or []) if str(e).strip()])
+        validation["warnings"] = validation_warnings
+        validation["errors"] = validation_errors
+        qu = generation.get("query_understanding") if isinstance(generation.get("query_understanding"), dict) else {}
+        displayed_evidences = _resolve_displayed_evidences(generation)
+        stage_timings_ms = _stage_timings_from_generation(generation)
+        generation_debug = generation.get("debug") if isinstance(generation.get("debug"), dict) else {}
+        llm_provider = str(generation.get("provider") or "") or None
+        llm_model_requested = str(generation.get("model") or "") or None
+        llm_model_effective = str(generation_debug.get("ollama_model") or "") or None
+        model_verified = None
+        if llm_model_requested or llm_model_effective:
+            model_verified = llm_model_requested == llm_model_effective
+        canonical_requested_analytes = _canonicalize_analytes(list(qu.get("requested_analytes") or []))
+        qu_debug = dict(qu) if qu else {}
+        if qu_debug:
+            qu_debug["requested_analytes"] = canonical_requested_analytes
+        response_debug = {
+            "intent": str(qu.get("intent") or "") or None,
+            "safety_intent": str(qu.get("safety_intent") or "") or None,
+            "intent_arbitration": (qu.get("intent_arbitration") if isinstance(qu.get("intent_arbitration"), dict) else None),
+            "technical_condition": str(qu.get("technical_condition") or "") or None,
+            "requested_doc_ids": list(qu.get("requested_doc_ids") or []),
+            "requested_analytes": canonical_requested_analytes,
+            "query_understanding": qu_debug if qu_debug else None,
+            "selected_route": str((generation_debug.get("selected_route") or "")) or None,
+            "route_reason": str((generation_debug.get("route_reason") or "")) or None,
+            "evidence_rows_preview": list((generation_debug.get("evidence_rows_preview") or [])),
+            "included_rows": list((generation_debug.get("included_rows") or [])),
+            "excluded_rows": list((generation_debug.get("excluded_rows") or [])),
+            "fallback_reason": str((generation_debug.get("fallback_reason") or "")) or None,
+            "generation_mode_before_fallback": str((generation_debug.get("generation_mode_before_fallback") or "")) or None,
+            "llm_provider": llm_provider,
+            "llm_model_override_requested": requested_model_override,
+            "llm_model_override_allowed": allow_model_override,
+            "llm_model_override_applied": bool(requested_model_override and allow_model_override),
+            "llm_model_override_rejected": bool(requested_model_override and not allow_model_override),
+            "llm_model_requested": llm_model_requested,
+            "llm_model_effective": llm_model_effective,
+            "ollama_model": str((generation_debug.get("ollama_model") or "")) or None,
+            "model_verified": model_verified,
+            "generation_strategy": str((generation_debug.get("generation_strategy") or "")) or None,
+            "llm_expected": bool(generation_debug.get("llm_expected")),
+            "llm_skipped_reason": str((generation_debug.get("llm_skipped_reason") or "")) or None,
+            "deterministic_preferred_reason": str((generation_debug.get("deterministic_preferred_reason") or "")) or None,
+            "llm_writer_attempted": bool(generation_debug.get("llm_writer_attempted")),
+            "llm_writer_accepted": bool(generation_debug.get("llm_writer_accepted"))
+            if generation_debug.get("llm_writer_accepted") is not None
+            else (str((generation_debug.get("generation_writer") or "")).strip().lower() == "llm_writer"),
+            "hard_gate_rejected": bool(generation_debug.get("hard_gate_triggered")),
+            "repair_attempted": bool(generation_debug.get("llm_repair_attempted") or generation_debug.get("llm_candidate_repair_used")),
+            "repair_success": bool(generation_debug.get("llm_repair_attempted") or generation_debug.get("llm_candidate_repair_used"))
+            and not bool(generation_debug.get("hard_gate_triggered"))
+            and str((generation_debug.get("generation_writer") or "")).strip().lower() == "llm_writer",
+            "validation": {
+                "status": str(validation.get("validation_status") or "") or None,
+                "errors": validation_errors,
+                "warnings": validation_warnings,
+                "unsupported_claims": list(validation.get("unsupported_claims") or []),
+            },
+            "stage_timings_ms": stage_timings_ms,
+            "raw_debug": generation_debug,
+        }
 
         return ChatResponse(
             conversation_id=conversation_id,
@@ -264,6 +461,8 @@ def process_chat(
             chart_data=(generation.get("chart_data") if isinstance(generation.get("chart_data"), dict) else None),
             patients=generation.get("patients"),
             inventory_view=(generation.get("inventory_view") if isinstance(generation.get("inventory_view"), dict) else None),
+            displayed_evidences=displayed_evidences,
+            debug=response_debug,
         )
 
     except HTTPException:
@@ -281,6 +480,22 @@ def process_chat(
             "Une erreur interne a empêché la génération complète de la réponse. "
             "Les données indexées restent disponibles ; veuillez relancer la demande ou simplifier la formulation."
         )
+        expose_error_detail = str(os.getenv("CHAT_DEBUG_ERRORS", "")).strip().lower() in {"1", "true", "yes", "on"}
+        if not expose_error_detail:
+            app_env = str(os.getenv("APP_ENV", "")).strip().lower()
+            expose_error_detail = app_env in {"dev", "development", "test", "local"}
+        debug_payload: dict[str, Any] = {
+            "intent": None,
+            "validation": {
+                "status": "warning",
+                "errors": ["controlled_error_fallback"],
+                "warnings": [],
+                "unsupported_claims": [],
+            },
+        }
+        if expose_error_detail:
+            debug_payload["controlled_error_detail"] = str(exc)
+            debug_payload["controlled_error_traceback"] = traceback.format_exc()
         return ChatResponse(
             conversation_id=conversation_id,
             answer=safe_answer,
@@ -296,4 +511,5 @@ def process_chat(
             chart_data=None,
             patients=None,
             inventory_view=None,
+            debug=debug_payload,
         )
