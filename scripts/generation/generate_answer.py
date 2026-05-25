@@ -156,6 +156,10 @@ def _is_feature_enabled(name: str, default: bool = True) -> bool:
         return default
 
 
+def _llm_global_enabled() -> bool:
+    return _is_feature_enabled("LLM_GLOBAL_ENABLED", default=True)
+
+
 def _is_critical_medical_intent(query_understanding: QueryUnderstanding) -> bool:
     intent = str(getattr(query_understanding, "intent", "") or "").strip().lower()
     if intent in {"reference_range_lookup", "diagnostic_safety_question"}:
@@ -194,6 +198,8 @@ def _is_hybrid_structured_writer_intent(query_understanding: QueryUnderstanding)
 
 
 def _hybrid_writer_mode(query_understanding: QueryUnderstanding) -> str:
+    if not _llm_global_enabled():
+        return "fallback"
     force_llm_writer = str(os.getenv("MEDICAL_RAG_FORCE_LLM_WRITER", "0")).strip().lower() in {"1", "true", "yes", "on"}
     intent_norm = str(getattr(query_understanding, "intent", "") or "").strip().lower()
     if intent_norm == "multi_doc_comparison":
@@ -234,7 +240,7 @@ def _level2_llm_runtime_config(
     default_max_tokens: int,
 ) -> dict[str, Any]:
     route_norm = str(selected_route or "").strip().lower()
-    llm_allowed = bool(selected_policy.get("llm_writer_allowed", False))
+    llm_allowed = bool(selected_policy.get("llm_writer_allowed", False)) and _llm_global_enabled()
     generation_strategy = str(selected_policy.get("generation_strategy") or "").strip().lower() or "deterministic_preferred"
     llm_expected = bool(selected_policy.get("llm_expected", False))
     is_level2 = route_norm in LEVEL2_HYBRID_INTENT_POLICY
@@ -246,6 +252,8 @@ def _level2_llm_runtime_config(
     use_llm = False
     if generation_strategy == "deterministic_only":
         llm_skipped_reason = "route_deterministic_only"
+    elif not _llm_global_enabled():
+        llm_skipped_reason = "llm_globally_disabled"
     elif generation_strategy == "deterministic_preferred":
         # Deterministic-first on factual routes; explicit force can still opt-in for tests/debug.
         use_llm = bool(is_level2 and has_evidence and not hard_block_safety and force_llm_writer)
@@ -342,6 +350,9 @@ def _llm_assisted_query_understanding(
     timeout: int,
 ) -> tuple[QueryUnderstanding, dict[str, Any]]:
     debug: dict[str, Any] = {"enabled": False, "used": False, "error": None}
+    if not _llm_global_enabled():
+        debug["error"] = "llm_globally_disabled"
+        return base_qu, debug
     if not _is_feature_enabled("LLM_QUERY_UNDERSTANDING_ENABLED", default=False):
         return base_qu, debug
     debug["enabled"] = True
@@ -6911,8 +6922,8 @@ def render_evidence_pack_deterministic(evidence_pack: dict[str, Any], output_for
 
     if intent in {"multi_doc_comparison", "doc_pair_comparison"}:
         doc_ids = requested_doc_ids[:2]
-        left = doc_ids[0] if len(doc_ids) >= 1 else "report_a"
-        right = doc_ids[1] if len(doc_ids) >= 2 else "report_b"
+        left = doc_ids[0] if len(doc_ids) >= 1 else ""
+        right = doc_ids[1] if len(doc_ids) >= 2 else ""
         grouped: dict[str, dict[str, dict[str, Any]]] = {}
         for ev in evidences:
             analyte_norm = str(ev.get("analyte_norm") or ev.get("analyte") or "").strip().lower()
@@ -6930,14 +6941,23 @@ def render_evidence_pack_deterministic(evidence_pack: dict[str, Any], output_for
             side_data = grouped.get(key, {})
             a = side_data.get(left)
             b = side_data.get(right)
+            left_label = left or "le premier document demandé"
+            right_label = right or "le second document demandé"
             if not a and not b:
-                lines.append(f"- {label}: non retrouvé dans {left} ni {right}.")
+                if left and right:
+                    lines.append(f"- {label}: non retrouvé dans {left_label} ni {right_label}.")
+                elif left:
+                    lines.append(f"- {label}: non retrouvé dans {left_label}.")
+                elif right:
+                    lines.append(f"- {label}: non retrouvé dans {right_label}.")
+                else:
+                    lines.append(f"- {label}: non retrouvé dans les documents demandés.")
                 continue
             if a and not b:
-                lines.append(f"- {label}: présent uniquement dans {left} ({a.get('current_value')} {a.get('unit') or ''}).")
+                lines.append(f"- {label}: présent uniquement dans {left_label} ({a.get('current_value')} {a.get('unit') or ''}).")
                 continue
             if b and not a:
-                lines.append(f"- {label}: présent uniquement dans {right} ({b.get('current_value')} {b.get('unit') or ''}).")
+                lines.append(f"- {label}: présent uniquement dans {right_label} ({b.get('current_value')} {b.get('unit') or ''}).")
                 continue
             av = str(a.get("current_value") or "")
             bv = str(b.get("current_value") or "")

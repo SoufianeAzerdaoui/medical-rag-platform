@@ -12,12 +12,13 @@ def create_conversation_record(*, user_id: str, title: str | None = None, conver
     now = now_iso()
     conv_id = str(conversation_id or f"conv_{uuid4()}")
     safe_title = (str(title or "").strip() or "Nouvelle conversation")[:240]
+    title_source = "manual" if str(title or "").strip() else "auto"
 
     conn = db_connect()
     try:
         conn.execute(
-            "INSERT INTO conversations (id, user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-            (conv_id, str(user_id), safe_title, now, now),
+            "INSERT INTO conversations (id, user_id, title, title_source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (conv_id, str(user_id), safe_title, title_source, now, now),
         )
         conn.commit()
     finally:

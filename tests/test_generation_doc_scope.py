@@ -1811,6 +1811,17 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertIn("report_10", source_doc_ids)
         self.assertIn("report_12", source_doc_ids)
 
+    def test_multi_doc_comparison_never_uses_placeholder_report_labels(self) -> None:
+        result = run_generation(
+            query="compare report 10 et 12 vite fait",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        answer = str(result.get("answer") or "")
+        self.assertNotIn("report_a", answer)
+        self.assertNotIn("report_b", answer)
+
     def test_global_abnormal_with_analyte_not_forced_to_scope_clarification(self) -> None:
         result = run_generation(
             query="quels sont les rapports qui ont créatinine supérieur a 2 ??",

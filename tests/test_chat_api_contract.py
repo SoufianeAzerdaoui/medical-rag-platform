@@ -4,6 +4,7 @@ import logging
 import os
 import unittest
 from typing import Iterable
+from unittest.mock import patch
 
 try:
     import pytest
@@ -410,6 +411,47 @@ class TestChatApiContract(unittest.TestCase):
         self.assertIsNone(dbg.get("query_understanding"))
         self.assertIsNone(dbg.get("requested_analytes"))
         self.assertIsNone(dbg.get("selected_route"))
+
+    def test_structured_request_summary_log_is_emitted(self) -> None:
+        def _fake_run_generation(**_kwargs):
+            return {
+                "answer": "ok",
+                "generation_time_seconds": 0.123,
+                "generation_mode": "deterministic_single_analyte_lookup",
+                "validation": {"validation_status": "warning", "warnings": ["llm_hallucination"], "errors": []},
+                "quality_report": {"final_status": "warning"},
+                "query_understanding": {
+                    "intent": "doc_scoped_results",
+                    "requested_doc_ids": ["report_29"],
+                    "requested_analytes": ["créat"],
+                },
+                "sources": [],
+                "displayed_evidences": [],
+                "debug": {
+                    "selected_route": "doc_scoped_single_analyte_status",
+                    "answerability_status": "answerable_alias",
+                    "specialized_fallback_kind": "partial_answer",
+                },
+            }
+
+        logger = logging.getLogger("test.chat.contract.structured")
+        with patch.object(logger, "info") as info_mock:
+            chat_service.process_chat(
+                payload=ChatRequest(conversation_id="conv_structured_log", message="q"),
+                current_user={"id": "u1"},
+                state_service=_FakeStateService(),
+                run_generation=_fake_run_generation,
+                logger=logger,
+            )
+
+        joined_calls = [" ".join(str(arg) for arg in call.args) for call in info_mock.call_args_list]
+        summary_call = next((entry for entry in joined_calls if "chat_request_summary" in entry), "")
+        self.assertIn('"intent": "doc_scoped_results"', summary_call)
+        self.assertIn('"selected_route": "doc_scoped_single_analyte_status"', summary_call)
+        self.assertIn('"answerability_status": "answerable_alias"', summary_call)
+        self.assertIn('"fallback_kind": "partial_answer"', summary_call)
+        self.assertIn('"response_time_ms": 123.0', summary_call)
+        self.assertIn('"failure_signals": ["hallucination"]', summary_call)
 
 
 if __name__ == "__main__":

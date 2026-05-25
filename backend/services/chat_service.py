@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import re
 import traceback
@@ -120,6 +121,53 @@ def _dedup_keep_order(items: list[str]) -> list[str]:
         seen.add(key)
         out.append(key)
     return out
+
+
+def _validation_failure_signals(validation_errors: list[str], validation_warnings: list[str]) -> list[str]:
+    signals: list[str] = []
+    combined = [
+        str(item or "").strip().lower()
+        for item in [*validation_errors, *validation_warnings]
+        if str(item or "").strip()
+    ]
+    if any("hallucination" in item for item in combined):
+        signals.append("hallucination")
+    if any("diagnos" in item for item in combined):
+        signals.append("diagnosis")
+    if any("treatment" in item or "therap" in item for item in combined):
+        signals.append("treatment")
+    if any("pii" in item for item in combined):
+        signals.append("pii")
+    return signals
+
+
+def _emit_request_summary_log(
+    *,
+    logger: logging.Logger,
+    request_id: str,
+    conversation_id: str,
+    generation: dict[str, Any],
+    generation_debug: dict[str, Any],
+    validation_errors: list[str],
+    validation_warnings: list[str],
+) -> None:
+    quality_report = generation.get("quality_report") if isinstance(generation.get("quality_report"), dict) else {}
+    response_time_ms = round(float(generation.get("generation_time_seconds") or 0.0) * 1000.0, 3)
+    payload = {
+        "event": "chat_request_summary",
+        "request_id": request_id,
+        "conversation_id": conversation_id,
+        "intent": str(((generation.get("query_understanding") or {}).get("intent") or "")) or None,
+        "selected_route": str(generation_debug.get("selected_route") or "") or None,
+        "generation_mode": str(generation.get("generation_mode") or "") or None,
+        "validation_status": str(((generation.get("validation") or {}).get("validation_status") or "")) or None,
+        "quality_final_status": str(quality_report.get("final_status") or "") or None,
+        "answerability_status": str(generation_debug.get("answerability_status") or "") or None,
+        "fallback_kind": str(generation_debug.get("specialized_fallback_kind") or "") or None,
+        "response_time_ms": response_time_ms,
+        "failure_signals": _validation_failure_signals(validation_errors, validation_warnings),
+    }
+    logger.info("chat_request_summary %s", json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
 
 def _canonicalize_analyte_token(value: str) -> str:
@@ -499,6 +547,16 @@ def process_chat(
                     },
                 }
             )
+
+        _emit_request_summary_log(
+            logger=logger,
+            request_id=request_id,
+            conversation_id=conversation_id,
+            generation=generation,
+            generation_debug=generation_debug,
+            validation_errors=validation_errors,
+            validation_warnings=validation_warnings,
+        )
 
         return ChatResponse(
             conversation_id=conversation_id,
