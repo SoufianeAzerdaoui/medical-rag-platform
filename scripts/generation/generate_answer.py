@@ -135,6 +135,10 @@ from priority_scoring import compute_priority_score as _compute_priority_score_e
 from reference_range_parser import parse_reference_ranges
 from reference_range_selector import select_reference_range
 from reference_range_lookup_flow import run_reference_range_lookup_from_rows
+from specialized_fallbacks import (
+    build_specialized_fallback,
+    infer_specialized_fallback_kind,
+)
 try:
     from backend.services.feature_flag_service import get_feature_flag as _runtime_get_feature_flag
 except Exception:  # pragma: no cover - fallback for CLI-only runs without backend package
@@ -6400,6 +6404,83 @@ def _clarification_message(key: str, default: str) -> str:
     return _assistant_message(["clarifications", key], default)
 
 
+def _render_specialized_fallback(
+    *,
+    fallback_kind: str,
+    requested_analytes: list[str] | None = None,
+    requested_doc_ids: list[str] | None = None,
+    matched_doc_ids: list[str] | None = None,
+    missing_doc_ids: list[str] | None = None,
+    requested_value: str | None = None,
+    comparison_operator: str | None = None,
+) -> dict[str, str]:
+    fb = build_specialized_fallback(
+        kind=fallback_kind,
+        requested_analytes=requested_analytes,
+        requested_doc_ids=requested_doc_ids,
+        matched_doc_ids=matched_doc_ids,
+        missing_doc_ids=missing_doc_ids,
+        requested_value=requested_value,
+        comparison_operator=comparison_operator,
+    )
+    return {
+        "kind": str(fb.kind),
+        "answer": str(fb.answer),
+        "generation_mode": str(fb.generation_mode),
+        "warning_code": str(fb.warning_code),
+    }
+
+
+def _canonical_requested_analytes_for_debug(analytes: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in list(analytes or []):
+        key = canonicalize_medical_analyte(str(raw))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _build_fallback_decision_path(
+    *,
+    planner_execution: dict[str, Any],
+    answerability_assessment: dict[str, Any],
+    fallback_stage: str | None,
+    fallback_reason_debug: str | None,
+    specialized_fallback_kind: str | None,
+    llm_writer_used: bool,
+    final_safety_check_failed: bool,
+) -> list[str]:
+    path: list[str] = []
+    answerability_status = str(answerability_assessment.get("status") or "").strip().lower()
+    if answerability_status:
+        path.append(f"answerability:{answerability_status}")
+    selected_plan = str(planner_execution.get("selected_plan") or "").strip().lower()
+    if selected_plan:
+        path.append(f"planner_selected:{selected_plan}")
+    for cand in list(planner_execution.get("fallback_candidates") or []):
+        tok = str(cand or "").strip().lower()
+        if tok:
+            path.append(f"planner_fallback_candidate:{tok}")
+    if fallback_stage:
+        path.append(f"fallback_stage:{str(fallback_stage).strip().lower()}")
+    if specialized_fallback_kind:
+        path.append(f"specialized_fallback:{str(specialized_fallback_kind).strip().lower()}")
+    if fallback_reason_debug:
+        path.append(f"fallback_reason:{str(fallback_reason_debug).strip().lower()}")
+    if final_safety_check_failed:
+        path.append("final_safety_check:failed")
+    if llm_writer_used:
+        path.append("llm_writer:used")
+    dedup: list[str] = []
+    for p in path:
+        if p not in dedup:
+            dedup.append(p)
+    return dedup
+
+
 def _thyroid_high_groups() -> tuple[set[str], set[str]]:
     rules = dict(get_topic_rules("thyroid") or {})
     groups = dict(rules.get("high_groups") or {})
@@ -9894,6 +9975,7 @@ def run_generation(
     # Deterministic route normalization for production medical flows.
     planner_execution: dict[str, Any] = {
         "route_candidates": [],
+        "rejected_routes": [],
         "selected_plan": "",
         "fallback_candidates": [],
         "shadow_mode": True,
@@ -9920,6 +10002,7 @@ def run_generation(
     except Exception as planner_exc:
         planner_execution = {
             "route_candidates": [],
+            "rejected_routes": [],
             "selected_plan": str(query_understanding.intent or "").strip().lower(),
             "fallback_candidates": [],
             "shadow_mode": True,
@@ -9938,11 +10021,12 @@ def run_generation(
         and not list(query_understanding.requested_analytes or [])
     )
     if selected_route == "diagnostic_safety_question" or pure_diagnostic_refusal:
-        answer = (
-            "Je ne peux pas poser de diagnostic à partir de ces résultats.\n\n"
-            "Information insuffisante dans le contexte fourni.\n\n"
-            "Conclusion technique : refus diagnostique de sécurité, sans interprétation clinique."
+        fb_diag = _render_specialized_fallback(
+            fallback_kind="diagnosis_refusal",
+            requested_analytes=list(query_understanding.requested_analytes or []),
+            requested_doc_ids=list(query_understanding.requested_doc_ids or []),
         )
+        answer = str(fb_diag.get("answer") or "")
         validation = validate_answer(
             query=q,
             answer_text=answer,
@@ -10020,13 +10104,28 @@ def run_generation(
                     "route_reason": "hard_safety_gate_diagnostic_refusal",
                     "generation_mode": "deterministic_diagnostic_safety_refusal",
                     "generation_writer": "deterministic_safety_guardrail",
+                    "canonical_requested_analytes": _canonical_requested_analytes_for_debug(
+                        list(query_understanding.requested_analytes or [])
+                    ),
+                    "intent_candidates": list(getattr(query_understanding, "intent_candidates", []) or []),
+                    "intent_confidence": float(getattr(query_understanding, "intent_confidence", 0.0) or 0.0),
+                    "scope_confidence": float(getattr(query_understanding, "scope_confidence", 0.0) or 0.0),
+                    "ambiguity_flags": list(getattr(query_understanding, "ambiguity_flags", []) or []),
+                    "medical_topics": list(getattr(query_understanding, "medical_topics", []) or []),
                     "route_candidates": list(planner_execution.get("route_candidates") or []),
+                    "rejected_routes": list(planner_execution.get("rejected_routes") or []),
                     "selected_plan": planner_execution.get("selected_plan"),
                     "fallback_candidates": list(planner_execution.get("fallback_candidates") or []),
+                    "fallback_decision_path": [
+                        "answerability:unsafe",
+                        "specialized_fallback:diagnosis_refusal",
+                        "fallback_stage:hard_safety_gate",
+                    ],
                     "planner_shadow_mode": bool(planner_execution.get("shadow_mode", True)),
                     "planner_takeover_allowed": bool(planner_execution.get("takeover_allowed", False)),
                     "planner_takeover_reason": str(planner_execution.get("takeover_reason") or "shadow_mode_default"),
                     "planner_version": str(planner_execution.get("planner_version") or "v1"),
+                    "specialized_fallback_kind": str(fb_diag.get("kind") or "diagnosis_refusal"),
                     "answerability_status": "unsafe",
                     "answerability_reason": "diagnostic_safety_refusal",
                     "answerability_matching_strategy": "none",
@@ -10454,12 +10553,21 @@ def run_generation(
     if selected_route in {"global_qualitative_toxicology_search", "open_grounded_medical_question"}:
         early_detected_analytes = list(query_understanding.requested_analytes or [])
         early_policy = _strict_policy_for_route(selected_route)
-        answer = "Information insuffisante dans les données structurées disponibles pour répondre de façon fiable."
+        early_specialized_fallback_kind = "insufficient_evidence"
+        fb_insufficient = _render_specialized_fallback(
+            fallback_kind="insufficient_evidence",
+            requested_analytes=early_detected_analytes,
+            requested_doc_ids=requested_doc_ids,
+            requested_value=query_understanding.requested_value,
+            comparison_operator=query_understanding.comparison_operator,
+        )
+        answer = str(fb_insufficient.get("answer") or "")
         if selected_route == "global_qualitative_toxicology_search":
             answer = (
                 "Aucune recherche toxicologique urinaire exploitable n’a été retrouvée dans les documents indexés. "
                 "Les éléments urinaires non toxicologiques (ex. cristaux) ne sont pas retenus pour cette demande."
             )
+            early_specialized_fallback_kind = "topic_not_found"
         generation_mode = "deterministic_no_evidence_response"
         validation = validate_answer(
             query=q,
@@ -10493,7 +10601,14 @@ def run_generation(
         final_safety_check_failed = False
         if str((validation or {}).get("validation_status") or "").strip().lower() == "fail":
             final_safety_check_failed = True
-            final_answer = "Je ne peux pas fournir une réponse fiable à partir des données disponibles."
+            fb_safe = _render_specialized_fallback(
+                fallback_kind="insufficient_evidence",
+                requested_analytes=early_detected_analytes,
+                requested_doc_ids=requested_doc_ids,
+                requested_value=query_understanding.requested_value,
+                comparison_operator=query_understanding.comparison_operator,
+            )
+            final_answer = str(fb_safe.get("answer") or "")
             generation_mode = "deterministic_safe_error_response"
             displayed_evidences = []
             evidence_pack = []
@@ -10516,7 +10631,14 @@ def run_generation(
         final_safety_check_failed = False
         if str((validation or {}).get("validation_status") or "").strip().lower() == "fail":
             final_safety_check_failed = True
-            final_answer = "Je ne peux pas fournir une réponse fiable à partir des données disponibles."
+            fb_safe = _render_specialized_fallback(
+                fallback_kind="insufficient_evidence",
+                requested_analytes=early_detected_analytes,
+                requested_doc_ids=requested_doc_ids,
+                requested_value=query_understanding.requested_value,
+                comparison_operator=query_understanding.comparison_operator,
+            )
+            final_answer = str(fb_safe.get("answer") or "")
             generation_mode = "deterministic_safe_error_response"
             displayed_evidences = []
             evidence_pack = []
@@ -10585,6 +10707,7 @@ def run_generation(
                 "max_tokens": int(early_policy.get("max_tokens") or max_tokens),
                 "validator_policy": str(early_policy.get("validator_policy") or "default"),
                 "query_understanding": _query_understanding_payload(query_understanding),
+                "specialized_fallback_kind": early_specialized_fallback_kind,
                 "stage_timings_ms": dict(stage_times_ms),
             },
             "visualization": None,
@@ -11335,9 +11458,21 @@ def run_generation(
                 "route_reason": "abnormal_results_without_scope_requires_clarification",
                 "generation_mode": "deterministic_no_evidence_response",
                 "generation_writer": "deterministic_clarification",
+                "canonical_requested_analytes": _canonical_requested_analytes_for_debug(list(exact_analytes or [])),
+                "intent_candidates": list(getattr(query_understanding, "intent_candidates", []) or []),
+                "intent_confidence": float(getattr(query_understanding, "intent_confidence", 0.0) or 0.0),
+                "scope_confidence": float(getattr(query_understanding, "scope_confidence", 0.0) or 0.0),
+                "ambiguity_flags": list(getattr(query_understanding, "ambiguity_flags", []) or []),
+                "medical_topics": list(getattr(query_understanding, "medical_topics", []) or []),
                 "route_candidates": list(planner_execution.get("route_candidates") or []),
+                "rejected_routes": list(planner_execution.get("rejected_routes") or []),
                 "selected_plan": planner_execution.get("selected_plan"),
                 "fallback_candidates": list(planner_execution.get("fallback_candidates") or []),
+                "fallback_decision_path": [
+                    "answerability:ambiguous",
+                    "specialized_fallback:ambiguous_document_scope",
+                    "fallback_stage:clarification",
+                ],
                 "planner_shadow_mode": bool(planner_execution.get("shadow_mode", True)),
                 "planner_takeover_allowed": bool(planner_execution.get("takeover_allowed", False)),
                 "planner_takeover_reason": str(planner_execution.get("takeover_reason") or "shadow_mode_default"),
@@ -11346,6 +11481,7 @@ def run_generation(
                 "answerability_reason": "missing_scope_for_abnormal_query",
                 "answerability_matching_strategy": "none",
                 "answerability_confidence": 0.0,
+                "specialized_fallback_kind": "ambiguous_document_scope",
                 "context_resolution": context_resolution,
                 "deictic_resolution": deictic_resolution,
                 "resolution_arbitration": resolution_arbitration,
@@ -11446,8 +11582,24 @@ def run_generation(
                         "route_reason": "global_summary_without_scope_requires_clarification",
                         "generation_mode": "deterministic_no_evidence_response",
                         "generation_writer": "deterministic_clarification",
+                        "canonical_requested_analytes": _canonical_requested_analytes_for_debug(list(exact_analytes or [])),
+                        "intent_candidates": list(getattr(query_understanding, "intent_candidates", []) or []),
+                        "intent_confidence": float(getattr(query_understanding, "intent_confidence", 0.0) or 0.0),
+                        "scope_confidence": float(getattr(query_understanding, "scope_confidence", 0.0) or 0.0),
+                        "ambiguity_flags": list(getattr(query_understanding, "ambiguity_flags", []) or []),
+                        "medical_topics": list(getattr(query_understanding, "medical_topics", []) or []),
+                        "route_candidates": list(planner_execution.get("route_candidates") or []),
+                        "rejected_routes": list(planner_execution.get("rejected_routes") or []),
+                        "selected_plan": planner_execution.get("selected_plan"),
+                        "fallback_candidates": list(planner_execution.get("fallback_candidates") or []),
+                        "fallback_decision_path": [
+                            "answerability:ambiguous",
+                            "specialized_fallback:ambiguous_document_scope",
+                            "fallback_stage:clarification",
+                        ],
                         "answerability_status": "ambiguous",
                         "answerability_reason": "global_summary_no_scope",
+                        "specialized_fallback_kind": "ambiguous_document_scope",
                         "context_resolution": context_resolution,
                         "deictic_resolution": deictic_resolution,
                         "resolution_arbitration": resolution_arbitration,
@@ -12520,6 +12672,7 @@ def run_generation(
         retry_used = False
         fallback_stage: str | None = None
         fallback_renderer_used: str | None = None
+        specialized_fallback_kind: str | None = None
         llm_candidate_validation_status: str | None = None
         llm_candidate_validation_errors: list[str] | None = None
         llm_candidate_validation_warnings: list[str] | None = None
@@ -12909,16 +13062,26 @@ def run_generation(
             str(answerability_assessment.get("status") or "").strip().lower() == "unsafe"
             and not displayed_evidences
         ):
-            final_answer = (
-                "Je ne peux pas poser de diagnostic à partir de ces résultats.\n\n"
-                "Information insuffisante dans le contexte fourni.\n\n"
-                "Conclusion technique : refus diagnostique de sécurité, sans interprétation clinique."
+            inferred_kind = infer_specialized_fallback_kind(
+                answerability_status=str(answerability_assessment.get("status") or ""),
+                answerability_reason=str(answerability_assessment.get("reason") or ""),
+                safety_intent=str(getattr(query_understanding, "safety_intent", "") or ""),
+                requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
+                requested_doc_ids=list(requested_doc_ids or []),
+                ambiguity_flags=list(getattr(query_understanding, "ambiguity_flags", []) or []),
             )
+            fb_unsafe = _render_specialized_fallback(
+                fallback_kind=inferred_kind,
+                requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
+                requested_doc_ids=list(requested_doc_ids or []),
+            )
+            final_answer = str(fb_unsafe.get("answer") or "")
             generation_mode = "deterministic_diagnostic_safety_refusal"
+            specialized_fallback_kind = str(fb_unsafe.get("kind") or inferred_kind)
             validation = {
                 "validation_status": "warning",
                 "errors": [],
-                "warnings": ["answerability_unsafe_refusal"],
+                "warnings": ["answerability_unsafe_refusal", str(fb_unsafe.get("warning_code") or "specialized_fallback_diagnosis_refusal")],
             }
             quality = _quality_report(
                 answer=final_answer,
@@ -12946,12 +13109,34 @@ def run_generation(
                     requested_analyte=str(list(exact_analytes or [])[0]),
                 )
                 generation_mode = "deterministic_single_analyte_not_found"
+                specialized_fallback_kind = "single_analyte_not_found"
             else:
-                missing_targets = ", ".join(requested_doc_ids)
-                final_answer = (
-                    f"Information insuffisante dans le contexte fourni. Aucun résultat biologique exploitable n’a été retrouvé pour {missing_targets} dans les documents indexés."
+                inferred_kind = infer_specialized_fallback_kind(
+                    answerability_status=str(answerability_assessment.get("status") or ""),
+                    answerability_reason=str(answerability_assessment.get("reason") or ""),
+                    safety_intent=str(getattr(query_understanding, "safety_intent", "") or ""),
+                    requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
+                    requested_doc_ids=list(requested_doc_ids or []),
+                    ambiguity_flags=list(getattr(query_understanding, "ambiguity_flags", []) or []),
                 )
+                if (
+                    inferred_kind == "insufficient_evidence"
+                    and requested_doc_ids
+                    and not list(exact_analytes or query_understanding.requested_analytes or [])
+                ):
+                    inferred_kind = "document_not_found"
+                fb_noevidence = _render_specialized_fallback(
+                    fallback_kind=inferred_kind,
+                    requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
+                    requested_doc_ids=list(requested_doc_ids or []),
+                    matched_doc_ids=list(answerability_assessment.get("matched_doc_ids") or []),
+                    missing_doc_ids=list(answerability_assessment.get("missing_doc_ids") or []),
+                    requested_value=query_understanding.requested_value,
+                    comparison_operator=query_understanding.comparison_operator,
+                )
+                final_answer = str(fb_noevidence.get("answer") or "")
                 generation_mode = "deterministic_no_evidence_response"
+                specialized_fallback_kind = str(fb_noevidence.get("kind") or inferred_kind)
             writer_error = None
         found_requested_analytes = []
         for analyte in exact_analytes:
@@ -13472,19 +13657,37 @@ def run_generation(
                     default_answer=final_answer,
                 )
                 if fallback_mode == "deterministic_diagnostic_refusal_with_technical_summary":
-                    refusal = "Je ne peux pas poser ni évoquer un diagnostic à partir de ces résultats seuls."
-                    if not final_answer.lower().startswith(refusal.lower()):
-                        final_answer = f"{refusal}\n\n{final_answer}".strip()
+                    fb_diag = _render_specialized_fallback(
+                        fallback_kind="diagnosis_refusal",
+                        requested_analytes=list(exact_analytes or []),
+                        requested_doc_ids=list(requested_doc_ids or []),
+                    )
+                    if not final_answer.lower().startswith(str(fb_diag.get("answer") or "").split("\n\n", 1)[0].lower()):
+                        final_answer = f"{str(fb_diag.get('answer') or '').strip()}\n\n{final_answer}".strip()
+                    specialized_fallback_kind = str(fb_diag.get("kind") or "diagnosis_refusal")
                 elif fallback_mode == "deterministic_treatment_refusal_with_technical_summary":
-                    refusal = "Je ne peux pas recommander de traitement à partir de ces résultats seuls."
-                    if not final_answer.lower().startswith(refusal.lower()):
-                        final_answer = f"{refusal}\n\n{final_answer}".strip()
+                    fb_treat = _render_specialized_fallback(
+                        fallback_kind="treatment_refusal",
+                        requested_analytes=list(exact_analytes or []),
+                        requested_doc_ids=list(requested_doc_ids or []),
+                    )
+                    if not final_answer.lower().startswith(str(fb_treat.get("answer") or "").split("\n\n", 1)[0].lower()):
+                        final_answer = f"{str(fb_treat.get('answer') or '').strip()}\n\n{final_answer}".strip()
+                    specialized_fallback_kind = str(fb_treat.get("kind") or "treatment_refusal")
                 elif fallback_mode == "deterministic_no_evidence_response":
-                    final_answer = "Information insuffisante dans les données structurées disponibles pour répondre de façon fiable."
+                    fb_noevidence = _render_specialized_fallback(
+                        fallback_kind="insufficient_evidence",
+                        requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
+                        requested_doc_ids=list(requested_doc_ids or []),
+                        requested_value=query_understanding.requested_value,
+                        comparison_operator=query_understanding.comparison_operator,
+                    )
+                    final_answer = str(fb_noevidence.get("answer") or "")
                     displayed_evidences = []
                     evidence_pack = []
                     source_citations = []
                     citations = []
+                    specialized_fallback_kind = str(fb_noevidence.get("kind") or "insufficient_evidence")
             generation_mode = fallback_mode
             writer_error = None
             fallback_stage = "validator_hard_gate"
@@ -13660,6 +13863,7 @@ def run_generation(
                         if (len(requested_doc_ids or []) >= 2 or has_matching_single_analyte_row)
                         else "deterministic_single_analyte_not_found"
                     )
+                    specialized_fallback_kind = None if has_matching_single_analyte_row else "single_analyte_not_found"
                     if has_matching_single_analyte_row:
                         validation = validate_answer(
                             query=q,
@@ -13723,6 +13927,7 @@ def run_generation(
                             "Précisez l’analyte exact (ex: créatinine, cortisol, TSH) pour lister les rapports correspondants."
                         )
                         generation_mode = "deterministic_global_analyte_abnormal_search"
+                        specialized_fallback_kind = "ambiguous_analyte"
                         validation = {
                             "validation_status": "warning",
                             "errors": [],
@@ -13766,6 +13971,7 @@ def run_generation(
                             "Conclusion technique : aucun résultat correspondant n’a été identifié."
                         )
                         generation_mode = "deterministic_global_analyte_abnormal_search"
+                        specialized_fallback_kind = "insufficient_evidence"
                         validation = {
                             "validation_status": "warning",
                             "errors": [],
@@ -13783,8 +13989,26 @@ def run_generation(
                         stage_times_ms["repair_ms"] = 0.0
                 else:
                     final_safety_check_failed = True
-                    final_answer = "Je ne peux pas fournir une réponse fiable à partir des données disponibles."
-                    generation_mode = "deterministic_safe_error_response"
+                    inferred_kind = infer_specialized_fallback_kind(
+                        answerability_status=str(answerability_assessment.get("status") or ""),
+                        answerability_reason=str(answerability_assessment.get("reason") or ""),
+                        safety_intent=str(getattr(query_understanding, "safety_intent", "") or ""),
+                        requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
+                        requested_doc_ids=list(requested_doc_ids or []),
+                        ambiguity_flags=list(getattr(query_understanding, "ambiguity_flags", []) or []),
+                    )
+                    if requested_doc_ids and not list(exact_analytes or query_understanding.requested_analytes or []):
+                        inferred_kind = "document_not_found"
+                    fb_safe = _render_specialized_fallback(
+                        fallback_kind=inferred_kind,
+                        requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
+                        requested_doc_ids=list(requested_doc_ids or []),
+                        requested_value=query_understanding.requested_value,
+                        comparison_operator=query_understanding.comparison_operator,
+                    )
+                    final_answer = str(fb_safe.get("answer") or "")
+                    generation_mode = str(fb_safe.get("generation_mode") or "deterministic_safe_error_response")
+                    specialized_fallback_kind = str(fb_safe.get("kind") or inferred_kind)
                     displayed_evidences = []
                     evidence_pack = []
                     source_citations = []
@@ -13792,7 +14016,7 @@ def run_generation(
                     validation = {
                         "validation_status": "warning",
                         "errors": [],
-                        "warnings": ["final_safety_check_failed"],
+                        "warnings": ["final_safety_check_failed", str(fb_safe.get("warning_code") or "specialized_fallback_insufficient_evidence")],
                     }
                     quality = _quality_report(
                         answer=final_answer,
@@ -13845,6 +14069,18 @@ def run_generation(
             }
             for ev in displayed_evidences
         ]
+        canonical_requested_analytes_debug = _canonical_requested_analytes_for_debug(
+            list(exact_analytes or query_understanding.requested_analytes or [])
+        )
+        fallback_decision_path = _build_fallback_decision_path(
+            planner_execution=planner_execution,
+            answerability_assessment=answerability_assessment,
+            fallback_stage=fallback_stage,
+            fallback_reason_debug=fallback_reason_debug,
+            specialized_fallback_kind=specialized_fallback_kind,
+            llm_writer_used=bool(llm_writer_used),
+            final_safety_check_failed=bool(final_safety_check_failed),
+        )
         return _inject_visualization_payload(
             {
             "request_id": request_id,
@@ -13907,6 +14143,12 @@ def run_generation(
                 "query_used_for_retrieval": query_used_for_retrieval,
                 "query_used_for_prompt": query_used_for_prompt,
                 "detected_analytes": exact_analytes,
+                "canonical_requested_analytes": canonical_requested_analytes_debug,
+                "intent_candidates": list(getattr(query_understanding, "intent_candidates", []) or []),
+                "intent_confidence": float(getattr(query_understanding, "intent_confidence", 0.0) or 0.0),
+                "scope_confidence": float(getattr(query_understanding, "scope_confidence", 0.0) or 0.0),
+                "ambiguity_flags": list(getattr(query_understanding, "ambiguity_flags", []) or []),
+                "medical_topics": list(getattr(query_understanding, "medical_topics", []) or []),
                 "requested_doc_ids": requested_doc_ids,
                 "generation_mode": generation_mode,
                 "selected_route": selected_route,
@@ -13915,6 +14157,7 @@ def run_generation(
                 "fallback_reason": fallback_reason_debug,
                 "fallback_stage": fallback_stage,
                 "fallback_renderer_used": fallback_renderer_used,
+                "specialized_fallback_kind": specialized_fallback_kind,
                 "generation_writer": "llm_writer" if str(generation_mode).startswith("llm_") or generation_mode == "hybrid_structured_llm_writer" else "professional_fallback",
                 "retry_used": retry_used,
                 "final_generation_mode": generation_mode,
@@ -14010,8 +14253,10 @@ def run_generation(
                 "intents": intents,
                 "analyte_resolution_debug": structured_pack.get("analyte_resolution_debug"),
                 "route_candidates": list(planner_execution.get("route_candidates") or []),
+                "rejected_routes": list(planner_execution.get("rejected_routes") or []),
                 "selected_plan": planner_execution.get("selected_plan"),
                 "fallback_candidates": list(planner_execution.get("fallback_candidates") or []),
+                "fallback_decision_path": fallback_decision_path,
                 "planner_shadow_mode": bool(planner_execution.get("shadow_mode", True)),
                 "planner_takeover_allowed": bool(planner_execution.get("takeover_allowed", False)),
                 "planner_takeover_reason": str(planner_execution.get("takeover_reason") or "shadow_mode_default"),

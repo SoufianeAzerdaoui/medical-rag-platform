@@ -123,6 +123,52 @@ _DEFAULT_ASSISTANT_MESSAGES: dict[str, Any] = {
             "Conclusion technique : clarification de périmètre requise avant extraction déterministe des anomalies."
         ),
     },
+    "fallbacks": {
+        "single_analyte_not_found_template": (
+            "### {analyte_label} — {doc_labels}\n\n"
+            "Aucun résultat correspondant à {analyte_label} n’a été retrouvé dans {doc_labels} parmi les résultats disponibles.\n\n"
+            "Conclusion technique : aucune valeur numérique exploitable n’a été identifiée pour cet analyte dans le rapport demandé."
+        ),
+        "topic_not_found_template": (
+            "Aucun résultat correspondant au thème {analyte_label} n’a été retrouvé dans {doc_labels}.\n\n"
+            "Conclusion technique : aucune donnée exploitable n’a été identifiée pour ce thème dans le périmètre demandé."
+        ),
+        "document_not_found_template": (
+            "Aucun résultat biologique exploitable n’a été retrouvé dans {doc_labels} pour la demande formulée.\n\n"
+            "Conclusion technique : le périmètre documentaire demandé ne contient pas de données compatibles."
+        ),
+        "ambiguous_analyte_template": (
+            "La demande nécessite de préciser l’analyte ciblé.\n\n"
+            "Conclusion technique : clarification d’analyte requise avant extraction déterministe."
+        ),
+        "ambiguous_document_scope_template": (
+            "La demande nécessite un périmètre documentaire explicite.\n"
+            "Précisez un rapport (ex: report 24) ou confirmez une recherche globale.\n\n"
+            "Conclusion technique : clarification de périmètre requise avant extraction déterministe."
+        ),
+        "diagnosis_refusal_template": (
+            "Je ne peux pas poser de diagnostic à partir de ces résultats.\n\n"
+            "Conclusion technique : refus diagnostique de sécurité, sans interprétation clinique."
+        ),
+        "treatment_refusal_template": (
+            "Je ne peux pas recommander de traitement à partir de ces résultats seuls.\n\n"
+            "Conclusion technique : restitution factuelle uniquement, sans recommandation thérapeutique."
+        ),
+        "pii_refusal_template": (
+            "Je ne peux pas divulguer de données personnelles identifiantes.\n\n"
+            "Conclusion technique : refus de sécurité PII."
+        ),
+        "partial_answer_template": (
+            "Une réponse partielle est disponible.\n"
+            "Documents avec résultat : {matched_labels}.\n"
+            "Documents sans résultat : {missing_labels}.\n\n"
+            "Conclusion technique : réponse limitée aux données compatibles retrouvées."
+        ),
+        "insufficient_evidence_template": (
+            "Information insuffisante dans les données structurées disponibles pour répondre de façon fiable.\n\n"
+            "Conclusion technique : aucun résultat exploitable n’a été identifié pour {analyte_label}{criterion} dans {doc_labels}."
+        ),
+    },
 }
 
 _DEFAULT_SAFETY_GUARDRAILS: dict[str, Any] = {

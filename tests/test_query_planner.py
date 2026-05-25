@@ -188,12 +188,42 @@ class TestQueryPlannerPhase4(unittest.TestCase):
         )
         debug = dict(result.get("debug") or {})
         self.assertIn("route_candidates", debug)
+        self.assertIn("rejected_routes", debug)
         self.assertIn("selected_plan", debug)
         self.assertIn("fallback_candidates", debug)
+        self.assertIn("fallback_decision_path", debug)
+        self.assertIn("canonical_requested_analytes", debug)
+        self.assertIn("intent_candidates", debug)
+        self.assertIn("intent_confidence", debug)
+        self.assertIn("scope_confidence", debug)
+        self.assertIn("ambiguity_flags", debug)
+        self.assertIn("medical_topics", debug)
         self.assertIn("planner_shadow_mode", debug)
         self.assertIn("planner_takeover_allowed", debug)
         self.assertIn("planner_takeover_reason", debug)
         self.assertIn("planner_version", debug)
+
+    def test_build_execution_plan_exposes_rejected_routes(self) -> None:
+        plan = build_execution_plan(
+            {
+                "intent": "doc_scoped_single_analyte_status",
+                "intent_candidates": [
+                    {"intent": "doc_scoped_single_analyte_status", "confidence": 0.91},
+                    {"intent": "doc_scoped_summary", "confidence": 0.55},
+                ],
+                "intent_confidence": 0.91,
+                "scope_confidence": 0.95,
+                "ambiguity_flags": [],
+                "medical_topics": [{"topic": "renal", "confidence": 0.9}],
+                "requested_doc_ids": ["report_29"],
+                "requested_analytes": ["creatinine"],
+                "technical_condition": "below_reference",
+                "safety_intent": None,
+            },
+            "la créat du report 29 est basse ?",
+        )
+        self.assertIn("rejected_routes", plan)
+        self.assertIsInstance(plan["rejected_routes"], list)
 
     def test_backward_compat_routing_unchanged_when_shadow_mode(self) -> None:
         os.environ["MEDICAL_RAG_PLANNER_SHADOW_MODE"] = "1"
@@ -211,4 +241,3 @@ class TestQueryPlannerPhase4(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

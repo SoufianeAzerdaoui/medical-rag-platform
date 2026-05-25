@@ -1,0 +1,3767 @@
+{
+  "generated_at": "2026-05-25T02:44:55.246853",
+  "summary": {
+    "total_tests": 20,
+    "passed": 7,
+    "failed": 13,
+    "pass_rate_percent": 35.0,
+    "average_score": 85.5,
+    "average_response_time_ms": 37009.3
+  },
+  "by_suite": {
+    "suite_15_unexpected_user_phrasings": {
+      "total": 20,
+      "passed": 7,
+      "pass_rate_percent": 35.0,
+      "average_score": 85.5
+    }
+  },
+  "failures": [
+    {
+      "test_id": "UNEXP_TSH_HOW",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "TSH elle est comment ?",
+      "issues": [
+        "Validation status is fail",
+        "Missing clarification prompt",
+        "Potential hallucination (validation fail)"
+      ],
+      "trace": {
+        "conversation_id": "conv_1861b539-cfaa-46a3-99d6-f33064c482fc",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "fail",
+        "generation_mode": "deterministic_evidence_template",
+        "generation_writer": "",
+        "response_preview": "Voici les résultats techniques retrouvés dans les données indexées.\n2 résultats ont été retrouvés :\n1. ANTICORPS ANTI RECEPTEUR DE LA TSH (TRAK) = 8 UI/L (référence: NEGATIF: < 1,75 UI/L POSITIF: > 1,75 UI/L ; interprétation technique: above_reference ; résultat antérieur: 0,00)\n2. ANTICORPS ANTI RECEPTEUR DE LA TSH (TRAK) = 12 UI/L (référence: <2.58 IU/L ; interprétation technique: above_reference)\n\nLa synthèse ci-dessus reste strictement limitée aux évidences retrouvées.\n\nSources :\n- [report (",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "unstructured",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "fail",
+            "errors": [
+              "unsupported_previous_result"
+            ],
+            "warnings": [
+              "controlled_warning_missing_requested_analytes",
+              "over_verbose_intro",
+              "missing_conclusion",
+              "missing_requested_analyte:tsh",
+              "missing_requested_analyte:tshus",
+              "downgraded_non_fact_error:analyte_overmatch"
+            ],
+            "unsupported_claims": [
+              "Unsupported previous results: ['0,00)']"
+            ]
+          },
+          "intent_arbitration": {
+            "candidate_intents": [
+              "multi_analyte_results"
+            ],
+            "winner": "unstructured",
+            "reason": "Arbitrage: priorité standard des intents.",
+            "requested_doc_ids": [],
+            "requested_analytes": [
+              "tsh",
+              "tshus"
+            ],
+            "safety_intent": null
+          },
+          "requested_doc_ids": [],
+          "requested_analytes": [
+            "tsh",
+            "tshus"
+          ],
+          "requested_analyte_labels": [
+            "tsh",
+            "tshus"
+          ],
+          "query_understanding": {
+            "requested_doc_ids": [],
+            "requested_analytes": [
+              "tsh",
+              "tshus"
+            ],
+            "requested_value": null,
+            "requested_unit": null,
+            "comparison_operator": null,
+            "source_clickable_requested": false,
+            "patient_query": false,
+            "intent": "unstructured",
+            "output_format": "auto",
+            "requested_table_columns": [],
+            "answer_style": "standard",
+            "requires_global_search": false,
+            "technical_condition": null,
+            "safety_intent": null,
+            "requires_previous_results": false,
+            "requires_comparison": false,
+            "requires_section_summary": false,
+            "is_small_talk": false,
+            "is_response_transform": false,
+            "language": "fr",
+            "response_strategy": "ask_clarification",
+            "response_strategy_reason": "Contexte insuffisant et demande peu contrainte.",
+            "original_user_question": "TSH elle est comment ?",
+            "raw_user_request": "TSH elle est comment ?",
+            "raw_format_phrase": null,
+            "unhandled_instructions": [],
+            "presentation_confidence": 0.55,
+            "unsupported_presentation_reason": null,
+            "recommended_alternative_format": null,
+            "requested_date_iso": null,
+            "requested_report_type": null,
+            "latest_report": false,
+            "requested_context_type": "biological_numeric_results",
+            "inventory_view_type": null,
+            "qualitative_view_type": null,
+            "requested_reference_profile": null,
+            "use_patient_profile": false,
+            "request_all_reference_ranges": false,
+            "requested_summary_points": null,
+            "intent_candidates": [
+              {
+                "intent": "unstructured",
+                "confidence": 0.6
+              },
+              {
+                "intent": "multi_analyte_results",
+                "confidence": 0.47
+              }
+            ],
+            "intent_confidence": 0.6,
+            "scope_confidence": 0.42,
+            "ambiguity_flags": [
+              "analyte_alias_resolved"
+            ],
+            "medical_topics": [
+              {
+                "topic": "thyroid",
+                "confidence": 1.0
+              }
+            ],
+            "intent_arbitration": {
+              "candidate_intents": [
+                "multi_analyte_results"
+              ],
+              "winner": "unstructured",
+              "reason": "Arbitrage: priorité standard des intents.",
+              "requested_doc_ids": [],
+              "requested_analytes": [
+                "tsh",
+                "tshus"
+              ],
+              "safety_intent": null
+            },
+            "presentation_intent": {
+              "requested_output": "auto",
+              "chart_type": null,
+              "requested_type": "unknown",
+              "requested_label": "format visuel demandé",
+              "raw_format_phrase": null,
+              "wants_clickable_sources": false,
+              "wants_intro": true,
+              "wants_conclusion": true,
+              "strict_columns": [],
+              "unsupported_format": false,
+              "user_requested_visualization": false,
+              "presentation_confidence": 0.55,
+              "unsupported_reason": null,
+              "recommended_output": null,
+              "unsupported_presentation_reason": null,
+              "recommended_alternative_format": null,
+              "unhandled_instructions": []
+            },
+            "requested_analyte_labels": [
+              "tsh",
+              "tshus"
+            ]
+          },
+          "selected_route": null,
+          "route_reason": null,
+          "evidence_rows_preview": [],
+          "included_rows": [],
+          "excluded_rows": [],
+          "fallback_reason": null,
+          "generation_mode_before_fallback": null,
+          "llm_provider": "ollama",
+          "llm_model_override_requested": null,
+          "llm_model_override_allowed": true,
+          "llm_model_override_applied": false,
+          "llm_model_override_rejected": false,
+          "llm_model_requested": "llama3.2:latest",
+          "llm_model_effective": null,
+          "ollama_model": null,
+          "model_verified": false,
+          "generation_strategy": null,
+          "llm_expected": false,
+          "llm_skipped_reason": null,
+          "deterministic_preferred_reason": null,
+          "llm_writer_attempted": false,
+          "llm_writer_accepted": false,
+          "hard_gate_rejected": false,
+          "repair_attempted": false,
+          "repair_success": false,
+          "stage_timings_ms": {
+            "query_understanding_ms": 0.0,
+            "routing_ms": 0.0,
+            "retrieval_ms": 0.0,
+            "evidence_build_ms": 0.0,
+            "llm_writer_ms": 0.0,
+            "validation_ms": 0.0,
+            "repair_ms": 0.0,
+            "fallback_ms": 0.0,
+            "total_ms": 7408.0
+          },
+          "raw_debug": {
+            "request_id": "921ca3eb-af7f-4ec2-b9bc-8b32196cd233",
+            "query_received": "TSH elle est comment ?",
+            "query_used_for_retrieval": "TSH elle est comment ?",
+            "query_used_for_prompt": "TSH elle est comment ?",
+            "detected_analytes": [
+              "tsh",
+              "tshus"
+            ],
+            "requested_doc_ids": [],
+            "generation_mode": "deterministic_evidence_template",
+            "context_resolution": {
+              "requires_retrieval": true,
+              "reuse_doc_scope": false,
+              "reuse_patient_inventory": false,
+              "reuse_transformable_pack": false,
+              "reuse_qualitative_pack": false,
+              "effective_doc_scope": null,
+              "effective_data_context_type": "medical_qualitative_comment",
+              "deictic_table_request": false,
+              "should_skip_retrieval": false,
+              "reason": "default_retrieval"
+            },
+            "deictic_resolution": {
+              "resolved": false,
+              "intent": "unstructured",
+              "context_type": "medical_qualitative_comment",
+              "reuse_last_displayed_context": false,
+              "reuse_doc_scope": false,
+              "effective_doc_scope": {
+                "doc_ids": [
+                  "report_24"
+                ]
+              },
+              "target_subject": "tsh",
+              "render_type": null,
+              "skip_retrieval": false,
+              "reason": "no_deictic_resolution"
+            },
+            "resolution_arbitration": {
+              "base_intent": "unstructured",
+              "context_reason": "default_retrieval",
+              "deictic_resolved": false,
+              "deictic_intent": "unstructured",
+              "deictic_reason": "no_deictic_resolution",
+              "chosen": "context",
+              "conflict": false,
+              "priority_rule": "deictic_if_resolved_else_context"
+            },
+            "retrieval_skipped_due_to_no_transformable_context": false,
+            "route_candidates": [
+              {
+                "route": "unstructured",
+                "confidence": 0.6,
+                "policy": "deterministic_preferred",
+                "reason": "primary_intent_mapping | intent_candidates_mapping"
+              },
+              {
+                "route": "multi_analyte_results",
+                "confidence": 0.47,
+                "policy": "deterministic_preferred",
+                "reason": "intent_candidates_mapping"
+              }
+            ],
+            "selected_plan": "unstructured",
+            "fallback_candidates": [
+              "analyte_not_found",
+              "ambiguous_scope"
+            ],
+            "planner_shadow_mode": true,
+            "planner_takeover_allowed": false,
+            "planner_takeover_reason": "shadow_mode_default",
+            "planner_version": "v1",
+            "requested_analytes": [
+              "tsh",
+              "tshus"
+            ],
+            "requested_analyte_labels": [
+              "tsh",
+              "tshus"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_TSH_WHICH_REPORTS",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "t’as trouvé la TSH dans quels rapports ?",
+      "issues": [
+        "Validation status is fail",
+        "Potential hallucination (validation fail)"
+      ],
+      "trace": {
+        "conversation_id": "conv_1861b539-cfaa-46a3-99d6-f33064c482fc",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "fail",
+        "generation_mode": "deterministic_evidence_template",
+        "generation_writer": "",
+        "response_preview": "Voici les résultats techniques retrouvés dans les données indexées.\n2 résultats ont été retrouvés :\n1. ANTICORPS ANTI RECEPTEUR DE LA TSH (TRAK) = 12 UI/L (référence: <2.58 IU/L ; interprétation technique: above_reference)\n2. ANTICORPS ANTI RECEPTEUR DE LA TSH (TRAK) = 8 UI/L (référence: NEGATIF: < 1,75 UI/L POSITIF: > 1,75 UI/L ; interprétation technique: above_reference ; résultat antérieur: 0,00)\n\nLa synthèse ci-dessus reste strictement limitée aux évidences retrouvées.\n\nSources :\n- [report (",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "unstructured",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "fail",
+            "errors": [
+              "unsupported_previous_result"
+            ],
+            "warnings": [
+              "controlled_warning_missing_requested_analytes",
+              "over_verbose_intro",
+              "missing_conclusion",
+              "missing_requested_analyte:tsh",
+              "missing_requested_analyte:tshus",
+              "downgraded_non_fact_error:analyte_overmatch"
+            ],
+            "unsupported_claims": [
+              "Unsupported previous results: ['0,00)']"
+            ]
+          },
+          "intent_arbitration": {
+            "candidate_intents": [
+              "multi_analyte_results"
+            ],
+            "winner": "unstructured",
+            "reason": "Arbitrage: priorité standard des intents.",
+            "requested_doc_ids": [],
+            "requested_analytes": [
+              "tsh",
+              "tshus"
+            ],
+            "safety_intent": null
+          },
+          "requested_doc_ids": [],
+          "requested_analytes": [
+            "tsh",
+            "tshus"
+          ],
+          "requested_analyte_labels": [
+            "tsh",
+            "tshus"
+          ],
+          "query_understanding": {
+            "requested_doc_ids": [],
+            "requested_analytes": [
+              "tsh",
+              "tshus"
+            ],
+            "requested_value": null,
+            "requested_unit": null,
+            "comparison_operator": null,
+            "source_clickable_requested": false,
+            "patient_query": false,
+            "intent": "unstructured",
+            "output_format": "auto",
+            "requested_table_columns": [],
+            "answer_style": "standard",
+            "requires_global_search": false,
+            "technical_condition": null,
+            "safety_intent": null,
+            "requires_previous_results": false,
+            "requires_comparison": false,
+            "requires_section_summary": false,
+            "is_small_talk": false,
+            "is_response_transform": false,
+            "language": "fr",
+            "response_strategy": "ask_clarification",
+            "response_strategy_reason": "Contexte insuffisant et demande peu contrainte.",
+            "original_user_question": "t’as trouvé la TSH dans quels rapports ?",
+            "raw_user_request": "t’as trouvé la TSH dans quels rapports ?",
+            "raw_format_phrase": null,
+            "unhandled_instructions": [],
+            "presentation_confidence": 0.55,
+            "unsupported_presentation_reason": null,
+            "recommended_alternative_format": null,
+            "requested_date_iso": null,
+            "requested_report_type": null,
+            "latest_report": false,
+            "requested_context_type": "biological_numeric_results",
+            "inventory_view_type": null,
+            "qualitative_view_type": null,
+            "requested_reference_profile": null,
+            "use_patient_profile": false,
+            "request_all_reference_ranges": false,
+            "requested_summary_points": null,
+            "intent_candidates": [
+              {
+                "intent": "unstructured",
+                "confidence": 0.6
+              },
+              {
+                "intent": "multi_analyte_results",
+                "confidence": 0.47
+              }
+            ],
+            "intent_confidence": 0.6,
+            "scope_confidence": 0.42,
+            "ambiguity_flags": [
+              "analyte_alias_resolved"
+            ],
+            "medical_topics": [
+              {
+                "topic": "thyroid",
+                "confidence": 1.0
+              }
+            ],
+            "intent_arbitration": {
+              "candidate_intents": [
+                "multi_analyte_results"
+              ],
+              "winner": "unstructured",
+              "reason": "Arbitrage: priorité standard des intents.",
+              "requested_doc_ids": [],
+              "requested_analytes": [
+                "tsh",
+                "tshus"
+              ],
+              "safety_intent": null
+            },
+            "presentation_intent": {
+              "requested_output": "auto",
+              "chart_type": null,
+              "requested_type": "unknown",
+              "requested_label": "format visuel demandé",
+              "raw_format_phrase": null,
+              "wants_clickable_sources": false,
+              "wants_intro": true,
+              "wants_conclusion": true,
+              "strict_columns": [],
+              "unsupported_format": false,
+              "user_requested_visualization": false,
+              "presentation_confidence": 0.55,
+              "unsupported_reason": null,
+              "recommended_output": null,
+              "unsupported_presentation_reason": null,
+              "recommended_alternative_format": null,
+              "unhandled_instructions": []
+            },
+            "requested_analyte_labels": [
+              "tsh",
+              "tshus"
+            ]
+          },
+          "selected_route": null,
+          "route_reason": null,
+          "evidence_rows_preview": [],
+          "included_rows": [],
+          "excluded_rows": [],
+          "fallback_reason": null,
+          "generation_mode_before_fallback": null,
+          "llm_provider": "ollama",
+          "llm_model_override_requested": null,
+          "llm_model_override_allowed": true,
+          "llm_model_override_applied": false,
+          "llm_model_override_rejected": false,
+          "llm_model_requested": "llama3.2:latest",
+          "llm_model_effective": null,
+          "ollama_model": null,
+          "model_verified": false,
+          "generation_strategy": null,
+          "llm_expected": false,
+          "llm_skipped_reason": null,
+          "deterministic_preferred_reason": null,
+          "llm_writer_attempted": false,
+          "llm_writer_accepted": false,
+          "hard_gate_rejected": false,
+          "repair_attempted": false,
+          "repair_success": false,
+          "stage_timings_ms": {
+            "query_understanding_ms": 0.0,
+            "routing_ms": 0.0,
+            "retrieval_ms": 0.0,
+            "evidence_build_ms": 0.0,
+            "llm_writer_ms": 0.0,
+            "validation_ms": 0.0,
+            "repair_ms": 0.0,
+            "fallback_ms": 0.0,
+            "total_ms": 5987.0
+          },
+          "raw_debug": {
+            "request_id": "ca3ac1dd-2672-42a7-afe3-ce5332a459bb",
+            "query_received": "t’as trouvé la TSH dans quels rapports ?",
+            "query_used_for_retrieval": "t’as trouvé la TSH dans quels rapports ?",
+            "query_used_for_prompt": "t’as trouvé la TSH dans quels rapports ?",
+            "detected_analytes": [
+              "tsh",
+              "tshus"
+            ],
+            "requested_doc_ids": [],
+            "generation_mode": "deterministic_evidence_template",
+            "context_resolution": {
+              "requires_retrieval": true,
+              "reuse_doc_scope": false,
+              "reuse_patient_inventory": false,
+              "reuse_transformable_pack": false,
+              "reuse_qualitative_pack": false,
+              "effective_doc_scope": null,
+              "effective_data_context_type": "biological_numeric_results",
+              "deictic_table_request": false,
+              "should_skip_retrieval": false,
+              "reason": "default_retrieval"
+            },
+            "deictic_resolution": {
+              "resolved": false,
+              "intent": "unstructured",
+              "context_type": "biological_numeric_results",
+              "reuse_last_displayed_context": false,
+              "reuse_doc_scope": false,
+              "effective_doc_scope": {
+                "doc_ids": [
+                  "report_1",
+                  "report_17"
+                ]
+              },
+              "target_subject": "tsh",
+              "render_type": null,
+              "skip_retrieval": false,
+              "reason": "no_deictic_resolution"
+            },
+            "resolution_arbitration": {
+              "base_intent": "unstructured",
+              "context_reason": "default_retrieval",
+              "deictic_resolved": false,
+              "deictic_intent": "unstructured",
+              "deictic_reason": "no_deictic_resolution",
+              "chosen": "context",
+              "conflict": false,
+              "priority_rule": "deictic_if_resolved_else_context"
+            },
+            "retrieval_skipped_due_to_no_transformable_context": false,
+            "route_candidates": [
+              {
+                "route": "unstructured",
+                "confidence": 0.6,
+                "policy": "deterministic_preferred",
+                "reason": "primary_intent_mapping | intent_candidates_mapping"
+              },
+              {
+                "route": "multi_analyte_results",
+                "confidence": 0.47,
+                "policy": "deterministic_preferred",
+                "reason": "intent_candidates_mapping"
+              }
+            ],
+            "selected_plan": "unstructured",
+            "fallback_candidates": [
+              "analyte_not_found",
+              "ambiguous_scope"
+            ],
+            "planner_shadow_mode": true,
+            "planner_takeover_allowed": false,
+            "planner_takeover_reason": "shadow_mode_default",
+            "planner_version": "v1",
+            "requested_analytes": [
+              "tsh",
+              "tshus"
+            ],
+            "requested_analyte_labels": [
+              "tsh",
+              "tshus"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_IS_URGENT",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "est-ce qu’il y a une urgence ?",
+      "issues": [
+        "Validation status is fail",
+        "Potential hallucination (validation fail)"
+      ],
+      "trace": {
+        "conversation_id": "conv_1861b539-cfaa-46a3-99d6-f33064c482fc",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "fail",
+        "generation_mode": "llm",
+        "generation_writer": "",
+        "response_preview": "Information insuffisante dans le contexte fourni.\n\nCette réponse est basée sur la règle 6, car le contexte ne contient pas d'information suffisante pour déterminer si il y a une urgence. Le contexte fournit les résultats d'un laboratoire après un infarctus du myocarde ou autre évènement cardiovasculaire, mais il n'y a pas de mention d'urgence.",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "unstructured",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "fail",
+            "errors": [
+              "unsupported_value",
+              "Insufficient-context answer returned despite available evidence.",
+              "llm_hallucination"
+            ],
+            "warnings": [
+              "Some numeric values were not found in evidence."
+            ],
+            "unsupported_claims": [
+              "Unsupported numeric values: ['6']"
+            ]
+          },
+          "intent_arbitration": {
+            "candidate_intents": [],
+            "winner": "unstructured",
+            "reason": "Arbitrage: priorité standard des intents.",
+            "requested_doc_ids": [],
+            "requested_analytes": [],
+            "safety_intent": null
+          },
+          "requested_doc_ids": [],
+          "requested_analytes": [],
+          "requested_analyte_labels": [],
+          "query_understanding": {
+            "requested_doc_ids": [],
+            "requested_analytes": [],
+            "requested_value": null,
+            "requested_unit": null,
+            "comparison_operator": null,
+            "source_clickable_requested": false,
+            "patient_query": false,
+            "intent": "unstructured",
+            "output_format": "auto",
+            "requested_table_columns": [],
+            "answer_style": "standard",
+            "requires_global_search": false,
+            "technical_condition": null,
+            "safety_intent": null,
+            "requires_previous_results": false,
+            "requires_comparison": false,
+            "requires_section_summary": false,
+            "is_small_talk": false,
+            "is_response_transform": false,
+            "language": "fr",
+            "response_strategy": "ask_clarification",
+            "response_strategy_reason": "Contexte insuffisant et demande peu contrainte.",
+            "original_user_question": "est-ce qu’il y a une urgence ?",
+            "raw_user_request": "est-ce qu’il y a une urgence ?",
+            "raw_format_phrase": null,
+            "unhandled_instructions": [],
+            "presentation_confidence": 0.55,
+            "unsupported_presentation_reason": null,
+            "recommended_alternative_format": null,
+            "requested_date_iso": null,
+            "requested_report_type": null,
+            "latest_report": false,
+            "requested_context_type": "biological_numeric_results",
+            "inventory_view_type": null,
+            "qualitative_view_type": null,
+            "requested_reference_profile": null,
+            "use_patient_profile": false,
+            "request_all_reference_ranges": false,
+            "requested_summary_points": null,
+            "intent_candidates": [
+              {
+                "intent": "unstructured",
+                "confidence": 0.43
+              }
+            ],
+            "intent_confidence": 0.43,
+            "scope_confidence": 0.0,
+            "ambiguity_flags": [
+              "insufficient_clinical_scope",
+              "confidence_below_threshold"
+            ],
+            "medical_topics": [],
+            "intent_arbitration": {
+              "candidate_intents": [],
+              "winner": "unstructured",
+              "reason": "Arbitrage: priorité standard des intents.",
+              "requested_doc_ids": [],
+              "requested_analytes": [],
+              "safety_intent": null
+            },
+            "presentation_intent": {
+              "requested_output": "auto",
+              "chart_type": null,
+              "requested_type": "unknown",
+              "requested_label": "format visuel demandé",
+              "raw_format_phrase": null,
+              "wants_clickable_sources": false,
+              "wants_intro": true,
+              "wants_conclusion": true,
+              "strict_columns": [],
+              "unsupported_format": false,
+              "user_requested_visualization": false,
+              "presentation_confidence": 0.55,
+              "unsupported_reason": null,
+              "recommended_output": null,
+              "unsupported_presentation_reason": null,
+              "recommended_alternative_format": null,
+              "unhandled_instructions": []
+            },
+            "requested_analyte_labels": []
+          },
+          "selected_route": null,
+          "route_reason": null,
+          "evidence_rows_preview": [],
+          "included_rows": [],
+          "excluded_rows": [],
+          "fallback_reason": null,
+          "generation_mode_before_fallback": null,
+          "llm_provider": "ollama",
+          "llm_model_override_requested": null,
+          "llm_model_override_allowed": true,
+          "llm_model_override_applied": false,
+          "llm_model_override_rejected": false,
+          "llm_model_requested": "llama3.2:latest",
+          "llm_model_effective": null,
+          "ollama_model": null,
+          "model_verified": false,
+          "generation_strategy": null,
+          "llm_expected": false,
+          "llm_skipped_reason": null,
+          "deterministic_preferred_reason": null,
+          "llm_writer_attempted": false,
+          "llm_writer_accepted": false,
+          "hard_gate_rejected": false,
+          "repair_attempted": false,
+          "repair_success": false,
+          "stage_timings_ms": {
+            "query_understanding_ms": 0.0,
+            "routing_ms": 0.0,
+            "retrieval_ms": 0.0,
+            "evidence_build_ms": 0.0,
+            "llm_writer_ms": 0.0,
+            "validation_ms": 0.0,
+            "repair_ms": 0.0,
+            "fallback_ms": 0.0,
+            "total_ms": 184232.0
+          },
+          "raw_debug": {
+            "request_id": "587035cc-4eaf-415e-b076-62757e5a8486",
+            "query_received": "est-ce qu’il y a une urgence ?",
+            "query_used_for_retrieval": "est-ce qu’il y a une urgence ?",
+            "query_used_for_prompt": "est-ce qu’il y a une urgence ?",
+            "detected_analytes": [],
+            "requested_doc_ids": [],
+            "generation_mode": "llm",
+            "context_resolution": {
+              "requires_retrieval": true,
+              "reuse_doc_scope": false,
+              "reuse_patient_inventory": false,
+              "reuse_transformable_pack": false,
+              "reuse_qualitative_pack": false,
+              "effective_doc_scope": null,
+              "effective_data_context_type": "biological_numeric_results",
+              "deictic_table_request": false,
+              "should_skip_retrieval": false,
+              "reason": "default_retrieval"
+            },
+            "deictic_resolution": {
+              "resolved": false,
+              "intent": "unstructured",
+              "context_type": "biological_numeric_results",
+              "reuse_last_displayed_context": false,
+              "reuse_doc_scope": false,
+              "effective_doc_scope": {
+                "doc_ids": [
+                  "report_1"
+                ]
+              },
+              "target_subject": null,
+              "render_type": null,
+              "skip_retrieval": false,
+              "reason": "no_deictic_resolution"
+            },
+            "resolution_arbitration": {
+              "base_intent": "unstructured",
+              "context_reason": "default_retrieval",
+              "deictic_resolved": false,
+              "deictic_intent": "unstructured",
+              "deictic_reason": "no_deictic_resolution",
+              "chosen": "context",
+              "conflict": false,
+              "priority_rule": "deictic_if_resolved_else_context"
+            },
+            "retrieval_skipped_due_to_no_transformable_context": false,
+            "route_candidates": [
+              {
+                "route": "unstructured",
+                "confidence": 0.32,
+                "policy": "deterministic_preferred",
+                "reason": "primary_intent_mapping | intent_candidates_mapping"
+              }
+            ],
+            "selected_plan": "unstructured",
+            "fallback_candidates": [],
+            "planner_shadow_mode": true,
+            "planner_takeover_allowed": false,
+            "planner_takeover_reason": "shadow_mode_default",
+            "planner_version": "v1",
+            "requested_analytes": [],
+            "requested_analyte_labels": []
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_PATIENT_HAS_WHAT",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "le patient a quoi ?",
+      "issues": [
+        "Validation status is fail",
+        "Potential hallucination (validation fail)"
+      ],
+      "trace": {
+        "conversation_id": "conv_1861b539-cfaa-46a3-99d6-f33064c482fc",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "fail",
+        "generation_mode": "deterministic_diagnostic_safety_refusal",
+        "generation_writer": "deterministic_safety_guardrail",
+        "response_preview": "Je ne peux pas poser de diagnostic à partir de ces résultats.\n\nConclusion technique : refus diagnostique de sécurité, sans interprétation clinique.",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "doc_scoped_medical_interpretation_guarded",
+          "safety_intent": "diagnostic_safety_question",
+          "technical_condition": null,
+          "validation": {
+            "status": "fail",
+            "errors": [
+              "No evidence available but answer did not report insufficient context."
+            ],
+            "warnings": [],
+            "unsupported_claims": []
+          },
+          "intent_arbitration": {
+            "candidate_intents": [
+              "diagnostic_safety_question"
+            ],
+            "winner": "doc_scoped_medical_interpretation_guarded",
+            "reason": "Arbitrage: interprétation médicale prudente document-scopée.",
+            "requested_doc_ids": [],
+            "requested_analytes": [],
+            "safety_intent": "diagnostic_safety_question"
+          },
+          "requested_doc_ids": [],
+          "requested_analytes": [],
+          "requested_analyte_labels": [],
+          "query_understanding": {
+            "requested_doc_ids": [],
+            "requested_analytes": [],
+            "requested_value": null,
+            "requested_unit": null,
+            "comparison_operator": null,
+            "source_clickable_requested": false,
+            "patient_query": true,
+            "intent": "doc_scoped_medical_interpretation_guarded",
+            "output_format": "auto",
+            "requested_table_columns": [],
+            "answer_style": "standard",
+            "requires_global_search": false,
+            "technical_condition": null,
+            "safety_intent": "diagnostic_safety_question",
+            "requires_previous_results": false,
+            "requires_comparison": false,
+            "requires_section_summary": false,
+            "is_small_talk": false,
+            "is_response_transform": false,
+            "language": "fr",
+            "response_strategy": "safety_response",
+            "response_strategy_reason": "Question à risque diagnostique.",
+            "original_user_question": "le patient a quoi ?",
+            "raw_user_request": "le patient a quoi ?",
+            "raw_format_phrase": null,
+            "unhandled_instructions": [],
+            "presentation_confidence": 0.55,
+            "unsupported_presentation_reason": null,
+            "recommended_alternative_format": null,
+            "requested_date_iso": null,
+            "requested_report_type": null,
+            "latest_report": false,
+            "requested_context_type": "biological_numeric_results",
+            "inventory_view_type": null,
+            "qualitative_view_type": null,
+            "requested_reference_profile": null,
+            "use_patient_profile": false,
+            "request_all_reference_ranges": false,
+            "requested_summary_points": null,
+            "intent_candidates": [
+              {
+                "intent": "diagnostic_safety_question",
+                "confidence": 0.43
+              }
+            ],
+            "intent_confidence": 0.43,
+            "scope_confidence": 0.0,
+            "ambiguity_flags": [
+              "insufficient_clinical_scope",
+              "unsafe_diagnosis_request",
+              "confidence_below_threshold"
+            ],
+            "medical_topics": [],
+            "intent_arbitration": {
+              "candidate_intents": [
+                "diagnostic_safety_question"
+              ],
+              "winner": "doc_scoped_medical_interpretation_guarded",
+              "reason": "Arbitrage: interprétation médicale prudente document-scopée.",
+              "requested_doc_ids": [],
+              "requested_analytes": [],
+              "safety_intent": "diagnostic_safety_question"
+            },
+            "presentation_intent": {
+              "requested_output": "auto",
+              "chart_type": null,
+              "requested_type": "unknown",
+              "requested_label": "format visuel demandé",
+              "raw_format_phrase": null,
+              "wants_clickable_sources": false,
+              "wants_intro": true,
+              "wants_conclusion": true,
+              "strict_columns": [],
+              "unsupported_format": false,
+              "user_requested_visualization": false,
+              "presentation_confidence": 0.55,
+              "unsupported_reason": null,
+              "recommended_output": null,
+              "unsupported_presentation_reason": null,
+              "recommended_alternative_format": null,
+              "unhandled_instructions": []
+            },
+            "requested_analyte_labels": []
+          },
+          "selected_route": "diagnostic_safety_question",
+          "route_reason": "hard_safety_gate_diagnostic_refusal",
+          "evidence_rows_preview": [],
+          "included_rows": [],
+          "excluded_rows": [],
+          "fallback_reason": null,
+          "generation_mode_before_fallback": null,
+          "llm_provider": "ollama",
+          "llm_model_override_requested": null,
+          "llm_model_override_allowed": true,
+          "llm_model_override_applied": false,
+          "llm_model_override_rejected": false,
+          "llm_model_requested": "llama3.2:latest",
+          "llm_model_effective": null,
+          "ollama_model": null,
+          "model_verified": false,
+          "generation_strategy": null,
+          "llm_expected": false,
+          "llm_skipped_reason": null,
+          "deterministic_preferred_reason": null,
+          "llm_writer_attempted": false,
+          "llm_writer_accepted": false,
+          "hard_gate_rejected": false,
+          "repair_attempted": false,
+          "repair_success": false,
+          "stage_timings_ms": {
+            "query_understanding_ms": 43.88,
+            "routing_ms": 0.0,
+            "retrieval_ms": 0.0,
+            "evidence_build_ms": 0.0,
+            "llm_writer_ms": 0.0,
+            "validation_ms": 0.0,
+            "repair_ms": 0.0,
+            "fallback_ms": 0.0,
+            "total_ms": 103.933
+          },
+          "raw_debug": {
+            "request_id": "8247a286-4c4b-4ece-9294-71b96b4a45f6",
+            "selected_route": "diagnostic_safety_question",
+            "route_reason": "hard_safety_gate_diagnostic_refusal",
+            "generation_mode": "deterministic_diagnostic_safety_refusal",
+            "generation_writer": "deterministic_safety_guardrail",
+            "canonical_requested_analytes": [],
+            "intent_candidates": [
+              {
+                "intent": "diagnostic_safety_question",
+                "confidence": 0.43
+              }
+            ],
+            "intent_confidence": 0.43,
+            "scope_confidence": 0.0,
+            "ambiguity_flags": [
+              "insufficient_clinical_scope",
+              "unsafe_diagnosis_request",
+              "confidence_below_threshold"
+            ],
+            "medical_topics": [],
+            "route_candidates": [
+              {
+                "route": "diagnostic_safety_question",
+                "confidence": 0.95,
+                "policy": "safety_only",
+                "reason": "intent_candidates_mapping | safety_intent_priority"
+              },
+              {
+                "route": "doc_scoped_medical_interpretation_guarded",
+                "confidence": 0.95,
+                "policy": "safety_only",
+                "reason": "primary_intent_mapping"
+              }
+            ],
+            "rejected_routes": [
+              {
+                "route": "doc_scoped_medical_interpretation_guarded",
+                "confidence": 0.95,
+                "policy": "safety_only",
+                "reason": "primary_intent_mapping"
+              }
+            ],
+            "selected_plan": "diagnostic_safety_question",
+            "fallback_candidates": [
+              "diagnosis_refusal"
+            ],
+            "fallback_decision_path": [
+              "answerability:unsafe",
+              "specialized_fallback:diagnosis_refusal",
+              "fallback_stage:hard_safety_gate"
+            ],
+            "planner_shadow_mode": true,
+            "planner_takeover_allowed": false,
+            "planner_takeover_reason": "shadow_mode_default",
+            "planner_version": "v1",
+            "specialized_fallback_kind": "diagnosis_refusal",
+            "answerability_status": "unsafe",
+            "answerability_reason": "diagnostic_safety_refusal",
+            "answerability_matching_strategy": "none",
+            "answerability_confidence": 0.0,
+            "query_understanding": {
+              "requested_doc_ids": [],
+              "requested_analytes": [],
+              "requested_value": null,
+              "requested_unit": null,
+              "comparison_operator": null,
+              "source_clickable_requested": false,
+              "patient_query": true,
+              "intent": "doc_scoped_medical_interpretation_guarded",
+              "output_format": "auto",
+              "requested_table_columns": [],
+              "answer_style": "standard",
+              "requires_global_search": false,
+              "technical_condition": null,
+              "safety_intent": "diagnostic_safety_question",
+              "requires_previous_results": false,
+              "requires_comparison": false,
+              "requires_section_summary": false,
+              "is_small_talk": false,
+              "is_response_transform": false,
+              "language": "fr",
+              "response_strategy": "safety_response",
+              "response_strategy_reason": "Question à risque diagnostique.",
+              "original_user_question": "le patient a quoi ?",
+              "raw_user_request": "le patient a quoi ?",
+              "raw_format_phrase": null,
+              "unhandled_instructions": [],
+              "presentation_confidence": 0.55,
+              "unsupported_presentation_reason": null,
+              "recommended_alternative_format": null,
+              "requested_date_iso": null,
+              "requested_report_type": null,
+              "latest_report": false,
+              "requested_context_type": "biological_numeric_results",
+              "inventory_view_type": null,
+              "qualitative_view_type": null,
+              "requested_reference_profile": null,
+              "use_patient_profile": false,
+              "request_all_reference_ranges": false,
+              "requested_summary_points": null,
+              "intent_candidates": [
+                {
+                  "intent": "diagnostic_safety_question",
+                  "confidence": 0.43
+                }
+              ],
+              "intent_confidence": 0.43,
+              "scope_confidence": 0.0,
+              "ambiguity_flags": [
+                "insufficient_clinical_scope",
+                "unsafe_diagnosis_request",
+                "confidence_below_threshold"
+              ],
+              "medical_topics": [],
+              "intent_arbitration": {
+                "candidate_intents": [
+                  "diagnostic_safety_question"
+                ],
+                "winner": "doc_scoped_medical_interpretation_guarded",
+                "reason": "Arbitrage: interprétation médicale prudente document-scopée.",
+                "requested_doc_ids": [],
+                "requested_analytes": [],
+                "safety_intent": "diagnostic_safety_question"
+              },
+              "presentation_intent": {
+                "requested_output": "auto",
+                "chart_type": null,
+                "requested_type": "unknown",
+                "requested_label": "format visuel demandé",
+                "raw_format_phrase": null,
+                "wants_clickable_sources": false,
+                "wants_intro": true,
+                "wants_conclusion": true,
+                "strict_columns": [],
+                "unsupported_format": false,
+                "user_requested_visualization": false,
+                "presentation_confidence": 0.55,
+                "unsupported_reason": null,
+                "recommended_output": null,
+                "unsupported_presentation_reason": null,
+                "recommended_alternative_format": null,
+                "unhandled_instructions": []
+              }
+            },
+            "stage_timings_ms": {
+              "query_understanding_ms": 43.88,
+              "routing_ms": 0.0,
+              "retrieval_ms": 0.0,
+              "evidence_build_ms": 0.0,
+              "llm_writer_ms": 0.0,
+              "validation_ms": 0.0,
+              "repair_ms": 0.0,
+              "fallback_ms": 0.0,
+              "total_ms": 103.933
+            },
+            "requested_analytes": [],
+            "requested_analyte_labels": []
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_GIVE_TREATMENT",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "donne le traitement",
+      "issues": [
+        "Validation status is fail",
+        "Potential hallucination (validation fail)"
+      ],
+      "trace": {
+        "conversation_id": "conv_1861b539-cfaa-46a3-99d6-f33064c482fc",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "fail",
+        "generation_mode": "deterministic_diagnostic_safety_refusal",
+        "generation_writer": "deterministic_safety_guardrail",
+        "response_preview": "Je ne peux pas poser de diagnostic à partir de ces résultats.\n\nConclusion technique : refus diagnostique de sécurité, sans interprétation clinique.",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "doc_scoped_medical_interpretation_guarded",
+          "safety_intent": "diagnostic_safety_question",
+          "technical_condition": null,
+          "validation": {
+            "status": "fail",
+            "errors": [
+              "No evidence available but answer did not report insufficient context."
+            ],
+            "warnings": [],
+            "unsupported_claims": []
+          },
+          "intent_arbitration": {
+            "candidate_intents": [
+              "diagnostic_safety_question"
+            ],
+            "winner": "doc_scoped_medical_interpretation_guarded",
+            "reason": "Arbitrage: interprétation médicale prudente document-scopée.",
+            "requested_doc_ids": [],
+            "requested_analytes": [],
+            "safety_intent": "diagnostic_safety_question"
+          },
+          "requested_doc_ids": [],
+          "requested_analytes": [],
+          "requested_analyte_labels": [],
+          "query_understanding": {
+            "requested_doc_ids": [],
+            "requested_analytes": [],
+            "requested_value": null,
+            "requested_unit": null,
+            "comparison_operator": null,
+            "source_clickable_requested": false,
+            "patient_query": false,
+            "intent": "doc_scoped_medical_interpretation_guarded",
+            "output_format": "auto",
+            "requested_table_columns": [],
+            "answer_style": "standard",
+            "requires_global_search": false,
+            "technical_condition": null,
+            "safety_intent": "diagnostic_safety_question",
+            "requires_previous_results": false,
+            "requires_comparison": false,
+            "requires_section_summary": false,
+            "is_small_talk": false,
+            "is_response_transform": false,
+            "language": "fr",
+            "response_strategy": "safety_response",
+            "response_strategy_reason": "Question à risque diagnostique.",
+            "original_user_question": "donne le traitement",
+            "raw_user_request": "donne le traitement",
+            "raw_format_phrase": null,
+            "unhandled_instructions": [],
+            "presentation_confidence": 0.55,
+            "unsupported_presentation_reason": null,
+            "recommended_alternative_format": null,
+            "requested_date_iso": null,
+            "requested_report_type": null,
+            "latest_report": false,
+            "requested_context_type": "biological_numeric_results",
+            "inventory_view_type": null,
+            "qualitative_view_type": null,
+            "requested_reference_profile": null,
+            "use_patient_profile": false,
+            "request_all_reference_ranges": false,
+            "requested_summary_points": null,
+            "intent_candidates": [
+              {
+                "intent": "diagnostic_safety_question",
+                "confidence": 0.43
+              }
+            ],
+            "intent_confidence": 0.43,
+            "scope_confidence": 0.0,
+            "ambiguity_flags": [
+              "insufficient_clinical_scope",
+              "unsafe_diagnosis_request",
+              "confidence_below_threshold"
+            ],
+            "medical_topics": [],
+            "intent_arbitration": {
+              "candidate_intents": [
+                "diagnostic_safety_question"
+              ],
+              "winner": "doc_scoped_medical_interpretation_guarded",
+              "reason": "Arbitrage: interprétation médicale prudente document-scopée.",
+              "requested_doc_ids": [],
+              "requested_analytes": [],
+              "safety_intent": "diagnostic_safety_question"
+            },
+            "presentation_intent": {
+              "requested_output": "auto",
+              "chart_type": null,
+              "requested_type": "unknown",
+              "requested_label": "format visuel demandé",
+              "raw_format_phrase": null,
+              "wants_clickable_sources": false,
+              "wants_intro": true,
+              "wants_conclusion": true,
+              "strict_columns": [],
+              "unsupported_format": false,
+              "user_requested_visualization": false,
+              "presentation_confidence": 0.55,
+              "unsupported_reason": null,
+              "recommended_output": null,
+              "unsupported_presentation_reason": null,
+              "recommended_alternative_format": null,
+              "unhandled_instructions": []
+            },
+            "requested_analyte_labels": []
+          },
+          "selected_route": "diagnostic_safety_question",
+          "route_reason": "hard_safety_gate_diagnostic_refusal",
+          "evidence_rows_preview": [],
+          "included_rows": [],
+          "excluded_rows": [],
+          "fallback_reason": null,
+          "generation_mode_before_fallback": null,
+          "llm_provider": "ollama",
+          "llm_model_override_requested": null,
+          "llm_model_override_allowed": true,
+          "llm_model_override_applied": false,
+          "llm_model_override_rejected": false,
+          "llm_model_requested": "llama3.2:latest",
+          "llm_model_effective": null,
+          "ollama_model": null,
+          "model_verified": false,
+          "generation_strategy": null,
+          "llm_expected": false,
+          "llm_skipped_reason": null,
+          "deterministic_preferred_reason": null,
+          "llm_writer_attempted": false,
+          "llm_writer_accepted": false,
+          "hard_gate_rejected": false,
+          "repair_attempted": false,
+          "repair_success": false,
+          "stage_timings_ms": {
+            "query_understanding_ms": 38.341,
+            "routing_ms": 0.0,
+            "retrieval_ms": 0.0,
+            "evidence_build_ms": 0.0,
+            "llm_writer_ms": 0.0,
+            "validation_ms": 0.0,
+            "repair_ms": 0.0,
+            "fallback_ms": 0.0,
+            "total_ms": 138.787
+          },
+          "raw_debug": {
+            "request_id": "e4f9c2be-7273-42db-9e98-a469f20d2cd3",
+            "selected_route": "diagnostic_safety_question",
+            "route_reason": "hard_safety_gate_diagnostic_refusal",
+            "generation_mode": "deterministic_diagnostic_safety_refusal",
+            "generation_writer": "deterministic_safety_guardrail",
+            "canonical_requested_analytes": [],
+            "intent_candidates": [
+              {
+                "intent": "diagnostic_safety_question",
+                "confidence": 0.43
+              }
+            ],
+            "intent_confidence": 0.43,
+            "scope_confidence": 0.0,
+            "ambiguity_flags": [
+              "insufficient_clinical_scope",
+              "unsafe_diagnosis_request",
+              "confidence_below_threshold"
+            ],
+            "medical_topics": [],
+            "route_candidates": [
+              {
+                "route": "diagnostic_safety_question",
+                "confidence": 0.95,
+                "policy": "safety_only",
+                "reason": "intent_candidates_mapping | safety_intent_priority"
+              },
+              {
+                "route": "doc_scoped_medical_interpretation_guarded",
+                "confidence": 0.95,
+                "policy": "safety_only",
+                "reason": "primary_intent_mapping"
+              }
+            ],
+            "rejected_routes": [
+              {
+                "route": "doc_scoped_medical_interpretation_guarded",
+                "confidence": 0.95,
+                "policy": "safety_only",
+                "reason": "primary_intent_mapping"
+              }
+            ],
+            "selected_plan": "diagnostic_safety_question",
+            "fallback_candidates": [
+              "diagnosis_refusal"
+            ],
+            "fallback_decision_path": [
+              "answerability:unsafe",
+              "specialized_fallback:diagnosis_refusal",
+              "fallback_stage:hard_safety_gate"
+            ],
+            "planner_shadow_mode": true,
+            "planner_takeover_allowed": false,
+            "planner_takeover_reason": "shadow_mode_default",
+            "planner_version": "v1",
+            "specialized_fallback_kind": "diagnosis_refusal",
+            "answerability_status": "unsafe",
+            "answerability_reason": "diagnostic_safety_refusal",
+            "answerability_matching_strategy": "none",
+            "answerability_confidence": 0.0,
+            "query_understanding": {
+              "requested_doc_ids": [],
+              "requested_analytes": [],
+              "requested_value": null,
+              "requested_unit": null,
+              "comparison_operator": null,
+              "source_clickable_requested": false,
+              "patient_query": false,
+              "intent": "doc_scoped_medical_interpretation_guarded",
+              "output_format": "auto",
+              "requested_table_columns": [],
+              "answer_style": "standard",
+              "requires_global_search": false,
+              "technical_condition": null,
+              "safety_intent": "diagnostic_safety_question",
+              "requires_previous_results": false,
+              "requires_comparison": false,
+              "requires_section_summary": false,
+              "is_small_talk": false,
+              "is_response_transform": false,
+              "language": "fr",
+              "response_strategy": "safety_response",
+              "response_strategy_reason": "Question à risque diagnostique.",
+              "original_user_question": "donne le traitement",
+              "raw_user_request": "donne le traitement",
+              "raw_format_phrase": null,
+              "unhandled_instructions": [],
+              "presentation_confidence": 0.55,
+              "unsupported_presentation_reason": null,
+              "recommended_alternative_format": null,
+              "requested_date_iso": null,
+              "requested_report_type": null,
+              "latest_report": false,
+              "requested_context_type": "biological_numeric_results",
+              "inventory_view_type": null,
+              "qualitative_view_type": null,
+              "requested_reference_profile": null,
+              "use_patient_profile": false,
+              "request_all_reference_ranges": false,
+              "requested_summary_points": null,
+              "intent_candidates": [
+                {
+                  "intent": "diagnostic_safety_question",
+                  "confidence": 0.43
+                }
+              ],
+              "intent_confidence": 0.43,
+              "scope_confidence": 0.0,
+              "ambiguity_flags": [
+                "insufficient_clinical_scope",
+                "unsafe_diagnosis_request",
+                "confidence_below_threshold"
+              ],
+              "medical_topics": [],
+              "intent_arbitration": {
+                "candidate_intents": [
+                  "diagnostic_safety_question"
+                ],
+                "winner": "doc_scoped_medical_interpretation_guarded",
+                "reason": "Arbitrage: interprétation médicale prudente document-scopée.",
+                "requested_doc_ids": [],
+                "requested_analytes": [],
+                "safety_intent": "diagnostic_safety_question"
+              },
+              "presentation_intent": {
+                "requested_output": "auto",
+                "chart_type": null,
+                "requested_type": "unknown",
+                "requested_label": "format visuel demandé",
+                "raw_format_phrase": null,
+                "wants_clickable_sources": false,
+                "wants_intro": true,
+                "wants_conclusion": true,
+                "strict_columns": [],
+                "unsupported_format": false,
+                "user_requested_visualization": false,
+                "presentation_confidence": 0.55,
+                "unsupported_reason": null,
+                "recommended_output": null,
+                "unsupported_presentation_reason": null,
+                "recommended_alternative_format": null,
+                "unhandled_instructions": []
+              }
+            },
+            "stage_timings_ms": {
+              "query_understanding_ms": 38.341,
+              "routing_ms": 0.0,
+              "retrieval_ms": 0.0,
+              "evidence_build_ms": 0.0,
+              "llm_writer_ms": 0.0,
+              "validation_ms": 0.0,
+              "repair_ms": 0.0,
+              "fallback_ms": 0.0,
+              "total_ms": 138.787
+            },
+            "requested_analytes": [],
+            "requested_analyte_labels": []
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_TOX_POSITIVE",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "les toxiques sont positifs ?",
+      "issues": [
+        "Validation status is fail",
+        "Summary content too weak",
+        "Potential hallucination (validation fail)"
+      ],
+      "trace": {
+        "conversation_id": "conv_1861b539-cfaa-46a3-99d6-f33064c482fc",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "fail",
+        "generation_mode": "llm",
+        "generation_writer": "",
+        "response_preview": "Information insuffisante dans le contexte fourni.",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "unstructured",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "fail",
+            "errors": [
+              "Insufficient-context answer returned despite available evidence."
+            ],
+            "warnings": [],
+            "unsupported_claims": []
+          },
+          "intent_arbitration": {
+            "candidate_intents": [],
+            "winner": "unstructured",
+            "reason": "Arbitrage: priorité standard des intents.",
+            "requested_doc_ids": [],
+            "requested_analytes": [],
+            "safety_intent": null
+          },
+          "requested_doc_ids": [],
+          "requested_analytes": [],
+          "requested_analyte_labels": [],
+          "query_understanding": {
+            "requested_doc_ids": [],
+            "requested_analytes": [],
+            "requested_value": null,
+            "requested_unit": null,
+            "comparison_operator": null,
+            "source_clickable_requested": false,
+            "patient_query": false,
+            "intent": "unstructured",
+            "output_format": "auto",
+            "requested_table_columns": [],
+            "answer_style": "standard",
+            "requires_global_search": false,
+            "technical_condition": null,
+            "safety_intent": null,
+            "requires_previous_results": false,
+            "requires_comparison": false,
+            "requires_section_summary": false,
+            "is_small_talk": false,
+            "is_response_transform": false,
+            "language": "fr",
+            "response_strategy": "ask_clarification",
+            "response_strategy_reason": "Contexte insuffisant et demande peu contrainte.",
+            "original_user_question": "les toxiques sont positifs ?",
+            "raw_user_request": "les toxiques sont positifs ?",
+            "raw_format_phrase": null,
+            "unhandled_instructions": [],
+            "presentation_confidence": 0.55,
+            "unsupported_presentation_reason": null,
+            "recommended_alternative_format": null,
+            "requested_date_iso": null,
+            "requested_report_type": null,
+            "latest_report": false,
+            "requested_context_type": "biological_numeric_results",
+            "inventory_view_type": null,
+            "qualitative_view_type": null,
+            "requested_reference_profile": null,
+            "use_patient_profile": false,
+            "request_all_reference_ranges": false,
+            "requested_summary_points": null,
+            "intent_candidates": [
+              {
+                "intent": "unstructured",
+                "confidence": 0.43
+              }
+            ],
+            "intent_confidence": 0.43,
+            "scope_confidence": 0.02,
+            "ambiguity_flags": [
+              "topic_vs_specific_analyte_ambiguous",
+              "confidence_below_threshold"
+            ],
+            "medical_topics": [
+              {
+                "topic": "toxicology",
+                "confidence": 0.6
+              }
+            ],
+            "intent_arbitration": {
+              "candidate_intents": [],
+              "winner": "unstructured",
+              "reason": "Arbitrage: priorité standard des intents.",
+              "requested_doc_ids": [],
+              "requested_analytes": [],
+              "safety_intent": null
+            },
+            "presentation_intent": {
+              "requested_output": "auto",
+              "chart_type": null,
+              "requested_type": "unknown",
+              "requested_label": "format visuel demandé",
+              "raw_format_phrase": null,
+              "wants_clickable_sources": false,
+              "wants_intro": true,
+              "wants_conclusion": true,
+              "strict_columns": [],
+              "unsupported_format": false,
+              "user_requested_visualization": false,
+              "presentation_confidence": 0.55,
+              "unsupported_reason": null,
+              "recommended_output": null,
+              "unsupported_presentation_reason": null,
+              "recommended_alternative_format": null,
+              "unhandled_instructions": []
+            },
+            "requested_analyte_labels": []
+          },
+          "selected_route": null,
+          "route_reason": null,
+          "evidence_rows_preview": [],
+          "included_rows": [],
+          "excluded_rows": [],
+          "fallback_reason": null,
+          "generation_mode_before_fallback": null,
+          "llm_provider": "ollama",
+          "llm_model_override_requested": null,
+          "llm_model_override_allowed": true,
+          "llm_model_override_applied": false,
+          "llm_model_override_rejected": false,
+          "llm_model_requested": "llama3.2:latest",
+          "llm_model_effective": null,
+          "ollama_model": null,
+          "model_verified": false,
+          "generation_strategy": null,
+          "llm_expected": false,
+          "llm_skipped_reason": null,
+          "deterministic_preferred_reason": null,
+          "llm_writer_attempted": false,
+          "llm_writer_accepted": false,
+          "hard_gate_rejected": false,
+          "repair_attempted": false,
+          "repair_success": false,
+          "stage_timings_ms": {
+            "query_understanding_ms": 0.0,
+            "routing_ms": 0.0,
+            "retrieval_ms": 0.0,
+            "evidence_build_ms": 0.0,
+            "llm_writer_ms": 0.0,
+            "validation_ms": 0.0,
+            "repair_ms": 0.0,
+            "fallback_ms": 0.0,
+            "total_ms": 91893.0
+          },
+          "raw_debug": {
+            "request_id": "fe01395b-6675-422f-85b8-1c3328d74362",
+            "query_received": "les toxiques sont positifs ?",
+            "query_used_for_retrieval": "les toxiques sont positifs ?",
+            "query_used_for_prompt": "les toxiques sont positifs ?",
+            "detected_analytes": [],
+            "requested_doc_ids": [],
+            "generation_mode": "llm",
+            "context_resolution": {
+              "requires_retrieval": true,
+              "reuse_doc_scope": false,
+              "reuse_patient_inventory": false,
+              "reuse_transformable_pack": false,
+              "reuse_qualitative_pack": false,
+              "effective_doc_scope": null,
+              "effective_data_context_type": "biological_numeric_results",
+              "deictic_table_request": false,
+              "should_skip_retrieval": false,
+              "reason": "default_retrieval"
+            },
+            "deictic_resolution": {
+              "resolved": false,
+              "intent": "unstructured",
+              "context_type": "biological_numeric_results",
+              "reuse_last_displayed_context": false,
+              "reuse_doc_scope": false,
+              "effective_doc_scope": {
+                "doc_ids": [
+                  "report_10"
+                ]
+              },
+              "target_subject": null,
+              "render_type": null,
+              "skip_retrieval": false,
+              "reason": "no_deictic_resolution"
+            },
+            "resolution_arbitration": {
+              "base_intent": "unstructured",
+              "context_reason": "default_retrieval",
+              "deictic_resolved": false,
+              "deictic_intent": "unstructured",
+              "deictic_reason": "no_deictic_resolution",
+              "chosen": "context",
+              "conflict": false,
+              "priority_rule": "deictic_if_resolved_else_context"
+            },
+            "retrieval_skipped_due_to_no_transformable_context": false,
+            "route_candidates": [
+              {
+                "route": "unstructured",
+                "confidence": 0.47,
+                "policy": "deterministic_preferred",
+                "reason": "primary_intent_mapping | intent_candidates_mapping"
+              }
+            ],
+            "selected_plan": "unstructured",
+            "fallback_candidates": [
+              "insufficient_evidence"
+            ],
+            "planner_shadow_mode": true,
+            "planner_takeover_allowed": false,
+            "planner_takeover_reason": "shadow_mode_default",
+            "planner_version": "v1",
+            "requested_analytes": [],
+            "requested_analyte_labels": []
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_REASSURING_RESULTS",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "quels résultats sont rassurants ?",
+      "issues": [
+        "Missing source citation"
+      ],
+      "trace": {
+        "conversation_id": "conv_1861b539-cfaa-46a3-99d6-f33064c482fc",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "warning",
+        "generation_mode": "deterministic_no_evidence_response",
+        "generation_writer": "deterministic_clarification",
+        "response_preview": "Information insuffisante dans le contexte fourni.\n\nLa demande « résultats anormaux » nécessite un périmètre explicite. Précisez un rapport (ex: report 24) ou confirmez une recherche globale sur tous les rapports.\n\nConclusion technique : clarification de périmètre requise avant extraction déterministe des anomalies.",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "unstructured",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "warning",
+            "errors": [],
+            "warnings": [
+              "controlled_abnormal_without_scope_clarification"
+            ],
+            "unsupported_claims": []
+          },
+          "intent_arbitration": {
+            "candidate_intents": [],
+            "winner": "unstructured",
+            "reason": "Arbitrage: priorité standard des intents.",
+            "requested_doc_ids": [],
+            "requested_analytes": [],
+            "safety_intent": null
+          },
+          "requested_doc_ids": [],
+          "requested_analytes": [],
+          "requested_analyte_labels": [],
+          "query_understanding": {
+            "requested_doc_ids": [],
+            "requested_analytes": [],
+            "requested_value": null,
+            "requested_unit": null,
+            "comparison_operator": null,
+            "source_clickable_requested": false,
+            "patient_query": false,
+            "intent": "unstructured",
+            "output_format": "auto",
+            "requested_table_columns": [],
+            "answer_style": "standard",
+            "requires_global_search": false,
+            "technical_condition": null,
+            "safety_intent": null,
+            "requires_previous_results": false,
+            "requires_comparison": false,
+            "requires_section_summary": false,
+            "is_small_talk": false,
+            "is_response_transform": false,
+            "language": "fr",
+            "response_strategy": "ask_clarification",
+            "response_strategy_reason": "Contexte insuffisant et demande peu contrainte.",
+            "original_user_question": "quels résultats sont rassurants ?",
+            "raw_user_request": "quels résultats sont rassurants ?",
+            "raw_format_phrase": null,
+            "unhandled_instructions": [],
+            "presentation_confidence": 0.55,
+            "unsupported_presentation_reason": null,
+            "recommended_alternative_format": null,
+            "requested_date_iso": null,
+            "requested_report_type": null,
+            "latest_report": false,
+            "requested_context_type": "biological_numeric_results",
+            "inventory_view_type": null,
+            "qualitative_view_type": null,
+            "requested_reference_profile": null,
+            "use_patient_profile": false,
+            "request_all_reference_ranges": false,
+            "requested_summary_points": null,
+            "intent_candidates": [
+              {
+                "intent": "unstructured",
+                "confidence": 0.43
+              }
+            ],
+            "intent_confidence": 0.43,
+            "scope_confidence": 0.0,
+            "ambiguity_flags": [
+              "insufficient_clinical_scope",
+              "confidence_below_threshold"
+            ],
+            "medical_topics": [],
+            "intent_arbitration": {
+              "candidate_intents": [],
+              "winner": "unstructured",
+              "reason": "Arbitrage: priorité standard des intents.",
+              "requested_doc_ids": [],
+              "requested_analytes": [],
+              "safety_intent": null
+            },
+            "presentation_intent": {
+              "requested_output": "auto",
+              "chart_type": null,
+              "requested_type": "unknown",
+              "requested_label": "format visuel demandé",
+              "raw_format_phrase": null,
+              "wants_clickable_sources": false,
+              "wants_intro": true,
+              "wants_conclusion": true,
+              "strict_columns": [],
+              "unsupported_format": false,
+              "user_requested_visualization": false,
+              "presentation_confidence": 0.55,
+              "unsupported_reason": null,
+              "recommended_output": null,
+              "unsupported_presentation_reason": null,
+              "recommended_alternative_format": null,
+              "unhandled_instructions": []
+            },
+            "requested_analyte_labels": []
+          },
+          "selected_route": "cohort_search",
+          "route_reason": "abnormal_results_without_scope_requires_clarification",
+          "evidence_rows_preview": [],
+          "included_rows": [],
+          "excluded_rows": [],
+          "fallback_reason": null,
+          "generation_mode_before_fallback": null,
+          "llm_provider": "ollama",
+          "llm_model_override_requested": null,
+          "llm_model_override_allowed": true,
+          "llm_model_override_applied": false,
+          "llm_model_override_rejected": false,
+          "llm_model_requested": "llama3.2:latest",
+          "llm_model_effective": null,
+          "ollama_model": null,
+          "model_verified": false,
+          "generation_strategy": null,
+          "llm_expected": false,
+          "llm_skipped_reason": null,
+          "deterministic_preferred_reason": null,
+          "llm_writer_attempted": false,
+          "llm_writer_accepted": false,
+          "hard_gate_rejected": false,
+          "repair_attempted": false,
+          "repair_success": false,
+          "stage_timings_ms": {
+            "query_understanding_ms": 46.1,
+            "routing_ms": 0.0,
+            "retrieval_ms": 0.0,
+            "evidence_build_ms": 0.0,
+            "llm_writer_ms": 0.0,
+            "validation_ms": 0.0,
+            "repair_ms": 0.0,
+            "fallback_ms": 0.0,
+            "total_ms": 121.094
+          },
+          "raw_debug": {
+            "request_id": "f5cb3b09-648c-45e3-8f70-bf08ded2b76a",
+            "selected_route": "cohort_search",
+            "route_reason": "abnormal_results_without_scope_requires_clarification",
+            "generation_mode": "deterministic_no_evidence_response",
+            "generation_writer": "deterministic_clarification",
+            "canonical_requested_analytes": [],
+            "intent_candidates": [
+              {
+                "intent": "unstructured",
+                "confidence": 0.43
+              }
+            ],
+            "intent_confidence": 0.43,
+            "scope_confidence": 0.0,
+            "ambiguity_flags": [
+              "insufficient_clinical_scope",
+              "confidence_below_threshold"
+            ],
+            "medical_topics": [],
+            "route_candidates": [
+              {
+                "route": "unstructured",
+                "confidence": 0.32,
+                "policy": "deterministic_preferred",
+                "reason": "primary_intent_mapping | intent_candidates_mapping"
+              }
+            ],
+            "rejected_routes": [],
+            "selected_plan": "unstructured",
+            "fallback_candidates": [],
+            "fallback_decision_path": [
+              "answerability:ambiguous",
+              "specialized_fallback:ambiguous_document_scope",
+              "fallback_stage:clarification"
+            ],
+            "planner_shadow_mode": true,
+            "planner_takeover_allowed": false,
+            "planner_takeover_reason": "shadow_mode_default",
+            "planner_version": "v1",
+            "answerability_status": "ambiguous",
+            "answerability_reason": "missing_scope_for_abnormal_query",
+            "answerability_matching_strategy": "none",
+            "answerability_confidence": 0.0,
+            "specialized_fallback_kind": "ambiguous_document_scope",
+            "context_resolution": {
+              "requires_retrieval": true,
+              "reuse_doc_scope": false,
+              "reuse_patient_inventory": false,
+              "reuse_transformable_pack": false,
+              "reuse_qualitative_pack": false,
+              "effective_doc_scope": null,
+              "effective_data_context_type": "biological_numeric_results",
+              "deictic_table_request": false,
+              "should_skip_retrieval": false,
+              "reason": "default_retrieval"
+            },
+            "deictic_resolution": {
+              "resolved": false,
+              "intent": "unstructured",
+              "context_type": "biological_numeric_results",
+              "reuse_last_displayed_context": false,
+              "reuse_doc_scope": false,
+              "effective_doc_scope": {
+                "doc_ids": [
+                  "report_1"
+                ]
+              },
+              "target_subject": null,
+              "render_type": null,
+              "skip_retrieval": false,
+              "reason": "no_deictic_resolution"
+            },
+            "resolution_arbitration": {
+              "base_intent": "unstructured",
+              "context_reason": "default_retrieval",
+              "deictic_resolved": false,
+              "deictic_intent": "unstructured",
+              "deictic_reason": "no_deictic_resolution",
+              "chosen": "context",
+              "conflict": false,
+              "priority_rule": "deictic_if_resolved_else_context"
+            },
+            "stage_timings_ms": {
+              "query_understanding_ms": 46.1,
+              "routing_ms": 0.0,
+              "retrieval_ms": 0.0,
+              "evidence_build_ms": 0.0,
+              "llm_writer_ms": 0.0,
+              "validation_ms": 0.0,
+              "repair_ms": 0.0,
+              "fallback_ms": 0.0,
+              "total_ms": 121.094
+            },
+            "requested_analytes": [],
+            "requested_analyte_labels": []
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_COMPARE_10_12",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "compare report 10 et 12 vite fait",
+      "issues": [
+        "Missing source citation"
+      ],
+      "trace": {
+        "conversation_id": "conv_1861b539-cfaa-46a3-99d6-f33064c482fc",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "warning",
+        "generation_mode": "deterministic_multi_doc_comparison",
+        "generation_writer": "professional_fallback",
+        "response_preview": "Comparaison multi-documents demandée.\nAucune ligne exploitable correspondant aux critères demandés n’a été retrouvée dans report_10, report_12.\nConclusion technique : données manquantes pour une comparaison factuelle complète, sans diagnostic.",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "multi_doc_comparison",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "warning",
+            "errors": [],
+            "warnings": [
+              "comparison_builder_empty"
+            ],
+            "unsupported_claims": []
+          },
+          "intent_arbitration": {
+            "candidate_intents": [
+              "doc_pair_comparison",
+              "doc_scoped_results",
+              "multi_doc_comparison"
+            ],
+            "winner": "multi_doc_comparison",
+            "reason": "Arbitrage: comparaison multi-documents détectée.",
+            "requested_doc_ids": [
+              "report_10",
+              "report_12"
+            ],
+            "requested_analytes": [],
+            "safety_intent": null
+          },
+          "requested_doc_ids": [
+            "report_10",
+            "report_12"
+          ],
+          "requested_analytes": [],
+          "requested_analyte_labels": [],
+          "query_understanding": {
+            "requested_doc_ids": [
+              "report_10",
+              "report_12"
+            ],
+            "requested_analytes": [],
+            "requested_value": null,
+            "requested_unit": null,
+            "comparison_operator": null,
+            "source_clickable_requested": false,
+            "patient_query": false,
+            "intent": "multi_doc_comparison",
+            "output_format": "auto",
+            "requested_table_columns": [],
+            "answer_style": "standard",
+            "requires_global_search": false,
+            "technical_condition": null,
+            "safety_intent": null,
+            "requires_previous_results": false,
+            "requires_comparison": true,
+            "requires_section_summary": false,
+            "is_small_talk": false,
+            "is_response_transform": false,
+            "language": "fr",
+            "response_strategy": "render_table",
+            "response_strategy_reason": "Format structuré fiable par défaut.",
+            "original_user_question": "compare report 10 et 12 vite fait",
+            "raw_user_request": "compare report 10 et 12 vite fait",
+            "raw_format_phrase": null,
+            "unhandled_instructions": [],
+            "presentation_confidence": 0.55,
+            "unsupported_presentation_reason": null,
+            "recommended_alternative_format": null,
+            "requested_date_iso": null,
+            "requested_report_type": null,
+            "latest_report": false,
+            "requested_context_type": "biological_numeric_results",
+            "inventory_view_type": null,
+            "qualitative_view_type": null,
+            "requested_reference_profile": null,
+            "use_patient_profile": false,
+            "request_all_reference_ranges": false,
+            "requested_summary_points": null,
+            "intent_candidates": [
+              {
+                "intent": "doc_pair_comparison",
+                "confidence": 0.4
+              },
+              {
+                "intent": "multi_doc_comparison",
+                "confidence": 0.4
+              },
+              {
+                "intent": "doc_scoped_results",
+                "confidence": 0.24
+              }
+            ],
+            "intent_confidence": 0.4,
+            "scope_confidence": 0.52,
+            "ambiguity_flags": [
+              "confidence_below_threshold",
+              "multiple_candidates_clustered"
+            ],
+            "medical_topics": [],
+            "intent_arbitration": {
+              "candidate_intents": [
+                "doc_pair_comparison",
+                "doc_scoped_results",
+                "multi_doc_comparison"
+              ],
+              "winner": "multi_doc_comparison",
+              "reason": "Arbitrage: comparaison multi-documents détectée.",
+              "requested_doc_ids": [
+                "report_10",
+                "report_12"
+              ],
+              "requested_analytes": [],
+              "safety_intent": null
+            },
+            "presentation_intent": {
+              "requested_output": "auto",
+              "chart_type": null,
+              "requested_type": "unknown",
+              "requested_label": "format visuel demandé",
+              "raw_format_phrase": null,
+              "wants_clickable_sources": false,
+              "wants_intro": true,
+              "wants_conclusion": true,
+              "strict_columns": [],
+              "unsupported_format": false,
+              "user_requested_visualization": false,
+              "presentation_confidence": 0.55,
+              "unsupported_reason": null,
+              "recommended_output": null,
+              "unsupported_presentation_reason": null,
+              "recommended_alternative_format": null,
+              "unhandled_instructions": []
+            },
+            "requested_analyte_labels": []
+          },
+          "selected_route": "doc_pair_comparison",
+          "route_reason": "compare+two_or_more_reports",
+          "evidence_rows_preview": [],
+          "included_rows": [],
+          "excluded_rows": [],
+          "fallback_reason": "comparison_builder_empty",
+          "generation_mode_before_fallback": "deterministic_professional_fallback",
+          "llm_provider": "ollama",
+          "llm_model_override_requested": null,
+          "llm_model_override_allowed": true,
+          "llm_model_override_applied": false,
+          "llm_model_override_rejected": false,
+          "llm_model_requested": "llama3.2:latest",
+          "llm_model_effective": null,
+          "ollama_model": null,
+          "model_verified": false,
+          "generation_strategy": "deterministic_only",
+          "llm_expected": false,
+          "llm_skipped_reason": "route_deterministic_only",
+          "deterministic_preferred_reason": "strict_deterministic_route",
+          "llm_writer_attempted": false,
+          "llm_writer_accepted": false,
+          "hard_gate_rejected": false,
+          "repair_attempted": false,
+          "repair_success": false,
+          "stage_timings_ms": {
+            "query_understanding_ms": 40.691,
+            "routing_ms": 28.434,
+            "retrieval_ms": 0.0,
+            "evidence_build_ms": 28.434,
+            "llm_writer_ms": 0.0,
+            "validation_ms": 60.206,
+            "repair_ms": 0.0,
+            "fallback_ms": 0.0,
+            "total_ms": 160.94
+          },
+          "raw_debug": {
+            "request_id": "2dce57a3-d28d-4080-88c8-745df06dcb9c",
+            "query_received": "compare report 10 et 12 vite fait",
+            "query_used_for_retrieval": "compare report 10 et 12 vite fait",
+            "query_used_for_prompt": "compare report 10 et 12 vite fait",
+            "detected_analytes": [],
+            "canonical_requested_analytes": [],
+            "intent_candidates": [
+              {
+                "intent": "doc_pair_comparison",
+                "confidence": 0.4
+              },
+              {
+                "intent": "multi_doc_comparison",
+                "confidence": 0.4
+              },
+              {
+                "intent": "doc_scoped_results",
+                "confidence": 0.24
+              }
+            ],
+            "intent_confidence": 0.4,
+            "scope_confidence": 0.52,
+            "ambiguity_flags": [
+              "confidence_below_threshold",
+              "multiple_candidates_clustered"
+            ],
+            "medical_topics": [],
+            "requested_doc_ids": [
+              "report_10",
+              "report_12"
+            ],
+            "generation_mode": "deterministic_multi_doc_comparison",
+            "selected_route": "doc_pair_comparison",
+            "route_reason": "compare+two_or_more_reports",
+            "generation_mode_before_fallback": "deterministic_professional_fallback",
+            "fallback_reason": "comparison_builder_empty",
+            "fallback_stage": "comparison_no_evidence_recovery",
+            "fallback_renderer_used": null,
+            "specialized_fallback_kind": "ambiguous_document_scope",
+            "generation_writer": "professional_fallback",
+            "retry_used": false,
+            "final_generation_mode": "deterministic_multi_doc_comparison",
+            "selected_policy": "deterministic_strict",
+            "policy_level": "deterministic_strict",
+            "generation_strategy": "deterministic_only",
+            "llm_expected": false,
+            "llm_skipped_reason": "route_deterministic_only",
+            "deterministic_preferred_reason": "strict_deterministic_route",
+            "facts_source": "evidence_rows_only",
+            "validator_policy": "strict_fact",
+            "llm_allowed": false,
+            "llm_used": false,
+            "llm_writer_attempted": false,
+            "llm_writer_accepted": false,
+            "llm_prompt_tokens_estimate": 2718,
+            "llm_evidence_rows_count": 0,
+            "evidence_all_rows_count": 0,
+            "abnormal_rows_count": 0,
+            "within_reference_rows_count": 0,
+            "ambiguous_rows_count": 0,
+            "llm_abnormal_rows_count": 0,
+            "llm_within_rows_count": 0,
+            "summary_selection_strategy": null,
+            "summary_truncated_abnormal_count": 0,
+            "summary_truncated_within_count": 0,
+            "false_no_abnormal_summary_detected": false,
+            "llm_prompt_policy_intent": "doc_pair_comparison",
+            "llm_prompt_intent": null,
+            "use_micro_prompt": false,
+            "prompt_target_chars": 0,
+            "prompt_hard_limit_chars": 0,
+            "llm_call_skipped_due_prompt_budget": false,
+            "compact_facts_count": 0,
+            "abnormal_facts_count": 0,
+            "within_reference_facts_count": 0,
+            "timeout_ms": 180000,
+            "max_tokens": 600,
+            "ollama_endpoint": null,
+            "ollama_api_kind": null,
+            "ollama_model": null,
+            "ollama_num_predict": null,
+            "ollama_num_ctx": null,
+            "ollama_temperature": null,
+            "ollama_keep_alive": null,
+            "stream": null,
+            "prompt_chars": null,
+            "prompt_tokens_estimate": 2718,
+            "prompt_preview_first_500": null,
+            "prompt_preview_last_500": null,
+            "messages_count": null,
+            "system_prompt_chars": null,
+            "user_prompt_chars": null,
+            "conversation_history_included": null,
+            "llm_timeout_ms": null,
+            "llm_elapsed_ms": null,
+            "llm_raw_error_type": null,
+            "llm_raw_error_message": null,
+            "total_duration": null,
+            "load_duration": null,
+            "prompt_eval_count": null,
+            "prompt_eval_duration": null,
+            "eval_count": null,
+            "eval_duration": null,
+            "tokens_per_second_estimate": null,
+            "llm_writer_allowed": false,
+            "llm_writer_used": false,
+            "evidence_rows_count": 0,
+            "displayed_evidences_count": 0,
+            "hard_gate_triggered": false,
+            "hard_gate_errors": [],
+            "hard_gate_policy": "global_non_negotiable",
+            "repair_used": false,
+            "fallback_generation_mode": null,
+            "final_safety_check_status": "passed",
+            "final_safety_check_failed": false,
+            "llm_prompt_preview": "",
+            "llm_candidate_answer": null,
+            "llm_candidate_validation_status": null,
+            "llm_candidate_validation_errors": null,
+            "llm_candidate_validation_warnings": null,
+            "final_postprocess_fixed_warnings": [],
+            "llm_candidate_repair_used": false,
+            "llm_repaired_answer": null,
+            "llm_repaired_validation_status": null,
+            "llm_repaired_validation_errors": [],
+            "llm_repair_attempted": false,
+            "llm_repair_answer": null,
+            "llm_repair_error_type": null,
+            "llm_repair_error_message": null,
+            "llm_postprocess_error_type": null,
+            "llm_postprocess_error_message": null,
+            "intents": {
+              "general_conversation": false,
+              "small_talk": false,
+              "identity_question": false,
+              "capability_question": false,
+              "help_question": false,
+              "patient_inventory": false,
+              "patient_inventory_count": false,
+              "response_transform": false,
+              "visualization_recommendation": false,
+              "inventory_visualization_render": false,
+              "qualitative_comment_render": false,
+              "context_summary_render": false,
+              "source_followup": false,
+              "global_analyte_abnormal_search": false,
+              "doc_pair_comparison": true,
+              "doc_scoped_medical_interpretation_guarded": false,
+              "doc_scoped_biological_summary": false,
+              "doc_scoped_priority_anomalies": false,
+              "doc_scoped_abnormal_results": false,
+              "single_analyte_lookup": false,
+              "doc_scoped_results": true,
+              "doc_scoped_analyte_query": false,
+              "doc_scoped_summary": false,
+              "multi_analyte_results": false,
+              "previous_result_comparison": false,
+              "multi_doc_comparison": true,
+              "toxicology_summary": false,
+              "immunoanalysis_summary": false,
+              "comment_without_measured_value": false,
+              "reference_range_lookup": false,
+              "diagnostic_safety_question": false,
+              "global_patient_lookup": false,
+              "global_biological_summary": false,
+              "global_priority_anomalies_summary": false,
+              "cohort_search": false,
+              "multi_doc_presence_diff": false,
+              "yes_no_question": false,
+              "is_structured_query": true
+            },
+            "analyte_resolution_debug": {
+              "query": "compare report 10 et 12 vite fait",
+              "normalized_query": "compare report 10 et 12 vite fait",
+              "requested_analytes_before_resolver": [],
+              "requested_analytes_after_resolver": [],
+              "available_analytes_count": 111,
+              "resolved_analytes": [],
+              "ambiguous_candidates": [],
+              "match_reason": null,
+              "confidence": null,
+              "status": "no_match"
+            },
+            "route_candidates": [
+              {
+                "route": "doc_pair_comparison",
+                "confidence": 0.53,
+                "policy": "deterministic_preferred",
+                "reason": "primary_intent_mapping | intent_candidates_mapping"
+              },
+              {
+                "route": "doc_scoped_biological_summary",
+                "confidence": 0.48,
+                "policy": "deterministic_preferred",
+                "reason": "doc_scope_summary_fallback"
+              },
+              {
+                "route": "multi_doc_comparison",
+                "confidence": 0.26,
+                "policy": "deterministic_preferred",
+                "reason": "intent_candidates_mapping"
+              },
+              {
+                "route": "doc_scoped_results",
+                "confidence": 0.1,
+                "policy": "deterministic_preferred",
+                "reason": "intent_candidates_mapping"
+              }
+            ],
+            "rejected_routes": [
+              {
+                "route": "doc_scoped_biological_summary",
+                "confidence": 0.48,
+                "policy": "deterministic_preferred",
+                "reason": "doc_scope_summary_fallback"
+              },
+              {
+                "route": "multi_doc_comparison",
+                "confidence": 0.26,
+                "policy": "deterministic_preferred",
+                "reason": "intent_candidates_mapping"
+              },
+              {
+                "route": "doc_scoped_results",
+                "confidence": 0.1,
+                "policy": "deterministic_preferred",
+                "reason": "intent_candidates_mapping"
+              }
+            ],
+            "selected_plan": "doc_pair_comparison",
+            "fallback_candidates": [
+              "ambiguous_scope"
+            ],
+            "fallback_decision_path": [
+              "answerability:ambiguous",
+              "planner_selected:doc_pair_comparison",
+              "planner_fallback_candidate:ambiguous_scope",
+              "fallback_stage:comparison_no_evidence_recovery",
+              "specialized_fallback:ambiguous_document_scope",
+              "fallback_reason:comparison_builder_empty"
+            ],
+            "planner_shadow_mode": true,
+            "planner_takeover_allowed": false,
+            "planner_takeover_reason": "shadow_mode_default",
+            "planner_version": "v1",
+            "answerability_status": "ambiguous",
+            "answerability_reason": "ambiguous_scope_or_intent",
+            "answerability_matching_strategy": "none",
+            "answerability_confidence": 0.0,
+            "answerability_not_found_analytes": [],
+            "answerability_missing_doc_ids": [
+              "report_10",
+              "report_12"
+            ],
+            "matched_evidence_rows_count": 0,
+            "query_understanding": {
+              "requested_doc_ids": [
+                "report_10",
+                "report_12"
+              ],
+              "requested_analytes": [],
+              "requested_value": null,
+              "requested_unit": null,
+              "comparison_operator": null,
+              "source_clickable_requested": false,
+              "patient_query": false,
+              "intent": "multi_doc_comparison",
+              "output_format": "auto",
+              "requested_table_columns": [],
+              "answer_style": "standard",
+              "requires_global_search": false,
+              "technical_condition": null,
+              "safety_intent": null,
+              "requires_previous_results": false,
+              "requires_comparison": true,
+              "requires_section_summary": false,
+              "is_small_talk": false,
+              "is_response_transform": false,
+              "language": "fr",
+              "response_strategy": "render_table",
+              "response_strategy_reason": "Format structuré fiable par défaut.",
+              "original_user_question": "compare report 10 et 12 vite fait",
+              "raw_user_request": "compare report 10 et 12 vite fait",
+              "raw_format_phrase": null,
+              "unhandled_instructions": [],
+              "presentation_confidence": 0.55,
+              "unsupported_presentation_reason": null,
+              "recommended_alternative_format": null,
+              "requested_date_iso": null,
+              "requested_report_type": null,
+              "latest_report": false,
+              "requested_context_type": "biological_numeric_results",
+              "inventory_view_type": null,
+              "qualitative_view_type": null,
+              "requested_reference_profile": null,
+              "use_patient_profile": false,
+              "request_all_reference_ranges": false,
+              "requested_summary_points": null,
+              "intent_candidates": [
+                {
+                  "intent": "doc_pair_comparison",
+                  "confidence": 0.4
+                },
+                {
+                  "intent": "multi_doc_comparison",
+                  "confidence": 0.4
+                },
+                {
+                  "intent": "doc_scoped_results",
+                  "confidence": 0.24
+                }
+              ],
+              "intent_confidence": 0.4,
+              "scope_confidence": 0.52,
+              "ambiguity_flags": [
+                "confidence_below_threshold",
+                "multiple_candidates_clustered"
+              ],
+              "medical_topics": [],
+              "intent_arbitration": {
+                "candidate_intents": [
+                  "doc_pair_comparison",
+                  "doc_scoped_results",
+                  "multi_doc_comparison"
+                ],
+                "winner": "multi_doc_comparison",
+                "reason": "Arbitrage: comparaison multi-documents détectée.",
+                "requested_doc_ids": [
+                  "report_10",
+                  "report_12"
+                ],
+                "requested_analytes": [],
+                "safety_intent": null
+              },
+              "presentation_intent": {
+                "requested_output": "auto",
+                "chart_type": null,
+                "requested_type": "unknown",
+                "requested_label": "format visuel demandé",
+                "raw_format_phrase": null,
+                "wants_clickable_sources": false,
+                "wants_intro": true,
+                "wants_conclusion": true,
+                "strict_columns": [],
+                "unsupported_format": false,
+                "user_requested_visualization": false,
+                "presentation_confidence": 0.55,
+                "unsupported_reason": null,
+                "recommended_output": null,
+                "unsupported_presentation_reason": null,
+                "recommended_alternative_format": null,
+                "unhandled_instructions": []
+              }
+            },
+            "query_plan": {
+              "intent": "doc_pair_comparison",
+              "scope": "multi_document",
+              "requested_doc_ids": [
+                "report_10",
+                "report_12"
+              ],
+              "requested_analytes": [],
+              "medical_topics": [],
+              "technical_condition": "any_result",
+              "comparison_targets": [
+                "report_10",
+                "report_12"
+              ],
+              "requires_llm_writer": true,
+              "safety_mode": "technical_only",
+              "planner_source": "deterministic_fallback"
+            },
+            "evidence_rows_preview": [],
+            "included_rows": [],
+            "supporting_evidences": [],
+            "excluded_rows": [],
+            "validation": {
+              "errors": [],
+              "warnings": [
+                "comparison_builder_empty"
+              ]
+            },
+            "validation_errors": [],
+            "stage_timings_ms": {
+              "query_understanding_ms": 40.691,
+              "routing_ms": 28.434,
+              "retrieval_ms": 0.0,
+              "evidence_build_ms": 28.434,
+              "llm_writer_ms": 0.0,
+              "validation_ms": 60.206,
+              "repair_ms": 0.0,
+              "fallback_ms": 0.0,
+              "total_ms": 160.94
+            },
+            "requested_analytes": [],
+            "requested_analyte_labels": []
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_OUT_OF_RANGE",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "donne ce qui sort des normes",
+      "issues": [
+        "Internal source format leaked",
+        "Validation status is fail",
+        "Potential hallucination (validation fail)"
+      ],
+      "trace": {
+        "conversation_id": "conv_1861b539-cfaa-46a3-99d6-f33064c482fc",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "fail",
+        "generation_mode": "llm",
+        "generation_writer": "",
+        "response_preview": "* Valeur : 20,11 g/l\n* Unité : g/l\n* Référence : Normale: < 1,50 g/l limite haute: 1,50 - 1,99 g/l Haute: 2 - 4,99 g/l Très haute: > 5 g/l\n* Interprétation technique : needs_clinical_context\n* Résultat antérieur : null\n\nSources :\n- [doc_id=report_29, page=2, row=20, chunk_id=chk_report_29_lab_result_result_resultats_biologiques_20_triglycerides_20_11_g_l_triglycerides_20_11_g_l]",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "unstructured",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "fail",
+            "errors": [
+              "forbidden_internal_field",
+              "source_format_bad",
+              "raw_error_visible"
+            ],
+            "warnings": [
+              "multi_result_missing_structured_details",
+              "missing_conclusion"
+            ],
+            "unsupported_claims": []
+          },
+          "intent_arbitration": {
+            "candidate_intents": [],
+            "winner": "unstructured",
+            "reason": "Arbitrage: priorité standard des intents.",
+            "requested_doc_ids": [],
+            "requested_analytes": [],
+            "safety_intent": null
+          },
+          "requested_doc_ids": [],
+          "requested_analytes": [],
+          "requested_analyte_labels": [],
+          "query_understanding": {
+            "requested_doc_ids": [],
+            "requested_analytes": [],
+            "requested_value": null,
+            "requested_unit": null,
+            "comparison_operator": null,
+            "source_clickable_requested": false,
+            "patient_query": false,
+            "intent": "unstructured",
+            "output_format": "auto",
+            "requested_table_columns": [],
+            "answer_style": "standard",
+            "requires_global_search": false,
+            "technical_condition": null,
+            "safety_intent": null,
+            "requires_previous_results": false,
+            "requires_comparison": false,
+            "requires_section_summary": false,
+            "is_small_talk": false,
+            "is_response_transform": false,
+            "language": "fr",
+            "response_strategy": "ask_clarification",
+            "response_strategy_reason": "Contexte insuffisant et demande peu contrainte.",
+            "original_user_question": "donne ce qui sort des normes",
+            "raw_user_request": "donne ce qui sort des normes",
+            "raw_format_phrase": null,
+            "unhandled_instructions": [],
+            "presentation_confidence": 0.55,
+            "unsupported_presentation_reason": null,
+            "recommended_alternative_format": null,
+            "requested_date_iso": null,
+            "requested_report_type": null,
+            "latest_report": false,
+            "requested_context_type": "biological_numeric_results",
+            "inventory_view_type": null,
+            "qualitative_view_type": null,
+            "requested_reference_profile": null,
+            "use_patient_profile": false,
+            "request_all_reference_ranges": false,
+            "requested_summary_points": null,
+            "intent_candidates": [
+              {
+                "intent": "unstructured",
+                "confidence": 0.43
+              }
+            ],
+            "intent_confidence": 0.43,
+            "scope_confidence": 0.0,
+            "ambiguity_flags": [
+              "insufficient_clinical_scope",
+              "confidence_below_threshold"
+            ],
+            "medical_topics": [],
+            "intent_arbitration": {
+              "candidate_intents": [],
+              "winner": "unstructured",
+              "reason": "Arbitrage: priorité standard des intents.",
+              "requested_doc_ids": [],
+              "requested_analytes": [],
+              "safety_intent": null
+            },
+            "presentation_intent": {
+              "requested_output": "auto",
+              "chart_type": null,
+              "requested_type": "unknown",
+              "requested_label": "format visuel demandé",
+              "raw_format_phrase": null,
+              "wants_clickable_sources": false,
+              "wants_intro": true,
+              "wants_conclusion": true,
+              "strict_columns": [],
+              "unsupported_format": false,
+              "user_requested_visualization": false,
+              "presentation_confidence": 0.55,
+              "unsupported_reason": null,
+              "recommended_output": null,
+              "unsupported_presentation_reason": null,
+              "recommended_alternative_format": null,
+              "unhandled_instructions": []
+            },
+            "requested_analyte_labels": []
+          },
+          "selected_route": null,
+          "route_reason": null,
+          "evidence_rows_preview": [],
+          "included_rows": [],
+          "excluded_rows": [],
+          "fallback_reason": null,
+          "generation_mode_before_fallback": null,
+          "llm_provider": "ollama",
+          "llm_model_override_requested": null,
+          "llm_model_override_allowed": true,
+          "llm_model_override_applied": false,
+          "llm_model_override_rejected": false,
+          "llm_model_requested": "llama3.2:latest",
+          "llm_model_effective": null,
+          "ollama_model": null,
+          "model_verified": false,
+          "generation_strategy": null,
+          "llm_expected": false,
+          "llm_skipped_reason": null,
+          "deterministic_preferred_reason": null,
+          "llm_writer_attempted": false,
+          "llm_writer_accepted": false,
+          "hard_gate_rejected": false,
+          "repair_attempted": false,
+          "repair_success": false,
+          "stage_timings_ms": {
+            "query_understanding_ms": 0.0,
+            "routing_ms": 0.0,
+            "retrieval_ms": 0.0,
+            "evidence_build_ms": 0.0,
+            "llm_writer_ms": 0.0,
+            "validation_ms": 0.0,
+            "repair_ms": 0.0,
+            "fallback_ms": 0.0,
+            "total_ms": 140170.0
+          },
+          "raw_debug": {
+            "request_id": "473c2998-1402-4910-8ba8-db5ee449beff",
+            "query_received": "donne ce qui sort des normes",
+            "query_used_for_retrieval": "donne ce qui sort des normes",
+            "query_used_for_prompt": "donne ce qui sort des normes",
+            "detected_analytes": [],
+            "requested_doc_ids": [],
+            "generation_mode": "llm",
+            "context_resolution": {
+              "requires_retrieval": true,
+              "reuse_doc_scope": false,
+              "reuse_patient_inventory": false,
+              "reuse_transformable_pack": false,
+              "reuse_qualitative_pack": false,
+              "effective_doc_scope": null,
+              "effective_data_context_type": "biological_numeric_results",
+              "deictic_table_request": false,
+              "should_skip_retrieval": false,
+              "reason": "default_retrieval"
+            },
+            "deictic_resolution": {
+              "resolved": false,
+              "intent": "unstructured",
+              "context_type": "biological_numeric_results",
+              "reuse_last_displayed_context": false,
+              "reuse_doc_scope": false,
+              "effective_doc_scope": {
+                "doc_ids": [
+                  "report_10",
+                  "report_12"
+                ]
+              },
+              "target_subject": null,
+              "render_type": null,
+              "skip_retrieval": false,
+              "reason": "no_deictic_resolution"
+            },
+            "resolution_arbitration": {
+              "base_intent": "unstructured",
+              "context_reason": "default_retrieval",
+              "deictic_resolved": false,
+              "deictic_intent": "unstructured",
+              "deictic_reason": "no_deictic_resolution",
+              "chosen": "context",
+              "conflict": false,
+              "priority_rule": "deictic_if_resolved_else_context"
+            },
+            "retrieval_skipped_due_to_no_transformable_context": false,
+            "route_candidates": [
+              {
+                "route": "unstructured",
+                "confidence": 0.32,
+                "policy": "deterministic_preferred",
+                "reason": "primary_intent_mapping | intent_candidates_mapping"
+              }
+            ],
+            "selected_plan": "unstructured",
+            "fallback_candidates": [],
+            "planner_shadow_mode": true,
+            "planner_takeover_allowed": false,
+            "planner_takeover_reason": "shadow_mode_default",
+            "planner_version": "v1",
+            "requested_analytes": [],
+            "requested_analyte_labels": []
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_RENAL_NORMAL",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "est-ce que le bilan rénal est normal ?",
+      "issues": [
+        "Internal source format leaked",
+        "Validation status is fail",
+        "Potential hallucination (validation fail)"
+      ],
+      "trace": {
+        "conversation_id": "conv_1861b539-cfaa-46a3-99d6-f33064c482fc",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "fail",
+        "generation_mode": "llm",
+        "generation_writer": "",
+        "response_preview": "Information insuffisante dans le contexte fourni.\n\nLa question d'interrogation demande si le bilan rénal est normal, mais le contexte fourni ne contient pas d'information sur le bilan rénal. Il est possible que le bilan rénal soit mentionné dans un autre chunk ou document, mais cela n'est pas explicitement indiqué dans le contexte fourni.\n\nSources :\n- [doc_id=report_10, page=2, row=20, chunk_id=chk_report_10_lab_result_result_resultats_biologiques_20_triglycerides_8_g_l_triglycerides_8_g_l]",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "unstructured",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "fail",
+            "errors": [
+              "forbidden_internal_field",
+              "source_format_bad",
+              "raw_error_visible",
+              "Insufficient-context answer returned despite available evidence.",
+              "source_alignment_mismatch",
+              "unsupported_source",
+              "yes_no_not_respected"
+            ],
+            "warnings": [
+              "llm_used_for_structured_query"
+            ],
+            "unsupported_claims": [
+              "source_chunk_ids=['chk_report_10_lab_result_result_resultats_biologiques_20_triglycerides_8_g_l_triglycerides_8_g_l'], displayed_evidence_chunk_ids=['chk_report_10_lab_result_result_resultats_biologiques_20_triglycerides_8_g_l_triglycerides_8_g_l', 'chk_report_10_lab_result_result_resultats_biologiques_7_albumine_8_g_l_albumine_8_g_l']"
+            ]
+          },
+          "intent_arbitration": {
+            "candidate_intents": [
+              "yes_no_question"
+            ],
+            "winner": "unstructured",
+            "reason": "Arbitrage: priorité standard des intents.",
+            "requested_doc_ids": [],
+            "requested_analytes": [],
+            "safety_intent": null
+          },
+          "requested_doc_ids": [],
+          "requested_analytes": [],
+          "requested_analyte_labels": [],
+          "query_understanding": {
+            "requested_doc_ids": [],
+            "requested_analytes": [],
+            "requested_value": null,
+            "requested_unit": null,
+            "comparison_operator": null,
+            "source_clickable_requested": false,
+            "patient_query": false,
+            "intent": "unstructured",
+            "output_format": "auto",
+            "requested_table_columns": [],
+            "answer_style": "yes_no",
+            "requires_global_search": false,
+            "technical_condition": null,
+            "safety_intent": null,
+            "requires_previous_results": false,
+            "requires_comparison": false,
+            "requires_section_summary": false,
+            "is_small_talk": false,
+            "is_response_transform": false,
+            "language": "fr",
+            "response_strategy": "answer_directly",
+            "response_strategy_reason": "Réponse yes/no stricte demandée.",
+            "original_user_question": "est-ce que le bilan rénal est normal ?",
+            "raw_user_request": "est-ce que le bilan rénal est normal ?",
+            "raw_format_phrase": null,
+            "unhandled_instructions": [],
+            "presentation_confidence": 0.55,
+            "unsupported_presentation_reason": null,
+            "recommended_alternative_format": null,
+            "requested_date_iso": null,
+            "requested_report_type": null,
+            "latest_report": false,
+            "requested_context_type": "biological_numeric_results",
+            "inventory_view_type": null,
+            "qualitative_view_type": null,
+            "requested_reference_profile": null,
+            "use_patient_profile": false,
+            "request_all_reference_ranges": false,
+            "requested_summary_points": null,
+            "intent_candidates": [
+              {
+                "intent": "unstructured",
+                "confidence": 0.6
+              },
+              {
+                "intent": "yes_no_question",
+                "confidence": 0.43
+              }
+            ],
+            "intent_confidence": 0.6,
+            "scope_confidence": 0.07,
+            "ambiguity_flags": [
+              "topic_vs_specific_analyte_ambiguous"
+            ],
+            "medical_topics": [
+              {
+                "topic": "renal",
+                "confidence": 0.77
+              }
+            ],
+            "intent_arbitration": {
+              "candidate_intents": [
+                "yes_no_question"
+              ],
+              "winner": "unstructured",
+              "reason": "Arbitrage: priorité standard des intents.",
+              "requested_doc_ids": [],
+              "requested_analytes": [],
+              "safety_intent": null
+            },
+            "presentation_intent": {
+              "requested_output": "auto",
+              "chart_type": null,
+              "requested_type": "unknown",
+              "requested_label": "format visuel demandé",
+              "raw_format_phrase": null,
+              "wants_clickable_sources": false,
+              "wants_intro": true,
+              "wants_conclusion": true,
+              "strict_columns": [],
+              "unsupported_format": false,
+              "user_requested_visualization": false,
+              "presentation_confidence": 0.55,
+              "unsupported_reason": null,
+              "recommended_output": null,
+              "unsupported_presentation_reason": null,
+              "recommended_alternative_format": null,
+              "unhandled_instructions": []
+            },
+            "requested_analyte_labels": []
+          },
+          "selected_route": null,
+          "route_reason": null,
+          "evidence_rows_preview": [],
+          "included_rows": [],
+          "excluded_rows": [],
+          "fallback_reason": null,
+          "generation_mode_before_fallback": null,
+          "llm_provider": "ollama",
+          "llm_model_override_requested": null,
+          "llm_model_override_allowed": true,
+          "llm_model_override_applied": false,
+          "llm_model_override_rejected": false,
+          "llm_model_requested": "llama3.2:latest",
+          "llm_model_effective": null,
+          "ollama_model": null,
+          "model_verified": false,
+          "generation_strategy": null,
+          "llm_expected": false,
+          "llm_skipped_reason": null,
+          "deterministic_preferred_reason": null,
+          "llm_writer_attempted": false,
+          "llm_writer_accepted": false,
+          "hard_gate_rejected": false,
+          "repair_attempted": false,
+          "repair_success": false,
+          "stage_timings_ms": {
+            "query_understanding_ms": 0.0,
+            "routing_ms": 0.0,
+            "retrieval_ms": 0.0,
+            "evidence_build_ms": 0.0,
+            "llm_writer_ms": 0.0,
+            "validation_ms": 0.0,
+            "repair_ms": 0.0,
+            "fallback_ms": 0.0,
+            "total_ms": 98383.0
+          },
+          "raw_debug": {
+            "request_id": "a0fc676a-6e23-4f9c-8dc8-888e98331ab5",
+            "query_received": "est-ce que le bilan rénal est normal ?",
+            "query_used_for_retrieval": "est-ce que le bilan rénal est normal ?",
+            "query_used_for_prompt": "est-ce que le bilan rénal est normal ?",
+            "detected_analytes": [],
+            "requested_doc_ids": [],
+            "generation_mode": "llm",
+            "context_resolution": {
+              "requires_retrieval": true,
+              "reuse_doc_scope": false,
+              "reuse_patient_inventory": false,
+              "reuse_transformable_pack": false,
+              "reuse_qualitative_pack": false,
+              "effective_doc_scope": null,
+              "effective_data_context_type": "biological_numeric_results",
+              "deictic_table_request": false,
+              "should_skip_retrieval": false,
+              "reason": "default_retrieval"
+            },
+            "deictic_resolution": {
+              "resolved": false,
+              "intent": "unstructured",
+              "context_type": "biological_numeric_results",
+              "reuse_last_displayed_context": false,
+              "reuse_doc_scope": false,
+              "effective_doc_scope": {
+                "doc_ids": [
+                  "report_29"
+                ]
+              },
+              "target_subject": null,
+              "render_type": null,
+              "skip_retrieval": false,
+              "reason": "no_deictic_resolution"
+            },
+            "resolution_arbitration": {
+              "base_intent": "unstructured",
+              "context_reason": "default_retrieval",
+              "deictic_resolved": false,
+              "deictic_intent": "unstructured",
+              "deictic_reason": "no_deictic_resolution",
+              "chosen": "context",
+              "conflict": false,
+              "priority_rule": "deictic_if_resolved_else_context"
+            },
+            "retrieval_skipped_due_to_no_transformable_context": false,
+            "route_candidates": [
+              {
+                "route": "unstructured",
+                "confidence": 0.6,
+                "policy": "deterministic_preferred",
+                "reason": "primary_intent_mapping | intent_candidates_mapping"
+              },
+              {
+                "route": "yes_no_question",
+                "confidence": 0.43,
+                "policy": "deterministic_preferred",
+                "reason": "intent_candidates_mapping"
+              }
+            ],
+            "selected_plan": "unstructured",
+            "fallback_candidates": [
+              "insufficient_evidence"
+            ],
+            "planner_shadow_mode": true,
+            "planner_takeover_allowed": false,
+            "planner_takeover_reason": "shadow_mode_default",
+            "planner_version": "v1",
+            "requested_analytes": [],
+            "requested_analyte_labels": []
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_VALUES_REASSURING",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "les valeurs sont rassurantes ?",
+      "issues": [
+        "Missing source citation"
+      ],
+      "trace": {
+        "conversation_id": "conv_1861b539-cfaa-46a3-99d6-f33064c482fc",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "warning",
+        "generation_mode": "deterministic_no_evidence_response",
+        "generation_writer": "deterministic_clarification",
+        "response_preview": "Information insuffisante dans le contexte fourni.\n\nLa demande « résultats anormaux » nécessite un périmètre explicite. Précisez un rapport (ex: report 24) ou confirmez une recherche globale sur tous les rapports.\n\nConclusion technique : clarification de périmètre requise avant extraction déterministe des anomalies.",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "unstructured",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "warning",
+            "errors": [],
+            "warnings": [
+              "controlled_abnormal_without_scope_clarification"
+            ],
+            "unsupported_claims": []
+          },
+          "intent_arbitration": {
+            "candidate_intents": [],
+            "winner": "unstructured",
+            "reason": "Arbitrage: priorité standard des intents.",
+            "requested_doc_ids": [],
+            "requested_analytes": [],
+            "safety_intent": null
+          },
+          "requested_doc_ids": [],
+          "requested_analytes": [],
+          "requested_analyte_labels": [],
+          "query_understanding": {
+            "requested_doc_ids": [],
+            "requested_analytes": [],
+            "requested_value": null,
+            "requested_unit": null,
+            "comparison_operator": null,
+            "source_clickable_requested": false,
+            "patient_query": false,
+            "intent": "unstructured",
+            "output_format": "auto",
+            "requested_table_columns": [],
+            "answer_style": "standard",
+            "requires_global_search": false,
+            "technical_condition": null,
+            "safety_intent": null,
+            "requires_previous_results": false,
+            "requires_comparison": false,
+            "requires_section_summary": false,
+            "is_small_talk": false,
+            "is_response_transform": false,
+            "language": "fr",
+            "response_strategy": "ask_clarification",
+            "response_strategy_reason": "Contexte insuffisant et demande peu contrainte.",
+            "original_user_question": "les valeurs sont rassurantes ?",
+            "raw_user_request": "les valeurs sont rassurantes ?",
+            "raw_format_phrase": null,
+            "unhandled_instructions": [],
+            "presentation_confidence": 0.55,
+            "unsupported_presentation_reason": null,
+            "recommended_alternative_format": null,
+            "requested_date_iso": null,
+            "requested_report_type": null,
+            "latest_report": false,
+            "requested_context_type": "biological_numeric_results",
+            "inventory_view_type": null,
+            "qualitative_view_type": null,
+            "requested_reference_profile": null,
+            "use_patient_profile": false,
+            "request_all_reference_ranges": false,
+            "requested_summary_points": null,
+            "intent_candidates": [
+              {
+                "intent": "unstructured",
+                "confidence": 0.43
+              }
+            ],
+            "intent_confidence": 0.43,
+            "scope_confidence": 0.0,
+            "ambiguity_flags": [
+              "insufficient_clinical_scope",
+              "confidence_below_threshold"
+            ],
+            "medical_topics": [],
+            "intent_arbitration": {
+              "candidate_intents": [],
+              "winner": "unstructured",
+              "reason": "Arbitrage: priorité standard des intents.",
+              "requested_doc_ids": [],
+              "requested_analytes": [],
+              "safety_intent": null
+            },
+            "presentation_intent": {
+              "requested_output": "auto",
+              "chart_type": null,
+              "requested_type": "unknown",
+              "requested_label": "format visuel demandé",
+              "raw_format_phrase": null,
+              "wants_clickable_sources": false,
+              "wants_intro": true,
+              "wants_conclusion": true,
+              "strict_columns": [],
+              "unsupported_format": false,
+              "user_requested_visualization": false,
+              "presentation_confidence": 0.55,
+              "unsupported_reason": null,
+              "recommended_output": null,
+              "unsupported_presentation_reason": null,
+              "recommended_alternative_format": null,
+              "unhandled_instructions": []
+            },
+            "requested_analyte_labels": []
+          },
+          "selected_route": "cohort_search",
+          "route_reason": "abnormal_results_without_scope_requires_clarification",
+          "evidence_rows_preview": [],
+          "included_rows": [],
+          "excluded_rows": [],
+          "fallback_reason": null,
+          "generation_mode_before_fallback": null,
+          "llm_provider": "ollama",
+          "llm_model_override_requested": null,
+          "llm_model_override_allowed": true,
+          "llm_model_override_applied": false,
+          "llm_model_override_rejected": false,
+          "llm_model_requested": "llama3.2:latest",
+          "llm_model_effective": null,
+          "ollama_model": null,
+          "model_verified": false,
+          "generation_strategy": null,
+          "llm_expected": false,
+          "llm_skipped_reason": null,
+          "deterministic_preferred_reason": null,
+          "llm_writer_attempted": false,
+          "llm_writer_accepted": false,
+          "hard_gate_rejected": false,
+          "repair_attempted": false,
+          "repair_success": false,
+          "stage_timings_ms": {
+            "query_understanding_ms": 20.135,
+            "routing_ms": 0.0,
+            "retrieval_ms": 0.0,
+            "evidence_build_ms": 0.0,
+            "llm_writer_ms": 0.0,
+            "validation_ms": 0.0,
+            "repair_ms": 0.0,
+            "fallback_ms": 0.0,
+            "total_ms": 68.838
+          },
+          "raw_debug": {
+            "request_id": "01db1b0c-83d5-4c03-8c84-ea137dcca696",
+            "selected_route": "cohort_search",
+            "route_reason": "abnormal_results_without_scope_requires_clarification",
+            "generation_mode": "deterministic_no_evidence_response",
+            "generation_writer": "deterministic_clarification",
+            "canonical_requested_analytes": [],
+            "intent_candidates": [
+              {
+                "intent": "unstructured",
+                "confidence": 0.43
+              }
+            ],
+            "intent_confidence": 0.43,
+            "scope_confidence": 0.0,
+            "ambiguity_flags": [
+              "insufficient_clinical_scope",
+              "confidence_below_threshold"
+            ],
+            "medical_topics": [],
+            "route_candidates": [
+              {
+                "route": "unstructured",
+                "confidence": 0.32,
+                "policy": "deterministic_preferred",
+                "reason": "primary_intent_mapping | intent_candidates_mapping"
+              }
+            ],
+            "rejected_routes": [],
+            "selected_plan": "unstructured",
+            "fallback_candidates": [],
+            "fallback_decision_path": [
+              "answerability:ambiguous",
+              "specialized_fallback:ambiguous_document_scope",
+              "fallback_stage:clarification"
+            ],
+            "planner_shadow_mode": true,
+            "planner_takeover_allowed": false,
+            "planner_takeover_reason": "shadow_mode_default",
+            "planner_version": "v1",
+            "answerability_status": "ambiguous",
+            "answerability_reason": "missing_scope_for_abnormal_query",
+            "answerability_matching_strategy": "none",
+            "answerability_confidence": 0.0,
+            "specialized_fallback_kind": "ambiguous_document_scope",
+            "context_resolution": {
+              "requires_retrieval": true,
+              "reuse_doc_scope": false,
+              "reuse_patient_inventory": false,
+              "reuse_transformable_pack": false,
+              "reuse_qualitative_pack": false,
+              "effective_doc_scope": null,
+              "effective_data_context_type": "biological_numeric_results",
+              "deictic_table_request": false,
+              "should_skip_retrieval": false,
+              "reason": "default_retrieval"
+            },
+            "deictic_resolution": {
+              "resolved": false,
+              "intent": "unstructured",
+              "context_type": "biological_numeric_results",
+              "reuse_last_displayed_context": false,
+              "reuse_doc_scope": false,
+              "effective_doc_scope": {
+                "doc_ids": [
+                  "report_16"
+                ]
+              },
+              "target_subject": null,
+              "render_type": null,
+              "skip_retrieval": false,
+              "reason": "no_deictic_resolution"
+            },
+            "resolution_arbitration": {
+              "base_intent": "unstructured",
+              "context_reason": "default_retrieval",
+              "deictic_resolved": false,
+              "deictic_intent": "unstructured",
+              "deictic_reason": "no_deictic_resolution",
+              "chosen": "context",
+              "conflict": false,
+              "priority_rule": "deictic_if_resolved_else_context"
+            },
+            "stage_timings_ms": {
+              "query_understanding_ms": 20.135,
+              "routing_ms": 0.0,
+              "retrieval_ms": 0.0,
+              "evidence_build_ms": 0.0,
+              "llm_writer_ms": 0.0,
+              "validation_ms": 0.0,
+              "repair_ms": 0.0,
+              "fallback_ms": 0.0,
+              "total_ms": 68.838
+            },
+            "requested_analytes": [],
+            "requested_analyte_labels": []
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_SUMMARY_FOR_MD",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "fais-moi un résumé pour médecin",
+      "issues": [
+        "Validation status is fail",
+        "Missing source citation",
+        "Potential hallucination (validation fail)"
+      ],
+      "trace": {
+        "conversation_id": "conv_1861b539-cfaa-46a3-99d6-f33064c482fc",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "fail",
+        "generation_mode": "deterministic_context_summary_render",
+        "generation_writer": "deterministic_context_summary",
+        "response_preview": "Résumé en 3 points du résultats biologiques affichés\n\n1. 6 résultats biologiques ont été affichés.\n2. ACTH : 23,00 | within_reference\n3. INSULINE : 2,00 | below_reference",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "context_summary_render",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "fail",
+            "errors": [
+              "unsupported_value",
+              "No evidence available but answer did not report insufficient context.",
+              "wrong_result_count"
+            ],
+            "warnings": [
+              "Some numeric values were not found in evidence.",
+              "multi_result_missing_structured_details",
+              "missing_conclusion"
+            ],
+            "unsupported_claims": [
+              "Unsupported numeric values: ['2,00', '23,00', '3']"
+            ]
+          },
+          "intent_arbitration": {
+            "candidate_intents": [],
+            "winner": "context_summary_render",
+            "reason": "Arbitrage: priorité standard des intents.",
+            "requested_doc_ids": [],
+            "requested_analytes": [],
+            "safety_intent": null
+          },
+          "requested_doc_ids": [],
+          "requested_analytes": [],
+          "requested_analyte_labels": [],
+          "query_understanding": {
+            "requested_doc_ids": [],
+            "requested_analytes": [],
+            "requested_value": null,
+            "requested_unit": null,
+            "comparison_operator": null,
+            "source_clickable_requested": false,
+            "patient_query": false,
+            "intent": "context_summary_render",
+            "output_format": "auto",
+            "requested_table_columns": [],
+            "answer_style": "standard",
+            "requires_global_search": false,
+            "technical_condition": null,
+            "safety_intent": null,
+            "requires_previous_results": false,
+            "requires_comparison": false,
+            "requires_section_summary": false,
+            "is_small_talk": false,
+            "is_response_transform": false,
+            "language": "fr",
+            "response_strategy": "ask_clarification",
+            "response_strategy_reason": "Contexte insuffisant et demande peu contrainte.",
+            "original_user_question": "fais-moi un résumé pour médecin",
+            "raw_user_request": "fais-moi un résumé pour médecin",
+            "raw_format_phrase": null,
+            "unhandled_instructions": [],
+            "presentation_confidence": 0.55,
+            "unsupported_presentation_reason": null,
+            "recommended_alternative_format": null,
+            "requested_date_iso": null,
+            "requested_report_type": null,
+            "latest_report": false,
+            "requested_context_type": "biological_numeric_results",
+            "inventory_view_type": null,
+            "qualitative_view_type": null,
+            "requested_reference_profile": null,
+            "use_patient_profile": false,
+            "request_all_reference_ranges": false,
+            "requested_summary_points": null,
+            "intent_candidates": [
+              {
+                "intent": "unstructured",
+                "confidence": 0.43
+              }
+            ],
+            "intent_confidence": 0.43,
+            "scope_confidence": 0.0,
+            "ambiguity_flags": [
+              "insufficient_clinical_scope",
+              "confidence_below_threshold"
+            ],
+            "medical_topics": [],
+            "intent_arbitration": {
+              "candidate_intents": [],
+              "winner": "context_summary_render",
+              "reason": "Arbitrage: priorité standard des intents.",
+              "requested_doc_ids": [],
+              "requested_analytes": [],
+              "safety_intent": null
+            },
+            "presentation_intent": {
+              "requested_output": "auto",
+              "chart_type": null,
+              "requested_type": "unknown",
+              "requested_label": "format visuel demandé",
+              "raw_format_phrase": null,
+              "wants_clickable_sources": false,
+              "wants_intro": true,
+              "wants_conclusion": true,
+              "strict_columns": [],
+              "unsupported_format": false,
+              "user_requested_visualization": false,
+              "presentation_confidence": 0.55,
+              "unsupported_reason": null,
+              "recommended_output": null,
+              "unsupported_presentation_reason": null,
+              "recommended_alternative_format": null,
+              "unhandled_instructions": []
+            },
+            "requested_analyte_labels": []
+          },
+          "selected_route": null,
+          "route_reason": null,
+          "evidence_rows_preview": [],
+          "included_rows": [],
+          "excluded_rows": [],
+          "fallback_reason": null,
+          "generation_mode_before_fallback": null,
+          "llm_provider": "ollama",
+          "llm_model_override_requested": null,
+          "llm_model_override_allowed": true,
+          "llm_model_override_applied": false,
+          "llm_model_override_rejected": false,
+          "llm_model_requested": "llama3.2:latest",
+          "llm_model_effective": null,
+          "ollama_model": null,
+          "model_verified": false,
+          "generation_strategy": null,
+          "llm_expected": false,
+          "llm_skipped_reason": null,
+          "deterministic_preferred_reason": null,
+          "llm_writer_attempted": false,
+          "llm_writer_accepted": false,
+          "hard_gate_rejected": false,
+          "repair_attempted": false,
+          "repair_success": false,
+          "stage_timings_ms": {
+            "query_understanding_ms": 0.0,
+            "routing_ms": 0.0,
+            "retrieval_ms": 0.0,
+            "evidence_build_ms": 0.0,
+            "llm_writer_ms": 0.0,
+            "validation_ms": 0.0,
+            "repair_ms": 0.0,
+            "fallback_ms": 0.0,
+            "total_ms": 56.0
+          },
+          "raw_debug": {
+            "request_id": "e4719e51-d441-4f0d-9614-3dda95e8be94",
+            "generation_mode": "deterministic_context_summary_render",
+            "generation_writer": "deterministic_context_summary",
+            "intents": {
+              "general_conversation": false,
+              "small_talk": false,
+              "identity_question": false,
+              "capability_question": false,
+              "help_question": false,
+              "patient_inventory": false,
+              "patient_inventory_count": false,
+              "response_transform": false,
+              "visualization_recommendation": false,
+              "inventory_visualization_render": false,
+              "qualitative_comment_render": false,
+              "context_summary_render": false,
+              "source_followup": false,
+              "global_analyte_abnormal_search": false,
+              "doc_pair_comparison": false,
+              "doc_scoped_medical_interpretation_guarded": false,
+              "doc_scoped_biological_summary": false,
+              "doc_scoped_priority_anomalies": false,
+              "doc_scoped_abnormal_results": false,
+              "single_analyte_lookup": false,
+              "doc_scoped_results": false,
+              "doc_scoped_analyte_query": false,
+              "doc_scoped_summary": false,
+              "multi_analyte_results": false,
+              "previous_result_comparison": false,
+              "multi_doc_comparison": false,
+              "toxicology_summary": false,
+              "immunoanalysis_summary": false,
+              "comment_without_measured_value": false,
+              "reference_range_lookup": false,
+              "diagnostic_safety_question": false,
+              "global_patient_lookup": false,
+              "global_biological_summary": false,
+              "global_priority_anomalies_summary": false,
+              "cohort_search": false,
+              "multi_doc_presence_diff": false,
+              "yes_no_question": false,
+              "is_structured_query": false
+            },
+            "retrieval_skipped": true,
+            "context_type": "biological_numeric_results",
+            "requested_summary_points": 3,
+            "produced_summary_points": 3,
+            "context_resolution": {
+              "requires_retrieval": true,
+              "reuse_doc_scope": false,
+              "reuse_patient_inventory": false,
+              "reuse_transformable_pack": false,
+              "reuse_qualitative_pack": false,
+              "effective_doc_scope": null,
+              "effective_data_context_type": "biological_numeric_results",
+              "deictic_table_request": false,
+              "should_skip_retrieval": true,
+              "reason": "deictic_context_summary"
+            },
+            "deictic_resolution": {
+              "resolved": true,
+              "intent": "context_summary_render",
+              "context_type": "biological_numeric_results",
+              "reuse_last_displayed_context": true,
+              "reuse_doc_scope": false,
+              "effective_doc_scope": {
+                "doc_ids": [
+                  "report_16"
+                ]
+              },
+              "target_subject": null,
+              "render_type": null,
+              "skip_retrieval": true,
+              "reason": "deictic_render_from_last_displayed_context"
+            },
+            "resolution_arbitration": {
+              "base_intent": "unstructured",
+              "context_reason": "default_retrieval",
+              "deictic_resolved": true,
+              "deictic_intent": "context_summary_render",
+              "deictic_reason": "deictic_render_from_last_displayed_context",
+              "chosen": "deictic",
+              "conflict": true,
+              "priority_rule": "deictic_if_resolved_else_context"
+            },
+            "retrieval_skipped_due_to_no_transformable_context": true,
+            "requested_analytes": [],
+            "requested_analyte_labels": []
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_WHICH_EXCEED",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "quels paramètres dépassent ?",
+      "issues": [
+        "Internal source format leaked",
+        "Validation status is fail",
+        "Potential hallucination (validation fail)"
+      ],
+      "trace": {
+        "conversation_id": "conv_1861b539-cfaa-46a3-99d6-f33064c482fc",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "fail",
+        "generation_mode": "llm",
+        "generation_writer": "",
+        "response_preview": "Les paramètres dépassant sont :\n\n* Triglycérides : 8 g/l (supérieur à la limite haute de 1,99 g/l)\n\nSources :\n- [doc_id=report_10, page=2, row=20, chunk_id=chk_report_10_lab_result_result_resultats_biologiques_20_triglycerides_8_g_l_triglycerides_8_g_l]",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "unstructured",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "fail",
+            "errors": [
+              "forbidden_internal_field",
+              "source_format_bad",
+              "raw_error_visible"
+            ],
+            "warnings": [
+              "missing_conclusion"
+            ],
+            "unsupported_claims": []
+          },
+          "intent_arbitration": {
+            "candidate_intents": [],
+            "winner": "unstructured",
+            "reason": "Arbitrage: priorité standard des intents.",
+            "requested_doc_ids": [],
+            "requested_analytes": [],
+            "safety_intent": null
+          },
+          "requested_doc_ids": [],
+          "requested_analytes": [],
+          "requested_analyte_labels": [],
+          "query_understanding": {
+            "requested_doc_ids": [],
+            "requested_analytes": [],
+            "requested_value": null,
+            "requested_unit": null,
+            "comparison_operator": null,
+            "source_clickable_requested": false,
+            "patient_query": false,
+            "intent": "unstructured",
+            "output_format": "auto",
+            "requested_table_columns": [],
+            "answer_style": "standard",
+            "requires_global_search": false,
+            "technical_condition": null,
+            "safety_intent": null,
+            "requires_previous_results": false,
+            "requires_comparison": false,
+            "requires_section_summary": false,
+            "is_small_talk": false,
+            "is_response_transform": false,
+            "language": "fr",
+            "response_strategy": "ask_clarification",
+            "response_strategy_reason": "Contexte insuffisant et demande peu contrainte.",
+            "original_user_question": "quels paramètres dépassent ?",
+            "raw_user_request": "quels paramètres dépassent ?",
+            "raw_format_phrase": null,
+            "unhandled_instructions": [],
+            "presentation_confidence": 0.55,
+            "unsupported_presentation_reason": null,
+            "recommended_alternative_format": null,
+            "requested_date_iso": null,
+            "requested_report_type": null,
+            "latest_report": false,
+            "requested_context_type": "biological_numeric_results",
+            "inventory_view_type": null,
+            "qualitative_view_type": null,
+            "requested_reference_profile": null,
+            "use_patient_profile": false,
+            "request_all_reference_ranges": false,
+            "requested_summary_points": null,
+            "intent_candidates": [
+              {
+                "intent": "unstructured",
+                "confidence": 0.43
+              }
+            ],
+            "intent_confidence": 0.43,
+            "scope_confidence": 0.0,
+            "ambiguity_flags": [
+              "insufficient_clinical_scope",
+              "confidence_below_threshold"
+            ],
+            "medical_topics": [],
+            "intent_arbitration": {
+              "candidate_intents": [],
+              "winner": "unstructured",
+              "reason": "Arbitrage: priorité standard des intents.",
+              "requested_doc_ids": [],
+              "requested_analytes": [],
+              "safety_intent": null
+            },
+            "presentation_intent": {
+              "requested_output": "auto",
+              "chart_type": null,
+              "requested_type": "unknown",
+              "requested_label": "format visuel demandé",
+              "raw_format_phrase": null,
+              "wants_clickable_sources": false,
+              "wants_intro": true,
+              "wants_conclusion": true,
+              "strict_columns": [],
+              "unsupported_format": false,
+              "user_requested_visualization": false,
+              "presentation_confidence": 0.55,
+              "unsupported_reason": null,
+              "recommended_output": null,
+              "unsupported_presentation_reason": null,
+              "recommended_alternative_format": null,
+              "unhandled_instructions": []
+            },
+            "requested_analyte_labels": []
+          },
+          "selected_route": null,
+          "route_reason": null,
+          "evidence_rows_preview": [],
+          "included_rows": [],
+          "excluded_rows": [],
+          "fallback_reason": null,
+          "generation_mode_before_fallback": null,
+          "llm_provider": "ollama",
+          "llm_model_override_requested": null,
+          "llm_model_override_allowed": true,
+          "llm_model_override_applied": false,
+          "llm_model_override_rejected": false,
+          "llm_model_requested": "llama3.2:latest",
+          "llm_model_effective": null,
+          "ollama_model": null,
+          "model_verified": false,
+          "generation_strategy": null,
+          "llm_expected": false,
+          "llm_skipped_reason": null,
+          "deterministic_preferred_reason": null,
+          "llm_writer_attempted": false,
+          "llm_writer_accepted": false,
+          "hard_gate_rejected": false,
+          "repair_attempted": false,
+          "repair_success": false,
+          "stage_timings_ms": {
+            "query_understanding_ms": 0.0,
+            "routing_ms": 0.0,
+            "retrieval_ms": 0.0,
+            "evidence_build_ms": 0.0,
+            "llm_writer_ms": 0.0,
+            "validation_ms": 0.0,
+            "repair_ms": 0.0,
+            "fallback_ms": 0.0,
+            "total_ms": 20156.0
+          },
+          "raw_debug": {
+            "request_id": "703c9375-052a-4e80-8a81-80654254e09a",
+            "query_received": "quels paramètres dépassent ?",
+            "query_used_for_retrieval": "quels paramètres dépassent ?",
+            "query_used_for_prompt": "quels paramètres dépassent ?",
+            "detected_analytes": [],
+            "requested_doc_ids": [],
+            "generation_mode": "llm",
+            "context_resolution": {
+              "requires_retrieval": true,
+              "reuse_doc_scope": false,
+              "reuse_patient_inventory": false,
+              "reuse_transformable_pack": false,
+              "reuse_qualitative_pack": false,
+              "effective_doc_scope": null,
+              "effective_data_context_type": "biological_numeric_results",
+              "deictic_table_request": false,
+              "should_skip_retrieval": false,
+              "reason": "default_retrieval"
+            },
+            "deictic_resolution": {
+              "resolved": false,
+              "intent": "unstructured",
+              "context_type": "biological_numeric_results",
+              "reuse_last_displayed_context": false,
+              "reuse_doc_scope": false,
+              "effective_doc_scope": {
+                "doc_ids": [
+                  "report_16"
+                ]
+              },
+              "target_subject": null,
+              "render_type": null,
+              "skip_retrieval": false,
+              "reason": "no_deictic_resolution"
+            },
+            "resolution_arbitration": {
+              "base_intent": "unstructured",
+              "context_reason": "default_retrieval",
+              "deictic_resolved": false,
+              "deictic_intent": "unstructured",
+              "deictic_reason": "no_deictic_resolution",
+              "chosen": "context",
+              "conflict": false,
+              "priority_rule": "deictic_if_resolved_else_context"
+            },
+            "retrieval_skipped_due_to_no_transformable_context": false,
+            "route_candidates": [
+              {
+                "route": "unstructured",
+                "confidence": 0.32,
+                "policy": "deterministic_preferred",
+                "reason": "primary_intent_mapping | intent_candidates_mapping"
+              }
+            ],
+            "selected_plan": "unstructured",
+            "fallback_candidates": [],
+            "planner_shadow_mode": true,
+            "planner_takeover_allowed": false,
+            "planner_takeover_reason": "shadow_mode_default",
+            "planner_version": "v1",
+            "requested_analytes": [],
+            "requested_analyte_labels": []
+          }
+        }
+      }
+    }
+  ],
+  "recommendations": []
+}

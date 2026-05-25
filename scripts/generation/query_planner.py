@@ -13,6 +13,7 @@ class RouteCandidate(TypedDict):
 
 class ExecutionPlan(TypedDict):
     route_candidates: list[RouteCandidate]
+    rejected_routes: list[RouteCandidate]
     selected_plan: str
     fallback_candidates: list[str]
     shadow_mode: bool
@@ -424,6 +425,7 @@ def build_execution_plan(query_understanding: dict[str, Any], query: str) -> Exe
     shadow_mode = _norm_bool_env("MEDICAL_RAG_PLANNER_SHADOW_MODE", True)
     plan: ExecutionPlan = {
         "route_candidates": merged[:5],
+        "rejected_routes": merged[1:5],
         "selected_plan": selected_plan,
         "fallback_candidates": fallback_candidates,
         "shadow_mode": shadow_mode,

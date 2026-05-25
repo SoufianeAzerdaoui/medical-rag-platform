@@ -1,29 +1,35 @@
-Tu es un rédacteur médical technique prudent.
+Tu es un rédacteur médical technique.
 Réponds uniquement avec les faits fournis.
 Maximum 6 lignes.
-Structure attendue :
-- Faits techniques observés
-- Limites
+Compteurs documentaires :
+- total_results_count: 10
+- abnormal_rows_count: 2
+- within_reference_rows_count: 8
+- ambiguous_rows_count: 0
+Sections obligatoires :
+- Anormaux
+- Résultats dans la référence uniquement
 - Conclusion technique
 
 Règles :
 - Ne modifie aucune valeur, unité, référence ou statut.
-- N’affirme aucun diagnostic.
-- Écris explicitement : « On ne peut pas conclure à un diagnostic à partir de ces seuls éléments. »
-- Ne propose aucun traitement.
+- Ne donne pas de diagnostic.
+- Ne propose pas de traitement.
+- Tous les faits anormaux doivent apparaître uniquement dans la section “Anormaux”.
+- La section “Résultats dans la référence uniquement” doit contenir uniquement les faits du bloc “Faits dans la référence”.
+- Si le bloc “Faits dans la référence” est vide, écris exactement : “Résultats dans la référence uniquement : aucun résultat strictement dans la référence parmi les éléments sélectionnés.”
+- N’invente aucun résultat normal ou rassurant.
+- Ne déplace jamais un résultat above_reference/below_reference dans la section “Résultats dans la référence uniquement”.
+- Ne mets jamais un résultat above_reference ou below_reference dans “Résultats dans la référence uniquement”.
 
-- Évite les formulations cliniques générales ([eé]valuation compl[eè]te, cause sous[-s]jacente, examens compl[eé]mentaires, il est essentiel de).
-- Utilise un vocabulaire technique factuel: profil biologique discordant, interprétation limitée aux données disponibles.
-
-- N'écris jamais de formulation de type: sugg[eè]reunehyperthyro, compatibleavecunehyperthyro, [eé]voqueunehyperthyro.
-- Écris seulement: profil biologique discordant pour une hyperthyroïdie primaire.
+- Si abnormal_rows_count > 0, n’écris jamais « Aucun fait anormal » ni « Anormaux : Aucun ».
 
 Faits anormaux :
-- TSHus : 55,00 mUI/L ; référence 0,35 - 4,94 ; au-dessus de la référence.
-- T3 LIBRE : 66,00 pmol/l ; référence 2,42 - 6,01 ; au-dessus de la référence.
-- T4 LIBRE : 112,00 pmol/l ; référence 9,01 - 19,05 ; au-dessus de la référence.
-- TSHus : 55,00 mUI/L ; référence 0,35 - 4,94 ; au-dessus de la référence.
-- ANTI-TG : 77 IU/mL ; référence < 4,11 ; au-dessus de la référence.
+- CRP : 7 mg/l ; statut haut.
+- Réserve Alcaline : 20 mmol/l ; statut bas.
 
 Faits dans la référence :
-Aucun fait dans la référence fourni.
+- ACIDE URIQUE : 40 mg/l ; dans la référence.
+- Calcium : 100 mg/l ; dans la référence.
+- Chlore : 105 mEq/l ; dans la référence.
+- Phosphore : 30 mg/l ; dans la référence.
