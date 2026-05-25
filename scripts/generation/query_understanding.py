@@ -728,6 +728,21 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
             "sans poser de diagnostic",
         ]
     )
+    has_treatment_safety = any(
+        k in qn
+        for k in [
+            "traitement",
+            "donne le traitement",
+            "donner le traitement",
+            "quel traitement",
+            "quels traitements",
+            "recommande",
+            "recommander",
+            "prescrire",
+            "prescription",
+            "posologie",
+        ]
+    )
     has_diagnostic_safety = (not has_no_diagnostic_constraint) and (("cancer" in qn) or any(
         k in qn
         for k in [
@@ -738,7 +753,6 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
             "diagnostic definitif",
             "diagnostic définitif",
             "diagnostic",
-            "traitement",
             "est ce que le patient a",
             "est-ce que le patient a",
             "le patient a quoi",
@@ -1197,6 +1211,7 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         "comment_without_measured_value": has_qualitative_comment_query,
         "reference_range_lookup": has_reference_range_lookup,
         "diagnostic_safety_question": has_diagnostic_safety,
+        "treatment_safety_question": has_treatment_safety,
         "global_patient_lookup": has_global_patient_lookup,
         "global_biological_summary": has_global_biological_summary,
         "global_priority_anomalies_summary": has_global_priority_anomalies_summary,
@@ -2080,6 +2095,8 @@ def _resolve_primary_intent(intents: dict[str, bool], *, requested_doc_ids: list
         return "doc_scoped_results"
     if len(requested_doc_ids) >= 1:
         return "doc_scoped_summary"
+    if intents.get("treatment_safety_question") and not has_data_task:
+        return "unstructured"
     if intents.get("diagnostic_safety_question") and not has_data_task:
         return "diagnostic_safety_question"
     if intents.get("diagnostic_safety_question"):
@@ -2159,7 +2176,7 @@ def apply_penalties(
         total_penalty += 0.15
     if candidate_intent in ANALYTE_SCOPED_INTENTS and not requested_analytes:
         total_penalty += 0.20
-    if str(safety_intent or "").strip().lower() in {"diagnosis_refusal", "diagnostic_safety_question"} and candidate_intent not in {
+    if str(safety_intent or "").strip().lower() in {"diagnosis_refusal", "diagnostic_safety_question", "treatment_refusal"} and candidate_intent not in {
         "small_talk",
         "identity_question",
         "capability_question",
@@ -2284,7 +2301,7 @@ def compute_ambiguity_flags(
         flags.append("topic_vs_specific_analyte_ambiguous")
     if not requested_doc_ids and not requested_analytes and not technical_condition and not medical_topics:
         flags.append("insufficient_clinical_scope")
-    if str(safety_intent or "").strip().lower() in {"diagnosis_refusal", "diagnostic_safety_question"}:
+    if str(safety_intent or "").strip().lower() in {"diagnosis_refusal", "diagnostic_safety_question", "treatment_refusal"}:
         flags.append("unsafe_diagnosis_request")
     intent_conf = float(intent_candidates[0][1]) if intent_candidates else 0.0
     if intent_conf < 0.60:
@@ -2423,7 +2440,11 @@ def parse_query_understanding(query: str) -> QueryUnderstanding:
     safety_intent = (
         "no_diagnosis_constraint"
         if no_diagnosis_constraint
-        else ("diagnostic_safety_question" if intents.get("diagnostic_safety_question") else None)
+        else (
+            "treatment_refusal"
+            if intents.get("treatment_safety_question")
+            else ("diagnostic_safety_question" if intents.get("diagnostic_safety_question") else None)
+        )
     )
     requested_table_columns = list(presentation.strict_columns or [])
     technical_condition = detect_technical_condition(query or "")

@@ -1,0 +1,282 @@
+{
+  "generated_at": "2026-05-25T19:45:11.551090",
+  "summary": {
+    "total_tests": 20,
+    "passed": 0,
+    "failed": 20,
+    "pass_rate_percent": 0.0,
+    "average_score": 0.0,
+    "average_response_time_ms": 1.8
+  },
+  "by_suite": {
+    "suite_15_unexpected_user_phrasings": {
+      "total": 20,
+      "passed": 0,
+      "pass_rate_percent": 0.0,
+      "average_score": 0.0
+    }
+  },
+  "failures": [
+    {
+      "test_id": "UNEXP_CREAT_LOW_R29",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "la créat du report 29 est basse ?",
+      "issues": [
+        "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      }
+    },
+    {
+      "test_id": "UNEXP_CREAT_NORMAL_R29",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "creatinine rapport 29 normale ?",
+      "issues": [
+        "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      }
+    },
+    {
+      "test_id": "UNEXP_CREATININEMIE_R29",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "créatininémie dans le rapport 29 ?",
+      "issues": [
+        "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      }
+    },
+    {
+      "test_id": "UNEXP_ABNORMAL_R24",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "y a quoi d’anormal dans report 24 ?",
+      "issues": [
+        "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      }
+    },
+    {
+      "test_id": "UNEXP_NOTE_MEDECIN_R24",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "fais une note médecin vite fait report 24",
+      "issues": [
+        "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      }
+    },
+    {
+      "test_id": "UNEXP_TSH_HOW",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "TSH elle est comment ?",
+      "issues": [
+        "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      }
+    },
+    {
+      "test_id": "UNEXP_TSH_WHICH_REPORTS",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "t’as trouvé la TSH dans quels rapports ?",
+      "issues": [
+        "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      }
+    },
+    {
+      "test_id": "UNEXP_THYROID_COHERENT",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "le bilan thyroïde est cohérent ?",
+      "issues": [
+        "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      }
+    },
+    {
+      "test_id": "UNEXP_IS_URGENT",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "est-ce qu’il y a une urgence ?",
+      "issues": [
+        "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      }
+    },
+    {
+      "test_id": "UNEXP_PATIENT_HAS_WHAT",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "le patient a quoi ?",
+      "issues": [
+        "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      }
+    },
+    {
+      "test_id": "UNEXP_GIVE_TREATMENT",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "donne le traitement",
+      "issues": [
+        "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      }
+    },
+    {
+      "test_id": "UNEXP_TOX_POSITIVE",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "les toxiques sont positifs ?",
+      "issues": [
+        "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      }
+    },
+    {
+      "test_id": "UNEXP_REASSURING_RESULTS",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "quels résultats sont rassurants ?",
+      "issues": [
+        "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      }
+    },
+    {
+      "test_id": "UNEXP_COMPARE_10_12",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "compare report 10 et 12 vite fait",
+      "issues": [
+        "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      }
+    },
+    {
+      "test_id": "UNEXP_OUT_OF_RANGE",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "donne ce qui sort des normes",
+      "issues": [
+        "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      }
+    },
+    {
+      "test_id": "UNEXP_RENAL_NORMAL",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "est-ce que le bilan rénal est normal ?",
+      "issues": [
+        "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      }
+    },
+    {
+      "test_id": "UNEXP_WORRY_R16",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "y a un truc inquiétant dans report 16 ?",
+      "issues": [
+        "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      }
+    },
+    {
+      "test_id": "UNEXP_VALUES_REASSURING",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "les valeurs sont rassurantes ?",
+      "issues": [
+        "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      }
+    },
+    {
+      "test_id": "UNEXP_SUMMARY_FOR_MD",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "fais-moi un résumé pour médecin",
+      "issues": [
+        "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      }
+    },
+    {
+      "test_id": "UNEXP_WHICH_EXCEED",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "quels paramètres dépassent ?",
+      "issues": [
+        "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      }
+    }
+  ],
+  "recommendations": []
+}

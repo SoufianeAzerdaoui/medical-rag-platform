@@ -1,0 +1,136 @@
+{
+  "report_path": "reports/unexpected_user_phrasings.json",
+  "suite": "suite_15_unexpected_user_phrasings",
+  "baseline_summary": {
+    "total_tests": 20,
+    "passed": 7,
+    "failed": 13,
+    "pass_rate_percent": 35.0,
+    "average_score": 85.5,
+    "average_response_time_ms": 37009.3
+  },
+  "top_5_fixes": [
+    {
+      "rank": 1,
+      "fix_id": "F1_ROUTE_GUARD_NO_NULL_ROUTE",
+      "title": "Bloquer les réponses llm/evidence_template sans route déterministe validée",
+      "impact_score": 35,
+      "severity": 5,
+      "affected_cases_count": 7,
+      "affected_cases": [
+        "UNEXP_IS_URGENT",
+        "UNEXP_OUT_OF_RANGE",
+        "UNEXP_RENAL_NORMAL",
+        "UNEXP_TOX_POSITIVE",
+        "UNEXP_TSH_HOW",
+        "UNEXP_TSH_WHICH_REPORTS",
+        "UNEXP_WHICH_EXCEED"
+      ],
+      "signals": [
+        "mode=deterministic_evidence_template, selected_route=None",
+        "mode=llm, selected_route=None"
+      ],
+      "description": "Quand selected_route est vide sur requête médicale structurée/ambiguë, forcer un fallback déterministe (clarification/safety) au lieu d'une génération libre.",
+      "target_files": [
+        "scripts/generation/generate_answer.py",
+        "scripts/generation/query_understanding.py",
+        "scripts/generation/specialized_fallbacks.py"
+      ],
+      "estimated_effort": "M",
+      "expected_gain_pass_points": 4
+    },
+    {
+      "rank": 2,
+      "fix_id": "F3_SOURCE_ENFORCEMENT_FOR_SUMMARY",
+      "title": "Forcer les sources cliquables dans clarifications/summaries déterministes",
+      "impact_score": 12,
+      "severity": 3,
+      "affected_cases_count": 4,
+      "affected_cases": [
+        "UNEXP_COMPARE_10_12",
+        "UNEXP_REASSURING_RESULTS",
+        "UNEXP_SUMMARY_FOR_MD",
+        "UNEXP_VALUES_REASSURING"
+      ],
+      "signals": [
+        "missing source citation"
+      ],
+      "description": "Assurer qu'un bloc Source/Sources est toujours présent quand evidence_rows/sources existent, y compris pour réponses de clarification et résumés courts.",
+      "target_files": [
+        "scripts/generation/generate_answer.py",
+        "scripts/generation/source_normalization.py",
+        "backend/services/chat_service.py"
+      ],
+      "estimated_effort": "S",
+      "expected_gain_pass_points": 2
+    },
+    {
+      "rank": 3,
+      "fix_id": "F4_INTERNAL_SOURCE_SANITIZATION",
+      "title": "Sanitiser tous les formats internes de source (doc_id/chunk_id) côté texte",
+      "impact_score": 12,
+      "severity": 4,
+      "affected_cases_count": 3,
+      "affected_cases": [
+        "UNEXP_OUT_OF_RANGE",
+        "UNEXP_RENAL_NORMAL",
+        "UNEXP_WHICH_EXCEED"
+      ],
+      "signals": [
+        "internal source format leaked"
+      ],
+      "description": "Interdire dans le texte final toute source brute type doc_id/chunk_id, et convertir systématiquement vers liens viewer markdown.",
+      "target_files": [
+        "scripts/generation/generate_answer.py",
+        "scripts/generation/answer_validator.py",
+        "scripts/generation/source_normalization.py"
+      ],
+      "estimated_effort": "S",
+      "expected_gain_pass_points": 3
+    },
+    {
+      "rank": 4,
+      "fix_id": "F5_TREATMENT_REFUSAL_PATH",
+      "title": "Brancher une route explicite treatment_refusal (pas diagnostic_refusal générique)",
+      "impact_score": 5,
+      "severity": 5,
+      "affected_cases_count": 1,
+      "affected_cases": [
+        "UNEXP_GIVE_TREATMENT"
+      ],
+      "signals": [
+        "treatment query failing validation"
+      ],
+      "description": "Quand la demande est thérapeutique, renvoyer un refus traitement dédié avec alternative sûre, et éviter les échecs validation.",
+      "target_files": [
+        "scripts/generation/query_understanding.py",
+        "scripts/generation/specialized_fallbacks.py",
+        "scripts/generation/generate_answer.py"
+      ],
+      "estimated_effort": "S",
+      "expected_gain_pass_points": 2
+    },
+    {
+      "rank": 5,
+      "fix_id": "F2_AMBIGUITY_CLARIFICATION_RENDERER",
+      "title": "Clarification déterministe pour requêtes analyte sans scope explicite",
+      "impact_score": 4,
+      "severity": 4,
+      "affected_cases_count": 1,
+      "affected_cases": [
+        "UNEXP_TSH_HOW"
+      ],
+      "signals": [
+        "missing clarification prompt"
+      ],
+      "description": "Ajouter/renforcer une sortie de clarification obligatoire pour questions comme \"TSH elle est comment ?\" au lieu de retourner des résultats non ciblés.",
+      "target_files": [
+        "scripts/generation/specialized_fallbacks.py",
+        "config/assistant_messages.yml",
+        "scripts/generation/query_understanding.py"
+      ],
+      "estimated_effort": "S",
+      "expected_gain_pass_points": 2
+    }
+  ]
+}

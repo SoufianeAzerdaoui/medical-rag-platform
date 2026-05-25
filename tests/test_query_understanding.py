@@ -531,6 +531,12 @@ class TestQueryUnderstanding(unittest.TestCase):
             self.assertEqual(other.scope_confidence, first.scope_confidence)
             self.assertEqual(other.ambiguity_flags, first.ambiguity_flags)
 
+    def test_treatment_request_sets_treatment_safety_intent(self) -> None:
+        qu = parse_query_understanding("donne le traitement")
+        self.assertEqual(qu.safety_intent, "treatment_refusal")
+        self.assertFalse(bool((qu.intents or {}).get("diagnostic_safety_question")))
+        self.assertTrue(bool((qu.intents or {}).get("treatment_safety_question")))
+
 
 if __name__ == "__main__":
     unittest.main()

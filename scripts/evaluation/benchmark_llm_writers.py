@@ -157,24 +157,43 @@ def _normalize_string(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _route_from_generation_mode(generation_mode: str | None) -> str:
+    mode = _normalize_string(generation_mode).lower()
+    mapping = {
+        "deterministic_reference_range_lookup": "reference_range_lookup",
+        "deterministic_single_analyte_lookup": "doc_scoped_single_analyte_status",
+        "deterministic_global_analyte_abnormal_search": "global_analyte_abnormal_search",
+        "deterministic_global_toxicology_search": "global_toxicology_search",
+        "deterministic_doc_scoped_toxicology_threshold_search": "doc_scoped_toxicology_threshold_search",
+        "deterministic_doc_scoped_toxicology_summary": "doc_scoped_toxicology_summary",
+        "deterministic_doc_scoped_abnormal_results": "doc_scoped_abnormal_results",
+        "deterministic_doc_scoped_biological_summary": "doc_scoped_biological_summary",
+        "deterministic_reference_range_multi_profile": "reference_range_lookup",
+    }
+    return mapping.get(mode, "")
+
+
 def _extract_response_fields(model: str, question_id: str, question: str, response: dict[str, Any]) -> dict[str, Any]:
     debug = dict(response.get("debug") or {})
     raw_debug = dict(debug.get("raw_debug") or {})
     def _dbg(name: str) -> Any:
+        if name in response and response.get(name) is not None:
+            return response.get(name)
         if name in debug and debug.get(name) is not None:
             return debug.get(name)
         return raw_debug.get(name)
     validation = dict(response.get("validation") or {})
     debug_validation = dict((_dbg("validation") or {}))
     score = 0
-    validation_status = _normalize_string(response.get("validation_status") or validation.get("validation_status"))
+    validation_status = _normalize_string(response.get("validation_status") or validation.get("validation_status") or (debug_validation.get("status") if isinstance(debug_validation, dict) else ""))
     fallback_reason = _normalize_string(_dbg("fallback_reason")) or None
     llm_candidate_validation_errors = _dbg("llm_candidate_validation_errors")
     quality_final_status = _normalize_string((response.get("quality_report") or {}).get("final_status"))
     generation_writer = _normalize_string(response.get("generation_writer") or _dbg("generation_writer"))
     generation_mode = _normalize_string(response.get("generation_mode"))
     generation_strategy = _normalize_string(_dbg("generation_strategy")) or None
-    llm_expected = bool(_dbg("llm_expected"))
+    llm_expected_raw = _dbg("llm_expected")
+    llm_expected = bool(llm_expected_raw) if llm_expected_raw is not None else generation_mode == "llm"
     llm_skipped_reason = _normalize_string(_dbg("llm_skipped_reason")) or None
     deterministic_preferred_reason = _normalize_string(_dbg("deterministic_preferred_reason")) or None
     answer = str(response.get("answer") or "").strip()
@@ -200,8 +219,8 @@ def _extract_response_fields(model: str, question_id: str, question: str, respon
 
     llm_candidate_validation_status = _normalize_string(_dbg("llm_candidate_validation_status")) or None
     llm_candidate_validation_warnings = list(_dbg("llm_candidate_validation_warnings") or [])
-    validation_errors = list(debug_validation.get("errors") or [])
-    validation_warnings = list(debug_validation.get("warnings") or [])
+    validation_errors = list(response.get("validation_errors") or debug_validation.get("errors") or [])
+    validation_warnings = list(response.get("validation_warnings") or debug_validation.get("warnings") or [])
     displayed_evidences = list(response.get("displayed_evidences") or [])
     sources = list(response.get("sources") or [])
     llm_provider = _normalize_string(_dbg("llm_provider")) or None
@@ -239,7 +258,7 @@ def _extract_response_fields(model: str, question_id: str, question: str, respon
         "validation_status": validation_status or None,
         "quality_final_status": quality_final_status or None,
         "fallback_reason": fallback_reason,
-        "selected_route": _normalize_string(_dbg("selected_route")) or None,
+        "selected_route": _normalize_string(_dbg("selected_route")) or _route_from_generation_mode(generation_mode) or None,
         "llm_provider": llm_provider,
         "llm_model_requested": llm_model_requested,
         "llm_model_effective": llm_model_effective,

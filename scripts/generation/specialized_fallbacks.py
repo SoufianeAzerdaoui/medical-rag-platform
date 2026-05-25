@@ -151,6 +151,7 @@ def build_specialized_fallback(
             ["fallbacks", "ambiguous_analyte_template"],
             (
                 "La demande nécessite de préciser l’analyte ciblé.\n\n"
+                "Précisez l’analyte exact et, si besoin, le rapport visé.\n\n"
                 "Conclusion technique : clarification d’analyte requise avant extraction déterministe."
             ),
         )

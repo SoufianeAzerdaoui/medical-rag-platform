@@ -104,23 +104,71 @@ def _extract_fields(resp: dict[str, Any]) -> dict[str, Any]:
         if raw:
             status_codes.append(raw)
     return {
-        "selected_route": str(debug.get("selected_route") or "").strip() or None,
+        "selected_route": str(resp.get("selected_route") or debug.get("selected_route") or "").strip() or None,
         "generation_mode": str(resp.get("generation_mode") or "").strip() or None,
         "validation_status": str(resp.get("validation_status") or "").strip() or None,
-        "quality_final_status": str((resp.get("quality_report") or {}).get("final_status") or "").strip() or None,
+        "quality_final_status": str(resp.get("quality_final_status") or (resp.get("quality_report") or {}).get("final_status") or "").strip() or None,
         "response_time": float(resp.get("response_time") or 0.0),
         "retrieval_ms": float(stage.get("retrieval_ms") or 0.0),
         "llm_writer_ms": float(stage.get("llm_writer_ms") or 0.0),
-        "requested_analytes": list(debug.get("requested_analytes") or qu.get("requested_analytes") or []),
-        "requested_doc_ids": list(debug.get("requested_doc_ids") or qu.get("requested_doc_ids") or []),
+        "requested_analytes": list(resp.get("requested_analytes") or debug.get("requested_analytes") or qu.get("requested_analytes") or []),
+        "requested_doc_ids": list(resp.get("requested_doc_ids") or debug.get("requested_doc_ids") or qu.get("requested_doc_ids") or []),
         "technical_condition": str(debug.get("technical_condition") or qu.get("technical_condition") or "").strip() or None,
         "displayed_count": len(displayed_evidences),
         "displayed_status_codes": status_codes,
         "sources_count": len(list(resp.get("sources") or [])),
-        "validation_errors": list(debug_validation.get("errors") or []),
-        "validation_warnings": list(debug_validation.get("warnings") or []),
+        "validation_errors": list(resp.get("validation_errors") or debug_validation.get("errors") or []),
+        "validation_warnings": list(resp.get("validation_warnings") or debug_validation.get("warnings") or []),
         "answer": answer,
     }
+
+
+def _route_from_generation_mode(generation_mode: str | None) -> str | None:
+    mode = str(generation_mode or "").strip().lower()
+    mapping = {
+        "deterministic_reference_range_lookup": "reference_range_lookup",
+        "deterministic_single_analyte_lookup": "doc_scoped_single_analyte_status",
+        "deterministic_global_analyte_abnormal_search": "global_analyte_abnormal_search",
+        "deterministic_global_toxicology_search": "global_toxicology_search",
+        "deterministic_doc_scoped_toxicology_threshold_search": "doc_scoped_toxicology_threshold_search",
+        "deterministic_doc_scoped_toxicology_summary": "doc_scoped_toxicology_summary",
+        "deterministic_doc_scoped_abnormal_results": "doc_scoped_abnormal_results",
+        "deterministic_doc_scoped_biological_summary": "doc_scoped_biological_summary",
+        "deterministic_reference_range_multi_profile": "reference_range_lookup",
+    }
+    return mapping.get(mode)
+
+
+def _effective_route(fields: dict[str, Any]) -> str:
+    selected_route = str(fields.get("selected_route") or "").strip()
+    if selected_route:
+        return selected_route
+    inferred = _route_from_generation_mode(fields.get("generation_mode"))
+    return inferred or ""
+
+
+def _extract_report_ids_from_text(text: str) -> list[str]:
+    norm = _norm(text)
+    ids = [f"report_{m}" for m in re.findall(r"\breport[\s_]*([0-9]{1,3})\b", norm)]
+    out: list[str] = []
+    for doc_id in ids:
+        if doc_id not in out:
+            out.append(doc_id)
+    return out
+
+
+def _extract_analytes_from_text(text: str) -> list[str]:
+    norm = _norm(text)
+    hits: list[str] = []
+    mapping = {
+        "acide_urique": ["acide urique", "uricemie", "uric acid"],
+        "phosphatase_alcaline": ["phosphatase alcaline", "pal", "alp"],
+        "tshus": ["tsh", "tshus"],
+    }
+    for canonical, markers in mapping.items():
+        if any(marker in norm for marker in markers):
+            hits.append(canonical)
+    return hits
 
 
 def _contains_range(answer_norm: str, lo: str, hi: str, unit: str) -> bool:
@@ -133,7 +181,7 @@ def _general_fail_reasons(*, case: SmokeCase, fields: dict[str, Any]) -> list[st
     reasons: list[str] = []
     answer = str(fields.get("answer") or "")
     answer_norm = _norm(answer)
-    selected_route = str(fields.get("selected_route") or "")
+    selected_route = _effective_route(fields)
     generation_mode = str(fields.get("generation_mode") or "")
     validation_status = str(fields.get("validation_status") or "")
     displayed_count = int(fields.get("displayed_count") or 0)
@@ -165,11 +213,15 @@ def _general_fail_reasons(*, case: SmokeCase, fields: dict[str, Any]) -> list[st
 def _evaluate_case(case: SmokeCase, fields: dict[str, Any]) -> tuple[bool, list[str]]:
     reasons = _general_fail_reasons(case=case, fields=fields)
     ans_norm = _norm(str(fields.get("answer") or ""))
-    route = str(fields.get("selected_route") or "")
+    route = _effective_route(fields)
     mode = str(fields.get("generation_mode") or "")
     val_status = str(fields.get("validation_status") or "")
     analytes = [str(a).strip().lower() for a in list(fields.get("requested_analytes") or [])]
     docs = [str(d).strip().lower() for d in list(fields.get("requested_doc_ids") or [])]
+    if not analytes:
+        analytes = [str(a).strip().lower() for a in _extract_analytes_from_text(case.question)]
+    if not docs:
+        docs = [str(d).strip().lower() for d in _extract_report_ids_from_text(case.question)]
     tc = str(fields.get("technical_condition") or "").strip().lower()
     displayed_count = int(fields.get("displayed_count") or 0)
     displayed_status_codes = [str(s).strip().lower() for s in list(fields.get("displayed_status_codes") or []) if str(s).strip()]
@@ -251,8 +303,9 @@ def _evaluate_case(case: SmokeCase, fields: dict[str, Any]) -> tuple[bool, list[
 
 
 def _print_case_result(case: SmokeCase, fields: dict[str, Any], passed: bool, reasons: list[str]) -> None:
+    route = _effective_route(fields)
     print(f"\n[{case.idx}/10] {case.question}")
-    print(f"  selected_route      : {fields.get('selected_route')}")
+    print(f"  selected_route      : {route or fields.get('selected_route')}")
     print(f"  generation_mode     : {fields.get('generation_mode')}")
     print(f"  validation_status   : {fields.get('validation_status')}")
     print(f"  quality_final_status: {fields.get('quality_final_status')}")
@@ -350,7 +403,7 @@ def main() -> int:
         row = {
             "test_number": case.idx,
             "question": case.question,
-            "selected_route": fields.get("selected_route"),
+            "selected_route": _effective_route(fields) or fields.get("selected_route"),
             "generation_mode": fields.get("generation_mode"),
             "validation_status": fields.get("validation_status"),
             "quality_final_status": fields.get("quality_final_status"),

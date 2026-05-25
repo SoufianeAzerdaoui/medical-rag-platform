@@ -1779,6 +1779,38 @@ class TestGenerationDocScope(unittest.TestCase):
                 self.assertEqual(str(dbg.get("selected_route") or ""), "cohort_search")
                 self.assertEqual(str(dbg.get("route_reason") or ""), "abnormal_results_without_scope_requires_clarification")
 
+    def test_factual_sources_block_is_appended_even_without_displayed_rows(self) -> None:
+        ga = __import__("generate_answer")
+        answer, sources = ga._ensure_sources_in_factual_answer(
+            answer="Comparaison technique disponible.",
+            generation_mode="deterministic_multi_doc_comparison",
+            selected_route="multi_doc_comparison",
+            displayed_evidences=[],
+            source_citations=[
+                {
+                    "label": "report (10).pdf — page 1, ligne 2",
+                    "doc_id": "report_10",
+                    "url": "/viewer/pdf?doc_id=report_10&page=1",
+                }
+            ],
+        )
+        self.assertIn("Sources :", answer)
+        self.assertGreater(len(list(sources or [])), 0)
+
+    def test_multi_doc_comparison_without_rows_has_doc_scope_sources(self) -> None:
+        result = run_generation(
+            query="compare report 10 et 12 vite fait",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_multi_doc_comparison")
+        sources = list(result.get("sources") or [])
+        self.assertGreater(len(sources), 0)
+        source_doc_ids = {str(s.get("doc_id") or "").strip().lower() for s in sources}
+        self.assertIn("report_10", source_doc_ids)
+        self.assertIn("report_12", source_doc_ids)
+
     def test_global_abnormal_with_analyte_not_forced_to_scope_clarification(self) -> None:
         result = run_generation(
             query="quels sont les rapports qui ont créatinine supérieur a 2 ??",

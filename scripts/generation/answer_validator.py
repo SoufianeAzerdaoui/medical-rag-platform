@@ -1291,13 +1291,29 @@ def validate_answer(
         "aucun résultat correspondant n’a été retrouvé" in text_norm
     ) or (
         "aucun resultat correspondant" in text_norm and "retrouve" in text_norm
+    ) or (
+        "clarification d analyte requise" in text_norm
+    ) or (
+        "clarification d’analyte requise" in core_norm
+    ) or (
+        "clarification de perimetre requise" in text_norm
+    ) or (
+        "clarification de périmètre requise" in core_norm
     )
 
     if no_evidence:
+        safety_refusal_modes = {
+            "deterministic_treatment_refusal_with_technical_summary",
+            "deterministic_diagnostic_safety_refusal",
+            "deterministic_diagnostic_refusal_with_technical_summary",
+            "deterministic_pii_refusal",
+        }
         if (answer_style_requested or "").strip().lower() == "yes_no":
             compact = core_norm.strip()
             insufficient_context_handled = compact.startswith("non") or compact.startswith("no") or has_insufficient_sentence
         elif is_general_conversation_query:
+            insufficient_context_handled = True
+        elif generation_mode_norm in safety_refusal_modes:
             insufficient_context_handled = True
         else:
             insufficient_context_handled = has_insufficient_sentence

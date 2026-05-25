@@ -251,6 +251,22 @@ python3 scripts/evaluation/comprehensive_rag_tester.py \
   --output reports/unexpected_user_phrasings.json
 ```
 
+```bash
+# Analyze Phase 8 targets (>=80% + zero hallucination/diagnosis/treatment/PII leaks)
+python3 scripts/evaluation/analyze_suite15_targets.py \
+  --report reports/unexpected_user_phrasings.json \
+  --output-json reports/suite15_targets.json \
+  --output-md reports/suite15_targets.md \
+  --enforce
+```
+
+```bash
+# Generate prioritized fix matrix for next iteration
+python3 scripts/evaluation/generate_suite15_fix_matrix.py \
+  --report reports/unexpected_user_phrasings.json \
+  --output-json reports/suite15_fix_matrix.json
+```
+
 ### Run with Custom API
 
 ```bash

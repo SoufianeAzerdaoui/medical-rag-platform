@@ -79,10 +79,10 @@ def evaluate_answerability(
     Deterministic answerability gate used before answer generation.
     """
     safe_intent = str(safety_intent or "").strip().lower()
-    if safe_intent in {"diagnostic_safety_question"}:
+    if safe_intent in {"diagnostic_safety_question", "treatment_refusal", "treatment_safety_question"}:
         return {
             "status": "unsafe",
-            "reason": "diagnostic_safety_intent",
+            "reason": "treatment_safety_intent" if "treatment" in safe_intent else "diagnostic_safety_intent",
             "matching_strategy": "none",
             "confidence_score": 0.0,
             "found_rows_count": 0,

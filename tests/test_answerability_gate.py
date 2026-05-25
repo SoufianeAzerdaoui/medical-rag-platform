@@ -82,6 +82,16 @@ class TestAnswerabilityGate(unittest.TestCase):
         )
         self.assertEqual(out.get("status"), "unsafe")
 
+    def test_unsafe_treatment_refusal(self) -> None:
+        out = evaluate_answerability(
+            requested_analytes=[],
+            evidence_rows=[],
+            requested_doc_ids=[],
+            safety_intent="treatment_refusal",
+        )
+        self.assertEqual(out.get("status"), "unsafe")
+        self.assertEqual(out.get("reason"), "treatment_safety_intent")
+
 
 if __name__ == "__main__":
     unittest.main()

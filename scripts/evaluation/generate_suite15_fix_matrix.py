@@ -37,6 +37,21 @@ def _extract_failures(report: dict[str, Any]) -> list[dict[str, Any]]:
 def _collect_fix_candidates(failures: list[dict[str, Any]]) -> list[FixCandidate]:
     by_id: dict[str, FixCandidate] = {}
 
+    def _route_from_generation_mode(generation_mode: str) -> str:
+        mode = _norm(generation_mode)
+        mapping = {
+            "deterministic_reference_range_lookup": "reference_range_lookup",
+            "deterministic_single_analyte_lookup": "doc_scoped_single_analyte_status",
+            "deterministic_global_analyte_abnormal_search": "global_analyte_abnormal_search",
+            "deterministic_global_toxicology_search": "global_toxicology_search",
+            "deterministic_doc_scoped_toxicology_threshold_search": "doc_scoped_toxicology_threshold_search",
+            "deterministic_doc_scoped_toxicology_summary": "doc_scoped_toxicology_summary",
+            "deterministic_doc_scoped_abnormal_results": "doc_scoped_abnormal_results",
+            "deterministic_doc_scoped_biological_summary": "doc_scoped_biological_summary",
+            "deterministic_reference_range_multi_profile": "reference_range_lookup",
+        }
+        return mapping.get(mode, "")
+
     def upsert(
         fix_id: str,
         *,
@@ -74,7 +89,11 @@ def _collect_fix_candidates(failures: list[dict[str, Any]]) -> list[FixCandidate
         issues = [str(i) for i in (failure.get("issues") or [])]
         trace = failure.get("trace") if isinstance(failure.get("trace"), dict) else {}
         dbg = trace.get("debug") if isinstance(trace.get("debug"), dict) else {}
-        selected_route = str(dbg.get("selected_route") or "")
+        selected_route = (
+            str(trace.get("selected_route") or "")
+            or str(dbg.get("selected_route") or "")
+            or _route_from_generation_mode(str(trace.get("generation_mode") or ""))
+        )
         generation_mode = str(trace.get("generation_mode") or "")
 
         if (

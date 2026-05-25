@@ -63,6 +63,21 @@ def resolve_deictic_request(message: str, query_understanding: QueryUnderstandin
     )
     asks_chart = any(k in qn for k in ["graphique", "chart", "courbe", "radar", "bar chart", "line graph", "visualise"])
     asks_summary = any(k in qn for k in ["resume", "résume", "synthese", "synthèse"])
+    summary_previous_targets = [
+        "ce commentaire",
+        "cette commentaire",
+        "ce resultat",
+        "ce résultat",
+        "cette valeur",
+        "ces resultats",
+        "ces résultats",
+        "ce tableau",
+        "cette visualisation",
+        "ca",
+        "ça",
+        "ceci",
+    ]
+    asks_summary_on_previous_context = asks_summary and any(k in qn for k in summary_previous_targets)
     asks_note = any(_has_phrase(k) for k in ["note interpretative", "note interprétative", "encadre", "encadré"])
     asks_card = any(
         _has_phrase(k)
@@ -190,10 +205,10 @@ def resolve_deictic_request(message: str, query_understanding: QueryUnderstandin
         return out
 
     # 3) render/summary/status from last displayed context
-    if (is_deictic or correction_format_followup or (asks_summary and not has_global_scope_phrase)) and not explicit_scope and has_any_context:
+    if (is_deictic or correction_format_followup or (asks_summary_on_previous_context and not has_global_scope_phrase)) and not explicit_scope and has_any_context:
         intent = out["intent"]
         render_type = None
-        if asks_summary:
+        if asks_summary_on_previous_context:
             intent = "context_summary_render"
             out["skip_retrieval"] = True
         elif asks_status and prev_ctx_type == "biological_numeric_results":
@@ -244,7 +259,7 @@ def resolve_deictic_request(message: str, query_understanding: QueryUnderstandin
     # 4) no-context guard
     # Only trigger no-context for genuinely deictic phrasing (or explicit summarize request),
     # and only when absolutely no reusable context exists.
-    if (is_deictic or (asks_summary and not has_global_scope_phrase)) and not explicit_scope and not has_any_context:
+    if (is_deictic or (asks_summary_on_previous_context and not has_global_scope_phrase)) and not explicit_scope and not has_any_context:
         out.update(
             {
                 "resolved": True,

@@ -29,6 +29,11 @@ class TestSpecializedFallbacks(unittest.TestCase):
         self.assertEqual(out.kind, "ambiguous_document_scope")
         self.assertIn("Précisez un rapport", out.answer)
 
+    def test_ambiguous_analyte_template_has_clarification_prompt(self) -> None:
+        out = build_specialized_fallback(kind="ambiguous_analyte")
+        self.assertEqual(out.kind, "ambiguous_analyte")
+        self.assertIn("Précisez", out.answer)
+
     def test_insufficient_evidence_with_numeric_criterion(self) -> None:
         out = build_specialized_fallback(
             kind="insufficient_evidence",
