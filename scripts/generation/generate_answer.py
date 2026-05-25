@@ -130,6 +130,7 @@ from policy_matrix import (
     LEVEL2_HYBRID_INTENT_POLICY,
     STRICT_DETERMINISTIC_ROUTES,
     get_intent_policy,
+    get_llm_route_class,
 )
 from priority_scoring import compute_priority_score as _compute_priority_score_external
 from reference_range_parser import parse_reference_ranges
@@ -177,6 +178,52 @@ def _is_critical_medical_intent(query_understanding: QueryUnderstanding) -> bool
 
 def _strict_policy_for_route(route: str) -> dict[str, Any]:
     return get_intent_policy(route)
+
+
+def _llm_route_class_for_debug(route: str, selected_policy: dict[str, Any] | None = None) -> str:
+    return get_llm_route_class(route, selected_policy)
+
+
+def _llm_prompt_policy_version_for_debug(
+    *,
+    selected_route: str,
+    selected_policy: dict[str, Any] | None = None,
+    composed: dict[str, Any] | None = None,
+) -> str | None:
+    prompt_version = str(((composed or {}).get("llm_prompt_policy_version") or "")).strip()
+    if prompt_version:
+        return prompt_version
+    if _llm_route_class_for_debug(selected_route, selected_policy) == "llm_allowed":
+        return _LLM_PROMPT_POLICY_VERSION
+    return None
+
+
+def _llm_runtime_metrics_for_debug(
+    *,
+    llm_writer_attempted: bool,
+    llm_writer_accepted: bool,
+    fallback_reason_debug: str | None,
+    generation_mode_before_fallback: str | None = None,
+    contract_violation_count: int = 0,
+) -> dict[str, Any]:
+    effective_attempted = bool(llm_writer_attempted) and int(contract_violation_count or 0) <= 0
+    effective_accepted = bool(llm_writer_accepted) and effective_attempted
+    fallback_after_llm = bool(
+        effective_attempted
+        and (
+            str(fallback_reason_debug or "").strip()
+            or str(generation_mode_before_fallback or "").strip()
+        )
+    )
+    return {
+        "llm_attempt": effective_attempted,
+        "llm_accept": effective_accepted,
+        "fallback_after_llm": fallback_after_llm,
+        "llm_attempt_rate": 1.0 if effective_attempted else 0.0,
+        "llm_accept_rate": 1.0 if effective_accepted else 0.0,
+        "fallback_after_llm_rate": 1.0 if fallback_after_llm else 0.0,
+        "contract_violation_count": max(0, int(contract_violation_count or 0)),
+    }
 
 
 def _is_hybrid_structured_writer_intent(query_understanding: QueryUnderstanding) -> bool:
@@ -7791,9 +7838,31 @@ _LEVEL2_LLM_PROMPT_POLICY: dict[str, dict[str, Any]] = {
     },
 }
 
+_LLM_PROMPT_POLICY_VERSION = "v2"
+
 
 def _level2_prompt_policy(route: str) -> dict[str, Any]:
     return dict(_LEVEL2_LLM_PROMPT_POLICY.get(str(route or "").strip().lower(), {}))
+
+
+def _level2_prompt_guardrail_block(selected_route: str) -> str:
+    route = str(selected_route or "").strip().lower()
+    lines = [
+        "Règles universelles de sécurité :",
+        "- Tu es uniquement un writer/summarizer/rephraser technique.",
+        "- Tu n'es ni routeur, ni planner, ni answerability gate.",
+        "- Tu ne décides jamais du routing, du scope, de l'answerability ou des sources à garder.",
+        "- Tu utilises uniquement les faits fournis par le backend.",
+        "- Tu ne modifies jamais une valeur, unité, référence, statut, document ou source.",
+        "- Tu n'inventes jamais un fait absent, même si la question semble évidente.",
+        "- Tu ne donnes jamais de diagnostic.",
+        "- Tu ne proposes jamais de traitement.",
+        "- Tu n'exposes jamais chunk_id, request_id, logs internes ou champs techniques bruts.",
+        "- Si les faits fournis sont insuffisants, tu formules une limite technique explicite au lieu de compléter.",
+    ]
+    if route in {"doc_scoped_medical_interpretation_guarded", "open_grounded_medical_question"}:
+        lines.append("- Tu ne transformes jamais une question médicale ouverte en conclusion clinique affirmative.")
+    return "\n".join(lines)
 
 
 def _build_compact_facts_lines(evidences: list[dict[str, Any]], max_rows: int) -> list[str]:
@@ -7879,6 +7948,7 @@ def _compose_level2_micro_prompt_answer(
         or max(0, len(llm_evidences) - len(compact_abnormal_lines) - len(compact_within_lines))
     )
     route = str(selected_route or "").strip().lower()
+    guardrail_block = _level2_prompt_guardrail_block(route)
     if route == "doc_scoped_priority_anomalies":
         prompt = (
             "Tu es un rédacteur médical technique.\n"
@@ -7899,6 +7969,7 @@ def _compose_level2_micro_prompt_answer(
             "- N'utilise jamais '...'. Écris des phrases complètes.\n"
             "- Respecte strictement le mapping backend: high -> Priorité élevée ; moderate/low -> Priorité modérée/faible.\n"
             "- Ne transforme jamais une référence textuelle complexe en borne numérique simplifiée (ex: 1,50 - 1,50).\n"
+            f"{guardrail_block}\n"
             "Faits anormaux :\n"
             f"{abnormal_block}\n\n"
             "Faits dans la référence :\n"
@@ -7950,6 +8021,28 @@ def _compose_level2_micro_prompt_answer(
             "- Utilise un vocabulaire technique factuel: profil biologique discordant, interprétation limitée aux données disponibles.\n\n"
             f"- N'écris jamais de formulation de type: {strong_hint or 'suggère/évoque/compatible avec hyperthyroïdie'}.\n"
             f"- Écris seulement: {discordance_replacement}.\n\n"
+            f"{guardrail_block}\n"
+            "Faits anormaux :\n"
+            f"{abnormal_block}\n\n"
+            "Faits dans la référence :\n"
+            f"{within_block}\n"
+        )
+    elif route == "open_grounded_medical_question":
+        prompt = (
+            "Tu es un rédacteur médical technique prudent.\n"
+            "Réponds uniquement avec les faits fournis.\n"
+            f"Maximum {max(3, min(max_lines, 8))} lignes.\n"
+            "Structure obligatoire :\n"
+            "- Faits techniques\n"
+            "- Limites\n"
+            "- Conclusion technique\n\n"
+            "Règles :\n"
+            "- Ne modifie aucune valeur, unité, référence ou statut.\n"
+            "- Ne réponds jamais comme si tu avais plus de contexte que les faits fournis.\n"
+            "- Si des éléments manquent pour conclure, écris explicitement que le contexte est insuffisant.\n"
+            "- N'utilise jamais de formulation diagnostique, causale ou thérapeutique.\n"
+            "- N'emploie jamais 'probablement', 'suggère une maladie', 'traitement recommandé'.\n\n"
+            f"{guardrail_block}\n"
             "Faits anormaux :\n"
             f"{abnormal_block}\n\n"
             "Faits dans la référence :\n"
@@ -7980,6 +8073,7 @@ def _compose_level2_micro_prompt_answer(
             "- Ne déplace jamais un résultat above_reference/below_reference dans la section “Résultats dans la référence uniquement”.\n"
             "- Ne mets jamais un résultat above_reference ou below_reference dans “Résultats dans la référence uniquement”.\n\n"
             "- Si abnormal_rows_count > 0, n’écris jamais « Aucun fait anormal » ni « Anormaux : Aucun ».\n\n"
+            f"{guardrail_block}\n"
             "Faits anormaux :\n"
             f"{(chr(10).join(compact_abnormal_lines) if compact_abnormal_lines else '- Aucun fait anormal fourni.')}\n\n"
             "Faits dans la référence :\n"
@@ -8003,6 +8097,7 @@ def _compose_level2_micro_prompt_answer(
         "llm_prompt_tokens_estimate": prompt_tokens_est,
         "llm_prompt_policy_intent": str(selected_route or ""),
         "llm_prompt_intent": str(selected_route or ""),
+        "llm_prompt_policy_version": _LLM_PROMPT_POLICY_VERSION,
         "use_micro_prompt": bool(policy.get("use_micro_prompt", False)),
         "llm_call_skipped_due_prompt_budget": False,
         "compact_facts_count": len(llm_evidences),
@@ -11204,9 +11299,21 @@ def run_generation(
                 "route_reason": route_reason,
                 "selected_policy": early_policy.get("selected_policy"),
                 "policy_level": early_policy.get("policy_level"),
+                "llm_route_class": _llm_route_class_for_debug(selected_route, early_policy),
+                "llm_prompt_policy_version": _llm_prompt_policy_version_for_debug(
+                    selected_route=selected_route,
+                    selected_policy=early_policy,
+                ),
                 "facts_source": early_policy.get("facts_source"),
                 "llm_allowed": bool(early_policy.get("llm_writer_allowed", False)),
                 "llm_used": False,
+                "llm_writer_attempted": False,
+                "llm_writer_accepted": False,
+                **_llm_runtime_metrics_for_debug(
+                    llm_writer_attempted=False,
+                    llm_writer_accepted=False,
+                    fallback_reason_debug=None,
+                ),
                 "timeout_ms": int(early_policy.get("timeout_s") or timeout) * 1000,
                 "max_tokens": int(early_policy.get("max_tokens") or max_tokens),
                 "validator_policy": str(early_policy.get("validator_policy") or "default"),
@@ -12220,6 +12327,7 @@ def run_generation(
         )
         composed_data = composed
         answer = str(composed.get("answer") or "")
+        response_transform_fallback_reason: str | None = None
         generation_mode = (
             "deterministic_response_transform_json"
             if output_format == "json"
@@ -12256,6 +12364,62 @@ def run_generation(
             transformable_context_available=True,
             previous_intent=str(previous_context_intent or ""),
         )
+        if str(validation.get("validation_status") or "").strip().lower() == "fail":
+            response_transform_fallback_reason = "llm_validation_failed"
+            if output_format == "json":
+                answer = json.dumps(
+                    {
+                        "intent": "response_transform",
+                        "requested_doc_ids": list(transformed_pack.get("requested_doc_ids") or transformed_qu.requested_doc_ids or []),
+                        "requested_analytes": list(transformed_pack.get("requested_analytes") or transformed_qu.requested_analytes or []),
+                        "results": list(transformed_pack.get("results") or []),
+                        "sources": list(transformed_pack.get("sources") or source_citations or []),
+                    },
+                    ensure_ascii=False,
+                )
+                generation_mode = "deterministic_response_transform_json"
+            else:
+                fallback_composed = compose_professional_answer(
+                    user_question=q,
+                    query_understanding=transformed_qu,
+                    evidence_pack=transformed_pack,
+                    mode="fallback",
+                    source_citations=source_citations,
+                )
+                fallback_answer = str(fallback_composed.get("answer") or "").strip() or answer
+                answer = fallback_answer
+                generation_mode = "deterministic_response_transform_professional"
+            validation = validate_answer(
+                query=q,
+                answer_text=answer,
+                evidence_pack=displayed_evidences,
+                displayed_evidences=displayed_evidences,
+                source_citations=source_citations,
+                generation_mode=generation_mode,
+                retrieval_status="answerable" if displayed_evidences else "insufficient_context",
+                query_received=query_received,
+                query_used_for_retrieval=query_used_for_retrieval,
+                query_used_for_prompt=query_used_for_prompt,
+                query_stored=q,
+                detected_analytes=exact_analytes,
+                query_intents=intents,
+                output_format_requested=output_format,
+                answer_style_requested=transformed_qu.answer_style,
+                requested_table_columns=transformed_pack.get("requested_table_columns")
+                or transformed_qu.requested_table_columns,
+                requested_technical_condition=transformed_qu.technical_condition,
+                source_clickable_requested=bool(transformed_qu.source_clickable_requested),
+                requested_value=transformed_qu.requested_value,
+                comparison_operator=transformed_qu.comparison_operator,
+                raw_format_phrase=getattr(transformed_qu, "raw_format_phrase", None),
+                unsupported_presentation=bool(getattr(transformed_qu.presentation_intent, "unsupported_format", False)),
+                user_requested_visualization=bool(getattr(transformed_qu.presentation_intent, "user_requested_visualization", False)),
+                requested_chart_type=getattr(transformed_qu.presentation_intent, "chart_type", None),
+                visualization_payload=_preview_visualization_payload(transformed_qu, displayed_evidences)[0],
+                chart_data_payload=_preview_visualization_payload(transformed_qu, displayed_evidences)[1],
+                transformable_context_available=True,
+                previous_intent=str(previous_context_intent or ""),
+            )
         quality = _quality_report(
             answer=answer,
             validation=validation,
@@ -12269,6 +12433,44 @@ def run_generation(
             displayed_evidences=displayed_evidences,
             source_citations=list(source_citations_for_response or source_citations or []),
         )
+        if str(validation.get("validation_status") or "").strip().lower() == "fail":
+            validation = validate_answer(
+                query=q,
+                answer_text=answer,
+                evidence_pack=displayed_evidences,
+                displayed_evidences=displayed_evidences,
+                source_citations=source_citations_for_response,
+                generation_mode=generation_mode,
+                retrieval_status="answerable" if displayed_evidences else "insufficient_context",
+                query_received=query_received,
+                query_used_for_retrieval=query_used_for_retrieval,
+                query_used_for_prompt=query_used_for_prompt,
+                query_stored=q,
+                detected_analytes=exact_analytes,
+                query_intents=intents,
+                output_format_requested=output_format,
+                answer_style_requested=transformed_qu.answer_style,
+                requested_table_columns=transformed_pack.get("requested_table_columns")
+                or transformed_qu.requested_table_columns,
+                requested_technical_condition=transformed_qu.technical_condition,
+                source_clickable_requested=bool(transformed_qu.source_clickable_requested),
+                requested_value=transformed_qu.requested_value,
+                comparison_operator=transformed_qu.comparison_operator,
+                raw_format_phrase=getattr(transformed_qu, "raw_format_phrase", None),
+                unsupported_presentation=bool(getattr(transformed_qu.presentation_intent, "unsupported_format", False)),
+                user_requested_visualization=bool(getattr(transformed_qu.presentation_intent, "user_requested_visualization", False)),
+                requested_chart_type=getattr(transformed_qu.presentation_intent, "chart_type", None),
+                visualization_payload=_preview_visualization_payload(transformed_qu, displayed_evidences)[0],
+                chart_data_payload=_preview_visualization_payload(transformed_qu, displayed_evidences)[1],
+                transformable_context_available=True,
+                previous_intent=str(previous_context_intent or ""),
+            )
+            quality = _quality_report(
+                answer=answer,
+                validation=validation,
+                source_clickable_requested=bool(transformed_qu.source_clickable_requested),
+                recent_style_history=style_history,
+            )
         intro_text, conclusion_text = _extract_intro_conclusion(answer)
         elapsed = time.perf_counter() - started
         return _inject_visualization_payload(
@@ -12334,6 +12536,7 @@ def run_generation(
                 "generation_mode": generation_mode,
                 "generation_writer": "llm_writer" if str(generation_mode).startswith("llm_") or generation_mode == "hybrid_structured_llm_writer" else "professional_fallback",
                 "intents": intents,
+                "fallback_reason": response_transform_fallback_reason,
             },
             "exact_analyte_coverage": {
                 "detected_exact_analyte": exact_analyte,
@@ -12905,12 +13108,22 @@ def run_generation(
                     "generation_writer": "deterministic_toxicology_renderer",
                     "selected_policy": selected_policy.get("selected_policy"),
                     "policy_level": selected_policy.get("policy_level"),
+                    "llm_route_class": _llm_route_class_for_debug(selected_route, selected_policy),
+                    "llm_prompt_policy_version": _llm_prompt_policy_version_for_debug(
+                        selected_route=selected_route,
+                        selected_policy=selected_policy,
+                    ),
                     "generation_strategy": str(selected_policy.get("generation_strategy") or "deterministic_only"),
                     "llm_expected": bool(selected_policy.get("llm_expected", False)),
                     "llm_skipped_reason": "route_deterministic_only",
                     "deterministic_preferred_reason": str(selected_policy.get("deterministic_preferred_reason") or "strict_deterministic_route"),
                     "llm_writer_attempted": False,
                     "llm_writer_accepted": False,
+                    **_llm_runtime_metrics_for_debug(
+                        llm_writer_attempted=False,
+                        llm_writer_accepted=False,
+                        fallback_reason_debug=None,
+                    ),
                     "query_understanding": _query_understanding_payload(query_understanding),
                     "toxicology_subtype": structured_pack.get("toxicology_subtype"),
                     "raw_evidence_rows_count": len(displayed_evidences),
@@ -13087,6 +13300,11 @@ def run_generation(
                     "generation_writer": "professional_fallback",
                     "selected_policy": selected_policy.get("selected_policy"),
                     "policy_level": selected_policy.get("policy_level"),
+                    "llm_route_class": _llm_route_class_for_debug(selected_route, selected_policy),
+                    "llm_prompt_policy_version": _llm_prompt_policy_version_for_debug(
+                        selected_route=selected_route,
+                        selected_policy=selected_policy,
+                    ),
                     "generation_strategy": generation_strategy,
                     "llm_expected": llm_expected,
                     "llm_skipped_reason": llm_skipped_reason or "biological_summary_deterministic_preferred",
@@ -13096,6 +13314,12 @@ def run_generation(
                     "llm_allowed": llm_writer_allowed,
                     "llm_used": False,
                     "llm_writer_attempted": False,
+                    "llm_writer_accepted": False,
+                    **_llm_runtime_metrics_for_debug(
+                        llm_writer_attempted=False,
+                        llm_writer_accepted=False,
+                        fallback_reason_debug=None,
+                    ),
                     "llm_prompt_tokens_estimate": llm_prompt_tokens_estimate,
                     "llm_evidence_rows_count": llm_evidence_rows_count,
                     "evidence_all_rows_count": len(summary_all_evidences) if summary_all_evidences else len(list(structured_pack.get("evidences") or [])),
@@ -13154,6 +13378,16 @@ def run_generation(
             llm_writer_used = True
             stage_times_ms["llm_writer_ms"] = round((time.perf_counter() - t_llm0) * 1000.0, 3)
         composed_data = composed
+        contract_violation_list = (
+            [str(item).strip() for item in list(composed.get("contract_violation") or []) if str(item).strip()]
+            if isinstance(composed, dict)
+            else []
+        )
+        contract_violation_count = len(contract_violation_list)
+        if contract_violation_count > 0:
+            llm_writer_attempted = False
+            llm_writer_used = False
+            stage_times_ms["llm_writer_ms"] = 0.0
         composed_llm_postprocess_error_type: str | None = None
         composed_llm_postprocess_error_message: str | None = None
         final_postprocess_fixed_warnings: list[str] = []
@@ -14705,6 +14939,7 @@ def run_generation(
                 "final_generation_mode": generation_mode,
                 "selected_policy": selected_policy.get("selected_policy"),
                 "policy_level": selected_policy.get("policy_level"),
+                "llm_route_class": _llm_route_class_for_debug(selected_route, selected_policy),
                 "generation_strategy": generation_strategy,
                 "llm_expected": llm_expected,
                 "llm_skipped_reason": llm_skipped_reason,
@@ -14715,6 +14950,22 @@ def run_generation(
                 "llm_used": llm_writer_used,
                 "llm_writer_attempted": llm_writer_attempted,
                 "llm_writer_accepted": bool(str(generation_mode).strip().lower() == "hybrid_structured_llm_writer"),
+                "contract_violation_count": contract_violation_count,
+                "contract_violation": contract_violation_list,
+                "llm_prompt_policy_version": _llm_prompt_policy_version_for_debug(
+                    selected_route=selected_route,
+                    selected_policy=selected_policy,
+                    composed=composed if isinstance(composed, dict) else None,
+                ),
+                **_llm_runtime_metrics_for_debug(
+                    llm_writer_attempted=llm_writer_attempted,
+                    llm_writer_accepted=bool(str(generation_mode).strip().lower() == "hybrid_structured_llm_writer"),
+                    fallback_reason_debug=fallback_reason_debug,
+                    generation_mode_before_fallback=(
+                        str(composed_data.get("mode") if isinstance(composed_data, dict) else "") or None
+                    ) if fallback_reason_debug else None,
+                    contract_violation_count=contract_violation_count,
+                ),
                 "llm_prompt_tokens_estimate": llm_prompt_tokens_estimate,
                 "llm_evidence_rows_count": llm_evidence_rows_count,
                 "evidence_all_rows_count": len(summary_all_evidences) if summary_all_evidences else len(list(structured_pack.get("evidences") or [])),

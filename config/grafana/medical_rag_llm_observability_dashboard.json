@@ -1,0 +1,186 @@
+{
+  "title": "Medical RAG - LLM Observability",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "tags": ["medical-rag", "llm", "observability"],
+  "templating": {
+    "list": [
+      {
+        "name": "app_label",
+        "type": "textbox",
+        "label": "Loki App Label",
+        "query": "medical-rag-backend",
+        "current": {
+          "text": "medical-rag-backend",
+          "value": "medical-rag-backend"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "LLM Attempt Rate",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "avg_over_time({app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | unwrap llm_attempt_rate [5m])",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "LLM Accept Rate",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "avg_over_time({app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | unwrap llm_accept_rate [5m])",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Fallback After LLM Rate",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "avg_over_time({app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | unwrap fallback_after_llm_rate [5m])",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "p95 Response Time (ms)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "quantile_over_time(0.95, {app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | unwrap response_time_ms [5m])",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "barchart",
+      "title": "Requests by LLM Route Class",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "sum by (llm_route_class) (count_over_time({app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json [15m]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Contract Violation Count",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "expr": "sum_over_time({app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | unwrap contract_violation_count [5m])",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "barchart",
+      "title": "Fallback Kind Volume",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "targets": [
+        {
+          "expr": "sum by (fallback_kind) (count_over_time({app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | fallback_kind!=\"\" [15m]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "logs",
+      "title": "Latest LLM Fallbacks",
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 24 },
+      "targets": [
+        {
+          "expr": "{app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | fallback_after_llm_rate=1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true
+      }
+    },
+    {
+      "id": 8,
+      "type": "logs",
+      "title": "Safety / Hallucination Signals",
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 32 },
+      "targets": [
+        {
+          "expr": "{app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | failure_signals!=\"[]\"",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true
+      }
+    },
+    {
+      "id": 10,
+      "type": "logs",
+      "title": "Latest Contract Violations",
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 34 },
+      "targets": [
+        {
+          "expr": "{app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | contract_violation_count > 0",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true
+      }
+    },
+    {
+      "id": 11,
+      "type": "barchart",
+      "title": "Hard Gate Reasons (15m)",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 44 },
+      "targets": [
+        {
+          "expr": "sum by (validation_hard_gate_reason) (count_over_time({app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | validation_hard_gate_reason!=\"\" [15m]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Top Hard Gate Reason Trends (5m rolling)",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 52 },
+      "targets": [
+        {
+          "expr": "topk(8, sum by (validation_hard_gate_reason) (count_over_time({app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | validation_hard_gate_reason!=\"\" [5m])))",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

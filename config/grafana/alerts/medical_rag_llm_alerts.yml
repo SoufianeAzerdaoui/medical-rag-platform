@@ -1,0 +1,104 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: medical-rag-llm-observability
+    folder: Medical RAG
+    interval: 1m
+    rules:
+      - uid: medical-rag-contract-violation
+        title: Medical RAG Contract Violation Detected
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: loki
+            model:
+              editorMode: code
+              expr: sum_over_time({app="medical-rag-backend"} |= "chat_request_summary" | regexp `chat_request_summary (?P<json>\{.*\})` | line_format "{{.json}}" | json | unwrap contract_violation_count [15m])
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              queryType: range
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    type: last
+                  type: query
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: Writer evidence contract violations detected on Medical RAG requests.
+          description: contract_violation_count has been greater than 0 within the last 15 minutes for at least 5 minutes.
+        labels:
+          severity: critical
+          service: medical-rag-backend
+          signal: contract_violation
+      - uid: medical-rag-hard-gate-reason
+        title: Medical RAG Hard Gate Errors Detected
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: loki
+            model:
+              editorMode: code
+              expr: count_over_time({app="medical-rag-backend"} |= "chat_request_summary" | regexp `chat_request_summary (?P<json>\{.*\})` | line_format "{{.json}}" | json | validation_hard_gate_reason!="" [15m])
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              queryType: range
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    type: last
+                  type: query
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: Hard-gate validation errors detected on Medical RAG responses.
+          description: validation_hard_gate_reason has been non-empty over the last 15 minutes for at least 5 minutes.
+        labels:
+          severity: warning
+          service: medical-rag-backend
+          signal: validation_hard_gate

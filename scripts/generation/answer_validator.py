@@ -1195,9 +1195,11 @@ def validate_answer(
     if any(re.search(p, lower_core) for p in _TREATMENT_PATTERNS):
         if "ne peux pas proposer de traitement" not in lower_core and INSUFFICIENT_CONTEXT_SENTENCE.lower() not in lower_core:
             errors.append("Treatment recommendation detected.")
+            errors.append("treatment_recommendation")
     if any(re.search(p, lower_core) for p in _DIAGNOSIS_PATTERNS):
         errors.append("Definitive diagnosis detected.")
         errors.append("hallucinated_diagnosis")
+        errors.append("diagnostic_affirmation")
 
     # Section consistency for LLM summaries.
     ref_only_section = _extract_reference_only_section(core_text)
@@ -2622,6 +2624,54 @@ def validate_answer(
         return out
 
     warnings = _dedup_keep_order([str(w) for w in warnings])
+    if pii_leak_detected:
+        errors.append("pii_exposure")
+
+    if unsupported_units:
+        errors.append("unit_mismatch")
+
+    if "unsupported_value" in set(str(e) for e in errors):
+        errors.append("value_changed")
+
+    source_mismatch_markers = {
+        "source_alignment_mismatch",
+        "source_alignment_mismatch_doc_level",
+        "source_evidence_doc_mismatch",
+        "source_url_docid_mismatch",
+    }
+    if set(str(e) for e in errors).intersection(source_mismatch_markers):
+        errors.append("source_mismatch")
+
+    raw_internal_source_markers = {
+        "source_format_bad",
+        "forbidden_internal_field",
+        "internal_debug_leak",
+        "raw_logs_visible",
+        "render_internal_term_leak",
+        "internal_chart_term_visible",
+        "chunk_id_visible",
+        "evidence_id_visible",
+        "raw_internal_field_visible",
+    }
+    if set(str(e) for e in errors).intersection(raw_internal_source_markers):
+        errors.append("raw_internal_source")
+
+    diagnosis_markers = {
+        "hallucinated_diagnosis",
+        "diagnostic_claim_detected",
+        "diagnostic_safety_violation",
+        "diagnostic_suggestion_too_strong",
+        "Definitive diagnosis detected.",
+    }
+    if set(str(e) for e in errors).intersection(diagnosis_markers):
+        errors.append("diagnostic_affirmation")
+
+    treatment_markers = {
+        "Treatment recommendation detected.",
+    }
+    if set(str(e) for e in errors).intersection(treatment_markers):
+        errors.append("treatment_recommendation")
+
     errors = _dedup_keep_order([str(e) for e in errors])
 
     return {

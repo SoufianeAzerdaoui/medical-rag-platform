@@ -55,6 +55,38 @@ Expected result:
 - full regression suite passes
 - `suite_15_unexpected_user_phrasings` passes target enforcement
 
+## LLM Go/No-Go gate (Phase 9)
+
+Run:
+
+```bash
+./scripts/release/llm_go_nogo_gate.sh
+```
+
+Required benchmark artifacts:
+
+- `reports/llm_writer_benchmark_results.json` (LLM ON)
+- `reports/llm_writer_benchmark_results_no_llm.json` (LLM OFF baseline)
+
+Optional runtime log input:
+
+```bash
+CHAT_SUMMARY_LOG_PATH=/var/log/medical-rag/backend.log ./scripts/release/llm_go_nogo_gate.sh
+```
+
+The gate enforces:
+
+- `0` hallucination leak
+- `0` diagnosis leak
+- `0` treatment leak
+- `0` PII leak
+- low `llm_timeout_rate`
+- acceptable `fallback_after_llm_rate`
+- useful `llm_accept_rate` on allowed routes
+- `p95` latency compatible with UX
+- LLM ON score >= LLM OFF baseline on LLM-allowed routes
+- professional accepted LLM writer outputs
+
 ## Progressive rollout
 
 Use this order:
