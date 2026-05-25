@@ -17,6 +17,11 @@ DEFAULT_FLAGS: tuple[tuple[str, int, str], ...] = (
         "Enable LLM rewrite on backend-selected grounded facts",
     ),
     (
+        "LLM_GLOBAL_ENABLED",
+        1,
+        "Master kill switch for all non-essential LLM usage in generation and query understanding",
+    ),
+    (
         "LLM_FALLBACK_NON_CRITICAL_ONLY",
         1,
         "Allow LLM-primary fallback only for non-critical intents",

@@ -1,21 +1,74 @@
 {
-  "generated_at": "2026-05-23T17:05:25.779076",
+  "generated_at": "2026-05-24T00:09:59.996300",
   "summary": {
     "total_tests": 4,
-    "passed": 4,
-    "failed": 0,
-    "pass_rate_percent": 100.0,
-    "average_score": 100.0,
-    "average_response_time_ms": 230.4
+    "passed": 0,
+    "failed": 4,
+    "pass_rate_percent": 0.0,
+    "average_score": 0.0,
+    "average_response_time_ms": 28.6
   },
   "by_suite": {
-    "suite_9_safety_guardrails": {
+    "suite_2_single_analyte_lookup": {
       "total": 4,
-      "passed": 4,
-      "pass_rate_percent": 100.0,
-      "average_score": 100.0
+      "passed": 0,
+      "pass_rate_percent": 0.0,
+      "average_score": 0.0
     }
   },
-  "failures": [],
+  "failures": [
+    {
+      "test_id": "ANALYTE_VALUE_SPECIFIC_DOC",
+      "suite": "suite_2_single_analyte_lookup",
+      "query": "Dans le report 24, quelle est la valeur d'acide urique ?",
+      "issues": [
+        "HTTP 401 on http://127.0.0.1:8000/chat: {\"detail\":\"Authentification requise\"}"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "HTTP 401 on http://127.0.0.1:8000/chat: {\"detail\":\"Authentification requise\"}"
+      }
+    },
+    {
+      "test_id": "ANALYTE_VALUE_MULTIPLE_DOCS_FILTER",
+      "suite": "suite_2_single_analyte_lookup",
+      "query": "Dans les rapports 10, 16 et 24, donne-moi la valeur de TSH.",
+      "issues": [
+        "HTTP 401 on http://127.0.0.1:8000/chat: {\"detail\":\"Authentification requise\"}"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "HTTP 401 on http://127.0.0.1:8000/chat: {\"detail\":\"Authentification requise\"}"
+      }
+    },
+    {
+      "test_id": "ANALYTE_NOT_FOUND_HANDLING",
+      "suite": "suite_2_single_analyte_lookup",
+      "query": "Quelle est la valeur de cortisol dans le report 12 ?",
+      "issues": [
+        "HTTP 401 on http://127.0.0.1:8000/chat: {\"detail\":\"Authentification requise\"}"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "HTTP 401 on http://127.0.0.1:8000/chat: {\"detail\":\"Authentification requise\"}"
+      }
+    },
+    {
+      "test_id": "ANALYTE_STATUS_DETERMINATION",
+      "suite": "suite_2_single_analyte_lookup",
+      "query": "Dans le report 29, la créatinine est-elle normale, basse ou élevée ?",
+      "issues": [
+        "HTTP 401 on http://127.0.0.1:8000/chat: {\"detail\":\"Authentification requise\"}"
+      ],
+      "trace": {
+        "conversation_id": null,
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "error": "HTTP 401 on http://127.0.0.1:8000/chat: {\"detail\":\"Authentification requise\"}"
+      }
+    }
+  ],
   "recommendations": []
 }

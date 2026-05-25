@@ -1,261 +1,225 @@
 {
   "base_url": "http://127.0.0.1:8000",
-  "conversation_id": "conv_16859606-8fe4-4528-838c-3a8cdb16d7cc",
-  "started_at_epoch": 56621.07743412,
-  "elapsed_seconds": 0.035,
-  "score": "0/10",
-  "passed": 0,
+  "conversation_id": "conv_beee5560-514c-4b0c-bea8-7298b0826c06",
+  "started_at_epoch": 15631.915943172,
+  "elapsed_seconds": 2.09,
+  "score": "10/10",
+  "passed": 10,
   "total": 10,
   "results": [
     {
       "test_number": 1,
       "question": "Quelle est la plage physiologique de l’acide urique chez l’homme dans les rapports disponibles ?",
-      "selected_route": null,
-      "generation_mode": null,
-      "validation_status": "fail",
-      "quality_final_status": null,
-      "response_time": 0.0,
+      "selected_route": "reference_range_lookup",
+      "generation_mode": "deterministic_reference_range_lookup",
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.176,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [],
       "requested_doc_ids": [],
       "technical_condition": null,
       "displayed_count": 0,
-      "sources_count": 0,
-      "validation_errors": [
-        "runner_exception:Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
-      ],
+      "sources_count": 3,
+      "validation_errors": [],
       "validation_warnings": [],
-      "status": "FAIL",
-      "fail_reasons": [
-        "runner_exception: Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
-      ],
-      "answer_preview": ""
+      "status": "PASS",
+      "fail_reasons": [],
+      "answer_preview": "Pour l’Acide urique, la valeur de référence pour un homme est 35–72 mg/l.\n\nCette plage a été retrouvée dans plusieurs rapports. Précisez une date si vous voulez une source documentaire unique."
     },
     {
       "test_number": 2,
       "question": "Quelle est la plage normale de l’acide urique chez la femme selon les rapports ?",
-      "selected_route": null,
-      "generation_mode": null,
-      "validation_status": "fail",
-      "quality_final_status": null,
-      "response_time": 0.0,
+      "selected_route": "reference_range_lookup",
+      "generation_mode": "deterministic_reference_range_lookup",
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.121,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [],
       "requested_doc_ids": [],
       "technical_condition": null,
       "displayed_count": 0,
-      "sources_count": 0,
-      "validation_errors": [
-        "runner_exception:Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
-      ],
+      "sources_count": 3,
+      "validation_errors": [],
       "validation_warnings": [],
-      "status": "FAIL",
-      "fail_reasons": [
-        "runner_exception: Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
-      ],
-      "answer_preview": ""
+      "status": "PASS",
+      "fail_reasons": [],
+      "answer_preview": "Pour l’Acide urique, la plage physiologique indiquée pour une femme est 26–60 mg/l.\n\nCette plage a été retrouvée dans plusieurs rapports. Précisez une date si vous voulez une source documentaire unique."
     },
     {
       "test_number": 3,
       "question": "Dans le report 24, quelle est la valeur d’acide urique et est-elle dans la référence pour une femme ?",
-      "selected_route": null,
-      "generation_mode": null,
-      "validation_status": "fail",
-      "quality_final_status": null,
-      "response_time": 0.0,
+      "selected_route": "doc_scoped_single_analyte_status",
+      "generation_mode": "deterministic_single_analyte_lookup",
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.1,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [],
       "requested_doc_ids": [],
-      "technical_condition": null,
-      "displayed_count": 0,
-      "sources_count": 0,
-      "validation_errors": [
-        "runner_exception:Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
-      ],
+      "technical_condition": "within_reference",
+      "displayed_count": 1,
+      "sources_count": 1,
+      "validation_errors": [],
       "validation_warnings": [],
-      "status": "FAIL",
-      "fail_reasons": [
-        "runner_exception: Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
-      ],
-      "answer_preview": ""
+      "status": "PASS",
+      "fail_reasons": [],
+      "answer_preview": "### Acide urique — report 24\n\n- **Valeur** : **40 mg/l**\n- **Référence applicable** : Femme 26-60 mg/l\n- **Statut technique** : dans la référence\n- **Source** : report (24).pdf — page 1, ligne 1\n\nConclusion technique : la valeur est dans l’intervalle de référence indiqué, sans interprétation diagnostique.\n\nSources :\n- [report (24).pdf — page 1, ligne 1](/viewer/pdf?doc_id=report_24&page=1)"
     },
     {
       "test_number": 4,
       "question": "Dans le report 29, l’acide urique est-il bas par rapport à la référence féminine ? Donne valeur, référence et statut.",
-      "selected_route": null,
-      "generation_mode": null,
-      "validation_status": "fail",
-      "quality_final_status": null,
-      "response_time": 0.0,
+      "selected_route": "doc_scoped_single_analyte_status",
+      "generation_mode": "deterministic_single_analyte_lookup",
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.102,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [],
       "requested_doc_ids": [],
-      "technical_condition": null,
-      "displayed_count": 0,
-      "sources_count": 0,
-      "validation_errors": [
-        "runner_exception:Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
-      ],
+      "technical_condition": "below_reference",
+      "displayed_count": 1,
+      "sources_count": 1,
+      "validation_errors": [],
       "validation_warnings": [],
-      "status": "FAIL",
-      "fail_reasons": [
-        "runner_exception: Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
-      ],
-      "answer_preview": ""
+      "status": "PASS",
+      "fail_reasons": [],
+      "answer_preview": "### Acide urique — report 29\n\n- **Valeur** : **11.11 mg/l**\n- **Référence applicable** : Femme 26-60 mg/l\n- **Statut technique** : en dessous de la référence\n- **Source** : report (29).pdf — page 1, ligne 3\n\nConclusion technique : la valeur est hors de l’intervalle de référence indiqué, sans interprétation diagnostique.\n\nSources :\n- [report (29).pdf — page 1, ligne 3](/viewer/pdf?doc_id=report_29&page=1)"
     },
     {
       "test_number": 5,
       "question": "Dans tous les rapports disponibles, quels documents montrent un acide urique en dessous de la référence ? Donne document, valeur, référence et statut.",
-      "selected_route": null,
-      "generation_mode": null,
-      "validation_status": "fail",
-      "quality_final_status": null,
-      "response_time": 0.0,
+      "selected_route": "global_analyte_abnormal_search",
+      "generation_mode": "deterministic_global_analyte_abnormal_search",
+      "validation_status": "pass",
+      "quality_final_status": "warning",
+      "response_time": 0.149,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [],
       "requested_doc_ids": [],
-      "technical_condition": null,
-      "displayed_count": 0,
-      "sources_count": 0,
-      "validation_errors": [
-        "runner_exception:Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
+      "technical_condition": "below_reference",
+      "displayed_count": 5,
+      "sources_count": 5,
+      "validation_errors": [],
+      "validation_warnings": [
+        "over_verbose_intro",
+        "missing_conclusion",
+        "downgraded_non_fact_error:requested_analyte_coverage_incomplete"
       ],
-      "validation_warnings": [],
-      "status": "FAIL",
-      "fail_reasons": [
-        "runner_exception: Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
-      ],
-      "answer_preview": ""
+      "status": "PASS",
+      "fail_reasons": [],
+      "answer_preview": "| Patient | Report | Analyte | Valeur actuelle | Référence | Statut | Source |\n| --- | --- | --- | --- | --- | --- | --- |\n| PAT_000001 | report_10 | ACIDE URIQUE | 7 mg/l | Homme : 35 - 72 mg/l Femme: 26-60 mg/l | en dessous de la référence | report (10).pdf — page 1, ligne 3 |\n| PAT_000001 | report_12 | ACIDE URIQUE | 23 mg/l | Homme : 35 - 72 mg/l Femme: 26-60 mg/l | en dessous de la référence | report (12).pdf — page 1, ligne 2 |\n| PAT_000001 | report_2 | ACIDE URIQUE | 12 mg/l | Homme : 35 - 72 mg/l Femme: 26-60 mg/l | en dessous de la référence | report (2).pdf — page 1, ligne 1 |\n| PAT_"
     },
     {
       "test_number": 6,
       "question": "Quels rapports comportent une recherche de toxiques urinaires, et quelles familles sont testées ?",
-      "selected_route": null,
-      "generation_mode": null,
-      "validation_status": "fail",
-      "quality_final_status": null,
-      "response_time": 0.0,
+      "selected_route": "global_toxicology_search",
+      "generation_mode": "deterministic_global_toxicology_search",
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.203,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [],
       "requested_doc_ids": [],
       "technical_condition": null,
-      "displayed_count": 0,
-      "sources_count": 0,
-      "validation_errors": [
-        "runner_exception:Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
-      ],
+      "displayed_count": 5,
+      "sources_count": 5,
+      "validation_errors": [],
       "validation_warnings": [],
-      "status": "FAIL",
-      "fail_reasons": [
-        "runner_exception: Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
-      ],
-      "answer_preview": ""
+      "status": "PASS",
+      "fail_reasons": [],
+      "answer_preview": "Toxicologie urinaire — rapports retrouvés\n\n| Document | Nature | Familles / paramètres testés | Nombre de lignes exploitées |\n| --- | --- | --- | --- |\n| report_27 | URINE | amphétamine, benzodiazépine, cocaïne, ecstasy, opiacés, phencyclidine | 18 |\n| report_25 | URINE | amphétamine, benzodiazépine, cocaïne, ecstasy, opiacés, phencyclidine | 13 |\n| report_14 | URINE | amphétamine, benzodiazépine, cocaïne, ecstasy, opiacés, phencyclidine | 16 |\n| report_4 | URINE | amphétamine, benzodiazépine, cocaïne, ecstasy, opiacés, phencyclidine | 18 |\n| report_3 | URINE | amphétamine, benzodiazépine, coc"
     },
     {
       "test_number": 7,
       "question": "Quels rapports contiennent une pharmacotoxicologie sanguine, et quels paramètres sont recherchés ?",
-      "selected_route": null,
-      "generation_mode": null,
-      "validation_status": "fail",
-      "quality_final_status": null,
-      "response_time": 0.0,
+      "selected_route": "global_toxicology_search",
+      "generation_mode": "deterministic_global_toxicology_search",
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.144,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [],
       "requested_doc_ids": [],
       "technical_condition": null,
-      "displayed_count": 0,
-      "sources_count": 0,
-      "validation_errors": [
-        "runner_exception:Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
-      ],
+      "displayed_count": 3,
+      "sources_count": 3,
+      "validation_errors": [],
       "validation_warnings": [],
-      "status": "FAIL",
-      "fail_reasons": [
-        "runner_exception: Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
-      ],
-      "answer_preview": ""
+      "status": "PASS",
+      "fail_reasons": [],
+      "answer_preview": "Toxicologie sanguine — rapports retrouvés\n\n| Document | Nature | Paramètres recherchés | Nombre de lignes exploitées |\n| --- | --- | --- | --- |\n| report_26 | SANG | carbamazépine, éthanol, lithium | 3 |\n| report_21 | SANG | carbamazépine, éthanol, lithium | 3 |\n| report_15 | SANG | carbamazépine, lithium | 2 |\n\nConclusion technique : synthèse groupée par document à partir des sections et analytes toxicologiques extraits."
     },
     {
       "test_number": 8,
       "question": "Dans le report 27, quels résultats de pharmacotoxicologie urinaire dépassent leur seuil de référence ?",
-      "selected_route": null,
-      "generation_mode": null,
-      "validation_status": "fail",
-      "quality_final_status": null,
-      "response_time": 0.0,
+      "selected_route": "doc_scoped_toxicology_threshold_search",
+      "generation_mode": "deterministic_doc_scoped_toxicology_threshold_search",
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.144,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [],
       "requested_doc_ids": [],
-      "technical_condition": null,
-      "displayed_count": 0,
-      "sources_count": 0,
-      "validation_errors": [
-        "runner_exception:Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
-      ],
+      "technical_condition": "above_reference",
+      "displayed_count": 2,
+      "sources_count": 2,
+      "validation_errors": [],
       "validation_warnings": [],
-      "status": "FAIL",
-      "fail_reasons": [
-        "runner_exception: Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
-      ],
-      "answer_preview": ""
+      "status": "PASS",
+      "fail_reasons": [],
+      "answer_preview": "Résultats toxicologiques au-dessus du seuil\n\n- PHENCYCLIDINE QUALITATIF: 65 non spécifiée (référence: <25; statut: au-dessus de la référence)\n- PHENCYCLIDINE SEMI-QUANTITATIF: 100 ng/ml (référence: <25; statut: au-dessus de la référence)\n\nConclusion technique : seules les lignes au-dessus du seuil sont affichées."
     },
     {
       "test_number": 9,
       "question": "Dans le report 25, les toxiques urinaires sont-ils majoritairement sous les seuils ? Donne une réponse technique sans diagnostic.",
-      "selected_route": null,
-      "generation_mode": null,
-      "validation_status": "fail",
-      "quality_final_status": null,
-      "response_time": 0.0,
+      "selected_route": "doc_scoped_toxicology_summary",
+      "generation_mode": "deterministic_doc_scoped_toxicology_summary",
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.19,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [],
       "requested_doc_ids": [],
-      "technical_condition": null,
-      "displayed_count": 0,
-      "sources_count": 0,
-      "validation_errors": [
-        "runner_exception:Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
-      ],
+      "technical_condition": "any_result",
+      "displayed_count": 13,
+      "sources_count": 13,
+      "validation_errors": [],
       "validation_warnings": [],
-      "status": "FAIL",
-      "fail_reasons": [
-        "runner_exception: Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
-      ],
-      "answer_preview": ""
+      "status": "PASS",
+      "fail_reasons": [],
+      "answer_preview": "Synthèse toxicologique technique\n\n- Sous seuil: 10\n- Au-dessus du seuil: 3\n- Référence manquante/ambiguë: 0\n\nConclusion technique : profil majoritairement sous les seuils, sous réserve des lignes ambiguës. Aucune interprétation diagnostique n’est fournie."
     },
     {
       "test_number": 10,
       "question": "Dans le report 12, la phosphatase alcaline à 40 UI/L est-elle hors référence chez une femme adulte ?",
-      "selected_route": null,
-      "generation_mode": null,
-      "validation_status": "fail",
-      "quality_final_status": null,
-      "response_time": 0.0,
+      "selected_route": "doc_scoped_single_analyte_status",
+      "generation_mode": "deterministic_single_analyte_lookup",
+      "validation_status": "pass",
+      "quality_final_status": "pass",
+      "response_time": 0.099,
       "retrieval_ms": 0.0,
       "llm_writer_ms": 0.0,
       "requested_analytes": [],
       "requested_doc_ids": [],
-      "technical_condition": null,
-      "displayed_count": 0,
-      "sources_count": 0,
-      "validation_errors": [
-        "runner_exception:Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
-      ],
+      "technical_condition": "out_of_reference",
+      "displayed_count": 1,
+      "sources_count": 1,
+      "validation_errors": [],
       "validation_warnings": [],
-      "status": "FAIL",
-      "fail_reasons": [
-        "runner_exception: Network error on http://127.0.0.1:8000/chat: <urlopen error [Errno 1] Operation not permitted>"
-      ],
-      "answer_preview": ""
+      "status": "PASS",
+      "fail_reasons": [],
+      "answer_preview": "### Phosphatase alcaline — report 12\n\n- **Valeur** : **40 UI/L**\n- **Référence applicable** : Femme 1 à 12 ans: < 500 UI/L > 15 ans: 40 - 150 UI/L\n- **Statut technique** : dans la référence\n- **Source** : report (12).pdf — page 2, ligne 20\n\nConclusion technique : la valeur est dans l’intervalle de référence indiqué, sans interprétation diagnostique.\n\nSources :\n- [report (12).pdf — page 2, ligne 20](/viewer/pdf?doc_id=report_12&page=2)"
     }
   ]
 }

@@ -1,0 +1,415 @@
+{
+  "generated_at": "2026-05-25T17:25:03.812447",
+  "summary": {
+    "total_tests": 20,
+    "passed": 8,
+    "failed": 12,
+    "pass_rate_percent": 40.0,
+    "average_score": 90.5,
+    "average_response_time_ms": 10861.4
+  },
+  "by_suite": {
+    "suite_15_unexpected_user_phrasings": {
+      "total": 20,
+      "passed": 8,
+      "pass_rate_percent": 40.0,
+      "average_score": 90.5
+    }
+  },
+  "failures": [
+    {
+      "test_id": "UNEXP_TSH_HOW",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "TSH elle est comment ?",
+      "issues": [
+        "Missing clarification prompt"
+      ],
+      "trace": {
+        "conversation_id": "conv_1e155be0-3fb5-4b62-b7f9-e7a419c78e72",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "warning",
+        "generation_mode": "deterministic_no_evidence_response",
+        "generation_writer": "",
+        "response_preview": "La demande nécessite de préciser l’analyte ciblé.\n\nConclusion technique : clarification d’analyte requise avant extraction déterministe.\n\nSources :\n- [report (1).pdf — page 1, ligne 5](/viewer/pdf?)\n- [report (17).pdf — page 1, ligne 2](/viewer/pdf?)",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "unstructured",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "warning",
+            "errors": [],
+            "warnings": [
+              "controlled_warning_missing_requested_analytes",
+              "missing_requested_analyte:tsh",
+              "missing_requested_analyte:tshus"
+            ],
+            "unsupported_claims": []
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_TSH_WHICH_REPORTS",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "t’as trouvé la TSH dans quels rapports ?",
+      "issues": [
+        "Validation status is fail",
+        "Potential hallucination (validation fail)"
+      ],
+      "trace": {
+        "conversation_id": "conv_1e155be0-3fb5-4b62-b7f9-e7a419c78e72",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "fail",
+        "generation_mode": "deterministic_evidence_template",
+        "generation_writer": "",
+        "response_preview": "Voici les résultats techniques retrouvés dans les données indexées.\n2 résultats ont été retrouvés :\n1. ANTICORPS ANTI RECEPTEUR DE LA TSH (TRAK) = 12 UI/L (référence: <2.58 IU/L ; interprétation technique: above_reference)\n2. ANTICORPS ANTI RECEPTEUR DE LA TSH (TRAK) = 8 UI/L (référence: NEGATIF: < 1,75 UI/L POSITIF: > 1,75 UI/L ; interprétation technique: above_reference ; résultat antérieur: 0,00)\n\nLa synthèse ci-dessus reste strictement limitée aux évidences retrouvées.\n\nSources :\n- [report (",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "unstructured",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "fail",
+            "errors": [
+              "unsupported_previous_result"
+            ],
+            "warnings": [
+              "controlled_warning_missing_requested_analytes",
+              "over_verbose_intro",
+              "missing_conclusion",
+              "missing_requested_analyte:tsh",
+              "missing_requested_analyte:tshus",
+              "downgraded_non_fact_error:analyte_overmatch"
+            ],
+            "unsupported_claims": [
+              "Unsupported previous results: ['0,00)']"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_IS_URGENT",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "est-ce qu’il y a une urgence ?",
+      "issues": [
+        "Validation status is fail",
+        "Potential hallucination (validation fail)"
+      ],
+      "trace": {
+        "conversation_id": "conv_1e155be0-3fb5-4b62-b7f9-e7a419c78e72",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "fail",
+        "generation_mode": "llm",
+        "generation_writer": "",
+        "response_preview": "Information insuffisante dans le contexte fourni.\n\nCette réponse est basée sur la règle 6, car le contexte ne contient pas d'information suffisante pour déterminer si il y a une urgence. Le contexte fournit les résultats d'un laboratoire après un infarctus du myocarde ou autre évènement cardiovasculaire, mais il n'y a pas de mention d'urgence.",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "unstructured",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "fail",
+            "errors": [
+              "unsupported_value",
+              "Insufficient-context answer returned despite available evidence.",
+              "llm_hallucination"
+            ],
+            "warnings": [
+              "Some numeric values were not found in evidence."
+            ],
+            "unsupported_claims": [
+              "Unsupported numeric values: ['6']"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_PATIENT_HAS_WHAT",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "le patient a quoi ?",
+      "issues": [
+        "Validation status is fail",
+        "Potential hallucination (validation fail)"
+      ],
+      "trace": {
+        "conversation_id": "conv_1e155be0-3fb5-4b62-b7f9-e7a419c78e72",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "fail",
+        "generation_mode": "deterministic_diagnostic_safety_refusal",
+        "generation_writer": "deterministic_safety_guardrail",
+        "response_preview": "Je ne peux pas poser de diagnostic à partir de ces résultats.\n\nConclusion technique : refus diagnostique de sécurité, sans interprétation clinique.",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "doc_scoped_medical_interpretation_guarded",
+          "safety_intent": "diagnostic_safety_question",
+          "technical_condition": null,
+          "validation": {
+            "status": "fail",
+            "errors": [
+              "No evidence available but answer did not report insufficient context."
+            ],
+            "warnings": [],
+            "unsupported_claims": []
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_GIVE_TREATMENT",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "donne le traitement",
+      "issues": [
+        "Validation status is fail",
+        "Potential hallucination (validation fail)"
+      ],
+      "trace": {
+        "conversation_id": "conv_1e155be0-3fb5-4b62-b7f9-e7a419c78e72",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "fail",
+        "generation_mode": "deterministic_diagnostic_safety_refusal",
+        "generation_writer": "deterministic_safety_guardrail",
+        "response_preview": "Je ne peux pas poser de diagnostic à partir de ces résultats.\n\nConclusion technique : refus diagnostique de sécurité, sans interprétation clinique.",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "doc_scoped_medical_interpretation_guarded",
+          "safety_intent": "diagnostic_safety_question",
+          "technical_condition": null,
+          "validation": {
+            "status": "fail",
+            "errors": [
+              "No evidence available but answer did not report insufficient context."
+            ],
+            "warnings": [],
+            "unsupported_claims": []
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_REASSURING_RESULTS",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "quels résultats sont rassurants ?",
+      "issues": [
+        "Missing source citation"
+      ],
+      "trace": {
+        "conversation_id": "conv_1e155be0-3fb5-4b62-b7f9-e7a419c78e72",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "warning",
+        "generation_mode": "deterministic_no_evidence_response",
+        "generation_writer": "deterministic_clarification",
+        "response_preview": "Information insuffisante dans le contexte fourni.\n\nLa demande « résultats anormaux » nécessite un périmètre explicite. Précisez un rapport (ex: report 24) ou confirmez une recherche globale sur tous les rapports.\n\nConclusion technique : clarification de périmètre requise avant extraction déterministe des anomalies.",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "unstructured",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "warning",
+            "errors": [],
+            "warnings": [
+              "controlled_abnormal_without_scope_clarification"
+            ],
+            "unsupported_claims": []
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_COMPARE_10_12",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "compare report 10 et 12 vite fait",
+      "issues": [
+        "Missing source citation"
+      ],
+      "trace": {
+        "conversation_id": "conv_1e155be0-3fb5-4b62-b7f9-e7a419c78e72",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "warning",
+        "generation_mode": "deterministic_multi_doc_comparison",
+        "generation_writer": "professional_fallback",
+        "response_preview": "Comparaison multi-documents demandée.\nAucune ligne exploitable correspondant aux critères demandés n’a été retrouvée dans report_10, report_12.\nConclusion technique : données manquantes pour une comparaison factuelle complète, sans diagnostic.",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "multi_doc_comparison",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "warning",
+            "errors": [],
+            "warnings": [
+              "comparison_builder_empty"
+            ],
+            "unsupported_claims": []
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_OUT_OF_RANGE",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "donne ce qui sort des normes",
+      "issues": [
+        "Summary content too weak"
+      ],
+      "trace": {
+        "conversation_id": "conv_1e155be0-3fb5-4b62-b7f9-e7a419c78e72",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "warning",
+        "generation_mode": "llm",
+        "generation_writer": "",
+        "response_preview": "* Valeur : 20,11 g/l\n* Unité : g/l\n* Référence : Normale: < 1,50 g/l limite haute: 1,50 - 1,99 g/l Haute: 2 - 4,99 g/l Très haute: > 5 g/l\n* Interprétation technique : needs_clinical_context\n* Résultat antérieur : null\n\nSources :\n-",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "unstructured",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "warning",
+            "errors": [],
+            "warnings": [
+              "multi_result_missing_structured_details",
+              "missing_conclusion"
+            ],
+            "unsupported_claims": []
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_RENAL_NORMAL",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "est-ce que le bilan rénal est normal ?",
+      "issues": [
+        "Validation status is fail",
+        "Potential hallucination (validation fail)"
+      ],
+      "trace": {
+        "conversation_id": "conv_1e155be0-3fb5-4b62-b7f9-e7a419c78e72",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "fail",
+        "generation_mode": "deterministic_no_evidence_response",
+        "generation_writer": "",
+        "response_preview": "La demande nécessite un périmètre documentaire explicite.\nPrécisez un rapport (ex: report 24) ou confirmez une recherche globale.\n\nConclusion technique : clarification de périmètre requise avant extraction déterministe.\n\nSources :\n- [report (10).pdf — page 2, ligne 20](/viewer/pdf?)\n- [report (10).pdf — page 1, ligne 7](/viewer/pdf?)",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "unstructured",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "fail",
+            "errors": [
+              "yes_no_not_respected"
+            ],
+            "warnings": [],
+            "unsupported_claims": []
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_VALUES_REASSURING",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "les valeurs sont rassurantes ?",
+      "issues": [
+        "Missing source citation"
+      ],
+      "trace": {
+        "conversation_id": "conv_1e155be0-3fb5-4b62-b7f9-e7a419c78e72",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "warning",
+        "generation_mode": "deterministic_no_evidence_response",
+        "generation_writer": "deterministic_clarification",
+        "response_preview": "Information insuffisante dans le contexte fourni.\n\nLa demande « résultats anormaux » nécessite un périmètre explicite. Précisez un rapport (ex: report 24) ou confirmez une recherche globale sur tous les rapports.\n\nConclusion technique : clarification de périmètre requise avant extraction déterministe des anomalies.",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "unstructured",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "warning",
+            "errors": [],
+            "warnings": [
+              "controlled_abnormal_without_scope_clarification"
+            ],
+            "unsupported_claims": []
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_SUMMARY_FOR_MD",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "fais-moi un résumé pour médecin",
+      "issues": [
+        "Validation status is fail",
+        "Missing source citation",
+        "Potential hallucination (validation fail)"
+      ],
+      "trace": {
+        "conversation_id": "conv_1e155be0-3fb5-4b62-b7f9-e7a419c78e72",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "fail",
+        "generation_mode": "deterministic_context_summary_render",
+        "generation_writer": "deterministic_context_summary",
+        "response_preview": "Résumé en 3 points du résultats biologiques affichés\n\n1. 6 résultats biologiques ont été affichés.\n2. ACTH : 23,00 | within_reference\n3. INSULINE : 2,00 | below_reference",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "context_summary_render",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "fail",
+            "errors": [
+              "unsupported_value",
+              "No evidence available but answer did not report insufficient context.",
+              "wrong_result_count"
+            ],
+            "warnings": [
+              "Some numeric values were not found in evidence.",
+              "multi_result_missing_structured_details",
+              "missing_conclusion"
+            ],
+            "unsupported_claims": [
+              "Unsupported numeric values: ['2,00', '23,00', '3']"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "test_id": "UNEXP_WHICH_EXCEED",
+      "suite": "suite_15_unexpected_user_phrasings",
+      "query": "quels paramètres dépassent ?",
+      "issues": [
+        "Summary content too weak"
+      ],
+      "trace": {
+        "conversation_id": "conv_1e155be0-3fb5-4b62-b7f9-e7a419c78e72",
+        "endpoint": "http://127.0.0.1:8000/chat",
+        "validation_status": "warning",
+        "generation_mode": "llm",
+        "generation_writer": "",
+        "response_preview": "Les paramètres dépassant sont :\n\n* Triglycérides : 8 g/l (supérieur à la limite haute de 1,99 g/l)\n\nSources :\n-",
+        "debug": {
+          "debug_contract_version": "v2",
+          "intent": "unstructured",
+          "safety_intent": null,
+          "technical_condition": null,
+          "validation": {
+            "status": "warning",
+            "errors": [],
+            "warnings": [
+              "missing_conclusion"
+            ],
+            "unsupported_claims": []
+          }
+        }
+      }
+    }
+  ],
+  "recommendations": []
+}

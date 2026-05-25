@@ -110,6 +110,65 @@ _DEFAULT_ASSISTANT_MESSAGES: dict[str, Any] = {
             "summary_template": "Le document montre des anomalies thyroïdiennes importantes : {details_txt}. {no_diagnostic_sentence} {discordance} {correlation_sentence}",
         },
     },
+    "clarifications": {
+        "global_summary_no_scope": (
+            "Je dois connaître le document, le patient ou le périmètre à résumer. "
+            "Précisez un rapport ou demandez une synthèse sur l’ensemble des rapports disponibles."
+        ),
+        "abnormal_without_scope": (
+            "La demande « résultats anormaux » nécessite un périmètre explicite. "
+            "Précisez un rapport (ex: report 24) ou confirmez une recherche globale sur tous les rapports."
+        ),
+        "abnormal_without_scope_conclusion": (
+            "Conclusion technique : clarification de périmètre requise avant extraction déterministe des anomalies."
+        ),
+    },
+    "fallbacks": {
+        "single_analyte_not_found_template": (
+            "### {analyte_label} — {doc_labels}\n\n"
+            "Aucun résultat correspondant à {analyte_label} n’a été retrouvé dans {doc_labels} parmi les résultats disponibles.\n\n"
+            "Conclusion technique : aucune valeur numérique exploitable n’a été identifiée pour cet analyte dans le rapport demandé."
+        ),
+        "topic_not_found_template": (
+            "Aucun résultat correspondant au thème {analyte_label} n’a été retrouvé dans {doc_labels}.\n\n"
+            "Conclusion technique : aucune donnée exploitable n’a été identifiée pour ce thème dans le périmètre demandé."
+        ),
+        "document_not_found_template": (
+            "Aucun résultat biologique exploitable n’a été retrouvé dans {doc_labels} pour la demande formulée.\n\n"
+            "Conclusion technique : le périmètre documentaire demandé ne contient pas de données compatibles."
+        ),
+        "ambiguous_analyte_template": (
+            "La demande nécessite de préciser l’analyte ciblé.\n\n"
+            "Conclusion technique : clarification d’analyte requise avant extraction déterministe."
+        ),
+        "ambiguous_document_scope_template": (
+            "La demande nécessite un périmètre documentaire explicite.\n"
+            "Précisez un rapport (ex: report 24) ou confirmez une recherche globale.\n\n"
+            "Conclusion technique : clarification de périmètre requise avant extraction déterministe."
+        ),
+        "diagnosis_refusal_template": (
+            "Je ne peux pas poser de diagnostic à partir de ces résultats.\n\n"
+            "Conclusion technique : refus diagnostique de sécurité, sans interprétation clinique."
+        ),
+        "treatment_refusal_template": (
+            "Je ne peux pas recommander de traitement à partir de ces résultats seuls.\n\n"
+            "Conclusion technique : restitution factuelle uniquement, sans recommandation thérapeutique."
+        ),
+        "pii_refusal_template": (
+            "Je ne peux pas divulguer de données personnelles identifiantes.\n\n"
+            "Conclusion technique : refus de sécurité PII."
+        ),
+        "partial_answer_template": (
+            "Une réponse partielle est disponible.\n"
+            "Documents avec résultat : {matched_labels}.\n"
+            "Documents sans résultat : {missing_labels}.\n\n"
+            "Conclusion technique : réponse limitée aux données compatibles retrouvées."
+        ),
+        "insufficient_evidence_template": (
+            "Information insuffisante dans les données structurées disponibles pour répondre de façon fiable.\n\n"
+            "Conclusion technique : aucun résultat exploitable n’a été identifié pour {analyte_label}{criterion} dans {doc_labels}."
+        ),
+    },
 }
 
 _DEFAULT_SAFETY_GUARDRAILS: dict[str, Any] = {
@@ -139,6 +198,78 @@ _DEFAULT_SAFETY_GUARDRAILS: dict[str, Any] = {
         ],
         "limitation_sentence": "L’interprétation reste limitée aux données biologiques fournies.",
         "discordance_replacement": "profil biologique discordant pour une hyperthyroïdie primaire",
+    }
+}
+
+_DEFAULT_MEDICAL_ENTITY_RESOLVER: dict[str, Any] = {
+    "medical_entity_resolver": {
+        "topic_keywords": {
+            "thyroid": ["thyroid", "thyroide", "thyroïde", "thyroidien", "thyroïdien", "tsh", "t4", "t3", "hyperthyro"],
+            "toxicology": ["toxicologie", "toxicology", "pharmacotoxicologie", "toxique", "opiac", "benzodiazep", "cocaine", "amphet"],
+            "renal": ["renal", "rénal", "renale", "rénale", "creatinine", "créatinine", "uree", "urée", "dfg"],
+            "hepatic": ["hepat", "hépat", "foie", "alat", "asat", "ggt", "bilirub"],
+            "inflammation": ["inflammation", "crp", "proteine c reactive", "protéine c réactive"],
+        },
+        "analyte_families": {
+            "tsh": "thyroid_tsh",
+            "tshus": "thyroid_tsh",
+            "t3_libre": "thyroid",
+            "t4_libre": "thyroid",
+            "anti_tg": "thyroid_antibodies",
+            "anti_tpo": "thyroid_antibodies",
+            "trak": "thyroid_antibodies",
+            "crp": "inflammation",
+            "creatinine": "renal",
+            "acide_urique": "renal_metabolic",
+            "phosphatase_alcaline": "hepatic_bone",
+            "asat": "hepatic",
+            "alat": "hepatic",
+            "ggt": "hepatic",
+            "bilirubine": "hepatic",
+            "ethanol": "toxicology",
+            "amphetamine": "toxicology",
+            "benzodiazepine": "toxicology",
+            "cocaine": "toxicology",
+            "opiaces": "toxicology",
+            "phencyclidine": "toxicology",
+        },
+        "equivalent_groups": [
+            ["tsh", "tshus"],
+            ["ckmb", "cpkmb"],
+        ],
+        "safe_extra_aliases": {
+            "creat": "creatinine",
+            "creatininemie": "creatinine",
+            "uricemie": "acide_urique",
+            "uric acid": "acide_urique",
+            "alp": "phosphatase_alcaline",
+            "pal": "phosphatase_alcaline",
+            "tsh ultra sensible": "tshus",
+            "thyroid stimulating hormone": "tsh",
+            "thyreostimuline": "tsh",
+            "ft3": "t3_libre",
+            "ft4": "t4_libre",
+        },
+    }
+}
+
+_DEFAULT_GENERATION_ROUTING: dict[str, Any] = {
+    "generation_routing": {
+        "abnormal_without_scope": {
+            "global_scope_markers": [
+                "tous les rapports",
+                "rapports disponibles",
+                "ensemble des rapports",
+                "dans tous les rapports",
+                "quels rapports",
+            ],
+            "abnormal_hint_patterns": [
+                r"\banomal\w*",
+                r"\bhors\s+(?:de\s+la\s+)?(?:reference|norme|intervalle)\b",
+                r"\b(?:resultat|résultat|resultats|résultats|valeur|valeurs|taux)\b",
+                r"\bbiolog\w*\b",
+            ],
+        }
     }
 }
 
@@ -211,6 +342,15 @@ def get_safety_guardrails_config() -> dict[str, Any]:
     return load_yaml_config(CONFIG_DIR / "safety_guardrails.yml", _DEFAULT_SAFETY_GUARDRAILS)
 
 
+@lru_cache(maxsize=1)
+def get_medical_entity_resolver_config() -> dict[str, Any]:
+    return load_yaml_config(CONFIG_DIR / "medical_entity_resolver.yml", _DEFAULT_MEDICAL_ENTITY_RESOLVER)
+
+@lru_cache(maxsize=1)
+def get_generation_routing_config() -> dict[str, Any]:
+    return load_yaml_config(CONFIG_DIR / "generation_routing.yml", _DEFAULT_GENERATION_ROUTING)
+
+
 __all__ = [
     "load_yaml_config",
     "get_medical_topics_config",
@@ -218,4 +358,6 @@ __all__ = [
     "get_priority_scoring_config",
     "get_assistant_messages_config",
     "get_safety_guardrails_config",
+    "get_medical_entity_resolver_config",
+    "get_generation_routing_config",
 ]

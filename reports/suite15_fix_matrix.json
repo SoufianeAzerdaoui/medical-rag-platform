@@ -1,0 +1,65 @@
+{
+  "report_path": "reports/unexpected_user_phrasings.json",
+  "suite": "suite_15_unexpected_user_phrasings",
+  "baseline_summary": {
+    "total_tests": 20,
+    "passed": 10,
+    "failed": 10,
+    "pass_rate_percent": 50.0,
+    "average_score": 92.0,
+    "average_response_time_ms": 16632.7
+  },
+  "top_5_fixes": [
+    {
+      "rank": 1,
+      "fix_id": "F3_SOURCE_ENFORCEMENT_FOR_SUMMARY",
+      "title": "Forcer les sources cliquables dans clarifications/summaries déterministes",
+      "impact_score": 18,
+      "severity": 3,
+      "affected_cases_count": 6,
+      "affected_cases": [
+        "UNEXP_REASSURING_RESULTS",
+        "UNEXP_RENAL_NORMAL",
+        "UNEXP_SUMMARY_FOR_MD",
+        "UNEXP_THYROID_COHERENT",
+        "UNEXP_TOX_POSITIVE",
+        "UNEXP_VALUES_REASSURING"
+      ],
+      "signals": [
+        "missing source citation"
+      ],
+      "description": "Assurer qu'un bloc Source/Sources est toujours présent quand evidence_rows/sources existent, y compris pour réponses de clarification et résumés courts.",
+      "target_files": [
+        "scripts/generation/generate_answer.py",
+        "scripts/generation/source_normalization.py",
+        "backend/services/chat_service.py"
+      ],
+      "estimated_effort": "S",
+      "expected_gain_pass_points": 2
+    },
+    {
+      "rank": 2,
+      "fix_id": "F1_ROUTE_GUARD_NO_NULL_ROUTE",
+      "title": "Bloquer les réponses llm/evidence_template sans route déterministe validée",
+      "impact_score": 10,
+      "severity": 5,
+      "affected_cases_count": 2,
+      "affected_cases": [
+        "UNEXP_IS_URGENT",
+        "UNEXP_TSH_WHICH_REPORTS"
+      ],
+      "signals": [
+        "mode=deterministic_evidence_template, selected_route=None",
+        "mode=llm, selected_route=None"
+      ],
+      "description": "Quand selected_route est vide sur requête médicale structurée/ambiguë, forcer un fallback déterministe (clarification/safety) au lieu d'une génération libre.",
+      "target_files": [
+        "scripts/generation/generate_answer.py",
+        "scripts/generation/query_understanding.py",
+        "scripts/generation/specialized_fallbacks.py"
+      ],
+      "estimated_effort": "M",
+      "expected_gain_pass_points": 4
+    }
+  ]
+}

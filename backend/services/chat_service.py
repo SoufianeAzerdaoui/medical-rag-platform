@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import re
 import traceback
@@ -22,11 +23,20 @@ from scripts.generation.model_settings import (
     DEFAULT_LLM_TEMPERATURE,
     DEFAULT_LLM_TIMEOUT,
 )
+try:
+    from scripts.generation.medical_entity_resolver import canonicalize_analyte
+except Exception:  # pragma: no cover
+    canonicalize_analyte = None  # type: ignore
 
 
 def _debug_or_devtest_enabled() -> bool:
     if str(os.getenv("CHAT_DEBUG_ERRORS", "")).strip().lower() in {"1", "true", "yes", "on"}:
         return True
+    return str(os.getenv("APP_ENV", "")).strip().lower() in {"dev", "development", "test", "local"}
+
+
+def _advanced_debug_enabled() -> bool:
+    """Expose advanced debug payload only in dev/test-like environments."""
     return str(os.getenv("APP_ENV", "")).strip().lower() in {"dev", "development", "test", "local"}
 
 
@@ -113,7 +123,58 @@ def _dedup_keep_order(items: list[str]) -> list[str]:
     return out
 
 
+def _validation_failure_signals(validation_errors: list[str], validation_warnings: list[str]) -> list[str]:
+    signals: list[str] = []
+    combined = [
+        str(item or "").strip().lower()
+        for item in [*validation_errors, *validation_warnings]
+        if str(item or "").strip()
+    ]
+    if any("hallucination" in item for item in combined):
+        signals.append("hallucination")
+    if any("diagnos" in item for item in combined):
+        signals.append("diagnosis")
+    if any("treatment" in item or "therap" in item for item in combined):
+        signals.append("treatment")
+    if any("pii" in item for item in combined):
+        signals.append("pii")
+    return signals
+
+
+def _emit_request_summary_log(
+    *,
+    logger: logging.Logger,
+    request_id: str,
+    conversation_id: str,
+    generation: dict[str, Any],
+    generation_debug: dict[str, Any],
+    validation_errors: list[str],
+    validation_warnings: list[str],
+) -> None:
+    quality_report = generation.get("quality_report") if isinstance(generation.get("quality_report"), dict) else {}
+    response_time_ms = round(float(generation.get("generation_time_seconds") or 0.0) * 1000.0, 3)
+    payload = {
+        "event": "chat_request_summary",
+        "request_id": request_id,
+        "conversation_id": conversation_id,
+        "intent": str(((generation.get("query_understanding") or {}).get("intent") or "")) or None,
+        "selected_route": str(generation_debug.get("selected_route") or "") or None,
+        "generation_mode": str(generation.get("generation_mode") or "") or None,
+        "validation_status": str(((generation.get("validation") or {}).get("validation_status") or "")) or None,
+        "quality_final_status": str(quality_report.get("final_status") or "") or None,
+        "answerability_status": str(generation_debug.get("answerability_status") or "") or None,
+        "fallback_kind": str(generation_debug.get("specialized_fallback_kind") or "") or None,
+        "response_time_ms": response_time_ms,
+        "failure_signals": _validation_failure_signals(validation_errors, validation_warnings),
+    }
+    logger.info("chat_request_summary %s", json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
 def _canonicalize_analyte_token(value: str) -> str:
+    if canonicalize_analyte is not None:
+        key = canonicalize_analyte(str(value or ""))
+        if key:
+            return key
     s = str(value or "").strip().lower()
     if not s:
         return ""
@@ -135,6 +196,34 @@ def _canonicalize_analytes(values: list[str] | None) -> list[str]:
         seen.add(key)
         out.append(key)
     return out
+
+
+def _extract_requested_analyte_labels(
+    qu: dict[str, Any],
+    generation: dict[str, Any],
+    generation_debug: dict[str, Any],
+) -> list[str]:
+    candidates: list[str] = []
+
+    def _add(values: Any) -> None:
+        if not isinstance(values, list):
+            return
+        for v in values:
+            txt = str(v or "").strip()
+            if txt:
+                candidates.append(txt)
+
+    # 1) Most user-facing labels if already provided by generation.
+    _add(qu.get("requested_analyte_labels"))
+    # 2) Requested analytes parsed by query understanding.
+    _add(qu.get("requested_analytes"))
+    # 3) Debug fallbacks from generation runtime.
+    _add(generation_debug.get("requested_analytes"))
+    _add(generation_debug.get("detected_analytes"))
+    _add(generation_debug.get("answerability_not_found_analytes"))
+    _add(generation.get("detected_analytes"))
+
+    return _dedup_keep_order(candidates)
 
 
 def _stage_timings_from_generation(generation: dict[str, Any]) -> dict[str, float | None]:
@@ -395,56 +484,79 @@ def process_chat(
         model_verified = None
         if llm_model_requested or llm_model_effective:
             model_verified = llm_model_requested == llm_model_effective
-        canonical_requested_analytes = _canonicalize_analytes(list(qu.get("requested_analytes") or []))
+        requested_analyte_labels = _extract_requested_analyte_labels(qu, generation, generation_debug)
+        canonical_requested_analytes = _canonicalize_analytes(requested_analyte_labels)
         qu_debug = dict(qu) if qu else {}
         if qu_debug:
             qu_debug["requested_analytes"] = canonical_requested_analytes
-        response_debug = {
+            qu_debug["requested_analyte_labels"] = requested_analyte_labels
+        response_debug: dict[str, Any] = {
+            "debug_contract_version": "v2",
             "intent": str(qu.get("intent") or "") or None,
             "safety_intent": str(qu.get("safety_intent") or "") or None,
-            "intent_arbitration": (qu.get("intent_arbitration") if isinstance(qu.get("intent_arbitration"), dict) else None),
             "technical_condition": str(qu.get("technical_condition") or "") or None,
-            "requested_doc_ids": list(qu.get("requested_doc_ids") or []),
-            "requested_analytes": canonical_requested_analytes,
-            "query_understanding": qu_debug if qu_debug else None,
-            "selected_route": str((generation_debug.get("selected_route") or "")) or None,
-            "route_reason": str((generation_debug.get("route_reason") or "")) or None,
-            "evidence_rows_preview": list((generation_debug.get("evidence_rows_preview") or [])),
-            "included_rows": list((generation_debug.get("included_rows") or [])),
-            "excluded_rows": list((generation_debug.get("excluded_rows") or [])),
-            "fallback_reason": str((generation_debug.get("fallback_reason") or "")) or None,
-            "generation_mode_before_fallback": str((generation_debug.get("generation_mode_before_fallback") or "")) or None,
-            "llm_provider": llm_provider,
-            "llm_model_override_requested": requested_model_override,
-            "llm_model_override_allowed": allow_model_override,
-            "llm_model_override_applied": bool(requested_model_override and allow_model_override),
-            "llm_model_override_rejected": bool(requested_model_override and not allow_model_override),
-            "llm_model_requested": llm_model_requested,
-            "llm_model_effective": llm_model_effective,
-            "ollama_model": str((generation_debug.get("ollama_model") or "")) or None,
-            "model_verified": model_verified,
-            "generation_strategy": str((generation_debug.get("generation_strategy") or "")) or None,
-            "llm_expected": bool(generation_debug.get("llm_expected")),
-            "llm_skipped_reason": str((generation_debug.get("llm_skipped_reason") or "")) or None,
-            "deterministic_preferred_reason": str((generation_debug.get("deterministic_preferred_reason") or "")) or None,
-            "llm_writer_attempted": bool(generation_debug.get("llm_writer_attempted")),
-            "llm_writer_accepted": bool(generation_debug.get("llm_writer_accepted"))
-            if generation_debug.get("llm_writer_accepted") is not None
-            else (str((generation_debug.get("generation_writer") or "")).strip().lower() == "llm_writer"),
-            "hard_gate_rejected": bool(generation_debug.get("hard_gate_triggered")),
-            "repair_attempted": bool(generation_debug.get("llm_repair_attempted") or generation_debug.get("llm_candidate_repair_used")),
-            "repair_success": bool(generation_debug.get("llm_repair_attempted") or generation_debug.get("llm_candidate_repair_used"))
-            and not bool(generation_debug.get("hard_gate_triggered"))
-            and str((generation_debug.get("generation_writer") or "")).strip().lower() == "llm_writer",
             "validation": {
                 "status": str(validation.get("validation_status") or "") or None,
                 "errors": validation_errors,
                 "warnings": validation_warnings,
                 "unsupported_claims": list(validation.get("unsupported_claims") or []),
             },
-            "stage_timings_ms": stage_timings_ms,
-            "raw_debug": generation_debug,
         }
+        if _advanced_debug_enabled():
+            response_debug.update(
+                {
+                    "intent_arbitration": (qu.get("intent_arbitration") if isinstance(qu.get("intent_arbitration"), dict) else None),
+                    "requested_doc_ids": list(qu.get("requested_doc_ids") or []),
+                    "requested_analytes": canonical_requested_analytes,
+                    "requested_analyte_labels": requested_analyte_labels,
+                    "query_understanding": qu_debug if qu_debug else None,
+                    "selected_route": str((generation_debug.get("selected_route") or "")) or None,
+                    "route_reason": str((generation_debug.get("route_reason") or "")) or None,
+                    "evidence_rows_preview": list((generation_debug.get("evidence_rows_preview") or [])),
+                    "included_rows": list((generation_debug.get("included_rows") or [])),
+                    "excluded_rows": list((generation_debug.get("excluded_rows") or [])),
+                    "fallback_reason": str((generation_debug.get("fallback_reason") or "")) or None,
+                    "generation_mode_before_fallback": str((generation_debug.get("generation_mode_before_fallback") or "")) or None,
+                    "llm_provider": llm_provider,
+                    "llm_model_override_requested": requested_model_override,
+                    "llm_model_override_allowed": allow_model_override,
+                    "llm_model_override_applied": bool(requested_model_override and allow_model_override),
+                    "llm_model_override_rejected": bool(requested_model_override and not allow_model_override),
+                    "llm_model_requested": llm_model_requested,
+                    "llm_model_effective": llm_model_effective,
+                    "ollama_model": str((generation_debug.get("ollama_model") or "")) or None,
+                    "model_verified": model_verified,
+                    "generation_strategy": str((generation_debug.get("generation_strategy") or "")) or None,
+                    "llm_expected": bool(generation_debug.get("llm_expected")),
+                    "llm_skipped_reason": str((generation_debug.get("llm_skipped_reason") or "")) or None,
+                    "deterministic_preferred_reason": str((generation_debug.get("deterministic_preferred_reason") or "")) or None,
+                    "llm_writer_attempted": bool(generation_debug.get("llm_writer_attempted")),
+                    "llm_writer_accepted": bool(generation_debug.get("llm_writer_accepted"))
+                    if generation_debug.get("llm_writer_accepted") is not None
+                    else (str((generation_debug.get("generation_writer") or "")).strip().lower() == "llm_writer"),
+                    "hard_gate_rejected": bool(generation_debug.get("hard_gate_triggered")),
+                    "repair_attempted": bool(generation_debug.get("llm_repair_attempted") or generation_debug.get("llm_candidate_repair_used")),
+                    "repair_success": bool(generation_debug.get("llm_repair_attempted") or generation_debug.get("llm_candidate_repair_used"))
+                    and not bool(generation_debug.get("hard_gate_triggered"))
+                    and str((generation_debug.get("generation_writer") or "")).strip().lower() == "llm_writer",
+                    "stage_timings_ms": stage_timings_ms,
+                    "raw_debug": {
+                        **generation_debug,
+                        "requested_analytes": canonical_requested_analytes,
+                        "requested_analyte_labels": requested_analyte_labels,
+                    },
+                }
+            )
+
+        _emit_request_summary_log(
+            logger=logger,
+            request_id=request_id,
+            conversation_id=conversation_id,
+            generation=generation,
+            generation_debug=generation_debug,
+            validation_errors=validation_errors,
+            validation_warnings=validation_warnings,
+        )
 
         return ChatResponse(
             conversation_id=conversation_id,
@@ -482,9 +594,9 @@ def process_chat(
         )
         expose_error_detail = str(os.getenv("CHAT_DEBUG_ERRORS", "")).strip().lower() in {"1", "true", "yes", "on"}
         if not expose_error_detail:
-            app_env = str(os.getenv("APP_ENV", "")).strip().lower()
-            expose_error_detail = app_env in {"dev", "development", "test", "local"}
+            expose_error_detail = _advanced_debug_enabled()
         debug_payload: dict[str, Any] = {
+            "debug_contract_version": "v2",
             "intent": None,
             "validation": {
                 "status": "warning",

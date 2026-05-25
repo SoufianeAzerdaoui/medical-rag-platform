@@ -104,6 +104,28 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertIn("CFG_INTRO", answer)
         self.assertIn("CFG_CLOSE", answer)
 
+    def test_clarification_messages_are_config_driven(self) -> None:
+        cfg = {
+            "clarifications": {
+                "abnormal_without_scope": "CFG_ABNORMAL_SCOPE",
+                "abnormal_without_scope_conclusion": "CFG_ABNORMAL_CONCLUSION",
+                "global_summary_no_scope": "CFG_GLOBAL_SCOPE",
+            }
+        }
+        with mock.patch("generate_answer.get_assistant_messages_config", return_value=cfg):
+            result = run_generation(
+                query="les résultats anormaux",
+                mode="keyword",
+                top_k=20,
+                index_dir="data/indexes",
+            )
+            answer = str(result.get("answer") or "")
+            self.assertIn("CFG_ABNORMAL_SCOPE", answer)
+            self.assertIn("CFG_ABNORMAL_CONCLUSION", answer)
+            ga = __import__("generate_answer")
+            empty_global = ga._render_global_biological_summary_answer([])
+            self.assertIn("CFG_GLOBAL_SCOPE", empty_global)
+
     def test_guarded_thyroid_postprocess_patterns_are_config_driven(self) -> None:
         ga = __import__("generate_answer")
         cfg = {
@@ -1723,6 +1745,92 @@ class TestGenerationDocScope(unittest.TestCase):
         answer = str(result.get("answer") or "")
         self.assertTrue(answer.startswith("Je ne peux pas recommander de traitement à partir de ces résultats seuls."))
         self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+
+    def test_abnormal_results_without_scope_uses_deterministic_clarification(self) -> None:
+        result = run_generation(
+            query="les résultats anormaux",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_no_evidence_response")
+        self.assertNotEqual(str(result.get("generation_mode") or ""), "llm")
+        self.assertEqual(len(result.get("sources") or []), 0)
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("information insuffisante", answer)
+        self.assertIn("précisez un rapport", answer)
+        dbg = dict(result.get("debug") or {})
+        self.assertEqual(str(dbg.get("selected_route") or ""), "cohort_search")
+        self.assertEqual(str(dbg.get("route_reason") or ""), "abnormal_results_without_scope_requires_clarification")
+        self.assertEqual(str(dbg.get("answerability_status") or ""), "ambiguous")
+
+    def test_abnormal_variants_without_scope_use_same_deterministic_clarification(self) -> None:
+        for q in ["anomalies ?", "hors norme ?"]:
+            with self.subTest(query=q):
+                result = run_generation(
+                    query=q,
+                    mode="keyword",
+                    top_k=20,
+                    index_dir="data/indexes",
+                )
+                self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_no_evidence_response")
+                self.assertEqual(len(result.get("sources") or []), 0)
+                dbg = dict(result.get("debug") or {})
+                self.assertEqual(str(dbg.get("selected_route") or ""), "cohort_search")
+                self.assertEqual(str(dbg.get("route_reason") or ""), "abnormal_results_without_scope_requires_clarification")
+
+    def test_factual_sources_block_is_appended_even_without_displayed_rows(self) -> None:
+        ga = __import__("generate_answer")
+        answer, sources = ga._ensure_sources_in_factual_answer(
+            answer="Comparaison technique disponible.",
+            generation_mode="deterministic_multi_doc_comparison",
+            selected_route="multi_doc_comparison",
+            displayed_evidences=[],
+            source_citations=[
+                {
+                    "label": "report (10).pdf — page 1, ligne 2",
+                    "doc_id": "report_10",
+                    "url": "/viewer/pdf?doc_id=report_10&page=1",
+                }
+            ],
+        )
+        self.assertIn("Sources :", answer)
+        self.assertGreater(len(list(sources or [])), 0)
+
+    def test_multi_doc_comparison_without_rows_has_doc_scope_sources(self) -> None:
+        result = run_generation(
+            query="compare report 10 et 12 vite fait",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_multi_doc_comparison")
+        sources = list(result.get("sources") or [])
+        self.assertGreater(len(sources), 0)
+        source_doc_ids = {str(s.get("doc_id") or "").strip().lower() for s in sources}
+        self.assertIn("report_10", source_doc_ids)
+        self.assertIn("report_12", source_doc_ids)
+
+    def test_multi_doc_comparison_never_uses_placeholder_report_labels(self) -> None:
+        result = run_generation(
+            query="compare report 10 et 12 vite fait",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        answer = str(result.get("answer") or "")
+        self.assertNotIn("report_a", answer)
+        self.assertNotIn("report_b", answer)
+
+    def test_global_abnormal_with_analyte_not_forced_to_scope_clarification(self) -> None:
+        result = run_generation(
+            query="quels sont les rapports qui ont créatinine supérieur a 2 ??",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertNotEqual(str(result.get("generation_mode") or ""), "deterministic_no_evidence_response")
+        self.assertIn(str((result.get("debug") or {}).get("selected_route") or ""), {"cohort_search", "global_analyte_abnormal_search"})
 
 
 if __name__ == "__main__":

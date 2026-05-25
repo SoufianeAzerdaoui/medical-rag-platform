@@ -29,12 +29,19 @@ DETERMINISTIC_PREFERRED_ROUTES = {
     "doc_scoped_priority_anomalies",
 }
 
-LLM_WRITER_EXPECTED_ROUTES = {
+SAFETY_ONLY_ROUTES = {
+    "diagnostic_safety_question",
+    "treatment_safety_question",
+}
+
+LLM_ALLOWED_ROUTES = {
     "doc_scoped_medical_interpretation_guarded",
     "open_grounded_medical_question",
     "response_transform",
     "context_summary_render",
 }
+
+LLM_WRITER_EXPECTED_ROUTES = set(LLM_ALLOWED_ROUTES)
 
 LEVEL2_HYBRID_INTENT_POLICY: dict[str, dict[str, Any]] = {
     "doc_scoped_biological_summary": {
@@ -108,6 +115,17 @@ HARD_GATE_ERRORS = {
 
 def get_intent_policy(intent_or_route: str) -> dict[str, Any]:
     route_norm = str(intent_or_route or "").strip().lower()
+    if route_norm in SAFETY_ONLY_ROUTES:
+        return {
+            "selected_policy": "safety_only",
+            "policy_level": "safety_only",
+            "generation_strategy": "deterministic_only",
+            "llm_expected": False,
+            "deterministic_preferred_reason": "route_marked_safety_only",
+            "facts_source": "validated_evidence_or_refusal_only",
+            "llm_writer_allowed": False,
+            "validator_policy": "strict_safety",
+        }
     if route_norm in DETERMINISTIC_ONLY_ROUTES:
         return {
             "selected_policy": "deterministic_only",
@@ -167,11 +185,11 @@ def get_intent_policy(intent_or_route: str) -> dict[str, Any]:
     return {
         "selected_policy": "standard",
         "policy_level": "standard",
-        "generation_strategy": "llm_writer_expected",
-        "llm_expected": True,
-        "deterministic_preferred_reason": None,
-        "facts_source": "mixed",
-        "llm_writer_allowed": True,
+        "generation_strategy": "deterministic_preferred",
+        "llm_expected": False,
+        "deterministic_preferred_reason": "default_route_not_explicitly_llm_allowed",
+        "facts_source": "mixed_validated",
+        "llm_writer_allowed": False,
         "validator_policy": "default",
     }
 
@@ -180,6 +198,8 @@ __all__ = [
     "STRICT_DETERMINISTIC_ROUTES",
     "DETERMINISTIC_ONLY_ROUTES",
     "DETERMINISTIC_PREFERRED_ROUTES",
+    "SAFETY_ONLY_ROUTES",
+    "LLM_ALLOWED_ROUTES",
     "LLM_WRITER_EXPECTED_ROUTES",
     "LEVEL2_HYBRID_INTENT_POLICY",
     "HARD_GATE_ERRORS",

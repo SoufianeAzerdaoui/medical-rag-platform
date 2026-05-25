@@ -42,14 +42,21 @@ def init_schema() -> None:
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
                 title TEXT NOT NULL,
-                -- TODO: add `title_source` ("auto" | "manual") to persist manual titles server-side.
-                -- Current implementation keeps this flag in frontend state only.
+                title_source TEXT NOT NULL DEFAULT 'auto',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
             """
         )
+        conversation_columns = {
+            str(row[1]).strip().lower()
+            for row in cur.execute("PRAGMA table_info(conversations)").fetchall()
+        }
+        if "title_source" not in conversation_columns:
+            cur.execute(
+                "ALTER TABLE conversations ADD COLUMN title_source TEXT NOT NULL DEFAULT 'auto'"
+            )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS messages (

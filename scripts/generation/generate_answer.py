@@ -45,6 +45,7 @@ except Exception as _retrieval_import_error:  # pragma: no cover - import guard 
                 ) from _RETRIEVAL_IMPORT_ERROR
 
 from answer_validator import validate_answer
+from answerability_gate import evaluate_answerability
 from citation_builder import append_source_citations, build_citations, build_source_citations
 try:
     from source_resolver import DocPdfResolver
@@ -70,6 +71,8 @@ from professional_answer_composer import (
     compose_patient_inventory_answer,
     compose_patient_inventory_count_answer,
 )
+# Deterministic renderer for compact/not-found templates
+from professional_answer_composer import ClinicalDeterministicRenderer
 from prompt_builder import INSUFFICIENT_CONTEXT_SENTENCE, build_prompt
 from query_understanding import (
     QueryUnderstanding,
@@ -87,6 +90,7 @@ from query_understanding import (
     parse_query_understanding,
     norm_text,
 )
+from query_planner import build_execution_plan
 from followup_scope_utils import resolve_followup_doc_scope
 from context_resolver import resolve_context_for_turn, resolve_deictic_request
 from conversation_state_utils import evidence_pack_is_transformable
@@ -102,9 +106,15 @@ from qualitative_comment_utils import (
 )
 from analyte_aliases import ANALYTE_ALIAS_GROUPS
 from analyte_resolver import resolve_requested_analytes, load_available_analytes, normalize_analyte_text
+from medical_entity_resolver import (
+    canonicalize_analyte as canonicalize_medical_analyte,
+    get_display_analyte_label as resolve_display_analyte_label,
+    is_analyte_match as resolver_is_analyte_match,
+)
 from config_loader import (
     get_analyte_families_config,
     get_assistant_messages_config,
+    get_generation_routing_config,
     get_priority_scoring_config,
     get_safety_guardrails_config,
 )
@@ -125,6 +135,10 @@ from priority_scoring import compute_priority_score as _compute_priority_score_e
 from reference_range_parser import parse_reference_ranges
 from reference_range_selector import select_reference_range
 from reference_range_lookup_flow import run_reference_range_lookup_from_rows
+from specialized_fallbacks import (
+    build_specialized_fallback,
+    infer_specialized_fallback_kind,
+)
 try:
     from backend.services.feature_flag_service import get_feature_flag as _runtime_get_feature_flag
 except Exception:  # pragma: no cover - fallback for CLI-only runs without backend package
@@ -140,6 +154,10 @@ def _is_feature_enabled(name: str, default: bool = True) -> bool:
         return bool(_runtime_get_feature_flag(str(name)))
     except Exception:
         return default
+
+
+def _llm_global_enabled() -> bool:
+    return _is_feature_enabled("LLM_GLOBAL_ENABLED", default=True)
 
 
 def _is_critical_medical_intent(query_understanding: QueryUnderstanding) -> bool:
@@ -180,6 +198,8 @@ def _is_hybrid_structured_writer_intent(query_understanding: QueryUnderstanding)
 
 
 def _hybrid_writer_mode(query_understanding: QueryUnderstanding) -> str:
+    if not _llm_global_enabled():
+        return "fallback"
     force_llm_writer = str(os.getenv("MEDICAL_RAG_FORCE_LLM_WRITER", "0")).strip().lower() in {"1", "true", "yes", "on"}
     intent_norm = str(getattr(query_understanding, "intent", "") or "").strip().lower()
     if intent_norm == "multi_doc_comparison":
@@ -220,7 +240,7 @@ def _level2_llm_runtime_config(
     default_max_tokens: int,
 ) -> dict[str, Any]:
     route_norm = str(selected_route or "").strip().lower()
-    llm_allowed = bool(selected_policy.get("llm_writer_allowed", False))
+    llm_allowed = bool(selected_policy.get("llm_writer_allowed", False)) and _llm_global_enabled()
     generation_strategy = str(selected_policy.get("generation_strategy") or "").strip().lower() or "deterministic_preferred"
     llm_expected = bool(selected_policy.get("llm_expected", False))
     is_level2 = route_norm in LEVEL2_HYBRID_INTENT_POLICY
@@ -232,6 +252,8 @@ def _level2_llm_runtime_config(
     use_llm = False
     if generation_strategy == "deterministic_only":
         llm_skipped_reason = "route_deterministic_only"
+    elif not _llm_global_enabled():
+        llm_skipped_reason = "llm_globally_disabled"
     elif generation_strategy == "deterministic_preferred":
         # Deterministic-first on factual routes; explicit force can still opt-in for tests/debug.
         use_llm = bool(is_level2 and has_evidence and not hard_block_safety and force_llm_writer)
@@ -328,6 +350,9 @@ def _llm_assisted_query_understanding(
     timeout: int,
 ) -> tuple[QueryUnderstanding, dict[str, Any]]:
     debug: dict[str, Any] = {"enabled": False, "used": False, "error": None}
+    if not _llm_global_enabled():
+        debug["error"] = "llm_globally_disabled"
+        return base_qu, debug
     if not _is_feature_enabled("LLM_QUERY_UNDERSTANDING_ENABLED", default=False):
         return base_qu, debug
     debug["enabled"] = True
@@ -940,6 +965,8 @@ def _select_hard_gate_fallback_mode(
     if _is_treatment_request(query_norm):
         return "deterministic_treatment_refusal_with_technical_summary"
     if safety_intent_norm == "diagnostic_safety_question":
+        if str(selected_route or "").strip().lower() == "doc_scoped_medical_interpretation_guarded":
+            return "deterministic_guarded_medical_interpretation"
         return "deterministic_diagnostic_refusal_with_technical_summary"
     if not has_evidence:
         return "deterministic_no_evidence_response"
@@ -990,6 +1017,13 @@ def sanitize_final_answer(answer: str) -> str:
     raw = re.sub(r"(?im)^plan\s*:\s*", "", raw).strip()
     raw = re.sub(r"(?im)^réponse\s*:\s*", "", raw).strip()
     raw = re.sub(r"(?im)^reponse\s*:\s*", "", raw).strip()
+    # Remove internal source/debug tokens leaked into user-visible text.
+    raw = re.sub(r"\[[^\]]*(?:doc_id=|chunk_id=)[^\]]*\]\([^)]+\)", "", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"\[[^\]]*(?:doc_id=|chunk_id=)[^\]]*\]", "", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"(?<![?&])\bdoc_id=[^\s,\]\)]+", "", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"\bchunk_id=[^\s,\]\)]+", "", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"[ \t]{2,}", " ", raw)
+    raw = re.sub(r"\n{3,}", "\n\n", raw).strip()
     return raw.strip()
 
 
@@ -1761,6 +1795,11 @@ def _query_understanding_payload(qu: QueryUnderstanding) -> dict[str, Any]:
         "use_patient_profile": bool(getattr(qu, "use_patient_profile", False)),
         "request_all_reference_ranges": bool(getattr(qu, "request_all_reference_ranges", False)),
         "requested_summary_points": getattr(qu, "requested_summary_points", None),
+        "intent_candidates": list(getattr(qu, "intent_candidates", []) or []),
+        "intent_confidence": float(getattr(qu, "intent_confidence", 0.0) or 0.0),
+        "scope_confidence": float(getattr(qu, "scope_confidence", 0.0) or 0.0),
+        "ambiguity_flags": list(getattr(qu, "ambiguity_flags", []) or []),
+        "medical_topics": list(getattr(qu, "medical_topics", []) or []),
         "intent_arbitration": build_intent_arbitration_debug(qu),
         "presentation_intent": {
             "requested_output": getattr(presentation, "requested_output", qu.output_format),
@@ -2445,9 +2484,23 @@ def _is_toxicology_global_query(qn: str) -> bool:
             "tous les cas",
         ]
     )
+    # Implicit global intent for broad toxicology phrasing without document scope.
+    has_broad_global_toxicology_shape = any(
+        t in qn
+        for t in [
+            "toxiques sont positifs",
+            "toxiques positifs",
+            "toxiques sont negatif",
+            "toxiques sont négatif",
+            "toxico positive",
+            "toxicologie positive",
+        ]
+    )
     has_toxicology_terms = any(
         t in qn
         for t in [
+            "toxiques",
+            "toxique",
             "pharmacotoxicologie",
             "pharmaco toxicologie",
             "toxicologie",
@@ -2459,7 +2512,106 @@ def _is_toxicology_global_query(qn: str) -> bool:
             "recherche de toxiques",
         ]
     )
-    return has_global_scope and has_toxicology_terms
+    return (has_global_scope and has_toxicology_terms) or (has_broad_global_toxicology_shape and has_toxicology_terms)
+
+
+def _looks_like_analyte_report_lookup_query(
+    query_norm: str,
+    requested_doc_ids: list[str],
+    requested_analytes: list[str],
+) -> bool:
+    if list(requested_doc_ids or []):
+        return False
+    if not list(requested_analytes or []):
+        return False
+    default_markers = [
+        "dans quels rapports",
+        "quels rapports",
+        "dans quel rapport",
+        "trouve dans",
+        "trouvé dans",
+        "present dans quels rapports",
+        "présent dans quels rapports",
+        "liste les rapports",
+        "rapports qui ont",
+    ]
+    markers = _generation_routing_marker_list(
+        ["generation_routing", "analyte_report_lookup", "markers"],
+        default_markers,
+    )
+    return any(marker in query_norm for marker in markers)
+
+
+def _looks_like_global_priority_summary_query(query_norm: str, requested_doc_ids: list[str]) -> bool:
+    if list(requested_doc_ids or []):
+        return False
+    default_markers = [
+        "urgence",
+        "urgent",
+        "inquiet",
+        "inquiét",
+        "sort des normes",
+        "hors norme",
+        "hors reference",
+        "parametres depassent",
+        "paramètres dépassent",
+        "depassent",
+        "dépassent",
+        "au dessus de la reference",
+        "au-dessus de la référence",
+    ]
+    default_request_markers = [
+        "quels",
+        "donne",
+        "liste",
+        "resultats",
+        "résultats",
+        "parametres",
+        "paramètres",
+        "ce qui",
+    ]
+    default_urgency_markers = ["urgence", "urgent", "inquiet", "inquiét"]
+    markers = _generation_routing_marker_list(
+        ["generation_routing", "global_priority_summary", "markers"],
+        default_markers,
+    )
+    request_markers = _generation_routing_marker_list(
+        ["generation_routing", "global_priority_summary", "request_markers"],
+        default_request_markers,
+    )
+    urgency_markers = _generation_routing_marker_list(
+        ["generation_routing", "global_priority_summary", "urgency_markers"],
+        default_urgency_markers,
+    )
+    has_priority_signal = any(marker in query_norm for marker in markers)
+    has_request_signal = any(marker in query_norm for marker in request_markers)
+    has_urgency_signal = any(marker in query_norm for marker in urgency_markers)
+    return has_urgency_signal or (has_priority_signal and has_request_signal)
+
+
+def _looks_like_global_analyte_summary_query(
+    query_norm: str,
+    requested_doc_ids: list[str],
+    requested_analytes: list[str],
+) -> bool:
+    if list(requested_doc_ids or []):
+        return False
+    if not list(requested_analytes or []):
+        return False
+    default_markers = [
+        "coherent",
+        "cohérent",
+        "normal",
+        "normale",
+        "rassurant",
+        "rassurantes",
+        "bilan",
+    ]
+    markers = _generation_routing_marker_list(
+        ["generation_routing", "global_analyte_summary", "markers"],
+        default_markers,
+    )
+    return any(marker in query_norm for marker in markers)
 
 
 def _is_toxicology_query(qn: str) -> bool:
@@ -3697,6 +3849,24 @@ def _should_use_deterministic_generation(query: str, evidence_pack: list[dict[st
     return False
 
 
+def _has_explicit_global_scope_hint(query_norm: str) -> bool:
+    qn = str(query_norm or "").strip().lower()
+    if not qn:
+        return False
+    markers = [
+        "tous les rapports",
+        "tous les report",
+        "dans quels rapports",
+        "dans quel rapport",
+        "quels rapports",
+        "quel rapport",
+        "sur l ensemble",
+        "global",
+        "toute la base",
+    ]
+    return any(m in qn for m in markers)
+
+
 def _load_exact_analyte_rows(
     *,
     sqlite_path: Path,
@@ -3987,40 +4157,11 @@ def _clean_analyte_label(value: str | None) -> str:
 
 
 def _resolve_row_display_analyte(row: dict[str, Any], analyte_norm: str) -> str:
-    candidates = [
-        row.get("analyte_label"),
-        row.get("display_name"),
-        row.get("source_analyte"),
-        row.get("parameter"),
-        row.get("original_analyte"),
-        row.get("analyte"),
-    ]
-
-    source_label = ""
-    for cand in candidates:
-        label = _clean_analyte_label(str(cand or ""))
-        if label and label.lower() != "non précisé":
-            source_label = label
-            break
-
-    canonical_label = (
-        analyte_display_name(source_label or analyte_norm, analyte_norm or None)
-        or source_label
-        or "non précisé"
-    )
-
-    source_norm = norm_text(source_label)
-    norm_key = str(analyte_norm or "").strip().lower()
-
-    # Preserve source/display label when a more specific source alias is present.
-    # Example: source has "TSHus" while canonical key can be "tsh".
-    if norm_key in {"tsh", "tshus"} and "tshus" in source_norm:
-        return "TSHus"
-
-    if source_label:
-        return source_label
-
-    return canonical_label
+    label = _clean_analyte_label(resolve_display_analyte_label(row))
+    if label and label.lower() != "non précisé":
+        return label
+    canonical_label = analyte_display_name(analyte_norm, analyte_norm or None)
+    return canonical_label or "non précisé"
 
 
 def _extract_reference_from_text(text: str | None) -> str | None:
@@ -4484,11 +4625,44 @@ def _fetch_global_lab_rows(
             params,
         )
         rows = [dict(r) for r in cur.fetchall()]
-        # Final safeguard using alias matcher on raw fields.
+        # Final safeguard:
+        # - keep robust alias matching for heterogeneous source labels
+        # - block known false positives (e.g. "clairance de la créatinine"
+        #   when request targets "créatinine").
         filtered: list[dict[str, Any]] = []
         for row in rows:
-            analyte_field = str(row.get("analyte_norm") or "") + " " + str(row.get("analyte") or "")
-            if any(match_analyte(analyte_field, a) for a in analytes):
+            row_norm_raw = str(row.get("analyte_norm") or "").strip().lower()
+            row_analyte_raw = str(row.get("analyte") or "").strip().lower()
+            analyte_field = f"{row_norm_raw} {row_analyte_raw}".strip()
+            matched = False
+            for a in analytes:
+                req_can = canonicalize_medical_analyte(a)
+                row_can = canonicalize_medical_analyte(str(row.get("analyte_norm") or row.get("analyte") or ""))
+                strict_hit = resolver_is_analyte_match(
+                    a,
+                    {
+                        "analyte_norm": row.get("analyte_norm"),
+                        "analyte": row.get("analyte"),
+                        "analyte_label": row.get("analyte"),
+                        "display_name": row.get("analyte"),
+                        "source_analyte": row.get("analyte"),
+                        "parameter": row.get("parameter"),
+                        "original_analyte": row.get("analyte"),
+                    },
+                )
+                broad_hit = match_analyte(analyte_field, a)
+                if not (strict_hit or broad_hit):
+                    continue
+                # Guardrail: creatinine request must not include creatinine-clearance rows.
+                if req_can == "creatinine" and (
+                    "clairance" in row_norm_raw
+                    or "clairance" in row_analyte_raw
+                    or row_can in {"clairance_de_la_creatinine", "creatinine_clearance"}
+                ):
+                    continue
+                matched = True
+                break
+            if matched:
                 filtered.append(row)
         return filtered
     finally:
@@ -4831,6 +5005,176 @@ def _build_global_toxicology_source_citations(display_entries: list[dict[str, An
     return out
 
 
+def _answer_has_sources_block(answer: str) -> bool:
+    return bool(re.search(r"(?im)^\s*sources?\s*:", str(answer or "")))
+
+
+def _fallback_sources_from_evidences(evidences: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    raw: list[dict[str, Any]] = []
+    for ev in list(evidences or []):
+        doc_id = str(ev.get("doc_id") or "").strip()
+        if not doc_id:
+            continue
+        raw.append(
+            normalize_source_for_response(
+                {
+                    "doc_id": doc_id,
+                    "source_pdf": ev.get("source_pdf"),
+                    "page": ev.get("page_number"),
+                    "line": ev.get("row_index"),
+                    "label": _source_label(ev),
+                }
+            )
+        )
+    return dedup_sources_for_qualitative(raw)
+
+
+def _is_factual_generation_mode(generation_mode: str | None) -> bool:
+    gm = str(generation_mode or "").strip().lower()
+    return gm.startswith("deterministic_")
+
+
+_DOC_ANCHOR_SOURCE_ROUTES = {
+    "doc_pair_comparison",
+    "multi_doc_comparison",
+    "doc_scoped_summary",
+    "doc_scoped_biological_summary",
+    "doc_scoped_abnormal_results",
+    "doc_scoped_priority_anomalies",
+    "global_biological_summary",
+    "global_priority_anomalies_summary",
+    "global_analyte_abnormal_search",
+    "global_toxicology_search",
+    "doc_scoped_toxicology_summary",
+    "doc_scoped_toxicology_threshold_search",
+    "cohort_search",
+}
+
+
+def _sources_from_context_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return _fallback_sources_from_evidences([r for r in (rows or []) if isinstance(r, dict)])
+
+
+def _doc_anchor_sources_from_scope(*, sqlite_path: Path | None, requested_doc_ids: list[str]) -> list[dict[str, Any]]:
+    doc_ids = [str(d).strip().lower() for d in (requested_doc_ids or []) if str(d).strip()]
+    if not doc_ids:
+        return []
+    first_rows_by_doc: dict[str, dict[str, Any]] = {}
+    if isinstance(sqlite_path, Path) and sqlite_path.exists():
+        probe_rows = _fetch_doc_summary_rows(
+            sqlite_path=sqlite_path,
+            requested_doc_ids=doc_ids,
+            limit=max(12, len(doc_ids) * 4),
+        )
+        for row in probe_rows:
+            if not isinstance(row, dict):
+                continue
+            doc_id = str(row.get("doc_id") or "").strip().lower()
+            if not doc_id or doc_id in first_rows_by_doc:
+                continue
+            first_rows_by_doc[doc_id] = row
+    out: list[dict[str, Any]] = []
+    for doc_id in doc_ids:
+        row = first_rows_by_doc.get(doc_id)
+        if not row:
+            continue
+        out.append(
+            normalize_source_for_response(
+                {
+                    "doc_id": doc_id,
+                    "source_pdf": row.get("source_pdf"),
+                    "page": row.get("page_number"),
+                    "line": row.get("row_index"),
+                    "label": _source_label(row),
+                }
+            )
+        )
+    return dedup_sources_for_qualitative(out)
+
+
+def _backfill_factual_sources(
+    *,
+    generation_mode: str | None,
+    selected_route: str | None,
+    source_citations: list[dict[str, Any]],
+    displayed_evidences: list[dict[str, Any]],
+    evidence_pack: list[dict[str, Any]] | None,
+    structured_pack: dict[str, Any] | None,
+    requested_doc_ids: list[str] | None,
+    previous_displayed_context: dict[str, Any] | None,
+    previous_qualitative_evidence_pack: dict[str, Any] | None,
+    sqlite_path: Path | None,
+) -> list[dict[str, Any]]:
+    if not _is_factual_generation_mode(generation_mode):
+        return list(source_citations or [])
+    route = str(selected_route or "").strip().lower()
+    if route in {"small_talk", "general_conversation"}:
+        return list(source_citations or [])
+
+    existing = dedup_sources_for_qualitative(list(source_citations or []))
+    if existing:
+        return existing
+
+    candidates: list[dict[str, Any]] = []
+    candidates.extend(_sources_from_context_rows(list(displayed_evidences or [])))
+    candidates.extend(_sources_from_context_rows(list(evidence_pack or [])))
+
+    pack = dict(structured_pack or {})
+    if pack:
+        pack_sources = list(pack.get("sources") or [])
+        if pack_sources:
+            candidates.extend(dedup_sources_for_qualitative(pack_sources))
+        pack_rows = list(pack.get("evidences") or pack.get("results") or [])
+        candidates.extend(_sources_from_context_rows(pack_rows))
+
+    prev_ctx = dict(previous_displayed_context or {})
+    if prev_ctx:
+        prev_sources = list(prev_ctx.get("sources") or [])
+        if prev_sources:
+            candidates.extend(dedup_sources_for_qualitative(prev_sources))
+
+    prev_qual_pack = dict(previous_qualitative_evidence_pack or {})
+    if prev_qual_pack:
+        prev_rows = [r for r in list(prev_qual_pack.get("evidences") or prev_qual_pack.get("results") or []) if isinstance(r, dict)]
+        candidates.extend(_sources_from_context_rows(prev_rows))
+
+    candidates = dedup_sources_for_qualitative(candidates)
+    if candidates:
+        return candidates
+
+    if route in _DOC_ANCHOR_SOURCE_ROUTES and list(requested_doc_ids or []):
+        return _doc_anchor_sources_from_scope(
+            sqlite_path=sqlite_path,
+            requested_doc_ids=list(requested_doc_ids or []),
+        )
+    return []
+
+
+def _ensure_sources_in_factual_answer(
+    *,
+    answer: str,
+    generation_mode: str | None,
+    selected_route: str | None,
+    displayed_evidences: list[dict[str, Any]],
+    source_citations: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
+    if not _is_factual_generation_mode(generation_mode):
+        return str(answer or "").strip(), list(source_citations or [])
+    gm = str(generation_mode or "").strip().lower()
+    if gm.endswith("_json") or gm in {"deterministic_response_transform_json"}:
+        return str(answer or "").strip(), list(source_citations or [])
+    route = str(selected_route or "").strip().lower()
+    if route in {"small_talk", "general_conversation"}:
+        return str(answer or "").strip(), list(source_citations or [])
+    current_sources = list(source_citations or [])
+    if (not current_sources) and displayed_evidences:
+        current_sources = _fallback_sources_from_evidences(displayed_evidences)
+    final_answer = str(answer or "").strip()
+    if current_sources and not _answer_has_sources_block(final_answer):
+        final_answer = append_source_citations(final_answer, current_sources)
+    return final_answer, current_sources
+
+
 def _render_global_toxicology_answer(
     *,
     subtype: str,
@@ -4897,9 +5241,12 @@ def _render_doc_scoped_toxicology_majority_answer(
 
 def _render_global_biological_summary_answer(evidences: list[dict[str, Any]], *, max_items: int = 10) -> str:
     if not evidences:
-        return (
-            "Je dois connaître le document, le patient ou le périmètre à résumer. "
-            "Précisez un rapport ou demandez une synthèse sur l’ensemble des rapports disponibles."
+        return _clarification_message(
+            "global_summary_no_scope",
+            (
+                "Je dois connaître le document, le patient ou le périmètre à résumer. "
+                "Précisez un rapport ou demandez une synthèse sur l’ensemble des rapports disponibles."
+            ),
         )
     lines = ["Anomalies principales :", ""]
     shown = 0
@@ -4926,9 +5273,12 @@ def _render_global_biological_summary_answer(evidences: list[dict[str, Any]], *,
 
 def _render_global_priority_anomalies_summary_answer(evidences: list[dict[str, Any]], *, max_items: int = 10) -> str:
     if not evidences:
-        return (
-            "Je dois connaître le document, le patient ou le périmètre à résumer. "
-            "Précisez un rapport ou demandez une synthèse sur l’ensemble des rapports disponibles."
+        return _clarification_message(
+            "global_summary_no_scope",
+            (
+                "Je dois connaître le document, le patient ou le périmètre à résumer. "
+                "Précisez un rapport ou demandez une synthèse sur l’ensemble des rapports disponibles."
+            ),
         )
     high: list[str] = []
     moderate_low: list[str] = []
@@ -5073,11 +5423,15 @@ def _rows_to_evidence(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _row_matches_analyte(row: dict[str, Any], analyte_norm: str) -> bool:
+    key = canonicalize_medical_analyte(str(analyte_norm or ""))
+    if not key:
+        return False
+    if resolver_is_analyte_match(key, row):
+        return True
     analyte_field = f"{row.get('analyte_norm') or ''} {row.get('analyte') or ''}"
-    key = str(analyte_norm or "").strip().lower()
     if key in {"tsh", "tshus"}:
         return match_analyte(analyte_field, "tsh") or match_analyte(analyte_field, "tshus")
-    return match_analyte(analyte_field, analyte_norm)
+    return match_analyte(analyte_field, key)
 
 
 def _row_matches_excluded(row: dict[str, Any], excluded_analytes: list[str]) -> bool:
@@ -5178,14 +5532,14 @@ def _resolve_reference_scope_doc_ids(
 
 
 def _resolve_target_analyte_rows(rows: list[dict[str, Any]], requested_analyte: str) -> list[dict[str, Any]]:
-    target = norm_text(requested_analyte or "")
+    target = canonicalize_medical_analyte(str(requested_analyte or ""))
     if not target:
         return rows
     if target in {"tsh", "tshus"}:
         tsh_rows = [
             r
             for r in rows
-            if norm_text(str(r.get("analyte_norm") or "")) in {"tsh", "tshus"}
+            if canonicalize_medical_analyte(str(r.get("analyte_norm") or "")) in {"tsh", "tshus"}
             or "tsh" in norm_text(str(r.get("analyte") or ""))
         ]
         if tsh_rows:
@@ -5193,8 +5547,8 @@ def _resolve_target_analyte_rows(rows: list[dict[str, Any]], requested_analyte: 
     exact = [
         r
         for r in rows
-        if norm_text(str(r.get("analyte_norm") or r.get("analyte") or "")) == target
-        or norm_text(str(r.get("analyte") or "")) == target
+        if canonicalize_medical_analyte(str(r.get("analyte_norm") or r.get("analyte") or "")) == target
+        or canonicalize_medical_analyte(str(r.get("analyte") or "")) == target
     ]
     if exact:
         return exact
@@ -6298,6 +6652,98 @@ def _safety_guardrail_list(path: list[str], default: list[str]) -> list[str]:
     return vals or list(default)
 
 
+def _generation_routing_marker_list(path: list[str], default: list[str]) -> list[str]:
+    cfg: Any = get_generation_routing_config() or {}
+    node: Any = cfg
+    for key in path:
+        if not isinstance(node, dict):
+            return list(default)
+        node = node.get(key)
+    vals = [str(v).strip() for v in list(node or []) if str(v).strip()]
+    return vals or list(default)
+
+
+def _clarification_message(key: str, default: str) -> str:
+    return _assistant_message(["clarifications", key], default)
+
+
+def _render_specialized_fallback(
+    *,
+    fallback_kind: str,
+    requested_analytes: list[str] | None = None,
+    requested_doc_ids: list[str] | None = None,
+    matched_doc_ids: list[str] | None = None,
+    missing_doc_ids: list[str] | None = None,
+    requested_value: str | None = None,
+    comparison_operator: str | None = None,
+) -> dict[str, str]:
+    fb = build_specialized_fallback(
+        kind=fallback_kind,
+        requested_analytes=requested_analytes,
+        requested_doc_ids=requested_doc_ids,
+        matched_doc_ids=matched_doc_ids,
+        missing_doc_ids=missing_doc_ids,
+        requested_value=requested_value,
+        comparison_operator=comparison_operator,
+    )
+    return {
+        "kind": str(fb.kind),
+        "answer": str(fb.answer),
+        "generation_mode": str(fb.generation_mode),
+        "warning_code": str(fb.warning_code),
+    }
+
+
+def _canonical_requested_analytes_for_debug(analytes: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in list(analytes or []):
+        key = canonicalize_medical_analyte(str(raw))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _build_fallback_decision_path(
+    *,
+    planner_execution: dict[str, Any],
+    answerability_assessment: dict[str, Any],
+    fallback_stage: str | None,
+    fallback_reason_debug: str | None,
+    specialized_fallback_kind: str | None,
+    llm_writer_used: bool,
+    final_safety_check_failed: bool,
+) -> list[str]:
+    path: list[str] = []
+    answerability_status = str(answerability_assessment.get("status") or "").strip().lower()
+    if answerability_status:
+        path.append(f"answerability:{answerability_status}")
+    selected_plan = str(planner_execution.get("selected_plan") or "").strip().lower()
+    if selected_plan:
+        path.append(f"planner_selected:{selected_plan}")
+    for cand in list(planner_execution.get("fallback_candidates") or []):
+        tok = str(cand or "").strip().lower()
+        if tok:
+            path.append(f"planner_fallback_candidate:{tok}")
+    if fallback_stage:
+        path.append(f"fallback_stage:{str(fallback_stage).strip().lower()}")
+    if specialized_fallback_kind:
+        path.append(f"specialized_fallback:{str(specialized_fallback_kind).strip().lower()}")
+    if fallback_reason_debug:
+        path.append(f"fallback_reason:{str(fallback_reason_debug).strip().lower()}")
+    if final_safety_check_failed:
+        path.append("final_safety_check:failed")
+    if llm_writer_used:
+        path.append("llm_writer:used")
+    dedup: list[str] = []
+    for p in path:
+        if p not in dedup:
+            dedup.append(p)
+    return dedup
+
+
 def _thyroid_high_groups() -> tuple[set[str], set[str]]:
     rules = dict(get_topic_rules("thyroid") or {})
     groups = dict(rules.get("high_groups") or {})
@@ -6476,8 +6922,8 @@ def render_evidence_pack_deterministic(evidence_pack: dict[str, Any], output_for
 
     if intent in {"multi_doc_comparison", "doc_pair_comparison"}:
         doc_ids = requested_doc_ids[:2]
-        left = doc_ids[0] if len(doc_ids) >= 1 else "report_a"
-        right = doc_ids[1] if len(doc_ids) >= 2 else "report_b"
+        left = doc_ids[0] if len(doc_ids) >= 1 else ""
+        right = doc_ids[1] if len(doc_ids) >= 2 else ""
         grouped: dict[str, dict[str, dict[str, Any]]] = {}
         for ev in evidences:
             analyte_norm = str(ev.get("analyte_norm") or ev.get("analyte") or "").strip().lower()
@@ -6495,14 +6941,23 @@ def render_evidence_pack_deterministic(evidence_pack: dict[str, Any], output_for
             side_data = grouped.get(key, {})
             a = side_data.get(left)
             b = side_data.get(right)
+            left_label = left or "le premier document demandé"
+            right_label = right or "le second document demandé"
             if not a and not b:
-                lines.append(f"- {label}: non retrouvé dans {left} ni {right}.")
+                if left and right:
+                    lines.append(f"- {label}: non retrouvé dans {left_label} ni {right_label}.")
+                elif left:
+                    lines.append(f"- {label}: non retrouvé dans {left_label}.")
+                elif right:
+                    lines.append(f"- {label}: non retrouvé dans {right_label}.")
+                else:
+                    lines.append(f"- {label}: non retrouvé dans les documents demandés.")
                 continue
             if a and not b:
-                lines.append(f"- {label}: présent uniquement dans {left} ({a.get('current_value')} {a.get('unit') or ''}).")
+                lines.append(f"- {label}: présent uniquement dans {left_label} ({a.get('current_value')} {a.get('unit') or ''}).")
                 continue
             if b and not a:
-                lines.append(f"- {label}: présent uniquement dans {right} ({b.get('current_value')} {b.get('unit') or ''}).")
+                lines.append(f"- {label}: présent uniquement dans {right_label} ({b.get('current_value')} {b.get('unit') or ''}).")
                 continue
             av = str(a.get("current_value") or "")
             bv = str(b.get("current_value") or "")
@@ -6661,6 +7116,14 @@ def _reference_short(reference_raw: Any) -> str:
 
 
 def _ensure_biological_summary_conclusion(answer: str, *, has_abnormal: bool = True, has_within: bool = False) -> str:
+    def _insert_conclusion_before_sources(body: str, conc: str) -> str:
+        m = re.search(r"(?im)^\s*sources?\s*:\s*$", body or "")
+        if not m:
+            return f"{body}\n{conc}".strip()
+        before = str(body[: m.start()]).rstrip()
+        after = str(body[m.start() :]).lstrip()
+        return f"{before}\n\n{conc}\n\n{after}".strip()
+
     text = str(answer or "").strip()
     if not text:
         return text
@@ -6702,9 +7165,9 @@ def _ensure_biological_summary_conclusion(answer: str, *, has_abnormal: bool = T
                 current_conclusion = ln
         if current_conclusion and any(t in norm_text(current_conclusion) for t in ["le nombre de resultats anormaux", ": aucun", ": ras"]):
             text = re.sub(r"(?im)^conclusion technique\s*:.*$", "", text).strip()
-            return f"{text}\n{conclusion}".strip()
+            return _insert_conclusion_before_sources(text, conclusion)
         return text
-    return f"{text}\n{conclusion}".strip()
+    return _insert_conclusion_before_sources(text, conclusion)
 
 
 def _is_toxicology_dual_threshold_summary_query(qn: str) -> bool:
@@ -6730,6 +7193,22 @@ def _looks_like_global_summary_without_scope(query_norm: str, requested_doc_ids:
             "résultats biologiques disponibles",
         ]
     )
+    # Do not reinterpret explicit deictic follow-up requests as global summaries.
+    deictic_followup = any(
+        t in query_norm
+        for t in [
+            "ce commentaire",
+            "cette valeur",
+            "ce resultat",
+            "ce résultat",
+            "ces resultats",
+            "ces résultats",
+            "ce tableau",
+            "ceci",
+            "ca ",
+            "ça ",
+        ]
+    )
     has_summary_shape = any(
         t in query_norm
         for t in [
@@ -6742,7 +7221,92 @@ def _looks_like_global_summary_without_scope(query_norm: str, requested_doc_ids:
             "médico-biologique",
         ]
     )
-    return has_available_scope and has_summary_shape
+    broad_summary_markers = _generation_routing_marker_list(
+        ["generation_routing", "global_summary", "broad_markers"],
+        [
+            "resume pour medecin",
+            "résumé pour médecin",
+            "resume medecin",
+            "résumé médecin",
+            "fais moi un resume",
+            "fais-moi un résumé",
+            "valeurs rassurantes",
+            "resultats rassurants",
+            "résultats rassurants",
+            "rassurant",
+            "rassurantes",
+            "coherent",
+            "cohérent",
+            "bilan",
+        ],
+    )
+    has_broad_summary_shape = any(marker in query_norm for marker in broad_summary_markers)
+    return not deictic_followup and ((has_available_scope and has_summary_shape) or has_broad_summary_shape)
+
+
+def _looks_like_abnormal_results_without_scope(
+    query_norm: str,
+    requested_doc_ids: list[str],
+    requested_analytes: list[str],
+    technical_condition: str | None,
+    detected_intent: str | None = None,
+    query_intents: dict[str, Any] | None = None,
+) -> bool:
+    default_global_scope_markers = [
+        "tous les rapports",
+        "rapports disponibles",
+        "ensemble des rapports",
+        "dans tous les rapports",
+        "quels rapports",
+    ]
+    default_abnormal_hint_patterns = [
+        r"\banomal\w*",
+        r"\bhors\s+(?:de\s+la\s+)?(?:reference|norme|intervalle)\b",
+        r"\b(?:resultat|résultat|resultats|résultats|valeur|valeurs|taux)\b",
+        r"\bbiolog\w*\b",
+    ]
+    global_scope_markers = _generation_routing_marker_list(
+        ["generation_routing", "abnormal_without_scope", "global_scope_markers"],
+        default_global_scope_markers,
+    )
+    abnormal_hint_patterns = _generation_routing_marker_list(
+        ["generation_routing", "abnormal_without_scope", "abnormal_hint_patterns"],
+        default_abnormal_hint_patterns,
+    )
+    if list(requested_doc_ids or []):
+        return False
+    if list(requested_analytes or []):
+        return False
+    has_pattern_match = any(re.search(pattern, query_norm) for pattern in abnormal_hint_patterns)
+    has_strong_abnormal_hint = bool(
+        re.search(r"\banomal\w*", query_norm)
+        or re.search(r"\bhors\s+(?:de\s+la\s+)?(?:reference|norme|intervalle)\b", query_norm)
+        or re.search(r"\b(?:depass|dépass|above|below|superieur|supérieur|inferieur|inférieur)\w*\b", query_norm)
+    )
+    tc = _canonical_technical_condition(technical_condition)
+    if tc not in {"out_of_reference", "above_reference", "below_reference"} and not has_strong_abnormal_hint:
+        return False
+    intent_norm = str(detected_intent or "").strip().lower()
+    if intent_norm in {
+        "global_analyte_abnormal_search",
+        "global_biological_summary",
+        "global_priority_anomalies_summary",
+        "global_toxicology_search",
+    }:
+        return False
+    intents = query_intents or {}
+    if any(
+        bool(intents.get(k))
+        for k in ["small_talk", "general_conversation", "identity_question", "help_question", "capability_question"]
+    ):
+        return False
+    # Global scope phrasing should use global deterministic routes, not clarification.
+    if any(
+        marker in query_norm
+        for marker in global_scope_markers
+    ):
+        return False
+    return has_pattern_match
 
 
 def _ensure_guarded_thyroid_conclusion(answer: str) -> str:
@@ -6908,15 +7472,14 @@ def _enforce_biological_summary_template(
 
 
 def _canonical_analyte_key(value: str) -> str:
+    # Compatibility shim: keep historical "space-separated key" output expected by
+    # priority/template validators while delegating analyte normalization to the
+    # centralized medical resolver.
+    canonical = canonicalize_medical_analyte(str(value or ""))
+    if canonical:
+        return canonical.replace("_", " ").strip()
     key = norm_text(value or "").replace("_", " ")
-    key = key.replace("valporoique", "valproique")
-    key = key.replace("ck mb", "ckmb").replace("ck-mb", "ckmb").replace("cpk mb", "cpkmb").replace("cpk-mb", "cpkmb")
-    key = key.replace("apolipoproteine a1", "apo a1").replace("apolipoprotéine a1", "apo a1").replace("apoa1", "apo a1")
-    key = key.replace("ckmb (cpkmb)", "ckmb").replace("cpkmb (ckmb)", "ckmb")
-    key = key.replace("cpkmb", "ckmb")
-    key = re.sub(r"\bdepakine\b", "", key)
-    key = re.sub(r"\s+", " ", key).strip()
-    return key
+    return re.sub(r"\s+", " ", key).strip()
 
 
 def _priority_section_candidates(section_text: str) -> set[str]:
@@ -7797,7 +8360,22 @@ def build_structured_evidence_pack(
     }
 
     if normalized_intent in {"global_patient_lookup", "cohort_search"}:
+        # Guardrail: for global threshold/value searches we require an analyte scope.
+        # Without analyte parsing, returning unrelated analytes is misleading.
+        if not requested_analytes and (
+            str(query_understanding.requested_value or "").strip()
+            or str(query_understanding.comparison_operator or "").strip()
+            or str(query_understanding.technical_condition or "").strip()
+        ):
+            pack["missing_items"] = ["missing_requested_analyte_for_global_search"]
+            pack["rows"] = []
+            pack["evidences"] = []
+            return _finalize_structured_pack(pack, query_understanding)
         target_values = [str(query_understanding.requested_value)] if query_understanding.requested_value else _extract_query_numeric_targets(query)
+        has_explicit_numeric_threshold = bool(
+            str(query_understanding.comparison_operator or "").strip()
+            and len(target_values) > 0
+        )
         rows = _fetch_global_lab_rows(
             sqlite_path=sqlite_path,
             analyte_norms=requested_analytes,
@@ -7809,7 +8387,10 @@ def build_structured_evidence_pack(
             for r in rows
             if _row_matches_value_criterion(r, target_values, query_understanding.comparison_operator)
         ]
-        rows = _apply_technical_condition_filter(rows, query_understanding.technical_condition)
+        # If user asked an explicit numeric threshold (e.g. "> 2"), keep threshold semantics.
+        # Do not additionally force "above_reference/below_reference", which can hide valid hits.
+        if not has_explicit_numeric_threshold:
+            rows = _apply_technical_condition_filter(rows, query_understanding.technical_condition)
         if excluded_analytes:
             rows = [r for r in rows if not _row_matches_excluded(r, excluded_analytes)]
         evidences = [_structured_record_from_row(r) for r in rows]
@@ -8584,6 +9165,37 @@ def _best_row_for_analyte(rows: list[dict[str, Any]], analyte_norm: str) -> dict
     return sorted(candidates, key=score, reverse=True)[0]
 
 
+def format_reference_for_display(reference_raw: str) -> list[str]:
+    raw = str(reference_raw or "").strip()
+    if not raw or raw.lower() == "non disponible":
+        return []
+    compact = re.sub(r"\s+", " ", raw).strip()
+    normalized = (
+        compact.replace("Femme :", "||Femme :")
+        .replace("Homme :", "||Homme :")
+        .replace("femme :", "||Femme :")
+        .replace("homme :", "||Homme :")
+    )
+    blocks = [b.strip() for b in normalized.split("||") if b.strip()]
+    lines_out: list[str] = []
+    for block in blocks:
+        b = re.sub(r"\s*>\s*(\d+\s*ans)", r" > \1", block, flags=re.IGNORECASE)
+        b = re.sub(r"\s*(\d+\s*à\s*\d+\s*ans)\s*:\s*", r" \1 : ", b, flags=re.IGNORECASE)
+        b = re.sub(r"\s*-\s*", "–", b)
+        if ("Femme" in b or "Homme" in b) and ":" in b and (" > " in b or " ans:" in b):
+            head, tail = b.split(":", 1)
+            tail_norm = tail.replace(" > ", " || > ")
+            parts = [p.strip(" ;") for p in tail_norm.split("||") if p.strip()]
+            if not parts:
+                lines_out.append(b)
+                continue
+            for part in parts:
+                lines_out.append(f"{head.strip()} {part}")
+        else:
+            lines_out.append(b)
+    return [re.sub(r"\s+", " ", ln).strip(" ;") for ln in lines_out if ln.strip()]
+
+
 def _format_doc_analyte_rows_answer(
     *,
     rows: list[dict[str, Any]],
@@ -8610,12 +9222,30 @@ def _format_doc_analyte_rows_answer(
         seen_keys.add(key)
         deduped_analytes.append(analyte_for_lookup)
 
+    def _report_label(doc_id: str) -> str:
+        return str(doc_id or "").strip().replace("_", " ")
+
+    def _source_label_for_row(row: dict[str, Any]) -> str:
+        src_pdf = str(row.get("source_pdf") or "").strip().split("/")[-1]
+        page = row.get("page_number")
+        line = row.get("row_index")
+        if src_pdf:
+            parts = [src_pdf]
+            if page not in (None, ""):
+                parts.append(f"page {page}")
+            if line not in (None, ""):
+                parts.append(f"ligne {line}")
+            return " — ".join(parts)
+        return str(row.get("doc_id") or requested_doc_id).strip()
+
     for analyte in deduped_analytes:
         row = _best_row_for_analyte(rows, analyte)
         display_name = _canonical_display_name(analyte)
         if row is None:
             if include_missing:
-                lines.append(f"- {display_name}: non retrouvé dans {requested_doc_id}.")
+                lines.append(f"### {display_name} — {_report_label(requested_doc_id)}")
+                lines.append("")
+                lines.append(f"Aucun résultat correspondant à {display_name.lower()} n’a été retrouvé dans {_report_label(requested_doc_id)}.")
             missing.append(analyte)
             continue
 
@@ -8624,19 +9254,49 @@ def _format_doc_analyte_rows_answer(
         ref = str(row.get("reference_range") or "non disponible")
         status = _interpretation_fr(str(row.get("interpretation_status") or "unknown"))
         previous = str(row.get("previous_result_value_raw") or "").strip()
-        core = f"- {display_name}: {value}"
-        if unit:
-            core += f" {unit}"
-        core += f" | référence: {ref} | statut technique: {status}"
+        value_with_unit = f"{value} {unit}".strip()
+        source_label = _source_label_for_row(row)
+        lines.append(f"### {display_name} — {_report_label(requested_doc_id)}")
+        lines.append("")
+        lines.append(f"- **Valeur** : **{value_with_unit}**")
+        lines.append(f"- **Statut technique** : {status}")
+        lines.append(f"- **Source** : {source_label}")
+        ref_lines = format_reference_for_display(ref)
+        if len(ref_lines) <= 1:
+            ref_one = ref_lines[0] if ref_lines else ref
+            has_profile_marker = bool(re.search(r"\b(femme|homme|adulte|enfant|ans?)\b", ref_one, flags=re.IGNORECASE))
+            ref_label = "Référence applicable" if has_profile_marker else "Référence disponible"
+            lines.append(f"- **{ref_label}** : {ref_one}")
+        else:
+            lines.append("")
+            lines.append("**Références disponibles :**")
+            for rl in ref_lines:
+                lines.append(f"- {rl}")
         if compare_previous:
             if previous:
                 variation = _variation_label(value, previous)
-                core += f" | antérieur: {previous} | variation: {variation}"
+                lines.append(f"- **Résultat antérieur** : {previous}")
+                lines.append(f"- **Variation** : {variation}")
             else:
-                core += " | antérieur: non disponible"
-        lines.append(core)
+                lines.append("- **Résultat antérieur** : non disponible")
+        lines.append("")
+        lines.append("Conclusion technique : la valeur est dans l’intervalle de référence indiqué, sans interprétation diagnostique.")
+        lines.append("")
 
     return "\n".join(lines).strip(), missing
+
+
+def _format_single_doc_analyte_not_found_answer(*, requested_doc_id: str, requested_analyte: str) -> str:
+    analyte_key = str(requested_analyte or "").strip().lower()
+    analyte_label = "TSH/TSHus" if analyte_key in {"tsh", "tshus"} else _canonical_display_name(analyte_key)
+    report_label = str(requested_doc_id or "").strip().replace("_", " ")
+    if not report_label:
+        report_label = "document demandé"
+    return (
+        f"### {analyte_label} — {report_label}\n\n"
+        f"Aucun résultat correspondant à {analyte_label} n’a été retrouvé dans {report_label} parmi les résultats disponibles.\n\n"
+        f"Conclusion technique : aucune valeur numérique exploitable n’a été identifiée pour cet analyte dans le rapport demandé."
+    ).strip()
 
 
 def _format_multi_doc_single_analyte_status_answer(
@@ -8668,23 +9328,16 @@ def _format_multi_doc_single_analyte_status_answer(
 
     if not found_rows:
         req_label = "TSH/TSHus" if tsh_alias_mode else _canonical_display_name(analyte)
-        joined = ", ".join(doc_ids)
+        joined = ", ".join(d.replace("_", " ") for d in doc_ids)
         return (
-            f"Aucun résultat correspondant à {req_label} n’a été retrouvé dans {joined}.\n"
+            f"### {req_label} — rapports {joined}\n\n"
+            f"Aucun résultat correspondant à {req_label} n’a été retrouvé dans {joined}.\n\n"
             f"Conclusion technique : aucun résultat exploitable correspondant à {req_label} n’a été identifié."
         )
 
-    first_label = _resolve_row_display_analyte(
-        found_rows[0][1],
-        str(found_rows[0][1].get("analyte_norm") or analyte).strip().lower(),
-    )
     req_label = "TSH/TSHus" if tsh_alias_mode else _canonical_display_name(analyte)
-    title = (
-        f"Résultat correspondant à {req_label} retrouvé sous le libellé source {first_label} :"
-        if tsh_alias_mode
-        else f"Résultat correspondant à {req_label} :"
-    )
-    lines = [title]
+    report_labels = ", ".join(d.replace("_", " ") for d in doc_ids)
+    lines = [f"### {req_label} — rapports {report_labels}", "", "**Résultat retrouvé :**"]
     for doc_id, row in found_rows:
         label = _resolve_row_display_analyte(row, str(row.get("analyte_norm") or analyte).strip().lower())
         value = str(row.get("value_raw") or "non disponible").strip()
@@ -8693,17 +9346,19 @@ def _format_multi_doc_single_analyte_status_answer(
         status = _interpretation_fr(str(row.get("interpretation_status") or "unknown"))
         value_unit = f"{value}{(' ' + unit) if unit else ''}".strip()
         lines.append(
-            f"- {doc_id} : {label} = {value_unit} ; référence : {ref} ; statut technique : {status}."
+            f"- **{doc_id.replace('_', ' ')}** : {label} = **{value_unit}**"
         )
+        lines.append(f"  - Référence : {ref}")
+        lines.append(f"  - Statut technique : {status}")
     if missing_docs:
-        missing_joined = " et ".join(missing_docs) if len(missing_docs) <= 2 else ", ".join(missing_docs)
-        if tsh_alias_mode:
-            lines.append(f"Aucun résultat correspondant à TSH/TSHus n’a été retrouvé dans {missing_joined}.")
-        else:
-            lines.append(f"Aucun résultat correspondant à {req_label} n’a été retrouvé dans {missing_joined}.")
+        lines.append("")
+        lines.append(f"**Rapports sans résultat {req_label} :**")
+        for d in missing_docs:
+            lines.append(f"- {d.replace('_', ' ')}")
+    lines.append("")
     if tsh_alias_mode:
         lines.append(
-            f"Conclusion technique : seul {', '.join([d for d, _ in found_rows])} contient un résultat exploitable correspondant à TSH/TSHus."
+            f"Conclusion technique : seul {', '.join([d.replace('_', ' ') for d, _ in found_rows])} contient un résultat exploitable correspondant à TSH/TSHus."
             if len(found_rows) == 1
             else "Conclusion technique : plusieurs rapports contiennent un résultat exploitable correspondant à TSH/TSHus."
         )
@@ -9252,7 +9907,11 @@ def run_generation(
     prev_ctx_type = str(previous_data_context_type or "").strip().lower()
     deictic_no_context = str(deictic_resolution.get("intent") or "") == "deictic_no_context"
 
-    if (is_deictic_render or (asks_context_summary and not asks_global_summary_scope) or deictic_no_context) and not has_explicit_scope:
+    if (
+        is_deictic_render
+        or (asks_context_summary and not asks_global_summary_scope)
+        or (deictic_no_context and not asks_global_summary_scope)
+    ) and not has_explicit_scope:
         if prev_ctx_type == "patient_inventory":
             if asks_context_summary:
                 query_understanding = replace(
@@ -9630,8 +10289,290 @@ def run_generation(
             )
 
     # Deterministic route normalization for production medical flows.
+    planner_execution: dict[str, Any] = {
+        "route_candidates": [],
+        "rejected_routes": [],
+        "selected_plan": "",
+        "fallback_candidates": [],
+        "shadow_mode": True,
+        "takeover_allowed": False,
+        "takeover_reason": "planner_not_initialized",
+        "planner_version": "v1",
+    }
+    try:
+        planner_execution = build_execution_plan(
+            {
+                "intent": str(query_understanding.intent or ""),
+                "intent_candidates": list(getattr(query_understanding, "intent_candidates", []) or []),
+                "intent_confidence": float(getattr(query_understanding, "intent_confidence", 0.0) or 0.0),
+                "scope_confidence": float(getattr(query_understanding, "scope_confidence", 0.0) or 0.0),
+                "ambiguity_flags": list(getattr(query_understanding, "ambiguity_flags", []) or []),
+                "medical_topics": list(getattr(query_understanding, "medical_topics", []) or []),
+                "requested_doc_ids": list(query_understanding.requested_doc_ids or []),
+                "requested_analytes": list(query_understanding.requested_analytes or []),
+                "technical_condition": query_understanding.technical_condition,
+                "safety_intent": query_understanding.safety_intent,
+            },
+            q,
+        )
+    except Exception as planner_exc:
+        planner_execution = {
+            "route_candidates": [],
+            "rejected_routes": [],
+            "selected_plan": str(query_understanding.intent or "").strip().lower(),
+            "fallback_candidates": [],
+            "shadow_mode": True,
+            "takeover_allowed": False,
+            "takeover_reason": f"planner_error:{type(planner_exc).__name__}",
+            "planner_version": "v1",
+        }
+
     selected_route = str(query_understanding.intent or "").strip().lower()
     route_reason = "intent_resolved_by_query_understanding"
+    # Hard safety gate: a pure diagnostic request must never go through free-form retrieval/LLM.
+    safety_intent_norm = str(getattr(query_understanding, "safety_intent", "") or "").strip().lower()
+    pure_treatment_refusal = (
+        "treatment" in safety_intent_norm
+        and not list(query_understanding.requested_doc_ids or [])
+        and not list(query_understanding.requested_analytes or [])
+    )
+    if pure_treatment_refusal:
+        fb_treat = _render_specialized_fallback(
+            fallback_kind="treatment_refusal",
+            requested_analytes=list(query_understanding.requested_analytes or []),
+            requested_doc_ids=list(query_understanding.requested_doc_ids or []),
+        )
+        answer = str(fb_treat.get("answer") or "")
+        validation = validate_answer(
+            query=q,
+            answer_text=answer,
+            evidence_pack=[],
+            displayed_evidences=[],
+            source_citations=[],
+            generation_mode="deterministic_treatment_refusal_with_technical_summary",
+            retrieval_status="insufficient_context",
+            query_received=query_received,
+            query_used_for_retrieval=q,
+            query_used_for_prompt=q,
+            query_stored=q,
+            detected_analytes=list(query_understanding.requested_analytes or []),
+            query_intents={**dict(query_understanding.intents or {}), "treatment_safety_question": True, "diagnostic_safety_question": False},
+            output_format_requested=query_understanding.output_format,
+            answer_style_requested=query_understanding.answer_style,
+            requested_table_columns=query_understanding.requested_table_columns,
+            requested_technical_condition=query_understanding.technical_condition,
+            source_clickable_requested=bool(query_understanding.source_clickable_requested),
+            requested_value=query_understanding.requested_value,
+            comparison_operator=query_understanding.comparison_operator,
+            diagnostic_safety_intent=False,
+            raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+            unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+            user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+            requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+            visualization_payload=None,
+            chart_data_payload=None,
+        )
+        quality = _quality_report(
+            answer=answer,
+            validation=validation,
+            source_clickable_requested=False,
+            recent_style_history=style_history,
+        )
+        elapsed = time.perf_counter() - started
+        stage_times_ms["total_ms"] = round(elapsed * 1000.0, 3)
+        stage_times_ms["llm_writer_ms"] = 0.0
+        stage_times_ms["repair_ms"] = 0.0
+        return {
+            "request_id": request_id,
+            "query": q,
+            "query_received": query_received,
+            "query_used_for_retrieval": q,
+            "query_used_for_prompt": q,
+            "query_stored": q,
+            "normalized_query": q,
+            "mode": "treatment_safety",
+            "provider": provider,
+            "model": model,
+            "top_k": top_k,
+            "max_display_results": int(max_display_results),
+            "show_all_results": bool(show_all_results),
+            "show_low_quality": bool(show_low_quality),
+            "timeout": timeout,
+            "generation_time_seconds": round(elapsed, 3),
+            "answer": answer,
+            "citations": [],
+            "sources": [],
+            "validation": validation,
+            "quality_report": quality,
+            "llm_error": None,
+            "error_type": None,
+            "generation_mode": "deterministic_treatment_refusal_with_technical_summary",
+            "detected_analytes": list(query_understanding.requested_analytes or []),
+            "query_understanding": _query_understanding_payload(query_understanding),
+            "structured_evidence_pack": {"evidences": [], "results": [], "sources": [], "intent": "treatment_safety_question"},
+            "evidence_pack": [],
+            "displayed_evidences": [],
+            "retrieval": {"answerability": {"status": "unsafe", "reason": "treatment_refusal"}, "retrieval_skipped": True},
+            "prompt": "",
+            "debug": {
+                "request_id": request_id,
+                "selected_route": "treatment_safety_question",
+                "route_reason": "hard_safety_gate_treatment_refusal",
+                "generation_mode": "deterministic_treatment_refusal_with_technical_summary",
+                "generation_writer": "deterministic_safety_guardrail",
+                "canonical_requested_analytes": _canonical_requested_analytes_for_debug(
+                    list(query_understanding.requested_analytes or [])
+                ),
+                "intent_candidates": list(getattr(query_understanding, "intent_candidates", []) or []),
+                "intent_confidence": float(getattr(query_understanding, "intent_confidence", 0.0) or 0.0),
+                "scope_confidence": float(getattr(query_understanding, "scope_confidence", 0.0) or 0.0),
+                "ambiguity_flags": list(getattr(query_understanding, "ambiguity_flags", []) or []),
+                "medical_topics": list(getattr(query_understanding, "medical_topics", []) or []),
+                "route_candidates": list(planner_execution.get("route_candidates") or []),
+                "rejected_routes": list(planner_execution.get("rejected_routes") or []),
+                "selected_plan": planner_execution.get("selected_plan"),
+                "fallback_candidates": list(planner_execution.get("fallback_candidates") or []),
+                "fallback_decision_path": [
+                    "answerability:unsafe",
+                    "specialized_fallback:treatment_refusal",
+                    "fallback_stage:hard_safety_gate",
+                ],
+                "planner_shadow_mode": bool(planner_execution.get("shadow_mode", True)),
+                "planner_takeover_allowed": bool(planner_execution.get("takeover_allowed", False)),
+                "planner_takeover_reason": str(planner_execution.get("takeover_reason") or "shadow_mode_default"),
+                "planner_version": str(planner_execution.get("planner_version") or "v1"),
+                "specialized_fallback_kind": str(fb_treat.get("kind") or "treatment_refusal"),
+                "answerability_status": "unsafe",
+                "answerability_reason": "treatment_refusal",
+                "answerability_matching_strategy": "none",
+                "answerability_confidence": 0.0,
+                "query_understanding": _query_understanding_payload(query_understanding),
+                "stage_timings_ms": dict(stage_times_ms),
+            },
+            "visualization": None,
+            "chart_data": None,
+        }
+    pure_diagnostic_refusal = (
+        safety_intent_norm == "diagnostic_safety_question"
+        and not list(query_understanding.requested_doc_ids or [])
+        and not list(query_understanding.requested_analytes or [])
+    )
+    if selected_route == "diagnostic_safety_question" or pure_diagnostic_refusal:
+        fb_diag = _render_specialized_fallback(
+            fallback_kind="diagnosis_refusal",
+            requested_analytes=list(query_understanding.requested_analytes or []),
+            requested_doc_ids=list(query_understanding.requested_doc_ids or []),
+        )
+        answer = str(fb_diag.get("answer") or "")
+        validation = validate_answer(
+            query=q,
+            answer_text=answer,
+            evidence_pack=[],
+            displayed_evidences=[],
+            source_citations=[],
+            generation_mode="deterministic_diagnostic_safety_refusal",
+            retrieval_status="insufficient_context",
+            query_received=query_received,
+            query_used_for_retrieval=q,
+            query_used_for_prompt=q,
+            query_stored=q,
+            detected_analytes=list(query_understanding.requested_analytes or []),
+            query_intents={**dict(query_understanding.intents or {}), "diagnostic_safety_question": True},
+            output_format_requested=query_understanding.output_format,
+            answer_style_requested=query_understanding.answer_style,
+            requested_table_columns=query_understanding.requested_table_columns,
+            requested_technical_condition=query_understanding.technical_condition,
+            source_clickable_requested=bool(query_understanding.source_clickable_requested),
+            requested_value=query_understanding.requested_value,
+            comparison_operator=query_understanding.comparison_operator,
+            diagnostic_safety_intent=True,
+            raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+            unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+            user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+            requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+            visualization_payload=None,
+            chart_data_payload=None,
+        )
+        quality = _quality_report(
+            answer=answer,
+            validation=validation,
+            source_clickable_requested=False,
+            recent_style_history=style_history,
+        )
+        elapsed = time.perf_counter() - started
+        stage_times_ms["total_ms"] = round(elapsed * 1000.0, 3)
+        stage_times_ms["llm_writer_ms"] = 0.0
+        stage_times_ms["repair_ms"] = 0.0
+        return {
+            "request_id": request_id,
+            "query": q,
+            "query_received": query_received,
+            "query_used_for_retrieval": q,
+            "query_used_for_prompt": q,
+            "query_stored": q,
+            "normalized_query": q,
+            "mode": "diagnostic_safety",
+            "provider": provider,
+            "model": model,
+            "top_k": top_k,
+            "max_display_results": int(max_display_results),
+            "show_all_results": bool(show_all_results),
+            "show_low_quality": bool(show_low_quality),
+            "timeout": timeout,
+            "generation_time_seconds": round(elapsed, 3),
+            "answer": answer,
+            "citations": [],
+            "sources": [],
+            "validation": validation,
+            "quality_report": quality,
+            "llm_error": None,
+            "error_type": None,
+            "generation_mode": "deterministic_diagnostic_safety_refusal",
+            "detected_analytes": list(query_understanding.requested_analytes or []),
+            "query_understanding": _query_understanding_payload(query_understanding),
+            "structured_evidence_pack": {"evidences": [], "results": [], "sources": [], "intent": "diagnostic_safety_question"},
+            "evidence_pack": [],
+            "displayed_evidences": [],
+            "retrieval": {"answerability": {"status": "unsafe", "reason": "diagnostic_safety_refusal"}, "retrieval_skipped": True},
+            "prompt": "",
+                "debug": {
+                    "request_id": request_id,
+                    "selected_route": "diagnostic_safety_question",
+                    "route_reason": "hard_safety_gate_diagnostic_refusal",
+                    "generation_mode": "deterministic_diagnostic_safety_refusal",
+                    "generation_writer": "deterministic_safety_guardrail",
+                    "canonical_requested_analytes": _canonical_requested_analytes_for_debug(
+                        list(query_understanding.requested_analytes or [])
+                    ),
+                    "intent_candidates": list(getattr(query_understanding, "intent_candidates", []) or []),
+                    "intent_confidence": float(getattr(query_understanding, "intent_confidence", 0.0) or 0.0),
+                    "scope_confidence": float(getattr(query_understanding, "scope_confidence", 0.0) or 0.0),
+                    "ambiguity_flags": list(getattr(query_understanding, "ambiguity_flags", []) or []),
+                    "medical_topics": list(getattr(query_understanding, "medical_topics", []) or []),
+                    "route_candidates": list(planner_execution.get("route_candidates") or []),
+                    "rejected_routes": list(planner_execution.get("rejected_routes") or []),
+                    "selected_plan": planner_execution.get("selected_plan"),
+                    "fallback_candidates": list(planner_execution.get("fallback_candidates") or []),
+                    "fallback_decision_path": [
+                        "answerability:unsafe",
+                        "specialized_fallback:diagnosis_refusal",
+                        "fallback_stage:hard_safety_gate",
+                    ],
+                    "planner_shadow_mode": bool(planner_execution.get("shadow_mode", True)),
+                    "planner_takeover_allowed": bool(planner_execution.get("takeover_allowed", False)),
+                    "planner_takeover_reason": str(planner_execution.get("takeover_reason") or "shadow_mode_default"),
+                    "planner_version": str(planner_execution.get("planner_version") or "v1"),
+                    "specialized_fallback_kind": str(fb_diag.get("kind") or "diagnosis_refusal"),
+                    "answerability_status": "unsafe",
+                    "answerability_reason": "diagnostic_safety_refusal",
+                    "answerability_matching_strategy": "none",
+                    "answerability_confidence": 0.0,
+                    "query_understanding": _query_understanding_payload(query_understanding),
+                    "stage_timings_ms": dict(stage_times_ms),
+                },
+            "visualization": None,
+            "chart_data": None,
+        }
     has_explicit_global_scope = any(
         t in qn
         for t in [
@@ -9647,6 +10588,12 @@ def run_generation(
             "documents",
         ]
     )
+    if selected_route in {"cohort_search", "global_analyte_abnormal_search", "global_patient_lookup"} and (
+        _query_requests_multiple_results(qn) or has_explicit_global_scope
+    ):
+        # User explicitly asks for exhaustive listing over reports.
+        show_all_results = True
+
     has_short_bio_summary_shape = (
         bool(list(query_understanding.requested_doc_ids or []))
         and (
@@ -9753,7 +10700,8 @@ def run_generation(
     for a in requested_analytes_for_shape:
         key = _canonical_analyte_key(a)
         if key in {"tsh", "tshus"}:
-            key = "tshus"
+            # Keep canonical debug/matching key on "tsh"; display label can stay "TSHus" from evidence rows.
+            key = "tsh"
         if key and key not in requested_analyte_keys:
             requested_analyte_keys.append(key)
     if bool(list(query_understanding.requested_doc_ids or [])) and requested_analytes_for_shape and len(requested_analyte_keys) == 1:
@@ -9849,6 +10797,73 @@ def run_generation(
             query_understanding = replace(query_understanding, intent="toxicology_summary", technical_condition="any_result")
             selected_route = "doc_scoped_toxicology_summary"
             route_reason = "heuristic_doc_scoped_toxicology_summary_default"
+    if selected_route == "unstructured" and not list(query_understanding.requested_doc_ids or []):
+        # Global toxicology phrasing without explicit document scope.
+        if _is_toxicology_global_query(qn):
+            query_understanding = replace(
+                query_understanding,
+                intent="global_toxicology_search",
+                requires_global_search=True,
+                requested_doc_ids=[],
+            )
+            selected_route = "global_toxicology_search"
+            route_reason = "heuristic_global_toxicology_search"
+        # Cross-report analyte lookup phrasing (e.g. "dans quels rapports ...").
+        elif _looks_like_analyte_report_lookup_query(
+            query_norm=qn,
+            requested_doc_ids=list(query_understanding.requested_doc_ids or []),
+            requested_analytes=list(query_understanding.requested_analytes or []),
+        ):
+            query_understanding = replace(
+                query_understanding,
+                intent="global_analyte_abnormal_search",
+                requires_global_search=True,
+                requested_doc_ids=[],
+                technical_condition=(query_understanding.technical_condition or "any_result"),
+            )
+            selected_route = "global_analyte_abnormal_search"
+            route_reason = "heuristic_global_analyte_report_lookup"
+        # Broad analyte-family summary without document scope.
+        elif _looks_like_global_analyte_summary_query(
+            query_norm=qn,
+            requested_doc_ids=list(query_understanding.requested_doc_ids or []),
+            requested_analytes=list(query_understanding.requested_analytes or []),
+        ):
+            query_understanding = replace(
+                query_understanding,
+                intent="global_analyte_abnormal_search",
+                requires_global_search=True,
+                requested_doc_ids=[],
+                technical_condition=(query_understanding.technical_condition or "any_result"),
+            )
+            selected_route = "global_analyte_abnormal_search"
+            route_reason = "heuristic_global_analyte_summary"
+        # Global anomaly-priority / urgency wording without scope.
+        elif _looks_like_global_priority_summary_query(
+            query_norm=qn,
+            requested_doc_ids=list(query_understanding.requested_doc_ids or []),
+        ):
+            query_understanding = replace(
+                query_understanding,
+                intent="global_priority_anomalies_summary",
+                requires_global_search=True,
+                requested_doc_ids=[],
+                output_format="paragraph",
+                technical_condition=(query_understanding.technical_condition or "out_of_reference"),
+            )
+            selected_route = "global_priority_anomalies_summary"
+            route_reason = "heuristic_global_priority_anomalies_summary"
+        # General global biological summary phrasing.
+        elif _looks_like_global_summary_without_scope(qn, list(query_understanding.requested_doc_ids or [])):
+            query_understanding = replace(
+                query_understanding,
+                intent="global_biological_summary",
+                requires_global_search=True,
+                requested_doc_ids=[],
+                output_format="paragraph",
+            )
+            selected_route = "global_biological_summary"
+            route_reason = "heuristic_global_biological_summary"
     if selected_route == "unstructured" and has_global_abnormal_shape:
         selected_route = "global_analyte_abnormal_search"
         route_reason = "heuristic_global_analyte_abnormal_search"
@@ -10042,12 +11057,21 @@ def run_generation(
     if selected_route in {"global_qualitative_toxicology_search", "open_grounded_medical_question"}:
         early_detected_analytes = list(query_understanding.requested_analytes or [])
         early_policy = _strict_policy_for_route(selected_route)
-        answer = "Information insuffisante dans les données structurées disponibles pour répondre de façon fiable."
+        early_specialized_fallback_kind = "insufficient_evidence"
+        fb_insufficient = _render_specialized_fallback(
+            fallback_kind="insufficient_evidence",
+            requested_analytes=early_detected_analytes,
+            requested_doc_ids=requested_doc_ids,
+            requested_value=query_understanding.requested_value,
+            comparison_operator=query_understanding.comparison_operator,
+        )
+        answer = str(fb_insufficient.get("answer") or "")
         if selected_route == "global_qualitative_toxicology_search":
             answer = (
                 "Aucune recherche toxicologique urinaire exploitable n’a été retrouvée dans les documents indexés. "
                 "Les éléments urinaires non toxicologiques (ex. cristaux) ne sont pas retenus pour cette demande."
             )
+            early_specialized_fallback_kind = "topic_not_found"
         generation_mode = "deterministic_no_evidence_response"
         validation = validate_answer(
             query=q,
@@ -10081,7 +11105,14 @@ def run_generation(
         final_safety_check_failed = False
         if str((validation or {}).get("validation_status") or "").strip().lower() == "fail":
             final_safety_check_failed = True
-            final_answer = "Je ne peux pas fournir une réponse fiable à partir des données disponibles."
+            fb_safe = _render_specialized_fallback(
+                fallback_kind="insufficient_evidence",
+                requested_analytes=early_detected_analytes,
+                requested_doc_ids=requested_doc_ids,
+                requested_value=query_understanding.requested_value,
+                comparison_operator=query_understanding.comparison_operator,
+            )
+            final_answer = str(fb_safe.get("answer") or "")
             generation_mode = "deterministic_safe_error_response"
             displayed_evidences = []
             evidence_pack = []
@@ -10104,7 +11135,14 @@ def run_generation(
         final_safety_check_failed = False
         if str((validation or {}).get("validation_status") or "").strip().lower() == "fail":
             final_safety_check_failed = True
-            final_answer = "Je ne peux pas fournir une réponse fiable à partir des données disponibles."
+            fb_safe = _render_specialized_fallback(
+                fallback_kind="insufficient_evidence",
+                requested_analytes=early_detected_analytes,
+                requested_doc_ids=requested_doc_ids,
+                requested_value=query_understanding.requested_value,
+                comparison_operator=query_understanding.comparison_operator,
+            )
+            final_answer = str(fb_safe.get("answer") or "")
             generation_mode = "deterministic_safe_error_response"
             displayed_evidences = []
             evidence_pack = []
@@ -10173,6 +11211,7 @@ def run_generation(
                 "max_tokens": int(early_policy.get("max_tokens") or max_tokens),
                 "validator_policy": str(early_policy.get("validator_policy") or "default"),
                 "query_understanding": _query_understanding_payload(query_understanding),
+                "specialized_fallback_kind": early_specialized_fallback_kind,
                 "stage_timings_ms": dict(stage_times_ms),
             },
             "visualization": None,
@@ -10820,123 +11859,300 @@ def run_generation(
             displayed_evidences=[],
         )
 
+    if _looks_like_abnormal_results_without_scope(
+        qn,
+        requested_doc_ids,
+        exact_analytes,
+        query_understanding.technical_condition,
+        detected_intent=query_understanding.intent,
+        query_intents=intents,
+    ):
+        abnormal_clarification = _clarification_message(
+            "abnormal_without_scope",
+            (
+                "La demande « résultats anormaux » nécessite un périmètre explicite. "
+                "Précisez un rapport (ex: report 24) ou confirmez une recherche globale sur tous les rapports."
+            ),
+        )
+        abnormal_conclusion = _clarification_message(
+            "abnormal_without_scope_conclusion",
+            "Conclusion technique : clarification de périmètre requise avant extraction déterministe des anomalies.",
+        )
+        answer = (
+            "Information insuffisante dans le contexte fourni.\n\n"
+            f"{abnormal_clarification}\n\n"
+            f"{abnormal_conclusion}"
+        )
+        validation = validate_answer(
+            query=q,
+            answer_text=answer,
+            evidence_pack=[],
+            displayed_evidences=[],
+            source_citations=[],
+            generation_mode="deterministic_no_evidence_response",
+            retrieval_status="not_required",
+            query_received=query_received,
+            query_used_for_retrieval="",
+            query_used_for_prompt=q,
+            query_stored=q,
+            detected_analytes=exact_analytes,
+            query_intents={**intents, "cohort_search": True},
+            output_format_requested="paragraph",
+            answer_style_requested=query_understanding.answer_style,
+            requested_table_columns=[],
+            requested_technical_condition=query_understanding.technical_condition,
+            source_clickable_requested=False,
+            requested_value=query_understanding.requested_value,
+            comparison_operator=query_understanding.comparison_operator,
+            raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+            unsupported_presentation=False,
+            user_requested_visualization=False,
+            requested_chart_type=None,
+            visualization_payload=None,
+            chart_data_payload=None,
+        )
+        if str((validation or {}).get("validation_status") or "").strip().lower() == "fail":
+            validation = {
+                "validation_status": "warning",
+                "errors": [],
+                "warnings": ["controlled_abnormal_without_scope_clarification"],
+            }
+        elapsed = time.perf_counter() - started
+        stage_times_ms["retrieval_ms"] = 0.0
+        stage_times_ms["llm_writer_ms"] = 0.0
+        stage_times_ms["repair_ms"] = 0.0
+        stage_times_ms["validation_ms"] = 0.0
+        stage_times_ms["fallback_ms"] = 0.0
+        stage_times_ms["total_ms"] = round(elapsed * 1000.0, 3)
+        return {
+            "request_id": request_id,
+            "query": q,
+            "query_received": query_received,
+            "query_used_for_retrieval": "",
+            "query_used_for_prompt": q,
+            "query_stored": q,
+            "normalized_query": q,
+            "mode": "abnormal_results_no_scope",
+            "provider": provider,
+            "model": model,
+            "top_k": top_k,
+            "max_display_results": int(max_display_results),
+            "show_all_results": bool(show_all_results),
+            "show_low_quality": bool(show_low_quality),
+            "timeout": timeout,
+            "generation_time_seconds": round(elapsed, 3),
+            "answer": answer,
+            "citations": [],
+            "sources": [],
+            "validation": validation,
+            "quality_report": _quality_report(answer=answer, validation=validation, source_clickable_requested=False, recent_style_history=style_history),
+            "llm_error": None,
+            "error_type": None,
+            "generation_mode": "deterministic_no_evidence_response",
+            "detected_analytes": exact_analytes,
+            "query_understanding": _query_understanding_payload(query_understanding),
+            "structured_evidence_pack": {},
+            "evidence_pack": [],
+            "displayed_evidences": [],
+            "retrieval": {"answerability": {"status": "not_required", "reason": "abnormal_results_no_scope"}, "retrieval_skipped": True},
+            "prompt": "",
+            "debug": {
+                "request_id": request_id,
+                "selected_route": "cohort_search",
+                "route_reason": "abnormal_results_without_scope_requires_clarification",
+                "generation_mode": "deterministic_no_evidence_response",
+                "generation_writer": "deterministic_clarification",
+                "canonical_requested_analytes": _canonical_requested_analytes_for_debug(list(exact_analytes or [])),
+                "intent_candidates": list(getattr(query_understanding, "intent_candidates", []) or []),
+                "intent_confidence": float(getattr(query_understanding, "intent_confidence", 0.0) or 0.0),
+                "scope_confidence": float(getattr(query_understanding, "scope_confidence", 0.0) or 0.0),
+                "ambiguity_flags": list(getattr(query_understanding, "ambiguity_flags", []) or []),
+                "medical_topics": list(getattr(query_understanding, "medical_topics", []) or []),
+                "route_candidates": list(planner_execution.get("route_candidates") or []),
+                "rejected_routes": list(planner_execution.get("rejected_routes") or []),
+                "selected_plan": planner_execution.get("selected_plan"),
+                "fallback_candidates": list(planner_execution.get("fallback_candidates") or []),
+                "fallback_decision_path": [
+                    "answerability:ambiguous",
+                    "specialized_fallback:ambiguous_document_scope",
+                    "fallback_stage:clarification",
+                ],
+                "planner_shadow_mode": bool(planner_execution.get("shadow_mode", True)),
+                "planner_takeover_allowed": bool(planner_execution.get("takeover_allowed", False)),
+                "planner_takeover_reason": str(planner_execution.get("takeover_reason") or "shadow_mode_default"),
+                "planner_version": str(planner_execution.get("planner_version") or "v1"),
+                "answerability_status": "ambiguous",
+                "answerability_reason": "missing_scope_for_abnormal_query",
+                "answerability_matching_strategy": "none",
+                "answerability_confidence": 0.0,
+                "specialized_fallback_kind": "ambiguous_document_scope",
+                "context_resolution": context_resolution,
+                "deictic_resolution": deictic_resolution,
+                "resolution_arbitration": resolution_arbitration,
+                "stage_timings_ms": dict(stage_times_ms),
+            },
+            "visualization": None,
+            "chart_data": None,
+        }
+
+    if (
+        selected_route == "unstructured"
+        and not requested_doc_ids
+        and bool(list(exact_analytes or []))
+        and not _has_explicit_global_scope_hint(qn)
+    ):
+        fb_scope = _render_specialized_fallback(
+            fallback_kind="ambiguous_document_scope",
+            requested_analytes=list(exact_analytes or []),
+            requested_doc_ids=[],
+        )
+        answer = str(fb_scope.get("answer") or "").strip()
+        validation = validate_answer(
+            query=q,
+            answer_text=answer,
+            evidence_pack=[],
+            displayed_evidences=[],
+            source_citations=[],
+            generation_mode="deterministic_no_evidence_response",
+            retrieval_status="not_required",
+            query_received=query_received,
+            query_used_for_retrieval="",
+            query_used_for_prompt=q,
+            query_stored=q,
+            detected_analytes=exact_analytes,
+            query_intents={**intents, "cohort_search": False},
+            output_format_requested="paragraph",
+            answer_style_requested=query_understanding.answer_style,
+            requested_table_columns=[],
+            requested_technical_condition=query_understanding.technical_condition,
+            source_clickable_requested=False,
+            requested_value=query_understanding.requested_value,
+            comparison_operator=query_understanding.comparison_operator,
+            raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+            unsupported_presentation=False,
+            user_requested_visualization=False,
+            requested_chart_type=None,
+            visualization_payload=None,
+            chart_data_payload=None,
+        )
+        if str((validation or {}).get("validation_status") or "").strip().lower() == "fail":
+            validation = {
+                "validation_status": "warning",
+                "errors": [],
+                "warnings": ["controlled_scope_clarification_for_analyte_query"],
+            }
+        elapsed = time.perf_counter() - started
+        stage_times_ms["retrieval_ms"] = 0.0
+        stage_times_ms["llm_writer_ms"] = 0.0
+        stage_times_ms["repair_ms"] = 0.0
+        stage_times_ms["validation_ms"] = 0.0
+        stage_times_ms["fallback_ms"] = 0.0
+        stage_times_ms["total_ms"] = round(elapsed * 1000.0, 3)
+        return {
+            "request_id": request_id,
+            "query": q,
+            "query_received": query_received,
+            "query_used_for_retrieval": "",
+            "query_used_for_prompt": q,
+            "query_stored": q,
+            "normalized_query": q,
+            "mode": "analyte_scope_clarification",
+            "provider": provider,
+            "model": model,
+            "top_k": top_k,
+            "max_display_results": int(max_display_results),
+            "show_all_results": bool(show_all_results),
+            "show_low_quality": bool(show_low_quality),
+            "timeout": timeout,
+            "generation_time_seconds": round(elapsed, 3),
+            "answer": answer,
+            "citations": [],
+            "sources": [],
+            "validation": validation,
+            "quality_report": _quality_report(answer=answer, validation=validation, source_clickable_requested=False, recent_style_history=style_history),
+            "llm_error": None,
+            "error_type": None,
+            "generation_mode": "deterministic_no_evidence_response",
+            "detected_analytes": exact_analytes,
+            "query_understanding": _query_understanding_payload(query_understanding),
+            "structured_evidence_pack": {},
+            "evidence_pack": [],
+            "displayed_evidences": [],
+            "retrieval": {"answerability": {"status": "ambiguous", "reason": "analyte_scope_missing"}, "retrieval_skipped": True},
+            "prompt": "",
+            "debug": {
+                "request_id": request_id,
+                "selected_route": "unstructured",
+                "route_reason": "analyte_scope_missing_clarification",
+                "generation_mode": "deterministic_no_evidence_response",
+                "generation_writer": "deterministic_clarification",
+                "specialized_fallback_kind": str(fb_scope.get("kind") or "ambiguous_document_scope"),
+                "canonical_requested_analytes": _canonical_requested_analytes_for_debug(list(exact_analytes or [])),
+                "intent_candidates": list(getattr(query_understanding, "intent_candidates", []) or []),
+                "intent_confidence": float(getattr(query_understanding, "intent_confidence", 0.0) or 0.0),
+                "scope_confidence": float(getattr(query_understanding, "scope_confidence", 0.0) or 0.0),
+                "ambiguity_flags": list(getattr(query_understanding, "ambiguity_flags", []) or []),
+                "medical_topics": list(getattr(query_understanding, "medical_topics", []) or []),
+                "route_candidates": list(planner_execution.get("route_candidates") or []),
+                "rejected_routes": list(planner_execution.get("rejected_routes") or []),
+                "selected_plan": planner_execution.get("selected_plan"),
+                "fallback_candidates": list(planner_execution.get("fallback_candidates") or []),
+                "fallback_decision_path": [
+                    "answerability:ambiguous",
+                    "specialized_fallback:ambiguous_document_scope",
+                    "fallback_stage:clarification",
+                ],
+                "planner_shadow_mode": bool(planner_execution.get("shadow_mode", True)),
+                "planner_takeover_allowed": bool(planner_execution.get("takeover_allowed", False)),
+                "planner_takeover_reason": str(planner_execution.get("takeover_reason") or "shadow_mode_default"),
+                "planner_version": str(planner_execution.get("planner_version") or "v1"),
+                "answerability_status": "ambiguous",
+                "answerability_reason": "analyte_scope_missing",
+                "answerability_matching_strategy": "none",
+                "answerability_confidence": 0.0,
+                "stage_timings_ms": dict(stage_times_ms),
+            },
+            "visualization": None,
+            "chart_data": None,
+        }
+
     if query_understanding.intent == "response_transform":
         if not preferred_previous_transformable_pack:
             if _looks_like_global_summary_without_scope(qn, requested_doc_ids):
-                answer = (
-                    "Je dois connaître le document, le patient ou le périmètre à résumer. "
-                    "Précisez un rapport ou demandez une synthèse sur l’ensemble des rapports disponibles."
+                query_understanding = replace(
+                    query_understanding,
+                    intent="global_biological_summary",
+                    requires_global_search=True,
+                    requested_doc_ids=[],
+                    is_response_transform=False,
+                    output_format="paragraph",
                 )
-                validation = validate_answer(
+                intents["response_transform"] = False
+                intents["global_biological_summary"] = True
+                selected_route = "global_biological_summary"
+                route_reason = "global_summary_without_scope_rerouted_to_global_summary"
+            else:
+                return _build_no_transformable_context_response(
+                    request_id=request_id,
+                    started=started,
                     query=q,
-                    answer_text=answer,
-                    evidence_pack=[],
-                    displayed_evidences=[],
-                    source_citations=[],
-                    generation_mode="deterministic_no_evidence_response",
-                    retrieval_status="not_required",
                     query_received=query_received,
-                    query_used_for_retrieval="",
-                    query_used_for_prompt=q,
-                    query_stored=q,
-                    detected_analytes=exact_analytes,
-                    query_intents={**intents, "response_transform": False, "global_biological_summary": True},
-                    output_format_requested="paragraph",
-                    answer_style_requested=query_understanding.answer_style,
-                    requested_table_columns=[],
-                    requested_technical_condition=None,
-                    source_clickable_requested=False,
-                    requested_value=None,
-                    comparison_operator=None,
-                    raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
-                    unsupported_presentation=False,
-                    user_requested_visualization=False,
-                    requested_chart_type=None,
-                    visualization_payload=None,
-                    chart_data_payload=None,
-                    transformable_context_available=False,
-                    previous_intent=str(previous_context_intent or ""),
+                    query_used_for_retrieval=query_used_for_retrieval,
+                    query_used_for_prompt=query_used_for_prompt,
+                    top_k=top_k,
+                    max_display_results=max_display_results,
+                    show_all_results=show_all_results,
+                    show_low_quality=show_low_quality,
+                    timeout=timeout,
+                    provider=provider,
+                    model=model,
+                    query_understanding=query_understanding,
+                    intents=intents,
+                    exact_analytes=exact_analytes,
+                    requested_doc_ids=requested_doc_ids,
+                    qn=qn,
+                    previous_context_intent=previous_context_intent,
                 )
-                if str((validation or {}).get("validation_status") or "").strip().lower() == "fail":
-                    validation = {
-                        "validation_status": "warning",
-                        "errors": [],
-                        "warnings": ["controlled_no_scope_global_summary_request"],
-                    }
-                elapsed = time.perf_counter() - started
-                stage_times_ms["retrieval_ms"] = 0.0
-                stage_times_ms["llm_writer_ms"] = 0.0
-                stage_times_ms["repair_ms"] = 0.0
-                stage_times_ms["validation_ms"] = 0.0
-                stage_times_ms["fallback_ms"] = 0.0
-                stage_times_ms["total_ms"] = round(elapsed * 1000.0, 3)
-                return {
-                    "request_id": request_id,
-                    "query": q,
-                    "query_received": query_received,
-                    "query_used_for_retrieval": "",
-                    "query_used_for_prompt": q,
-                    "query_stored": q,
-                    "normalized_query": q,
-                    "mode": "global_summary_no_scope",
-                    "provider": provider,
-                    "model": model,
-                    "top_k": top_k,
-                    "max_display_results": int(max_display_results),
-                    "show_all_results": bool(show_all_results),
-                    "show_low_quality": bool(show_low_quality),
-                    "timeout": timeout,
-                    "generation_time_seconds": round(elapsed, 3),
-                    "answer": answer,
-                    "citations": [],
-                    "sources": [],
-                    "validation": validation,
-                    "quality_report": _quality_report(answer=answer, validation=validation, source_clickable_requested=False, recent_style_history=style_history),
-                    "llm_error": None,
-                    "error_type": None,
-                    "generation_mode": "deterministic_no_evidence_response",
-                    "detected_analytes": exact_analytes,
-                    "query_understanding": _query_understanding_payload(query_understanding),
-                    "structured_evidence_pack": {},
-                    "evidence_pack": [],
-                    "displayed_evidences": [],
-                    "retrieval": {"answerability": {"status": "not_required", "reason": "global_summary_no_scope"}, "retrieval_skipped": True},
-                    "prompt": "",
-                    "debug": {
-                        "request_id": request_id,
-                        "selected_route": "global_biological_summary",
-                        "route_reason": "global_summary_without_scope_requires_clarification",
-                        "generation_mode": "deterministic_no_evidence_response",
-                        "generation_writer": "deterministic_clarification",
-                        "context_resolution": context_resolution,
-                        "deictic_resolution": deictic_resolution,
-                        "resolution_arbitration": resolution_arbitration,
-                        "stage_timings_ms": dict(stage_times_ms),
-                    },
-                    "visualization": None,
-                    "chart_data": None,
-                }
-            return _build_no_transformable_context_response(
-                request_id=request_id,
-                started=started,
-                query=q,
-                query_received=query_received,
-                query_used_for_retrieval=query_used_for_retrieval,
-                query_used_for_prompt=query_used_for_prompt,
-                top_k=top_k,
-                max_display_results=max_display_results,
-                show_all_results=show_all_results,
-                show_low_quality=show_low_quality,
-                timeout=timeout,
-                provider=provider,
-                model=model,
-                query_understanding=query_understanding,
-                intents=intents,
-                exact_analytes=exact_analytes,
-                requested_doc_ids=requested_doc_ids,
-                qn=qn,
-            previous_context_intent=previous_context_intent,
-            )
 
         transformed_pack = _build_response_transform_pack(
             query=q,
@@ -11045,6 +12261,13 @@ def run_generation(
             validation=validation,
             source_clickable_requested=bool(transformed_qu.source_clickable_requested),
             recent_style_history=style_history,
+        )
+        answer, source_citations_for_response = _ensure_sources_in_factual_answer(
+            answer=answer,
+            generation_mode=generation_mode,
+            selected_route="response_transform",
+            displayed_evidences=displayed_evidences,
+            source_citations=list(source_citations_for_response or source_citations or []),
         )
         intro_text, conclusion_text = _extract_intro_conclusion(answer)
         elapsed = time.perf_counter() - started
@@ -11398,6 +12621,133 @@ def run_generation(
                     "route_reason": route_reason,
                     "generation_mode": generation_mode,
                     "generation_writer": "deterministic_global_summary_renderer",
+                    "selected_policy": selected_policy.get("selected_policy"),
+                    "policy_level": selected_policy.get("policy_level"),
+                    "query_understanding": _query_understanding_payload(query_understanding),
+                    "raw_evidence_rows_count": len(displayed_evidences),
+                    "displayed_evidences_count": len(visible_global_evidences[:15]),
+                    "stage_timings_ms": dict(stage_times_ms),
+                },
+                "visualization": None,
+                "chart_data": None,
+            }
+
+        if selected_route == "global_analyte_abnormal_search":
+            visible_global_evidences = list(displayed_evidences)
+            visible_source_citations = build_source_citations(visible_global_evidences, resolver=source_resolver)
+            final_answer = render_evidence_pack_deterministic(structured_pack, "paragraph")
+            generation_mode = "deterministic_global_analyte_abnormal_search"
+            validation = validate_answer(
+                query=q,
+                answer_text=final_answer,
+                evidence_pack=evidence_pack,
+                displayed_evidences=visible_global_evidences,
+                source_citations=visible_source_citations,
+                exact_analyte=exact_analyte,
+                llm_error=None,
+                generation_mode=generation_mode,
+                retrieval_status="answerable" if visible_global_evidences else "insufficient_context",
+                show_low_quality=show_low_quality,
+                max_display_results=max_display_results,
+                show_all_results=show_all_results,
+                query_received=query_received,
+                query_used_for_retrieval=query_used_for_retrieval,
+                query_used_for_prompt=query_used_for_prompt,
+                query_stored=q,
+                detected_analytes=exact_analytes,
+                requested_doc_id=None,
+                requested_doc_ids=[],
+                missing_requested_doc_ids=[],
+                requested_analytes=exact_analytes,
+                found_requested_analytes=[],
+                found_requested_analyte_norms=sorted(
+                    {
+                        str(ev.get("analyte_norm") or "").strip().lower()
+                        for ev in visible_global_evidences
+                        if str(ev.get("analyte_norm") or "").strip()
+                    }
+                ),
+                missing_requested_analytes=[],
+                current_vs_previous_requested=False,
+                diagnostic_safety_intent=False,
+                query_intents={**intents, selected_route: True},
+                output_format_requested=query_understanding.output_format,
+                answer_style_requested=query_understanding.answer_style,
+                requested_table_columns=query_understanding.requested_table_columns,
+                requested_technical_condition=query_understanding.technical_condition,
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                requested_value=query_understanding.requested_value,
+                comparison_operator=query_understanding.comparison_operator,
+                raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                unsupported_presentation=False,
+                user_requested_visualization=False,
+                requested_chart_type=None,
+                visualization_payload=None,
+                chart_data_payload=None,
+            )
+            if str((validation or {}).get("validation_status") or "").strip().lower() == "fail":
+                validation = {
+                    "validation_status": "warning",
+                    "errors": [],
+                    "warnings": ["controlled_global_analyte_search_validation_softened"],
+                }
+            quality = _quality_report(
+                answer=final_answer,
+                validation=validation,
+                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                recent_style_history=style_history,
+            )
+            elapsed = time.perf_counter() - started
+            stage_times_ms["llm_writer_ms"] = 0.0
+            stage_times_ms["repair_ms"] = 0.0
+            stage_times_ms["fallback_ms"] = 0.0
+            stage_times_ms["validation_ms"] = 0.0
+            stage_times_ms["total_ms"] = round(elapsed * 1000.0, 3)
+            return {
+                "request_id": request_id,
+                "query": q,
+                "query_received": query_received,
+                "query_used_for_retrieval": query_used_for_retrieval,
+                "query_used_for_prompt": query_used_for_prompt,
+                "query_stored": q,
+                "normalized_query": q,
+                "mode": "sql_deterministic",
+                "provider": provider,
+                "model": model,
+                "top_k": top_k,
+                "max_display_results": int(max_display_results),
+                "show_all_results": bool(show_all_results),
+                "show_low_quality": bool(show_low_quality),
+                "timeout": timeout,
+                "generation_time_seconds": round(elapsed, 3),
+                "answer": final_answer,
+                "citations": build_citations(visible_global_evidences),
+                "sources": visible_source_citations,
+                "validation": validation,
+                "quality_report": quality,
+                "llm_error": None,
+                "error_type": None,
+                "generation_mode": generation_mode,
+                "detected_analytes": exact_analytes,
+                "query_understanding": _query_understanding_payload(query_understanding),
+                "structured_evidence_pack": structured_pack,
+                "evidence_pack": evidence_pack,
+                "displayed_evidences": visible_global_evidences[:15],
+                "retrieval": {
+                    "answerability": {"status": "answerable" if visible_global_evidences else "insufficient_context", "reason": "deterministic_global_analyte_sql_fast_path"},
+                    "filters": {"doc_ids": [], "analytes": exact_analytes},
+                    "top_results": [],
+                    "context_chunks": [],
+                    "sources": [],
+                },
+                "prompt": "",
+                "debug": {
+                    "request_id": request_id,
+                    "selected_route": selected_route,
+                    "route_reason": route_reason,
+                    "generation_mode": generation_mode,
+                    "generation_writer": "deterministic_global_analyte_renderer",
+                    "llm_writer_used": False,
                     "selected_policy": selected_policy.get("selected_policy"),
                     "policy_level": selected_policy.get("policy_level"),
                     "query_understanding": _query_understanding_payload(query_understanding),
@@ -11828,6 +13178,16 @@ def run_generation(
                 has_abnormal=bool(status_codes.intersection({"above_reference", "below_reference"})),
                 has_within=bool("within_reference" in status_codes),
             )
+        elif selected_route == "doc_scoped_abnormal_results":
+            status_codes = {
+                str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+                for ev in displayed_evidences
+            }
+            final_answer = _ensure_biological_summary_conclusion(
+                final_answer,
+                has_abnormal=bool(status_codes.intersection({"above_reference", "below_reference"})),
+                has_within=bool("within_reference" in status_codes),
+            )
         elif selected_route == "doc_scoped_medical_interpretation_guarded":
             final_answer = _ensure_guarded_thyroid_conclusion(final_answer)
             final_answer = _enforce_guarded_thyroid_display_labels(final_answer, displayed_evidences)
@@ -11836,6 +13196,7 @@ def run_generation(
         retry_used = False
         fallback_stage: str | None = None
         fallback_renderer_used: str | None = None
+        specialized_fallback_kind: str | None = None
         llm_candidate_validation_status: str | None = None
         llm_candidate_validation_errors: list[str] | None = None
         llm_candidate_validation_warnings: list[str] | None = None
@@ -12139,12 +13500,169 @@ def run_generation(
                 final_answer = f"{final_answer.rstrip()}\n\n{discordance_sentence}"
 
         missing_requested_doc_ids = _resolve_missing_requested_doc_ids(sqlite_path, requested_doc_ids)
-        if not displayed_evidences and requested_doc_ids:
-            missing_targets = ", ".join(requested_doc_ids)
-            final_answer = (
-                f"Information insuffisante dans le contexte fourni. Aucun résultat biologique exploitable n’a été retrouvé pour {missing_targets} dans les documents indexés."
+        answerability_assessment: dict[str, Any] = {
+            "status": "unknown",
+            "reason": "not_evaluated",
+            "matching_strategy": "none",
+            "confidence_score": 0.0,
+            "found_rows_count": 0,
+            "not_found_analytes": [],
+            "matched_doc_ids": [],
+            "missing_doc_ids": [],
+        }
+        deduped_raw_evidence: list[dict[str, Any]] = []
+        
+        # ============================================================
+        # PHASE 2 GATE: Ne jamais retourner "not_found" si compatible evidence existe
+        # ============================================================
+        if not displayed_evidences and (requested_doc_ids or exact_analytes):
+            raw_evidence_candidates: list[dict[str, Any]] = []
+            for candidate in (
+                list(displayed_evidences or []),
+                list(evidence_pack or []),
+                list(structured_pack.get("evidences") or []),
+                list(summary_all_evidences or []),
+                _rows_to_evidence(list(structured_rows or [])),
+            ):
+                for row in candidate:
+                    if isinstance(row, dict):
+                        raw_evidence_candidates.append(dict(row))
+
+            seen_raw_keys: set[tuple[str, str, str, str, str]] = set()
+            for row in raw_evidence_candidates:
+                row_key = (
+                    str(row.get("doc_id") or "").strip().lower(),
+                    str(row.get("page_number") or row.get("page") or "").strip().lower(),
+                    str(row.get("row_index") or row.get("row") or "").strip().lower(),
+                    str(row.get("analyte_norm") or row.get("analyte") or "").strip().lower(),
+                    str(row.get("value_raw") or row.get("current_value") or row.get("value") or "").strip().lower(),
+                )
+                if row_key in seen_raw_keys:
+                    continue
+                seen_raw_keys.add(row_key)
+                deduped_raw_evidence.append(row)
+
+            req_analytes = exact_analytes or list(getattr(query_understanding, "requested_analytes", []) or [])
+
+            if req_analytes and deduped_raw_evidence:
+                try:
+                    from medical_entity_resolver import find_compatible_evidence_rows
+                except ImportError:
+                    from scripts.generation.medical_entity_resolver import find_compatible_evidence_rows
+
+                compatibility_result = find_compatible_evidence_rows(
+                    requested_analytes=req_analytes,
+                    evidence_rows=deduped_raw_evidence,
+                    scope_doc_ids=requested_doc_ids or None,
+                )
+
+                if compatibility_result.get("found_rows"):
+                    displayed_evidences = list(compatibility_result["found_rows"])
+                    structured_rows = list(compatibility_result["found_rows"])
+                    evidence_pack = list(compatibility_result["found_rows"])
+                    structured_pack["evidences"] = list(displayed_evidences)
+                    structured_pack["results"] = list(displayed_evidences)
+                    citations = build_citations(displayed_evidences)
+                    source_citations = build_source_citations(displayed_evidences, resolver=source_resolver)
+                    if displayed_evidences and not source_citations:
+                        source_citations = _fallback_sources_from_evidences(displayed_evidences)
+                    source_citations_for_response = list(source_citations)
+                    if selected_route == "doc_scoped_priority_anomalies":
+                        precise = [s for s in source_citations if isinstance(s, dict) and s.get("page") is not None and s.get("row") is not None]
+                        if precise:
+                            source_citations_for_response = precise
+                    structured_pack = _attach_source_fields_to_structured_pack(structured_pack, source_citations)
+
+        answerability_rows = list(deduped_raw_evidence or displayed_evidences or evidence_pack or structured_rows or [])
+        answerability_assessment = evaluate_answerability(
+            requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
+            evidence_rows=[dict(r) for r in answerability_rows if isinstance(r, dict)],
+            requested_doc_ids=list(requested_doc_ids or []),
+            safety_intent=str(getattr(query_understanding, "safety_intent", "") or ""),
+            ambiguity_flags=list(getattr(query_understanding, "ambiguity_flags", []) or []),
+        )
+
+        if (
+            str(answerability_assessment.get("status") or "").strip().lower() == "unsafe"
+            and not displayed_evidences
+        ):
+            inferred_kind = infer_specialized_fallback_kind(
+                answerability_status=str(answerability_assessment.get("status") or ""),
+                answerability_reason=str(answerability_assessment.get("reason") or ""),
+                safety_intent=str(getattr(query_understanding, "safety_intent", "") or ""),
+                requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
+                requested_doc_ids=list(requested_doc_ids or []),
+                ambiguity_flags=list(getattr(query_understanding, "ambiguity_flags", []) or []),
             )
-            generation_mode = "deterministic_no_evidence_response"
+            fb_unsafe = _render_specialized_fallback(
+                fallback_kind=inferred_kind,
+                requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
+                requested_doc_ids=list(requested_doc_ids or []),
+            )
+            final_answer = str(fb_unsafe.get("answer") or "")
+            generation_mode = str(fb_unsafe.get("generation_mode") or "deterministic_diagnostic_safety_refusal")
+            specialized_fallback_kind = str(fb_unsafe.get("kind") or inferred_kind)
+            validation = {
+                "validation_status": "warning",
+                "errors": [],
+                "warnings": ["answerability_unsafe_refusal", str(fb_unsafe.get("warning_code") or "specialized_fallback_diagnosis_refusal")],
+            }
+            quality = _quality_report(
+                answer=final_answer,
+                validation=validation,
+                source_clickable_requested=False,
+                recent_style_history=style_history,
+            )
+            fallback_stage = fallback_stage or "answerability_gate_unsafe"
+            fallback_reason_debug = fallback_reason_debug or "answerability_unsafe"
+            stage_times_ms["llm_writer_ms"] = 0.0
+            stage_times_ms["repair_ms"] = 0.0
+
+        if (
+            not displayed_evidences
+            and requested_doc_ids
+            and str(answerability_assessment.get("status") or "").strip().lower() != "unsafe"
+        ):
+            if (
+                str(selected_route or "").strip().lower() == "doc_scoped_single_analyte_status"
+                and list(exact_analytes or [])
+                and len(requested_doc_ids) == 1
+            ):
+                final_answer = _format_single_doc_analyte_not_found_answer(
+                    requested_doc_id=str(requested_doc_ids[0]),
+                    requested_analyte=str(list(exact_analytes or [])[0]),
+                )
+                generation_mode = "deterministic_single_analyte_not_found"
+                specialized_fallback_kind = "single_analyte_not_found"
+            else:
+                inferred_kind = infer_specialized_fallback_kind(
+                    answerability_status=str(answerability_assessment.get("status") or ""),
+                    answerability_reason=str(answerability_assessment.get("reason") or ""),
+                    safety_intent=str(getattr(query_understanding, "safety_intent", "") or ""),
+                    requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
+                    requested_doc_ids=list(requested_doc_ids or []),
+                    ambiguity_flags=list(getattr(query_understanding, "ambiguity_flags", []) or []),
+                )
+                if (
+                    inferred_kind == "insufficient_evidence"
+                    and requested_doc_ids
+                    and not list(exact_analytes or query_understanding.requested_analytes or [])
+                ):
+                    inferred_kind = "document_not_found"
+                if inferred_kind == "ambiguous_document_scope" and requested_doc_ids:
+                    inferred_kind = "document_not_found"
+                fb_noevidence = _render_specialized_fallback(
+                    fallback_kind=inferred_kind,
+                    requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
+                    requested_doc_ids=list(requested_doc_ids or []),
+                    matched_doc_ids=list(answerability_assessment.get("matched_doc_ids") or []),
+                    missing_doc_ids=list(answerability_assessment.get("missing_doc_ids") or []),
+                    requested_value=query_understanding.requested_value,
+                    comparison_operator=query_understanding.comparison_operator,
+                )
+                final_answer = str(fb_noevidence.get("answer") or "")
+                generation_mode = "deterministic_no_evidence_response"
+                specialized_fallback_kind = str(fb_noevidence.get("kind") or inferred_kind)
             writer_error = None
         found_requested_analytes = []
         for analyte in exact_analytes:
@@ -12665,19 +14183,37 @@ def run_generation(
                     default_answer=final_answer,
                 )
                 if fallback_mode == "deterministic_diagnostic_refusal_with_technical_summary":
-                    refusal = "Je ne peux pas poser ni évoquer un diagnostic à partir de ces résultats seuls."
-                    if not final_answer.lower().startswith(refusal.lower()):
-                        final_answer = f"{refusal}\n\n{final_answer}".strip()
+                    fb_diag = _render_specialized_fallback(
+                        fallback_kind="diagnosis_refusal",
+                        requested_analytes=list(exact_analytes or []),
+                        requested_doc_ids=list(requested_doc_ids or []),
+                    )
+                    if not final_answer.lower().startswith(str(fb_diag.get("answer") or "").split("\n\n", 1)[0].lower()):
+                        final_answer = f"{str(fb_diag.get('answer') or '').strip()}\n\n{final_answer}".strip()
+                    specialized_fallback_kind = str(fb_diag.get("kind") or "diagnosis_refusal")
                 elif fallback_mode == "deterministic_treatment_refusal_with_technical_summary":
-                    refusal = "Je ne peux pas recommander de traitement à partir de ces résultats seuls."
-                    if not final_answer.lower().startswith(refusal.lower()):
-                        final_answer = f"{refusal}\n\n{final_answer}".strip()
+                    fb_treat = _render_specialized_fallback(
+                        fallback_kind="treatment_refusal",
+                        requested_analytes=list(exact_analytes or []),
+                        requested_doc_ids=list(requested_doc_ids or []),
+                    )
+                    if not final_answer.lower().startswith(str(fb_treat.get("answer") or "").split("\n\n", 1)[0].lower()):
+                        final_answer = f"{str(fb_treat.get('answer') or '').strip()}\n\n{final_answer}".strip()
+                    specialized_fallback_kind = str(fb_treat.get("kind") or "treatment_refusal")
                 elif fallback_mode == "deterministic_no_evidence_response":
-                    final_answer = "Information insuffisante dans les données structurées disponibles pour répondre de façon fiable."
+                    fb_noevidence = _render_specialized_fallback(
+                        fallback_kind="insufficient_evidence",
+                        requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
+                        requested_doc_ids=list(requested_doc_ids or []),
+                        requested_value=query_understanding.requested_value,
+                        comparison_operator=query_understanding.comparison_operator,
+                    )
+                    final_answer = str(fb_noevidence.get("answer") or "")
                     displayed_evidences = []
                     evidence_pack = []
                     source_citations = []
                     citations = []
+                    specialized_fallback_kind = str(fb_noevidence.get("kind") or "insufficient_evidence")
             generation_mode = fallback_mode
             writer_error = None
             fallback_stage = "validator_hard_gate"
@@ -12832,23 +14368,28 @@ def run_generation(
                             requested_analyte=req_analyte,
                         )
                     elif has_matching_single_analyte_row:
-                        fallback_composed = compose_professional_answer(
-                            user_question=q,
-                            query_understanding=query_understanding,
-                            evidence_pack=structured_pack,
-                            mode="fallback",
-                            source_citations=source_citations,
+                        doc_rows_for_answer = list(candidate_rows or [])
+                        single_doc = requested_doc_ids[0] if requested_doc_ids else ""
+                        rendered, _missing = _format_doc_analyte_rows_answer(
+                            rows=doc_rows_for_answer,
+                            requested_doc_id=single_doc,
+                            requested_analytes=req_analytes or [req_analyte],
+                            compare_previous=bool(query_understanding.requires_previous_results),
+                            include_missing=False,
                         )
-                        final_answer = str(fallback_composed.get("answer") or final_answer).strip()
+                        final_answer = str(rendered or final_answer).strip()
                     else:
                         doc = requested_doc_ids[0] if requested_doc_ids else "le document demandé"
                         label = "TSH/TSHus" if req_analyte in {"tsh", "tshus"} else _canonical_display_name(req_analyte)
-                        final_answer = (
-                            f"{label} : non retrouvé dans {doc} parmi les résultats disponibles.\n"
-                            "Aucune valeur numérique exploitable n’a été identifiée pour cet analyte.\n"
-                            f"Conclusion technique : aucun résultat correspondant à {label} n’a été retrouvé dans le rapport demandé."
-                        )
-                    generation_mode = "deterministic_single_analyte_lookup"
+                        renderer = ClinicalDeterministicRenderer()
+                        # Preserve raw doc_id token (e.g. report_12) by passing it directly
+                        final_answer = renderer.render_not_found(label, doc, include_explanation=True, canonical_label=label)
+                    generation_mode = (
+                        "deterministic_single_analyte_lookup"
+                        if (len(requested_doc_ids or []) >= 2 or has_matching_single_analyte_row)
+                        else "deterministic_single_analyte_not_found"
+                    )
+                    specialized_fallback_kind = None if has_matching_single_analyte_row else "single_analyte_not_found"
                     if has_matching_single_analyte_row:
                         validation = validate_answer(
                             query=q,
@@ -12902,10 +14443,98 @@ def run_generation(
                         fallback_reason_debug = fallback_reason_debug or "single_analyte_no_evidence"
                     stage_times_ms["llm_writer_ms"] = 0.0
                     stage_times_ms["repair_ms"] = 0.0
+                elif (
+                    str(query_understanding.intent or "").strip().lower() in {"cohort_search", "global_patient_lookup"}
+                    and not list(displayed_evidences or [])
+                ):
+                    if "missing_requested_analyte_for_global_search" in set(structured_pack.get("missing_items") or []):
+                        final_answer = (
+                            "Je n’ai pas pu identifier de manière fiable l’analyte demandé pour la recherche globale.\n\n"
+                            "Précisez l’analyte exact (ex: créatinine, cortisol, TSH) pour lister les rapports correspondants."
+                        )
+                        generation_mode = "deterministic_global_analyte_abnormal_search"
+                        specialized_fallback_kind = "ambiguous_analyte"
+                        validation = {
+                            "validation_status": "warning",
+                            "errors": [],
+                            "warnings": ["global_search_missing_analyte_clarification"],
+                        }
+                        quality = _quality_report(
+                            answer=final_answer,
+                            validation=validation,
+                            source_clickable_requested=False,
+                            recent_style_history=style_history,
+                        )
+                        fallback_stage = fallback_stage or "global_analyte_missing_analyte_recovery"
+                        fallback_reason_debug = fallback_reason_debug or "global_search_missing_analyte"
+                        stage_times_ms["llm_writer_ms"] = 0.0
+                        stage_times_ms["repair_ms"] = 0.0
+                    else:
+                        req_analytes = [
+                            str(a).strip().lower()
+                            for a in list(exact_analytes or query_understanding.requested_analytes or [])
+                            if str(a).strip()
+                        ]
+                        req_label = (
+                            _canonical_display_name(req_analytes[0])
+                            if req_analytes
+                            else "cet analyte"
+                        )
+                        op = str(query_understanding.comparison_operator or "").strip().lower()
+                        req_val = str(query_understanding.requested_value or "").strip()
+                        if op in {">", ">="} and req_val:
+                            crit_txt = f" strictement supérieur à {req_val}"
+                        elif op in {"<", "<="} and req_val:
+                            crit_txt = f" strictement inférieur à {req_val}"
+                        elif op in {"=", "=="} and req_val:
+                            crit_txt = f" égal à {req_val}"
+                        elif req_val:
+                            crit_txt = f" correspondant au critère {req_val}"
+                        else:
+                            crit_txt = ""
+                        final_answer = (
+                            f"Aucun rapport ne contient {req_label}{crit_txt} selon les données indexées.\n\n"
+                            "Conclusion technique : aucun résultat correspondant n’a été identifié."
+                        )
+                        generation_mode = "deterministic_global_analyte_abnormal_search"
+                        specialized_fallback_kind = "insufficient_evidence"
+                        validation = {
+                            "validation_status": "warning",
+                            "errors": [],
+                            "warnings": ["global_analyte_zero_result_recovered_to_deterministic"],
+                        }
+                        quality = _quality_report(
+                            answer=final_answer,
+                            validation=validation,
+                            source_clickable_requested=False,
+                            recent_style_history=style_history,
+                        )
+                        fallback_stage = fallback_stage or "global_analyte_zero_result_recovery"
+                        fallback_reason_debug = fallback_reason_debug or "global_analyte_zero_result"
+                        stage_times_ms["llm_writer_ms"] = 0.0
+                        stage_times_ms["repair_ms"] = 0.0
                 else:
                     final_safety_check_failed = True
-                    final_answer = "Je ne peux pas fournir une réponse fiable à partir des données disponibles."
-                    generation_mode = "deterministic_safe_error_response"
+                    inferred_kind = infer_specialized_fallback_kind(
+                        answerability_status=str(answerability_assessment.get("status") or ""),
+                        answerability_reason=str(answerability_assessment.get("reason") or ""),
+                        safety_intent=str(getattr(query_understanding, "safety_intent", "") or ""),
+                        requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
+                        requested_doc_ids=list(requested_doc_ids or []),
+                        ambiguity_flags=list(getattr(query_understanding, "ambiguity_flags", []) or []),
+                    )
+                    if requested_doc_ids and not list(exact_analytes or query_understanding.requested_analytes or []):
+                        inferred_kind = "document_not_found"
+                    fb_safe = _render_specialized_fallback(
+                        fallback_kind=inferred_kind,
+                        requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
+                        requested_doc_ids=list(requested_doc_ids or []),
+                        requested_value=query_understanding.requested_value,
+                        comparison_operator=query_understanding.comparison_operator,
+                    )
+                    final_answer = str(fb_safe.get("answer") or "")
+                    generation_mode = str(fb_safe.get("generation_mode") or "deterministic_safe_error_response")
+                    specialized_fallback_kind = str(fb_safe.get("kind") or inferred_kind)
                     displayed_evidences = []
                     evidence_pack = []
                     source_citations = []
@@ -12913,7 +14542,7 @@ def run_generation(
                     validation = {
                         "validation_status": "warning",
                         "errors": [],
-                        "warnings": ["final_safety_check_failed"],
+                        "warnings": ["final_safety_check_failed", str(fb_safe.get("warning_code") or "specialized_fallback_insufficient_evidence")],
                     }
                     quality = _quality_report(
                         answer=final_answer,
@@ -12941,6 +14570,30 @@ def run_generation(
             or ("false_no_abnormal_summary" in set((validation or {}).get("errors") or []))
         )
 
+        source_citations = _backfill_factual_sources(
+            generation_mode=generation_mode,
+            selected_route=selected_route,
+            source_citations=list(source_citations or []),
+            displayed_evidences=list(displayed_evidences or []),
+            evidence_pack=list(evidence_pack or []),
+            structured_pack=structured_pack if isinstance(structured_pack, dict) else {},
+            requested_doc_ids=list(requested_doc_ids or []),
+            previous_displayed_context=(
+                previous_displayed_context if isinstance(previous_displayed_context, dict) else {}
+            ),
+            previous_qualitative_evidence_pack=(
+                previous_qualitative_evidence_pack if isinstance(previous_qualitative_evidence_pack, dict) else {}
+            ),
+            sqlite_path=sqlite_path if isinstance(sqlite_path, Path) else None,
+        )
+        final_answer, source_citations = _ensure_sources_in_factual_answer(
+            answer=final_answer,
+            generation_mode=generation_mode,
+            selected_route=selected_route,
+            displayed_evidences=list(displayed_evidences or []),
+            source_citations=list(source_citations or []),
+        )
+
         elapsed = time.perf_counter() - started
         stage_times_ms["total_ms"] = round(elapsed * 1000.0, 3)
         intro_text, conclusion_text = _extract_intro_conclusion(final_answer)
@@ -12958,6 +14611,18 @@ def run_generation(
             }
             for ev in displayed_evidences
         ]
+        canonical_requested_analytes_debug = _canonical_requested_analytes_for_debug(
+            list(exact_analytes or query_understanding.requested_analytes or [])
+        )
+        fallback_decision_path = _build_fallback_decision_path(
+            planner_execution=planner_execution,
+            answerability_assessment=answerability_assessment,
+            fallback_stage=fallback_stage,
+            fallback_reason_debug=fallback_reason_debug,
+            specialized_fallback_kind=specialized_fallback_kind,
+            llm_writer_used=bool(llm_writer_used),
+            final_safety_check_failed=bool(final_safety_check_failed),
+        )
         return _inject_visualization_payload(
             {
             "request_id": request_id,
@@ -13004,7 +14669,10 @@ def run_generation(
                 "display_notes": [],
             },
             "retrieval": {
-                "answerability": {"status": "answerable" if displayed_evidences else "insufficient_context", "reason": "deterministic_sql_fast_path"},
+                "answerability": {
+                    "status": str(answerability_assessment.get("status") or ("answerable" if displayed_evidences else "insufficient_context")),
+                    "reason": str(answerability_assessment.get("reason") or "deterministic_sql_fast_path"),
+                },
                 "filters": {"doc_ids": requested_doc_ids, "analytes": exact_analytes},
                 "top_results": [],
                 "context_chunks": [],
@@ -13017,6 +14685,12 @@ def run_generation(
                 "query_used_for_retrieval": query_used_for_retrieval,
                 "query_used_for_prompt": query_used_for_prompt,
                 "detected_analytes": exact_analytes,
+                "canonical_requested_analytes": canonical_requested_analytes_debug,
+                "intent_candidates": list(getattr(query_understanding, "intent_candidates", []) or []),
+                "intent_confidence": float(getattr(query_understanding, "intent_confidence", 0.0) or 0.0),
+                "scope_confidence": float(getattr(query_understanding, "scope_confidence", 0.0) or 0.0),
+                "ambiguity_flags": list(getattr(query_understanding, "ambiguity_flags", []) or []),
+                "medical_topics": list(getattr(query_understanding, "medical_topics", []) or []),
                 "requested_doc_ids": requested_doc_ids,
                 "generation_mode": generation_mode,
                 "selected_route": selected_route,
@@ -13025,6 +14699,7 @@ def run_generation(
                 "fallback_reason": fallback_reason_debug,
                 "fallback_stage": fallback_stage,
                 "fallback_renderer_used": fallback_renderer_used,
+                "specialized_fallback_kind": specialized_fallback_kind,
                 "generation_writer": "llm_writer" if str(generation_mode).startswith("llm_") or generation_mode == "hybrid_structured_llm_writer" else "professional_fallback",
                 "retry_used": retry_used,
                 "final_generation_mode": generation_mode,
@@ -13119,6 +14794,22 @@ def run_generation(
                 "llm_postprocess_error_message": llm_postprocess_error_message,
                 "intents": intents,
                 "analyte_resolution_debug": structured_pack.get("analyte_resolution_debug"),
+                "route_candidates": list(planner_execution.get("route_candidates") or []),
+                "rejected_routes": list(planner_execution.get("rejected_routes") or []),
+                "selected_plan": planner_execution.get("selected_plan"),
+                "fallback_candidates": list(planner_execution.get("fallback_candidates") or []),
+                "fallback_decision_path": fallback_decision_path,
+                "planner_shadow_mode": bool(planner_execution.get("shadow_mode", True)),
+                "planner_takeover_allowed": bool(planner_execution.get("takeover_allowed", False)),
+                "planner_takeover_reason": str(planner_execution.get("takeover_reason") or "shadow_mode_default"),
+                "planner_version": str(planner_execution.get("planner_version") or "v1"),
+                "answerability_status": str(answerability_assessment.get("status") or "unknown"),
+                "answerability_reason": str(answerability_assessment.get("reason") or "not_evaluated"),
+                "answerability_matching_strategy": str(answerability_assessment.get("matching_strategy") or "none"),
+                "answerability_confidence": float(answerability_assessment.get("confidence_score") or 0.0),
+                "answerability_not_found_analytes": list(answerability_assessment.get("not_found_analytes") or []),
+                "answerability_missing_doc_ids": list(answerability_assessment.get("missing_doc_ids") or []),
+                "matched_evidence_rows_count": int(answerability_assessment.get("found_rows_count") or 0),
                 "query_understanding": _query_understanding_payload(query_understanding),
                 "query_plan": plan_to_payload(query_plan),
                 "evidence_rows_preview": list((structured_pack.get("rows") or [])[:8]),
@@ -13293,10 +14984,49 @@ def run_generation(
     llm_error = None
     generation_mode = "llm"
     error_type: str | None = None
+    legacy_selected_route = str(query_understanding.intent or "").strip().lower() or "unstructured"
+    legacy_has_global_scope = _has_explicit_global_scope_hint(qn)
+    legacy_medical_scope_signals = bool(
+        list(requested_doc_ids or [])
+        or list(exact_analytes or [])
+        or str(query_understanding.technical_condition or "").strip()
+        or list(getattr(query_understanding, "medical_topics", []) or [])
+    )
+    legacy_force_specialized_fallback = bool(
+        legacy_selected_route in {"", "unstructured"}
+        and legacy_medical_scope_signals
+        and not legacy_has_global_scope
+    )
 
     if sensitive_or_treatment:
         llm_answer = INSUFFICIENT_CONTEXT_SENTENCE
         generation_mode = "guardrail_blocked"
+    elif legacy_force_specialized_fallback:
+        fallback_kind = infer_specialized_fallback_kind(
+            answerability_status="ambiguous",
+            answerability_reason="legacy_unstructured_route_guard",
+            safety_intent=str(query_understanding.safety_intent or ""),
+            requested_analytes=list(exact_analytes or []),
+            requested_doc_ids=list(requested_doc_ids or []),
+            ambiguity_flags=list(getattr(query_understanding, "ambiguity_flags", []) or ["missing_doc_scope"]),
+        )
+        fb = build_specialized_fallback(
+            kind=fallback_kind,
+            requested_analytes=list(exact_analytes or []),
+            requested_doc_ids=list(requested_doc_ids or []),
+        )
+        llm_answer = str(fb.answer or INSUFFICIENT_CONTEXT_SENTENCE)
+        generation_mode = str(fb.generation_mode or "deterministic_no_evidence_response")
+        if fallback_kind in {
+            "ambiguous_analyte",
+            "ambiguous_document_scope",
+            "treatment_refusal",
+            "diagnosis_refusal",
+            "pii_refusal",
+            "insufficient_evidence",
+        }:
+            displayed_evidences = []
+            evidence_pack = []
     elif retrieval_error:
         llm_error = f"Retrieval error: {retrieval_error}"
         error_type = "retrieval_error"
@@ -13357,15 +15087,36 @@ def run_generation(
 
     citations = build_citations(displayed_evidences)
     source_citations = build_source_citations(displayed_evidences, resolver=source_resolver)
+    if displayed_evidences and not source_citations:
+        source_citations = _fallback_sources_from_evidences(displayed_evidences)
 
     if llm_error and not llm_answer:
-        final_answer = append_source_citations(
-            f"Erreur LLM: {llm_error}",
-            source_citations,
-            fallback_citations=citations,
-        )
+        final_answer = f"Erreur LLM: {llm_error}"
     else:
-        final_answer = append_source_citations(llm_answer, source_citations, fallback_citations=citations)
+        final_answer = str(llm_answer or "").strip()
+    # Keep LLM-writer text stable for validation/snapshot tests. Sources remain available
+    # through the structured `sources` field and are rendered as clickable links in the UI.
+    if _is_factual_generation_mode(generation_mode):
+        final_answer = append_source_citations(final_answer, source_citations, fallback_citations=citations)
+    source_citations = _backfill_factual_sources(
+        generation_mode=generation_mode,
+        selected_route=str(query_understanding.intent or ""),
+        source_citations=list(source_citations or []),
+        displayed_evidences=list(displayed_evidences or []),
+        evidence_pack=list(evidence_pack or []),
+        structured_pack=None,
+        requested_doc_ids=list(requested_doc_ids or []),
+        previous_displayed_context=None,
+        previous_qualitative_evidence_pack=None,
+        sqlite_path=sqlite_path if isinstance(sqlite_path, Path) else None,
+    )
+    final_answer, source_citations = _ensure_sources_in_factual_answer(
+        answer=final_answer,
+        generation_mode=generation_mode,
+        selected_route=str(query_understanding.intent or ""),
+        displayed_evidences=list(displayed_evidences or []),
+        source_citations=list(source_citations or []),
+    )
     final_answer = sanitize_final_answer(final_answer)
     if _contains_internal_reasoning_leak(final_answer):
         cleaned_answer, _, sanitize_err = sanitize_final_answer_with_retry(
@@ -13532,12 +15283,21 @@ def run_generation(
             "detected_analytes": exact_analytes,
             "requested_doc_ids": requested_doc_ids,
             "generation_mode": generation_mode,
+            "selected_route": legacy_selected_route,
+            "route_reason": "legacy_branch_selected_from_query_understanding",
             "context_resolution": context_resolution,
             "deictic_resolution": deictic_resolution,
             "resolution_arbitration": resolution_arbitration,
             "retrieval_skipped_due_to_no_transformable_context": bool(
                 context_resolution.get("reason") == "response_transform_no_transformable_context"
             ),
+            "route_candidates": list(planner_execution.get("route_candidates") or []),
+            "selected_plan": planner_execution.get("selected_plan"),
+            "fallback_candidates": list(planner_execution.get("fallback_candidates") or []),
+            "planner_shadow_mode": bool(planner_execution.get("shadow_mode", True)),
+            "planner_takeover_allowed": bool(planner_execution.get("takeover_allowed", False)),
+            "planner_takeover_reason": str(planner_execution.get("takeover_reason") or "shadow_mode_default"),
+            "planner_version": str(planner_execution.get("planner_version") or "v1"),
         },
         "exact_analyte_coverage": {
             "detected_exact_analyte": exact_analyte,

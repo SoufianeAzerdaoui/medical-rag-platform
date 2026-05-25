@@ -50,9 +50,13 @@ function StatusBadge({ text }: { text: string }) {
 }
 
 const markdownComponents = {
+  h3: ({ children }: { children?: ReactNode }) => (
+    <h3 className="mt-4 mb-2 text-base font-semibold text-slate-100">{children}</h3>
+  ),
   p: ({ children }: { children?: ReactNode }) => <p className="my-2 whitespace-pre-wrap leading-6">{children}</p>,
-  ul: ({ children }: { children?: ReactNode }) => <ul className="my-3 list-disc space-y-1 pl-5">{children}</ul>,
-  li: ({ children }: { children?: ReactNode }) => <li className="leading-6">{children}</li>,
+  ul: ({ children }: { children?: ReactNode }) => <ul className="my-3 list-disc space-y-1.5 pl-5">{children}</ul>,
+  li: ({ children }: { children?: ReactNode }) => <li className="leading-6 [&>ul]:mt-1.5">{children}</li>,
+  strong: ({ children }: { children?: ReactNode }) => <strong className="font-semibold text-slate-100">{children}</strong>,
   a: ({ href, children }: { href?: string; children?: ReactNode }) => (
     <a
       href={href}

@@ -258,6 +258,16 @@ def format_result_count(n: int) -> str:
     return f"{count} valeurs exploitables ont été retrouvées."
 
 
+def _has_numeric_criterion(query_understanding: QueryUnderstanding, evidence_pack: dict[str, Any]) -> bool:
+    value = _safe_str(getattr(query_understanding, "requested_value", "")) or _safe_str(
+        (evidence_pack.get("constraints") or {}).get("requested_value") if isinstance(evidence_pack.get("constraints"), dict) else ""
+    )
+    op = _safe_str(getattr(query_understanding, "comparison_operator", "")) or _safe_str(
+        (evidence_pack.get("constraints") or {}).get("comparison_operator") if isinstance(evidence_pack.get("constraints"), dict) else ""
+    )
+    return bool(value and op in {">", ">=", "<", "<=", "="})
+
+
 def _should_show_count_line(intent: str, presentation: str, evidences: list[dict[str, Any]]) -> bool:
     if not evidences:
         return False
@@ -275,17 +285,32 @@ def select_intro_template(intent: str, query_understanding: QueryUnderstanding, 
     seed = f"{intent}|{query_understanding.output_format}|{query_understanding.answer_style}|{doc_scope}|{analyte_text}|{condition}"
 
     if intent in {"cohort_search", "global_patient_lookup"}:
+        has_numeric_criterion = _has_numeric_criterion(query_understanding, evidence_pack)
         if condition and query_understanding.requested_value:
             precise = f"J’ai recherché les patients ayant une {analyte_text} {condition}."
         elif condition:
             precise = f"J’ai recherché les patients ayant {analyte_text} {condition}."
         else:
             precise = f"J’ai recherché les patients ayant {analyte_text}."
+        if has_numeric_criterion and condition:
+            precise = f"J’ai recherché les patients dont {analyte_text} respecte le critère numérique : {condition}."
         opts = [
             precise,
-            f"La recherche a été effectuée sur l’ensemble des rapports indexés pour {analyte_text}{condition_phrase}.",
-            f"J’ai filtré les rapports indexés pour identifier les patients avec {analyte_text}{condition_phrase}.",
-            f"La base a été interrogée pour retrouver les patients répondant au critère : {analyte_text}{condition_phrase}.",
+            (
+                f"La recherche a été effectuée sur l’ensemble des rapports indexés pour {analyte_text}{condition_phrase}."
+                if not has_numeric_criterion
+                else f"La recherche a été effectuée sur l’ensemble des rapports indexés pour {analyte_text} répondant au critère numérique {condition}."
+            ),
+            (
+                f"J’ai filtré les rapports indexés pour identifier les patients avec {analyte_text}{condition_phrase}."
+                if not has_numeric_criterion
+                else f"J’ai filtré les rapports indexés pour identifier les patients dont {analyte_text} satisfait le critère numérique {condition}."
+            ),
+            (
+                f"La base a été interrogée pour retrouver les patients répondant au critère : {analyte_text}{condition_phrase}."
+                if not has_numeric_criterion
+                else f"La base a été interrogée pour retrouver les patients répondant au critère numérique : {analyte_text} {condition}."
+            ),
         ]
         return _pick_variant(seed, [o for o in opts if "None" not in o])
 
@@ -582,6 +607,16 @@ def build_short_conclusion(intent: str, evidence_pack: dict[str, Any], safety_in
     first = evidences[0]
     status = _safe_str(first.get("technical_status_code")).lower()
     analyte = _display_analyte(first) or "l’analyte"
+    constraints = evidence_pack.get("constraints") if isinstance(evidence_pack, dict) else {}
+    req_value = _safe_str((constraints or {}).get("requested_value") if isinstance(constraints, dict) else "")
+    req_op = _safe_str((constraints or {}).get("comparison_operator") if isinstance(constraints, dict) else "")
+    req_unit = _safe_str((constraints or {}).get("requested_unit") if isinstance(constraints, dict) else "")
+    if not req_unit:
+        req_unit = _safe_str(first.get("unit"))
+    unit_suffix = f" {req_unit}" if req_unit else ""
+    has_numeric_criterion = intent in {"cohort_search", "global_patient_lookup"} and bool(
+        req_value and req_op in {">", ">=", "<", "<=", "="}
+    )
     if len(evidences) == 1:
         if intent in {"multi_doc_comparison", "doc_pair_comparison"}:
             cmp_status = _safe_str(first.get("comparison_status")).lower()
@@ -595,6 +630,18 @@ def build_short_conclusion(intent: str, evidence_pack: dict[str, Any], safety_in
             if cmp_status in {"missing_in_a", "missing_in_b"}:
                 return "Conclusion technique : la comparaison est partielle car une valeur manque dans l’un des deux rapports."
             return "Conclusion technique : la comparaison reste non exploitable numériquement."
+        if has_numeric_criterion:
+            op_label = {
+                ">": "strictement supérieur à",
+                ">=": "supérieur ou égal à",
+                "<": "strictement inférieur à",
+                "<=": "inférieur ou égal à",
+                "=": "égal à",
+            }.get(req_op, "conforme au critère")
+            return (
+                f"Conclusion technique : {analyte} satisfait le critère numérique demandé "
+                f"({op_label} {req_value}{unit_suffix})."
+            )
         if status == "above_reference":
             return f"Conclusion technique : {analyte} est au-dessus de l’intervalle de référence indiqué."
         if status == "below_reference":
@@ -729,6 +776,44 @@ def _single_analyte_conclusion(status_code: str) -> str:
     if sc == "within_reference":
         return "Conclusion technique : la valeur est dans l’intervalle de référence indiqué, sans interprétation diagnostique."
     return "Conclusion technique : interprétation technique limitée aux données disponibles, sans interprétation diagnostique."
+
+
+class ClinicalDeterministicRenderer:
+    """Deterministic Python renderer for simple clinical responses.
+
+    Methods:
+    - render_compact: compact single-line rendering (not used everywhere yet)
+    - render_detailed: multi-line detailed rendering
+    - render_not_found: deterministic not-found template that preserves raw doc_id tokens
+    """
+
+    def render_compact(self, analyte_label: str, doc_id: str, value: str | None = None) -> str:
+        if value:
+            return f"{analyte_label}: {value} — source: {doc_id}"
+        return f"{analyte_label} non retrouvé dans {doc_id}."
+
+    def render_detailed(self, analyte_label: str, doc_id: str, value_text: str | None, reference: str, status: str, source: str) -> str:
+        val = value_text or "non disponible"
+        lines = [f"### {analyte_label} — {doc_id}", "", f"- **Valeur** : **{val}**"]
+        lines.append(f"- **Référence** : {reference or 'non disponible'}")
+        lines.append(f"- **Statut technique** : {status or 'non interprétable'}")
+        lines.append(f"- **Source** : {source or doc_id}")
+        lines.append("")
+        lines.append(_single_analyte_conclusion(status or ""))
+        return "\n".join(lines)
+
+    def render_not_found(self, analyte_label: str, raw_doc_id: str, include_explanation: bool = True, canonical_label: str | None = None) -> str:
+        # Preserve the raw doc_id token (eg. report_12) so validators and downstream
+        # consumers can reliably parse the referenced document.
+        doc = raw_doc_id or "le document demandé"
+        label = canonical_label or analyte_label
+        if include_explanation:
+            return (
+                f"{label} : non retrouvé dans {doc} parmi les résultats disponibles.\n"
+                "Aucune valeur numérique exploitable n’a été identifiée pour cet analyte.\n"
+                f"Conclusion technique : aucun résultat correspondant à {label} n’a été retrouvé dans le rapport demandé."
+            )
+        return f"{label} non retrouvé dans {doc}."
 
 
 def _writer_intent(intent: str) -> str:
@@ -1995,3 +2080,379 @@ def compose_professional_answer(
         out["llm_error"] = str(exc)
         out["llm_prompt_preview"] = prompt[:1200]
         return out
+
+
+# =============================================================================
+# ClinicalDeterministicRenderer — Phase 3 / Option A
+# Deterministic, evidence-only renderer for single_analyte_lookup &
+# doc_scoped_results routes. Zero LLM, zero hallucination.
+# =============================================================================
+
+class ClinicalDeterministicRenderer:
+    """
+    Renders clinical evidence rows into safe, formatted outputs for physician UX.
+
+    Hard constraints:
+    - Uses ONLY displayed_evidences as facts. Never invents values.
+    - Never diagnoses, never recommends treatment, never exposes PII.
+    - Emits debug payload ONLY when debug=True.
+    - If compatible evidence rows exist (> 0), never returns "non retrouvé".
+
+    Output format:
+        {
+            "text": str,                   # Human-readable markdown
+            "table": list[dict] | None,    # Structured rows for detailed mode
+            "sources": list[str],          # doc_id citations
+            "conclusion": str,             # Single factual conclusion line
+            "debug": dict | None,          # Machine payload, None unless debug=True
+            "mode": str,                   # "compact" | "detailed" | "not_found"
+        }
+    """
+
+    # ------------------------------------------------------------------ #
+    #  Status mapping                                                      #
+    # ------------------------------------------------------------------ #
+    _STATUS_MAP: dict[str, str] = {
+        "above_reference": "au-dessus de la référence",
+        "below_reference": "en dessous de la référence",
+        "within_reference": "dans la référence",
+        "not_interpretable": "valeur non numériquement exploitable",
+        "not_numeric": "valeur non numériquement exploitable",
+    }
+
+    # ------------------------------------------------------------------ #
+    #  Internal helpers                                                    #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _get_display_label(row: dict) -> str:
+        """Return the best human-readable analyte label for a row."""
+        try:
+            from medical_entity_resolver import get_display_analyte_label
+            label = get_display_analyte_label(row)
+            if label and label.lower() not in ("non précisé", "non precise"):
+                return label
+        except Exception:
+            pass
+        for field in ("analyte_label", "display_name", "analyte", "analyte_norm"):
+            val = str(row.get(field) or "").strip()
+            if val and val.lower() not in ("non précisé", "non precise"):
+                return val
+        return "Analyte inconnu"
+
+    @staticmethod
+    def _get_value_str(row: dict) -> str:
+        """Return the numeric value string from a row."""
+        val = str(row.get("current_value") or row.get("value_raw") or row.get("value_numeric") or "").strip()
+        return val if val else "–"
+
+    @staticmethod
+    def _get_unit(row: dict) -> str:
+        return str(row.get("unit") or "").strip()
+
+    @staticmethod
+    def _get_status_fr(row: dict) -> str:
+        """Map technical_status / status to a French display label."""
+        raw = str(
+            row.get("technical_status_code")
+            or row.get("interpretation_status")
+            or row.get("technical_status")
+            or row.get("status")
+            or ""
+        ).strip().lower().replace("-", "_")
+        # Normalise common variants
+        if "above" in raw:
+            raw = "above_reference"
+        elif "below" in raw or "under" in raw:
+            raw = "below_reference"
+        elif "within" in raw or "normal" in raw or "dans" in raw:
+            raw = "within_reference"
+        return ClinicalDeterministicRenderer._STATUS_MAP.get(raw, "valeur non numériquement exploitable")
+
+    @staticmethod
+    def _get_ref_concise(row: dict) -> str:
+        """Return a concise ≤140-char reference string."""
+        ref = str(row.get("reference") or row.get("reference_range") or "").strip()
+        unit = ClinicalDeterministicRenderer._get_unit(row)
+        if not ref:
+            return "Réf: voir détail"
+        full = f"Réf: {ref}"
+        if unit and unit not in ref:
+            full = f"Réf: {ref} {unit}"
+        return full[:140]
+
+    @staticmethod
+    def _get_doc_id(row: dict) -> str:
+        return str(row.get("doc_id") or "").strip()
+
+    @staticmethod
+    def _get_source_label(row: dict) -> str:
+        """Return a short source citation string."""
+        doc_id = ClinicalDeterministicRenderer._get_doc_id(row)
+        page = row.get("page") or row.get("page_number")
+        row_idx = row.get("row") or row.get("row_index")
+        label = doc_id or "source inconnue"
+        if page:
+            label += f" — page {page}"
+            if row_idx:
+                label += f", ligne {row_idx}"
+        return label
+
+    @staticmethod
+    def _scope_label(query_understanding: dict) -> str:
+        doc_ids = list(query_understanding.get("requested_doc_ids") or [])
+        if not doc_ids:
+            return "global"
+        if len(doc_ids) == 1:
+            return str(doc_ids[0])
+        return ", ".join(str(d) for d in doc_ids[:3]) + ("…" if len(doc_ids) > 3 else "")
+
+    @staticmethod
+    def _user_query(query_understanding: dict) -> str:
+        return str(
+            query_understanding.get("original_user_question")
+            or query_understanding.get("raw_user_request")
+            or "bilan demandé"
+        ).strip()
+
+    # ------------------------------------------------------------------ #
+    #  Public API                                                          #
+    # ------------------------------------------------------------------ #
+
+    def render_compact(
+        self,
+        displayed_evidences: list[dict],
+        query_understanding: dict,
+        debug: bool = False,
+    ) -> dict:
+        """
+        Compact mode — ≤ 5 lines (excluding sources block and conclusion).
+        Returns structured dict with text, sources, conclusion, and optional debug.
+        """
+        if not displayed_evidences:
+            analytes = list(query_understanding.get("requested_analytes") or [])
+            doc_ids = list(query_understanding.get("requested_doc_ids") or [])
+            analyte = analytes[0] if analytes else "analyte inconnu"
+            doc_id = doc_ids[0] if doc_ids else None
+            return self.render_not_found(analyte, doc_id, debug_info={"requested_analytes": analytes, "requested_doc_ids": doc_ids} if debug else None)
+
+        scope = self._scope_label(query_understanding)
+        user_q = self._user_query(query_understanding)
+        total = len(displayed_evidences)
+
+        # Count anomalies (above + below reference)
+        anomaly_rows = [r for r in displayed_evidences if self._get_status_fr(r) in ("au-dessus de la référence", "en dessous de la référence")]
+        normal_rows = [r for r in displayed_evidences if r not in anomaly_rows]
+
+        # Header line
+        lines: list[str] = [f"**Bilan demandé :** {user_q} — {scope}"]
+
+        # Summary line
+        n_anom = len(anomaly_rows)
+        if n_anom:
+            lines.append(f"{total} valeur(s) exploitable(s) retrouvée(s). {n_anom} valeur(s) hors référence.")
+        else:
+            lines.append(f"{total} valeur(s) exploitable(s) retrouvée(s). Aucune anomalie.")
+
+        # Up to 3 key rows (anomalies first, then normal)
+        key_rows = (anomaly_rows + normal_rows)[:3]
+        for row in key_rows:
+            label = self._get_display_label(row)
+            value = self._get_value_str(row)
+            unit = self._get_unit(row)
+            status = self._get_status_fr(row)
+            doc = self._get_doc_id(row)
+            val_str = f"{value} {unit}".strip()
+            lines.append(f"- **{label}** = {val_str} ({status}) — {doc}")
+
+        # Sources block
+        sources = sorted({self._get_source_label(r) for r in displayed_evidences})
+
+        # Conclusion technique
+        if n_anom:
+            top_analytes = ", ".join(
+                f"{self._get_display_label(r)} — {self._get_doc_id(r)}"
+                for r in anomaly_rows[:2]
+            )
+            conclusion = f"Conclusion technique : {n_anom} valeur(s) hors référence ({top_analytes})."
+        else:
+            conclusion = f"Conclusion technique : {total} résultat(s) dans les limites de référence rapportées."
+
+        text = "\n".join(lines)
+
+        result: dict = {
+            "text": text,
+            "table": None,
+            "sources": sources,
+            "conclusion": conclusion,
+            "mode": "compact",
+            "debug": None,
+        }
+        if debug:
+            result["debug"] = self._build_debug(displayed_evidences, query_understanding)
+        return result
+
+    def render_detailed(
+        self,
+        displayed_evidences: list[dict],
+        query_understanding: dict,
+        debug: bool = False,
+    ) -> dict:
+        """
+        Detailed mode — markdown table with columns:
+        Analyte | Valeur (unit source) | Statut | Réf concise | Document (doc_id)
+        """
+        if not displayed_evidences:
+            analytes = list(query_understanding.get("requested_analytes") or [])
+            doc_ids = list(query_understanding.get("requested_doc_ids") or [])
+            analyte = analytes[0] if analytes else "analyte inconnu"
+            doc_id = doc_ids[0] if doc_ids else None
+            return self.render_not_found(analyte, doc_id, debug_info={"requested_analytes": analytes, "requested_doc_ids": doc_ids} if debug else None)
+
+        scope = self._scope_label(query_understanding)
+        user_q = self._user_query(query_understanding)
+
+        header = f"**Bilan demandé :** {user_q} — {scope}\n"
+
+        # Build structured table rows
+        table_rows: list[dict] = []
+        for row in displayed_evidences:
+            label = self._get_display_label(row)
+            value = self._get_value_str(row)
+            unit = self._get_unit(row)
+            val_str = f"{value} {unit}".strip()
+            status = self._get_status_fr(row)
+            ref_c = self._get_ref_concise(row)
+            doc_id = self._get_doc_id(row)
+            table_rows.append({
+                "Analyte": label,
+                "Valeur (unit source)": val_str,
+                "Statut": status,
+                "Réf concise": ref_c,
+                "Document (doc_id)": doc_id,
+            })
+
+        # Markdown table
+        md_lines = [
+            header,
+            "| Analyte | Valeur (unit source) | Statut | Réf concise | Document (doc_id) |",
+            "|---------|----------------------|--------|-------------|-------------------|",
+        ]
+        for tr in table_rows:
+            md_lines.append(
+                f"| {tr['Analyte']} | {tr['Valeur (unit source)']} | {tr['Statut']} | {tr['Réf concise']} | {tr['Document (doc_id)']} |"
+            )
+
+        text = "\n".join(md_lines)
+
+        sources = sorted({self._get_source_label(r) for r in displayed_evidences})
+
+        # Conclusion
+        anomaly_count = sum(
+            1 for r in displayed_evidences
+            if self._get_status_fr(r) in ("au-dessus de la référence", "en dessous de la référence")
+        )
+        if anomaly_count:
+            top = next(
+                (f"{self._get_display_label(r)} — {self._get_doc_id(r)}"
+                 for r in displayed_evidences
+                 if self._get_status_fr(r) in ("au-dessus de la référence", "en dessous de la référence")),
+                ""
+            )
+            conclusion = f"Conclusion technique : {anomaly_count} valeur(s) hors référence (ex: {top})."
+        else:
+            conclusion = f"Conclusion technique : {len(displayed_evidences)} résultat(s) dans les limites de référence rapportées."
+
+        result: dict = {
+            "text": text,
+            "table": table_rows,
+            "sources": sources,
+            "conclusion": conclusion,
+            "mode": "detailed",
+            "debug": None,
+        }
+        if debug:
+            result["debug"] = self._build_debug(displayed_evidences, query_understanding)
+        return result
+
+    def render_not_found(
+        self,
+        analyte: str,
+        doc_id: str | None = None,
+        debug_info: dict | None = None,
+    ) -> dict:
+        """
+        Exact not-found template per clinical spec.
+        Emits CTA for physician to refine query.
+        """
+        analyte_upper = str(analyte or "analyte").upper().strip()
+        if doc_id:
+            doc_token = str(doc_id).strip()
+            title = f"{analyte_upper} — {doc_token}"
+            body = (
+                f"Aucune valeur numérique de {analyte_upper} indexée trouvée dans {doc_token} "
+                f"parmi les résultats disponibles. "
+                f"Souhaitez‑vous : (1) rechercher globalement, (2) vérifier alias/orthographe, "
+                f"(3) préciser un autre rapport ?"
+            )
+            conclusion = (
+                f"Conclusion technique : aucune valeur exploitable identifiée pour "
+                f"{analyte_upper} dans le rapport demandé."
+            )
+        else:
+            title = analyte_upper
+            body = (
+                f"Aucune valeur numérique de {analyte_upper} n'a été identifiée dans les rapports indexés. "
+                f"Voulez‑vous une recherche étendue ?"
+            )
+            conclusion = (
+                f"Conclusion technique : aucune valeur exploitable identifiée pour "
+                f"{analyte_upper} dans les rapports disponibles."
+            )
+
+        text = f"### {title}\n\n{body}\n\n{conclusion}"
+
+        result: dict = {
+            "text": text,
+            "table": None,
+            "sources": [],
+            "conclusion": conclusion,
+            "mode": "not_found",
+            "debug": debug_info,
+        }
+        return result
+
+    def render(
+        self,
+        displayed_evidences: list[dict],
+        query_understanding: dict,
+        answer_style: str = "compact",
+        debug: bool = False,
+    ) -> dict:
+        """
+        Dispatcher: routes to compact / detailed / not_found based on answer_style
+        and presence of evidence rows.
+        """
+        style = str(answer_style or "compact").strip().lower()
+        if style in ("detailed", "table", "strict_json"):
+            return self.render_detailed(displayed_evidences, query_understanding, debug=debug)
+        return self.render_compact(displayed_evidences, query_understanding, debug=debug)
+
+    # ------------------------------------------------------------------ #
+    #  Debug payload builder                                               #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _build_debug(displayed_evidences: list[dict], query_understanding: dict) -> dict:
+        return {
+            "requested_analytes": list(query_understanding.get("requested_analytes") or []),
+            "requested_doc_ids": list(query_understanding.get("requested_doc_ids") or []),
+            "found_count": len(displayed_evidences),
+            "displayed_evidences_count": len(displayed_evidences),
+            "matching_strategy": str(query_understanding.get("_matching_strategy") or "unknown"),
+            "confidence_score": float(query_understanding.get("_confidence_score") or 0.0),
+        }
+
+
+# Singleton for import convenience
+clinical_renderer = ClinicalDeterministicRenderer()

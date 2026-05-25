@@ -182,6 +182,36 @@ def _age_band_text(r: dict[str, Any]) -> str:
     return "âge non précisé"
 
 
+def _format_docs_with_clickable_links(sources: list[dict[str, Any]]) -> str:
+    entries: list[tuple[str, str | None]] = []
+    seen: set[str] = set()
+    for src in sources or []:
+        doc_id = str(src.get("doc_id") or "").strip()
+        if not doc_id or doc_id in seen:
+            continue
+        seen.add(doc_id)
+        doc_label = doc_id.replace("_", " ").strip()
+        href = str(src.get("viewer_url") or src.get("url") or "").strip() or None
+        if not href:
+            page = src.get("page")
+            if isinstance(page, int):
+                href = f"/viewer/pdf?doc_id={doc_id}&page={page}"
+            else:
+                href = f"/viewer/pdf?doc_id={doc_id}"
+        entries.append((doc_label, href))
+
+    if not entries:
+        return ""
+
+    parts: list[str] = []
+    for label, href in entries:
+        if href:
+            parts.append(f"[{label}]({href})")
+        else:
+            parts.append(label)
+    return ", ".join(parts)
+
+
 def run_reference_range_lookup_from_rows(
     *,
     rows: list[dict[str, Any]],
@@ -372,6 +402,10 @@ def run_reference_range_lookup_from_rows(
             ]
             for c in dedup[:8]:
                 lines.append(f"- {_age_band_text(c)} : {_range_text(c)}")
+            docs_with_links = _format_docs_with_clickable_links(grouped_sources)
+            if docs_with_links:
+                lines.append("")
+                lines.append("Documents contenant cet analyte : " + docs_with_links + ".")
             lines.append("Donnez votre tranche d’âge (ex: 30–34 ans).")
             return {
                 "status": "grouped_options",
@@ -407,6 +441,10 @@ def run_reference_range_lookup_from_rows(
                 age_txt = _age_band_text(c) if (c.get("age_min") is not None or c.get("age_operator") is not None) else "âge non précisé"
                 label = _clean_profile_label(c)
                 lines.append(f"- {label} — {age_txt} : {_range_text(c)}")
+            docs_with_links = _format_docs_with_clickable_links(grouped_sources)
+            if docs_with_links:
+                lines.append("")
+                lines.append("Documents contenant cet analyte : " + docs_with_links + ".")
             return {
                 "status": "ambiguous",
                 "answer": "\n".join(lines),
