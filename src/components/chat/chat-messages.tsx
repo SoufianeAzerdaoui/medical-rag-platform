@@ -18,12 +18,14 @@ function isRenderableVisualization(message: {
   chart_data?: { rendered_type?: string | null; type?: string; data?: unknown[] } | undefined;
 }): boolean {
   const chartData = message.chart_data;
-  const visualization = message.visualization;
-  if (!visualization?.requested) return false;
-  const data = (Array.isArray(chartData?.data) ? chartData?.data : Array.isArray(visualization?.data) ? visualization?.data : []) || [];
-  const renderedType = String(chartData?.rendered_type || visualization?.rendered_type || chartData?.type || visualization?.type || "")
-    .toLowerCase()
-    .trim();
+  const viz = message.visualization;
+  if (!viz?.requested) return false;
+  const data = (Array.isArray(chartData?.data) ? chartData?.data : Array.isArray(viz?.data) ? viz?.data : []) || [];
+  const renderedType = String(
+    chartData?.rendered_type || viz?.rendered_type || chartData?.type || viz?.type || "",
+  )
+    .trim()
+    .toLowerCase();
   return renderedType.length > 0 || data.length > 0;
 }
 
@@ -98,15 +100,39 @@ export function ChatMessages() {
         const isError = isAssistant && status === "error";
         const isDone = isAssistant && status === "done";
         const shouldRenderSourceLinks = isDone && (message.sources?.length || 0) > 0;
-        const canRenderVisualization = isAssistant && isDone && isRenderableVisualization(message);
+        const canRenderVisualization =
+          isAssistant && isDone && isRenderableVisualization(message) && !message.content.includes("Le format demandé est ambigu");
         const hasPatients = isAssistant && isDone && Array.isArray(message.patients) && message.patients.length > 0;
         const previousUserContent = String(chat.messages[idx - 1]?.role === "user" ? chat.messages[idx - 1]?.content || "" : "").toLowerCase();
         const expandPatientSourcesByDefault =
           hasPatients && (previousUserContent.includes("source") || previousUserContent.includes("cliquable"));
+        const selectedRoute = String(
+          message?.diagnostics?.selected_route || message?.selected_route || "",
+        ).toLowerCase();
+        const intent = String(
+          message?.diagnostics?.intent || message?.intent || "",
+        ).toLowerCase();
+        const generationMode = String(
+          message?.diagnostics?.generation_mode || message?.generation_mode || "",
+        ).toLowerCase();
+        const isCohortLike =
+          selectedRoute === "cohort_search" ||
+          intent === "cohort_search" ||
+          selectedRoute === "global_analyte_abnormal_search" ||
+          intent === "global_analyte_abnormal_search" ||
+          selectedRoute === "global_patient_lookup" ||
+          intent === "global_patient_lookup" ||
+          generationMode === "deterministic_global_analyte_abnormal_search" ||
+          generationMode === "deterministic_evidence_template";
         const isSingleAnalyteDeterministic =
           isAssistant &&
           isDone &&
-          String(message?.diagnostics?.generation_mode || "") === "deterministic_single_analyte_lookup";
+          (generationMode === "deterministic_single_analyte_lookup" ||
+            selectedRoute === "doc_scoped_single_analyte_status" ||
+            intent === "doc_scoped_single_analyte_status") &&
+          (message.diagnostics?.displayed_evidences_count === 1 || message.diagnostics?.included_rows_count === 1) &&
+          !hasPatients &&
+          !isCohortLike;
         
         let contentToRender = shouldRenderSourceLinks ? stripSourcesSection(message.content) : message.content;
         
@@ -122,6 +148,7 @@ export function ChatMessages() {
         const contentHasTable = hasMarkdownTable(contentToRender);
         const useSingleAnalyteCard =
           isSingleAnalyteDeterministic &&
+          !contentHasTable &&
           /^###\s+/m.test(contentToRender) &&
           /-\s+\*\*Valeur\*\*/i.test(contentToRender) &&
           /-\s+\*\*Statut technique\*\*/i.test(contentToRender);
@@ -171,7 +198,19 @@ export function ChatMessages() {
                 ) : (
                   <p className="whitespace-pre-wrap text-sm leading-6">{contentToRender}</p>
                 )}
-                {isDone ? <SourceLinks sources={message.sources} /> : null}
+                {isDone && shouldRenderSourceLinks ? (
+                  useSingleAnalyteCard ? null : (
+                    <div className="mt-4 rounded-2xl border border-border/70 bg-fg/[0.03] p-3 shadow-sm">
+                      <div className="mb-2 flex items-center justify-between gap-3">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-fg/70">Sources cliquables</p>
+                        <span className="rounded-full border border-border bg-card px-2 py-0.5 text-[11px] text-fg/60">
+                          {message.sources?.length || 0}
+                        </span>
+                      </div>
+                      <SourceLinks sources={message.sources} showTitle={false} compact />
+                    </div>
+                  )
+                ) : null}
                 {isDone && isAssistant && qualityDebugEnabled ? <QualityReportCard diagnostics={message.diagnostics} /> : null}
                 {isDone && (
                   <div className="mt-3 flex gap-2">

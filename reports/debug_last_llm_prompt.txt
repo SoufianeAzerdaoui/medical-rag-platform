@@ -20,9 +20,9 @@ Règles :
 
 Faits anormaux :
 - TSHus : 55,00 mUI/L ; référence 0,35 - 4,94 ; au-dessus de la référence.
-- TSHus : 55,00 mUI/L ; référence 0,35 - 4,94 ; au-dessus de la référence.
-- T4 LIBRE : 112,00 pmol/l ; référence 9,01 - 19,05 ; au-dessus de la référence.
 - T3 LIBRE : 66,00 pmol/l ; référence 2,42 - 6,01 ; au-dessus de la référence.
+- T4 LIBRE : 112,00 pmol/l ; référence 9,01 - 19,05 ; au-dessus de la référence.
+- TSHus : 55,00 mUI/L ; référence 0,35 - 4,94 ; au-dessus de la référence.
 - ANTI-TG : 77 IU/mL ; référence < 4,11 ; au-dessus de la référence.
 
 Faits dans la référence :

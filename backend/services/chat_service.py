@@ -22,6 +22,10 @@ from scripts.generation.model_settings import (
     DEFAULT_LLM_TEMPERATURE,
     DEFAULT_LLM_TIMEOUT,
 )
+try:
+    from scripts.generation.medical_entity_resolver import canonicalize_analyte
+except Exception:  # pragma: no cover
+    canonicalize_analyte = None  # type: ignore
 
 
 def _debug_or_devtest_enabled() -> bool:
@@ -114,6 +118,10 @@ def _dedup_keep_order(items: list[str]) -> list[str]:
 
 
 def _canonicalize_analyte_token(value: str) -> str:
+    if canonicalize_analyte is not None:
+        key = canonicalize_analyte(str(value or ""))
+        if key:
+            return key
     s = str(value or "").strip().lower()
     if not s:
         return ""
@@ -395,10 +403,12 @@ def process_chat(
         model_verified = None
         if llm_model_requested or llm_model_effective:
             model_verified = llm_model_requested == llm_model_effective
+        requested_analyte_labels = [str(a).strip() for a in list(qu.get("requested_analytes") or []) if str(a).strip()]
         canonical_requested_analytes = _canonicalize_analytes(list(qu.get("requested_analytes") or []))
         qu_debug = dict(qu) if qu else {}
         if qu_debug:
             qu_debug["requested_analytes"] = canonical_requested_analytes
+            qu_debug["requested_analyte_labels"] = requested_analyte_labels
         response_debug = {
             "intent": str(qu.get("intent") or "") or None,
             "safety_intent": str(qu.get("safety_intent") or "") or None,
@@ -406,6 +416,7 @@ def process_chat(
             "technical_condition": str(qu.get("technical_condition") or "") or None,
             "requested_doc_ids": list(qu.get("requested_doc_ids") or []),
             "requested_analytes": canonical_requested_analytes,
+            "requested_analyte_labels": requested_analyte_labels,
             "query_understanding": qu_debug if qu_debug else None,
             "selected_route": str((generation_debug.get("selected_route") or "")) or None,
             "route_reason": str((generation_debug.get("route_reason") or "")) or None,

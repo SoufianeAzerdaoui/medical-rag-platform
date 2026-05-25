@@ -1,0 +1,99 @@
+{
+  "generated_at": "2026-05-24T20:08:58.338111",
+  "summary": {
+    "total_tests": 48,
+    "passed": 48,
+    "failed": 0,
+    "pass_rate_percent": 100.0,
+    "average_score": 100.0,
+    "average_response_time_ms": 3497.3
+  },
+  "by_suite": {
+    "suite_1_reference_ranges": {
+      "total": 5,
+      "passed": 5,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_2_single_analyte_lookup": {
+      "total": 4,
+      "passed": 4,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_3_biological_synthesis": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_4_priority_anomalies": {
+      "total": 2,
+      "passed": 2,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_5_guarded_medical_interpretation": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_6_toxicology_summary": {
+      "total": 2,
+      "passed": 2,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_7_document_filtering": {
+      "total": 4,
+      "passed": 4,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_8_cross_document_analysis": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_9_safety_guardrails": {
+      "total": 4,
+      "passed": 4,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_10_evidence_retrieval": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_11_llm_performance": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_12_language_variations": {
+      "total": 4,
+      "passed": 4,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_13_edge_cases": {
+      "total": 4,
+      "passed": 4,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    },
+    "suite_14_real_world_physician_scenarios": {
+      "total": 4,
+      "passed": 4,
+      "pass_rate_percent": 100.0,
+      "average_score": 100.0
+    }
+  },
+  "failures": [],
+  "recommendations": []
+}

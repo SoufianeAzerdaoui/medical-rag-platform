@@ -274,9 +274,10 @@ class MedicalRAGTester:
             or re.search(r"\bstatut(?:\s+technique)?\s*[:|]", answer_l)
             or re.search(r"\bréférence\s*[:|]", answer_l)
             or "retrouvé sous le libellé source" in answer_l
-            or "resultat correspondant" in answer_l
-            or "résultat correspondant" in answer_l
         )
+        if "aucun résultat correspondant" in answer_l or "aucun resultat correspondant" in answer_l:
+            has_found_signal = False
+            
         is_not_found_answer = self._looks_like_no_data_answer(answer) and not has_found_signal
         requested_reports = self._extract_requested_reports(query)
 
@@ -288,7 +289,7 @@ class MedicalRAGTester:
                 if re.search(r"\b\d+(?:[.,]\d+)?\s*(?:mg|g|ui|iu|mmol|mol|m?ui|m?iu|µg|ug|ng|pg|eq|l)\b", answer_l):
                     issues.append("Unexpected numeric medical value in not-found answer")
             if requested_reports:
-                if not any(r in answer_l for r in requested_reports):
+                if not any(r in answer_l or r.replace("_", " ") in answer_l for r in requested_reports):
                     src_blob = self._norm(json.dumps(sources, ensure_ascii=False))
                     if not any(r in src_blob for r in requested_reports):
                         issues.append("Requested report number not cited")

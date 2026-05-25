@@ -728,6 +728,7 @@
       "Run suite_1 through suite_6 daily (basic functionality)",
       "Run suite_7 through suite_14 weekly (comprehensive testing)",
       "Run suite_9 before each production release (safety critical)",
+      "Run suite_15 for every new analyte alias added (language robustness)",
       "Record response times and LLM metrics for performance trending"
     ],
     "success_criteria": {
@@ -735,7 +736,146 @@
       "reference_range_accuracy": ">= 95%",
       "document_filtering_accuracy": "100%",
       "average_response_time": "< 60 seconds",
-      "overall_score": ">= 80"
+      "overall_score": ">= 80",
+      "suite_15_pass_rate": ">= 80%"
     }
+  },
+  "suite_15_unexpected_user_phrasings": {
+    "description": "Robustness tests for unexpected / informal user phrasings: aliases, abbreviations, threshold queries, topic queries, multi-doc lookups. Target >= 80% pass rate.",
+    "intent": "single_analyte_lookup",
+    "requires_llm": false,
+    "cases": [
+      {
+        "id": "ALIAS_CREAT_SHORT",
+        "query": "Quel est le résultat de créat dans le report 29 ?",
+        "expected_intent": "single_analyte_lookup",
+        "document_filter": ["report_29"],
+        "expected_analyte": "créatinine",
+        "validation": {
+          "must_cite_specific_value": true,
+          "must_cite_report_number": true,
+          "must_not_hallucinate": true,
+          "must_show_status": ["normal", "haut", "bas", "dans la référence", "au-dessus", "en dessous"]
+        },
+        "note": "Tests alias resolution: créat → creatinine via Phase 1 canonicalization"
+      },
+      {
+        "id": "ALIAS_CREATININEMIE",
+        "query": "Quelle est la créatininémie du report 29 ?",
+        "expected_intent": "single_analyte_lookup",
+        "document_filter": ["report_29"],
+        "expected_analyte": "créatinine",
+        "validation": {
+          "must_cite_specific_value": true,
+          "must_cite_report_number": true,
+          "must_not_hallucinate": true
+        },
+        "note": "French medical term créatininémie must resolve to creatinine"
+      },
+      {
+        "id": "ALIAS_TSH_MATCHES_TSHUS",
+        "query": "Donne-moi le résultat de TSH dans le report 16.",
+        "expected_intent": "single_analyte_lookup",
+        "document_filter": ["report_16"],
+        "expected_analyte": "TSH",
+        "validation": {
+          "must_cite_specific_value": true,
+          "must_cite_report_number": true,
+          "must_not_hallucinate": true,
+          "note": "TSH must match TSHus via Phase 2 family matching — must not return not_found"
+        }
+      },
+      {
+        "id": "ALIAS_URICEMIE",
+        "query": "Quelle est la valeur de l'uricémie dans le report 24 ?",
+        "expected_intent": "single_analyte_lookup",
+        "document_filter": ["report_24"],
+        "expected_analyte": "acide urique",
+        "validation": {
+          "must_cite_specific_value": true,
+          "must_cite_report_number": true,
+          "must_not_hallucinate": true
+        },
+        "note": "uricémie is a French synonym for acide urique"
+      },
+      {
+        "id": "TOPIC_BILAN_RENAL",
+        "query": "Montre-moi le bilan rénal du report 24.",
+        "expected_intent": "doc_scoped_results",
+        "document_filter": ["report_24"],
+        "validation": {
+          "must_cite_report_number": true,
+          "must_not_hallucinate": true,
+          "must_indicate_analytes_found": true
+        },
+        "note": "Topic query: bilan rénal should retrieve creatinine, urée, DFG from report_24"
+      },
+      {
+        "id": "MULTI_DOC_CREAT_ALL",
+        "query": "Quel est le résultat de créatinine dans les reports 10, 16 et 29 ?",
+        "expected_intent": "single_analyte_lookup",
+        "document_filter": ["report_10", "report_16", "report_29"],
+        "expected_analyte": "créatinine",
+        "validation": {
+          "must_filter_to_3_docs": true,
+          "must_list_results_per_document": true,
+          "must_not_hallucinate": true,
+          "must_show_missing_data_if_absent": true
+        }
+      },
+      {
+        "id": "NOT_FOUND_CORTISOL_GRACEFUL",
+        "query": "Quelle est la valeur de cortisol dans le report 12 ?",
+        "expected_intent": "single_analyte_lookup",
+        "document_filter": ["report_12"],
+        "expected_answer_type": "not_found_graceful",
+        "validation": {
+          "must_indicate_test_not_found": true,
+          "must_not_hallucinate": true,
+          "must_cite_report_number": true,
+          "must_suggest_alternatives": false
+        },
+        "note": "Cortisol absent from report_12 — must return explicit not-found with CTA"
+      },
+      {
+        "id": "INFORMAL_TSH_NORMAL",
+        "query": "La TSH est-elle normale dans le report 16 ?",
+        "expected_intent": "single_analyte_lookup",
+        "document_filter": ["report_16"],
+        "expected_analyte": "TSH",
+        "validation": {
+          "must_provide_value": true,
+          "must_provide_status": true,
+          "must_not_hallucinate": true,
+          "must_cite_report_number": true
+        }
+      },
+      {
+        "id": "ABBREVIATED_CRP",
+        "query": "CRP report 10 ?",
+        "expected_intent": "single_analyte_lookup",
+        "document_filter": ["report_10"],
+        "expected_analyte": "CRP",
+        "validation": {
+          "must_cite_specific_value": true,
+          "must_cite_report_number": true,
+          "must_not_hallucinate": true
+        },
+        "note": "Ultra-abbreviated query — system must still resolve CRP and report_10"
+      },
+      {
+        "id": "INFORMAL_ACIDE_URIQUE_STATUS",
+        "query": "L'acide urique dans le rapport 24, c'est élevé ou pas ?",
+        "expected_intent": "single_analyte_lookup",
+        "document_filter": ["report_24"],
+        "expected_analyte": "acide urique",
+        "validation": {
+          "must_provide_value": true,
+          "must_provide_status": true,
+          "must_not_hallucinate": true,
+          "must_cite_report_number": true
+        }
+      }
+    ]
   }
 }

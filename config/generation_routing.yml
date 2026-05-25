@@ -1,0 +1,13 @@
+generation_routing:
+  abnormal_without_scope:
+    global_scope_markers:
+      - "tous les rapports"
+      - "rapports disponibles"
+      - "ensemble des rapports"
+      - "dans tous les rapports"
+      - "quels rapports"
+    abnormal_hint_patterns:
+      - "\\banomal\\w*"
+      - "\\bhors\\s+(?:de\\s+la\\s+)?(?:reference|norme|intervalle)\\b"
+      - "\\b(?:resultat|résultat|resultats|résultats|valeur|valeurs|taux)\\b"
+      - "\\bbiolog\\w*\\b"

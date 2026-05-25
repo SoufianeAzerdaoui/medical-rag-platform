@@ -104,6 +104,28 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertIn("CFG_INTRO", answer)
         self.assertIn("CFG_CLOSE", answer)
 
+    def test_clarification_messages_are_config_driven(self) -> None:
+        cfg = {
+            "clarifications": {
+                "abnormal_without_scope": "CFG_ABNORMAL_SCOPE",
+                "abnormal_without_scope_conclusion": "CFG_ABNORMAL_CONCLUSION",
+                "global_summary_no_scope": "CFG_GLOBAL_SCOPE",
+            }
+        }
+        with mock.patch("generate_answer.get_assistant_messages_config", return_value=cfg):
+            result = run_generation(
+                query="les résultats anormaux",
+                mode="keyword",
+                top_k=20,
+                index_dir="data/indexes",
+            )
+            answer = str(result.get("answer") or "")
+            self.assertIn("CFG_ABNORMAL_SCOPE", answer)
+            self.assertIn("CFG_ABNORMAL_CONCLUSION", answer)
+            ga = __import__("generate_answer")
+            empty_global = ga._render_global_biological_summary_answer([])
+            self.assertIn("CFG_GLOBAL_SCOPE", empty_global)
+
     def test_guarded_thyroid_postprocess_patterns_are_config_driven(self) -> None:
         ga = __import__("generate_answer")
         cfg = {
@@ -1723,6 +1745,49 @@ class TestGenerationDocScope(unittest.TestCase):
         answer = str(result.get("answer") or "")
         self.assertTrue(answer.startswith("Je ne peux pas recommander de traitement à partir de ces résultats seuls."))
         self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+
+    def test_abnormal_results_without_scope_uses_deterministic_clarification(self) -> None:
+        result = run_generation(
+            query="les résultats anormaux",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_no_evidence_response")
+        self.assertNotEqual(str(result.get("generation_mode") or ""), "llm")
+        self.assertEqual(len(result.get("sources") or []), 0)
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("information insuffisante", answer)
+        self.assertIn("précisez un rapport", answer)
+        dbg = dict(result.get("debug") or {})
+        self.assertEqual(str(dbg.get("selected_route") or ""), "cohort_search")
+        self.assertEqual(str(dbg.get("route_reason") or ""), "abnormal_results_without_scope_requires_clarification")
+        self.assertEqual(str(dbg.get("answerability_status") or ""), "ambiguous")
+
+    def test_abnormal_variants_without_scope_use_same_deterministic_clarification(self) -> None:
+        for q in ["anomalies ?", "hors norme ?"]:
+            with self.subTest(query=q):
+                result = run_generation(
+                    query=q,
+                    mode="keyword",
+                    top_k=20,
+                    index_dir="data/indexes",
+                )
+                self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_no_evidence_response")
+                self.assertEqual(len(result.get("sources") or []), 0)
+                dbg = dict(result.get("debug") or {})
+                self.assertEqual(str(dbg.get("selected_route") or ""), "cohort_search")
+                self.assertEqual(str(dbg.get("route_reason") or ""), "abnormal_results_without_scope_requires_clarification")
+
+    def test_global_abnormal_with_analyte_not_forced_to_scope_clarification(self) -> None:
+        result = run_generation(
+            query="quels sont les rapports qui ont créatinine supérieur a 2 ??",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertNotEqual(str(result.get("generation_mode") or ""), "deterministic_no_evidence_response")
+        self.assertIn(str((result.get("debug") or {}).get("selected_route") or ""), {"cohort_search", "global_analyte_abnormal_search"})
 
 
 if __name__ == "__main__":

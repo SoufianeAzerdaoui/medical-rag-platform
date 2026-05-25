@@ -1,0 +1,86 @@
+medical_entity_resolver:
+  topic_keywords:
+    thyroid:
+      - thyroid
+      - thyroide
+      - thyroïde
+      - thyroidien
+      - thyroïdien
+      - tsh
+      - t4
+      - t3
+      - hyperthyro
+    toxicology:
+      - toxicologie
+      - toxicology
+      - pharmacotoxicologie
+      - toxique
+      - opiac
+      - benzodiazep
+      - cocaine
+      - amphet
+    renal:
+      - renal
+      - rénal
+      - renale
+      - rénale
+      - creatinine
+      - créatinine
+      - uree
+      - urée
+      - dfg
+    hepatic:
+      - hepat
+      - hépat
+      - foie
+      - alat
+      - asat
+      - ggt
+      - bilirub
+    inflammation:
+      - inflammation
+      - crp
+      - proteine c reactive
+      - protéine c réactive
+
+  analyte_families:
+    tsh: thyroid_tsh
+    tshus: thyroid_tsh
+    t3_libre: thyroid
+    t4_libre: thyroid
+    anti_tg: thyroid_antibodies
+    anti_tpo: thyroid_antibodies
+    trak: thyroid_antibodies
+    crp: inflammation
+    creatinine: renal
+    acide_urique: renal_metabolic
+    phosphatase_alcaline: hepatic_bone
+    asat: hepatic
+    alat: hepatic
+    ggt: hepatic
+    bilirubine: hepatic
+    ethanol: toxicology
+    amphetamine: toxicology
+    benzodiazepine: toxicology
+    cocaine: toxicology
+    opiaces: toxicology
+    phencyclidine: toxicology
+
+  equivalent_groups:
+    - [tsh, tshus]
+    - [ckmb, cpkmb]
+
+  safe_extra_aliases:
+    creat: creatinine
+    creatine: creatinine
+    créatine: creatinine
+    creatininemie: creatinine
+    uricemie: acide_urique
+    "uric acid": acide_urique
+    alp: phosphatase_alcaline
+    pal: phosphatase_alcaline
+    "tsh ultra sensible": tshus
+    "thyroid stimulating hormone": tsh
+    thyreostimuline: tsh
+    ft3: t3_libre
+    ft4: t4_libre

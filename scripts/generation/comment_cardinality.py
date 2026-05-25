@@ -150,13 +150,19 @@ def _wants_latest_comment(query: str) -> bool:
 
     Signals detected:
     - Any term from _LATEST_SIGNALS
-    - NEVER returns True if _SINGULAR_SIGNALS also present (SINGLE wins)
+    - If LATEST signal is explicit, LATEST takes precedence (even if SINGULAR also present)
+    - If no LATEST signal present, SINGULAR_SIGNALS block it
     """
 
     qn = norm_text(query)
+    # If explicit LATEST signal present, that's the user's intent (LATEST wins over SINGULAR)
+    has_latest = any(signal in qn for signal in _LATEST_SIGNALS)
+    if has_latest:
+        return True
+    # Only block on SINGULAR if LATEST was not explicitly requested
     if any(signal in qn for signal in _SINGULAR_SIGNALS):
         return False
-    return any(signal in qn for signal in _LATEST_SIGNALS)
+    return False
 
 
 def _wants_all_comments_listing(query: str) -> bool:

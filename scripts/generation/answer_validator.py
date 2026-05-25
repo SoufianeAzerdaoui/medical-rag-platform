@@ -7,6 +7,15 @@ from typing import Any
 from config_loader import get_safety_guardrails_config
 from prompt_builder import INSUFFICIENT_CONTEXT_SENTENCE
 from query_understanding import contains_exact_term, detect_exact_analyte, detect_exact_analytes, find_analyte_mentions
+try:
+    from medical_entity_resolver import canonicalize_analyte, are_equivalent_analytes, get_analyte_family, is_analyte_match
+except Exception:  # pragma: no cover
+    from scripts.generation.medical_entity_resolver import (  # type: ignore
+        canonicalize_analyte,
+        are_equivalent_analytes,
+        get_analyte_family,
+        is_analyte_match,
+    )
 
 
 _PII_PATTERNS = [
@@ -703,13 +712,10 @@ def _extract_section_block(answer_text: str, section_title_norm: str) -> str:
 
 
 def _canonical_analyte_key(value: str) -> str:
+    canonical = canonicalize_analyte(str(value or ""))
+    if canonical:
+        return canonical.replace("_", " ")
     key = _norm(value).replace("_", " ")
-    key = key.replace("valporoique", "valproique")
-    key = key.replace("ck mb", "ckmb").replace("ck-mb", "ckmb").replace("cpk mb", "cpkmb").replace("cpk-mb", "cpkmb")
-    key = key.replace("apolipoproteine a1", "apo a1").replace("apolipoprotéine a1", "apo a1").replace("apoa1", "apo a1")
-    key = key.replace("ckmb (cpkmb)", "ckmb").replace("cpkmb (ckmb)", "ckmb")
-    key = key.replace("cpkmb", "ckmb")
-    key = re.sub(r"\bdepakine\b", "", key)
     key = re.sub(r"\s+", " ", key).strip()
     return key
 
@@ -728,9 +734,21 @@ def _multi_doc_analyte_represented(core_norm: str, analyte: str) -> bool:
 
 def _thyroid_equivalent_requested_keys(analyte: str) -> set[str]:
     key = _canonical_analyte_key(analyte)
-    if key in {"tsh", "tshus"}:
+    if key in {"tsh", "tshus"} or are_equivalent_analytes(key, "tsh"):
         return {"tsh", "tshus"}
     return {key}
+
+
+def _analytes_equivalent_or_same_family(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    if are_equivalent_analytes(left, right):
+        return True
+    l_family = get_analyte_family(left)
+    r_family = get_analyte_family(right)
+    return bool(l_family and r_family and l_family == r_family)
 
 
 def validate_answer(
@@ -990,6 +1008,18 @@ def validate_answer(
         "deterministic_doc_scoped_toxicology_threshold_search",
         "deterministic_doc_scoped_toxicology_summary",
     }
+    is_summary_deterministic_mode = generation_mode_norm in {
+        "deterministic_doc_scoped_abnormal_results",
+        "deterministic_doc_scoped_biological_summary",
+        "deterministic_doc_scoped_priority_anomalies",
+    }
+    is_doc_scoped_summary_like = bool(
+        (query_intents or {}).get("doc_scoped_summary")
+        or (query_intents or {}).get("doc_scoped_biological_summary")
+        or (query_intents or {}).get("doc_scoped_abnormal_results")
+        or (query_intents or {}).get("doc_scoped_priority_anomalies")
+    )
+    explicit_query_analytes = [str(a).strip().lower() for a in (detect_exact_analytes(query) or []) if str(a).strip()]
     if (not structured_first_mode) and mentioned_analytes_global and allowed_analytes_from_evidence and not is_presence_diff:
         allowed_canonical = {_canonical_analyte_key(a) for a in allowed_analytes_from_evidence}
         bad_analytes = sorted(
@@ -1001,7 +1031,10 @@ def validate_answer(
             k in _norm(query)
             for k in ["rapports disponibles", "tous les rapports", "ensemble des rapports", "quels documents", "documents"]
         )
-        if bad_analytes and not is_global_abnormal and not is_toxicology_deterministic_mode:
+        # Summary-like routes without an explicit analyte request are allowed to mention
+        # heterogeneous analytes from evidence rows; avoid false unsupported_analyte flags.
+        skip_summary_mismatch = (is_doc_scoped_summary_like or is_summary_deterministic_mode) and not explicit_query_analytes
+        if bad_analytes and not is_global_abnormal and not is_toxicology_deterministic_mode and not skip_summary_mismatch:
             errors.append("unsupported_analyte")
             unsupported_claims.append(f"Unsupported analytes: {bad_analytes}")
 
@@ -1045,7 +1078,11 @@ def validate_answer(
 
     if exact_analyte and not requested_analyte_list and not multi_doc_requested:
         detected = find_analyte_mentions(core_text)
-        irrelevant = sorted(a for a in detected if a != exact_analyte)
+        irrelevant = sorted(
+            a
+            for a in detected
+            if not _analytes_equivalent_or_same_family(_canonical_analyte_key(a), _canonical_analyte_key(exact_analyte))
+        )
         if irrelevant:
             errors.append("irrelevant_analyte_in_answer")
             unsupported_claims.append(
@@ -1054,9 +1091,7 @@ def validate_answer(
 
         bad_evidence_ids: list[str] = []
         for ev in evidence_pack:
-            analyte_norm = str(ev.get("analyte_norm") or "")
-            analyte = str(ev.get("analyte") or "")
-            if not (contains_exact_term(analyte_norm, exact_analyte) or contains_exact_term(analyte, exact_analyte)):
+            if not is_analyte_match(str(exact_analyte or ""), ev):
                 bad_evidence_ids.append(str(ev.get("chunk_id") or "unknown_chunk"))
         if bad_evidence_ids:
             warnings.append("non_exact_analyte_evidence_present")
@@ -1101,8 +1136,12 @@ def validate_answer(
 
         displayed_norms = {str(ev.get("analyte_norm") or "").strip().lower() for ev in displayed if ev.get("analyte_norm")}
         if found_requested_norms:
-            allowed_norms = set(found_requested_norms)
-            bad_displayed = sorted(n for n in displayed_norms if n not in allowed_norms)
+            allowed_norms = {_canonical_analyte_key(n) for n in set(found_requested_norms)}
+            bad_displayed = sorted(
+                n
+                for n in displayed_norms
+                if not any(_analytes_equivalent_or_same_family(_canonical_analyte_key(n), allowed) for allowed in allowed_norms)
+            )
             if bad_displayed:
                 errors.append("non_exact_analyte_evidence_present")
                 unsupported_claims.append(
@@ -1273,17 +1312,38 @@ def validate_answer(
         )
     else:
         insufficient_context_handled = has_insufficient_sentence
-        if (displayed or evidence_pack) and has_insufficient_sentence and not is_guardrail_mode and not missing_requested:
+        has_alias_compatible_evidence = bool(
+            requested_analyte_list
+            and (displayed or evidence_pack)
+            and any(
+                any(is_analyte_match(req, ev) for req in requested_analyte_list)
+                for ev in (displayed if displayed else evidence_pack)
+            )
+        )
+        if (
+            (displayed or evidence_pack)
+            and has_insufficient_sentence
+            and not is_guardrail_mode
+            and not missing_requested
+            and not has_alias_compatible_evidence
+        ):
             errors.append("Insufficient-context answer returned despite available evidence.")
 
     requested_analytes = detected_analytes or detect_exact_analytes(query)
     mentioned_analytes = find_analyte_mentions(core_text)
     if requested_analytes and (not structured_first_mode):
-        allowed_mentions = set(str(a).strip().lower() for a in requested_analytes if str(a).strip())
-        allowed_mentions.update(found_requested_norms)
+        allowed_mentions = {_canonical_analyte_key(str(a).strip().lower()) for a in requested_analytes if str(a).strip()}
+        allowed_mentions.update({_canonical_analyte_key(a) for a in found_requested_norms})
         if "hdl" in allowed_mentions:
             allowed_mentions.add("cholesterol_hdl")
-        bad_mentions = sorted(a for a in mentioned_analytes if a not in allowed_mentions)
+        bad_mentions = sorted(
+            a
+            for a in mentioned_analytes
+            if not any(
+                _analytes_equivalent_or_same_family(_canonical_analyte_key(a), allowed)
+                for allowed in allowed_mentions
+            )
+        )
         if bad_mentions:
             errors.append("query_answer_alignment_mismatch")
             unsupported_claims.append(
@@ -1791,7 +1851,7 @@ def validate_answer(
     intro_sentences = [s for s in re.split(r"[.!?]+", intro_block) if s.strip()]
     section_intro_ok = bool(
         re.match(
-            r"(?is)^\s*(anormaux|résultats?\s+dans\s+la\s+référence\s+uniquement|resultats?\s+dans\s+la\s+reference\s+uniquement|priorité\s+élevée|priorite\s+elevee|priorité\s+modérée/faible|priorite\s+moderee/faible|faits\s+techniques\s+observés|faits\s+techniques\s+observes|limites|conclusion\s+technique|synthèse\s+toxicologique\s+technique|synthese\s+toxicologique\s+technique)\s*:",
+            r"(?is)^\s*(anormaux|résultats?\s+dans\s+la\s+référence\s+uniquement|resultats?\s+dans\s+la\s+reference\s+uniquement|priorité\s+élevée|priorite\s+elevee|priorité\s+modérée/faible|priorite\s+moderee/faible|faits\s+techniques\s+observés|faits\s+techniques\s+observes|limites|conclusion\s+technique|synthèse\s+toxicologique\s+technique|synthese\s+toxicologique\s+technique|résultat\s+correspondant|resultat\s+correspondant)\s*:",
             intro_block or "",
             flags=re.IGNORECASE,
         )
@@ -1801,7 +1861,12 @@ def validate_answer(
         and (output_format_requested or "").strip().lower() != "json"
         and not is_general_conversation_query
     ):
-        if len(intro_sentences) > 2 and not section_intro_ok:
+        is_multi_doc_single_analyte_deterministic = (
+            generation_mode_norm == "deterministic_single_analyte_lookup"
+            and len(requested_doc_ids_norm) >= 2
+            and len(requested_analyte_list) == 1
+        )
+        if len(intro_sentences) > 2 and not section_intro_ok and not is_multi_doc_single_analyte_deterministic:
             warnings.append("over_verbose_intro")
         if requested_value:
             intro_norm = _norm(intro_block)

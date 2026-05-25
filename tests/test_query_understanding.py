@@ -190,6 +190,18 @@ class TestQueryUnderstanding(unittest.TestCase):
         qu = parse_query_understanding("ok")
         self.assertEqual(qu.intent, "small_talk")
 
+    def test_cholesterol_total_alias_detection(self) -> None:
+        analytes = detect_exact_analytes("donne la plage de cholestérol total")
+        self.assertIn("cholesterol_total", analytes)
+
+    def test_ok_suffix_does_not_force_small_talk_for_medical_request(self) -> None:
+        qu = parse_query_understanding(
+            "donne la plage de Cholestérol total, juste Cholestérol total, avec les sources disponibles, liste aussi les autres documents ok"
+        )
+        self.assertEqual(qu.intent, "reference_range_lookup")
+        self.assertIn("cholesterol_total", qu.requested_analytes)
+        self.assertFalse(qu.is_small_talk)
+
     def test_ok_transform_followup_is_response_transform(self) -> None:
         qu = parse_query_understanding("ok donne moi le résultat en JSON strict")
         self.assertEqual(qu.intent, "response_transform")
@@ -460,6 +472,64 @@ class TestQueryUnderstanding(unittest.TestCase):
         qu = parse_query_understanding("Dans report (10), liste les anomalies importantes par ordre de priorité technique.")
         self.assertEqual(qu.intent, "doc_scoped_priority_anomalies")
         self.assertEqual(qu.requested_doc_ids, ["report_10"])
+
+    def test_phase3_intent_candidates_present_and_sorted(self) -> None:
+        qu = parse_query_understanding("la créat du report 29 est basse ?")
+        self.assertTrue(isinstance(qu.intent_candidates, list))
+        self.assertGreaterEqual(len(qu.intent_candidates), 1)
+        self.assertLessEqual(len(qu.intent_candidates), 3)
+        for i in range(len(qu.intent_candidates) - 1):
+            self.assertGreaterEqual(
+                float(qu.intent_candidates[i]["confidence"]),
+                float(qu.intent_candidates[i + 1]["confidence"]),
+            )
+
+    def test_phase3_intent_confidence_range(self) -> None:
+        qu = parse_query_understanding("y a quoi d'anormal dans report 24 ?")
+        self.assertGreaterEqual(qu.intent_confidence, 0.0)
+        self.assertLessEqual(qu.intent_confidence, 1.0)
+
+    def test_phase3_scope_confidence_doc_scoped_high(self) -> None:
+        qu = parse_query_understanding("la créat du report 29 est basse ?")
+        self.assertGreater(qu.scope_confidence, 0.80)
+
+    def test_phase3_scope_confidence_missing_doc_low(self) -> None:
+        qu = parse_query_understanding("les résultats anormaux")
+        self.assertLess(qu.scope_confidence, 0.40)
+
+    def test_phase3_ambiguity_flags_list(self) -> None:
+        qu = parse_query_understanding("la créat du report 29 est basse ?")
+        self.assertTrue(isinstance(qu.ambiguity_flags, list))
+        self.assertTrue(all(isinstance(flag, str) for flag in qu.ambiguity_flags))
+
+    def test_phase3_patient_question_sets_safety_flag(self) -> None:
+        qu = parse_query_understanding("le patient a quoi ?")
+        self.assertIn("unsafe_diagnosis_request", qu.ambiguity_flags)
+        self.assertIsNotNone(qu.safety_intent)
+
+    def test_phase3_medical_topics_detected(self) -> None:
+        qu = parse_query_understanding("créatinine basse report 29")
+        topics = list(qu.medical_topics or [])
+        names = [str(t.get("topic") or "") for t in topics]
+        self.assertIn("renal", names)
+        for topic in topics:
+            conf = float(topic.get("confidence") or 0.0)
+            self.assertGreaterEqual(conf, 0.30)
+            self.assertLessEqual(conf, 1.0)
+
+    def test_phase3_backward_compat_intent_matches_top_candidate(self) -> None:
+        qu = parse_query_understanding("la créat du report 29 est basse ?")
+        self.assertEqual(qu.intent, str(qu.intent_candidates[0]["intent"]))
+
+    def test_phase3_deterministic_stability(self) -> None:
+        query = "la créat du report 29 est basse ?"
+        results = [parse_query_understanding(query) for _ in range(5)]
+        first = results[0]
+        for other in results[1:]:
+            self.assertEqual(other.intent_candidates, first.intent_candidates)
+            self.assertEqual(other.intent_confidence, first.intent_confidence)
+            self.assertEqual(other.scope_confidence, first.scope_confidence)
+            self.assertEqual(other.ambiguity_flags, first.ambiguity_flags)
 
 
 if __name__ == "__main__":

@@ -2,15 +2,27 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 try:
     from analyte_aliases import ANALYTE_ALIAS_GROUPS
     from analyte_resolver import resolve_requested_analytes, normalize_analyte_text
+    from medical_entity_resolver import (
+        are_equivalent_analytes,
+        canonicalize_analyte,
+        get_aliases_for_canonical,
+        resolve_medical_topic,
+    )
 except Exception:  # pragma: no cover
     from scripts.generation.analyte_aliases import ANALYTE_ALIAS_GROUPS  # type: ignore
     from scripts.generation.analyte_resolver import resolve_requested_analytes, normalize_analyte_text  # type: ignore
+    from scripts.generation.medical_entity_resolver import (  # type: ignore
+        are_equivalent_analytes,
+        canonicalize_analyte,
+        get_aliases_for_canonical,
+        resolve_medical_topic,
+    )
 
 # canonical analyte_norm -> accepted query/answer aliases
 ANALYTE_ALIASES: dict[str, set[str]] = {
@@ -65,6 +77,7 @@ ANALYTE_DISPLAY_NAMES: dict[str, str] = {
     "phosphatase_alcaline": "PHOSPHATASE ALCALINE",
     "acide_urique": "ACIDE URIQUE",
     "cholesterol_hdl": "CHOLESTÉROL HDL",
+    "cholesterol_total": "CHOLESTÉROL TOTAL",
     "benzodiazepine": "BENZODIAZÉPINE",
     "amphetamine": "AMPHÉTAMINE",
     "cocaine": "COCAÏNE",
@@ -72,6 +85,136 @@ ANALYTE_DISPLAY_NAMES: dict[str, str] = {
     "phencyclidine": "PHENCYCLIDINE",
 }
 
+# ============================================================
+# PHASE 3 - deterministic shadow scoring constants
+# ============================================================
+DOC_SCOPED_INTENTS: set[str] = {
+    "doc_scoped_results",
+    "doc_scoped_analyte_query",
+    "doc_scoped_summary",
+    "doc_scoped_biological_summary",
+    "doc_scoped_abnormal_results",
+    "doc_scoped_priority_anomalies",
+    "doc_scoped_medical_interpretation_guarded",
+    "toxicology_summary",
+    "immunoanalysis_summary",
+    "doc_scoped_single_analyte_status",
+}
+
+SINGLE_DOC_INTENTS: set[str] = {
+    "doc_scoped_results",
+    "doc_scoped_analyte_query",
+    "doc_scoped_summary",
+    "doc_scoped_biological_summary",
+    "doc_scoped_abnormal_results",
+    "doc_scoped_priority_anomalies",
+    "toxicology_summary",
+    "immunoanalysis_summary",
+}
+
+ANALYTE_SCOPED_INTENTS: set[str] = {
+    "doc_scoped_analyte_query",
+    "single_analyte_lookup",
+    "multi_analyte_results",
+    "previous_result_comparison",
+    "doc_scoped_single_analyte_status",
+    "reference_range_lookup",
+    "global_analyte_abnormal_search",
+    "global_patient_lookup",
+}
+
+LEXICAL_MARKERS: dict[str, dict[str, Any]] = {
+    "doc_scoped_single_analyte_status": {
+        "strong": ["creat", "creatinine", "valeur", "est elle", "basse", "elevee", "normal"],
+        "medium": ["rapport", "report", "document", "statut"],
+        "weak": ["resultat", "mesure"],
+        "weight": 1.2,
+    },
+    "doc_scoped_results": {
+        "strong": ["valeur", "resultat", "est elle", "est il", "rapport"],
+        "medium": ["analyte", "statut", "reference"],
+        "weak": ["mesure"],
+        "weight": 1.0,
+    },
+    "doc_scoped_biological_summary": {
+        "strong": ["synthese", "resume", "anormal", "anomalies", "hors reference"],
+        "medium": ["resultats", "biologique", "rapport"],
+        "weak": ["bilan"],
+        "weight": 1.1,
+    },
+    "doc_scoped_abnormal_results": {
+        "strong": ["anormal", "anormaux", "anomalies", "hors reference"],
+        "medium": ["resultats", "rapport"],
+        "weak": ["statut"],
+        "weight": 1.1,
+    },
+    "doc_scoped_priority_anomalies": {
+        "strong": ["priorite", "important", "attention", "classer"],
+        "medium": ["anomalies", "anormal"],
+        "weak": ["resultats"],
+        "weight": 1.0,
+    },
+    "reference_range_lookup": {
+        "strong": ["plage", "norme", "reference", "intervalle", "physiologique", "normal"],
+        "medium": ["homme", "femme", "adulte", "enfant"],
+        "weak": ["valeur"],
+        "weight": 1.0,
+    },
+    "global_analyte_abnormal_search": {
+        "strong": ["tous les rapports", "quels rapports", "liste", "cohorte", "patients"],
+        "medium": ["hors reference", "anormal", "au dessus", "en dessous"],
+        "weak": ["recherche"],
+        "weight": 1.0,
+    },
+    "cohort_search": {
+        "strong": ["patients", "liste", "quels rapports", "tous les rapports"],
+        "medium": ["superieur", "inferieur", "valeur", "strictement"],
+        "weak": ["recherche"],
+        "weight": 1.0,
+    },
+    "small_talk": {
+        "strong": ["bonjour", "salut", "hello", "merci"],
+        "medium": ["ok", "thanks"],
+        "weak": [],
+        "weight": 1.0,
+    },
+}
+
+INTENT_TOPIC_RELEVANCE: dict[str, dict[str, float]] = {
+    "doc_scoped_single_analyte_status": {"renal": 0.95, "thyroid": 0.85, "cardio": 0.75, "hepatic": 0.7, "toxicology": 0.6},
+    "doc_scoped_results": {"renal": 0.85, "thyroid": 0.85, "cardio": 0.8, "hepatic": 0.8, "toxicology": 0.75, "inflammation": 0.75},
+    "doc_scoped_biological_summary": {"renal": 0.75, "thyroid": 0.75, "cardio": 0.75, "hepatic": 0.8, "inflammation": 0.75, "toxicology": 0.6},
+    "doc_scoped_abnormal_results": {"renal": 0.85, "thyroid": 0.8, "cardio": 0.85, "hepatic": 0.8, "inflammation": 0.8},
+    "reference_range_lookup": {"renal": 0.9, "thyroid": 0.9, "cardio": 0.8, "hepatic": 0.8},
+    "global_analyte_abnormal_search": {"renal": 0.9, "thyroid": 0.9, "cardio": 0.9, "hepatic": 0.85, "inflammation": 0.8, "toxicology": 0.7},
+    "cohort_search": {"renal": 0.85, "thyroid": 0.85, "cardio": 0.85, "hepatic": 0.8, "toxicology": 0.75},
+}
+
+TOPIC_KEYWORDS: dict[str, list[str]] = {
+    "renal": ["creatinine", "creatinine", "uree", "urique", "renal", "rein", "dfg", "filtration", "glomerulaire"],
+    "thyroid": ["tsh", "tshus", "t3", "t4", "thyroid", "thyro", "anti tg", "trak", "anti tpo"],
+    "cardio": ["troponine", "bnp", "cholesterol", "hdl", "ldl", "triglyceride", "cardiaque", "coeur"],
+    "hepatic": ["asat", "alat", "ggt", "bilirubine", "hepatique", "foie", "transaminase", "phosphatase"],
+    "inflammation": ["crp", "inflamm", "leucocyte", "lymphocyte", "pmn"],
+    "toxicology": ["toxicologie", "benzodiazepine", "amphetamine", "cocaine", "opiaces", "cannabis", "lithium"],
+    "general_biology": ["bilan", "biologique", "resultats", "anomalies", "reference"],
+}
+
+ANALYTE_TOPIC_MAP: dict[str, list[str]] = {
+    "creatinine": ["renal"],
+    "uree": ["renal"],
+    "acide_urique": ["renal"],
+    "tsh": ["thyroid"],
+    "tshus": ["thyroid"],
+    "t4_libre": ["thyroid"],
+    "t3_libre": ["thyroid"],
+    "anti_tg": ["thyroid"],
+    "crp": ["inflammation"],
+    "troponine": ["cardio"],
+    "cholesterol_total": ["cardio"],
+    "cholesterol_hdl": ["cardio"],
+    "phosphatase_alcaline": ["hepatic"],
+}
 
 def analyte_display_name(value: str, analyte_norm: str | None = None) -> str:
     key = str(analyte_norm or value or "").strip().lower().replace(" ", "_")
@@ -158,6 +301,11 @@ class QueryUnderstanding:
     use_patient_profile: bool
     request_all_reference_ranges: bool
     requested_summary_points: int | None = None
+    intent_candidates: list[dict[str, Any]] = field(default_factory=list)
+    intent_confidence: float = 0.0
+    scope_confidence: float = 0.0
+    ambiguity_flags: list[str] = field(default_factory=list)
+    medical_topics: list[dict[str, Any]] = field(default_factory=list)
 
 
 def norm_text(value: str) -> str:
@@ -170,6 +318,9 @@ def norm_text(value: str) -> str:
 
 
 def normalize_analyte(text: str) -> str:
+    # Keep this helper for broader phrase normalization used outside strict analyte
+    # canonicalization (presentation/style parsing). Entity canonical keys should go
+    # through medical_entity_resolver.canonicalize_analyte.
     return normalize_analyte_text(text).replace("-", " ")
 
 
@@ -183,8 +334,8 @@ def detect_language(query: str) -> str:
 
 
 def get_analyte_aliases(analyte: str) -> set[str]:
-    key = str(analyte or "").strip().lower()
-    aliases = set(ANALYTE_ALIASES.get(key, set()))
+    key = canonicalize_analyte(str(analyte or ""))
+    aliases = set(get_aliases_for_canonical(key))
     aliases.add(key)
     if key == "acide_valproique":
         aliases.update(
@@ -213,7 +364,10 @@ def get_exclusion_aliases(analyte: str) -> set[str]:
 
 def match_analyte(candidate: str, requested: str) -> bool:
     cand = normalize_analyte(candidate)
-    req_key = str(requested or "").strip().lower()
+    req_key = canonicalize_analyte(str(requested or ""))
+    cand_key = canonicalize_analyte(cand)
+    if req_key and cand_key and (req_key == cand_key or are_equivalent_analytes(req_key, cand_key)):
+        return True
     aliases = get_analyte_aliases(req_key)
     exclusions = get_exclusion_aliases(req_key)
 
@@ -260,6 +414,21 @@ def find_analyte_mentions(text: str) -> set[str]:
                 found.add(canonical)
                 break
     return found
+
+
+def detect_alias_resolution_used(query: str, requested_analytes: list[str]) -> bool:
+    qn = normalize_analyte(query or "")
+    for analyte in requested_analytes:
+        canonical = str(analyte or "").strip().lower()
+        canonical_phrase = normalize_analyte(canonical.replace("_", " "))
+        aliases = get_analyte_aliases(canonical)
+        if not aliases:
+            continue
+        alias_hit = any(contains_exact_term(qn, alias) for alias in aliases if alias)
+        canonical_hit = contains_exact_term(qn, canonical_phrase)
+        if alias_hit and not canonical_hit:
+            return True
+    return False
 
 
 _REPORT_ID_PATTERN = re.compile(
@@ -572,6 +741,7 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
             "traitement",
             "est ce que le patient a",
             "est-ce que le patient a",
+            "le patient a quoi",
             "hyperthyroid",
             "hyperthyro",
             "hypothyroid",
@@ -872,10 +1042,34 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         or "respond only yes" in qn
         or "strictly yes/no" in qn
     )
+    has_medical_signal = bool(
+        len(doc_ids) > 0
+        or len(analyte_list) > 0
+        or has_reference_range_lookup
+        or has_structured_status_request
+        or has_global_scope_markers
+        or has_abnormal_wording
+        or any(
+            k in qn
+            for k in [
+                "plage",
+                "norme",
+                "reference",
+                "référence",
+                "valeur",
+                "resultat",
+                "résultat",
+                "rapport",
+                "report",
+                "document",
+            ]
+        )
+    )
     is_small_talk = (
         len(doc_ids) == 0
         and len(analyte_list) == 0
         and any(m in qn for m in small_talk_markers)
+        and not has_medical_signal
         and not has_response_transform
     )
     is_identity_question = (
@@ -922,6 +1116,15 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
             or "above reference" in qn
             or "hors reference" in qn
             or "dans la reference" in qn
+        )
+    )
+    has_global_threshold_without_analyte = (
+        len(doc_ids) == 0
+        and len(analyte_list) == 0
+        and has_global_scope_markers
+        and (
+            any(ch.isdigit() for ch in qn)
+            or any(k in qn for k in ["superieur", "supérieur", "inferieur", "inférieur", "au dessus", "au-dessus", "en dessous", "strictement"])
         )
     )
     has_global_biological_summary = (
@@ -997,7 +1200,7 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         "global_patient_lookup": has_global_patient_lookup,
         "global_biological_summary": has_global_biological_summary,
         "global_priority_anomalies_summary": has_global_priority_anomalies_summary,
-        "cohort_search": has_global_patient_lookup,
+        "cohort_search": (has_global_patient_lookup or has_global_threshold_without_analyte),
         "multi_doc_presence_diff": has_presence_diff,
         "yes_no_question": has_yes_no_question,
     }
@@ -1884,6 +2087,238 @@ def _resolve_primary_intent(intents: dict[str, bool], *, requested_doc_ids: list
     return "unstructured"
 
 
+def compute_lexical_score(candidate_intent: str, query: str) -> float:
+    qn = norm_text(query or "")
+    cfg = LEXICAL_MARKERS.get(candidate_intent, {})
+    strong = list(cfg.get("strong") or [])
+    medium = list(cfg.get("medium") or [])
+    weak = list(cfg.get("weak") or [])
+    weight = float(cfg.get("weight") or 1.0)
+
+    strong_count = sum(1 for marker in strong if contains_exact_term(qn, marker))
+    medium_count = sum(1 for marker in medium if contains_exact_term(qn, marker))
+    weak_count = sum(1 for marker in weak if contains_exact_term(qn, marker))
+
+    if not (strong or medium or weak):
+        return 0.3
+
+    matched = (strong_count * 1.0) + (medium_count * 0.6) + (weak_count * 0.3)
+    max_possible = (len(strong) * 1.0) + (len(medium) * 0.6) + (len(weak) * 0.3)
+    base = (matched / max(max_possible, 1.0)) if max_possible else 0.0
+    return max(0.0, min(1.0, base * weight))
+
+
+def compute_structural_score(
+    candidate_intent: str,
+    requested_doc_ids: list[str],
+    requested_analytes: list[str],
+    technical_condition: str | None,
+) -> float:
+    doc_scope = 0.0
+    if candidate_intent in DOC_SCOPED_INTENTS:
+        doc_scope = 1.0 if requested_doc_ids else 0.0
+    else:
+        doc_scope = 0.5 if requested_doc_ids else 0.7
+
+    analyte_scope = 0.0
+    if candidate_intent in ANALYTE_SCOPED_INTENTS:
+        analyte_scope = 1.0 if requested_analytes else 0.0
+    else:
+        analyte_scope = 0.5 if requested_analytes else 0.7
+
+    condition_scope = 1.0 if technical_condition else 0.0
+    structural = 0.4 * doc_scope + 0.4 * analyte_scope + 0.2 * condition_scope
+    return max(0.0, min(1.0, structural))
+
+
+def compute_medical_score(candidate_intent: str, medical_topics: list[dict[str, Any]]) -> float:
+    if not medical_topics:
+        return 0.5
+    relevance_map = INTENT_TOPIC_RELEVANCE.get(candidate_intent, {})
+    if not relevance_map:
+        return 0.5
+    best = 0.0
+    for topic_dict in medical_topics:
+        topic_name = str(topic_dict.get("topic") or "").strip()
+        topic_conf = float(topic_dict.get("confidence") or 0.5)
+        rel = float(relevance_map.get(topic_name, 0.0))
+        best = max(best, topic_conf * rel)
+    return max(0.0, min(1.0, best))
+
+
+def apply_penalties(
+    candidate_intent: str,
+    requested_doc_ids: list[str],
+    requested_analytes: list[str],
+    safety_intent: str | None,
+    lex_score: float,
+    struct_score: float,
+) -> float:
+    total_penalty = 0.0
+    if candidate_intent in DOC_SCOPED_INTENTS and not requested_doc_ids:
+        total_penalty += 0.15
+    if candidate_intent in ANALYTE_SCOPED_INTENTS and not requested_analytes:
+        total_penalty += 0.20
+    if str(safety_intent or "").strip().lower() in {"diagnosis_refusal", "diagnostic_safety_question"} and candidate_intent not in {
+        "small_talk",
+        "identity_question",
+        "capability_question",
+        "help_question",
+        "diagnostic_safety_question",
+    }:
+        total_penalty += 0.25
+    if lex_score < 0.20:
+        total_penalty += 0.10
+    if struct_score < 0.20:
+        total_penalty += 0.05
+    return min(0.30, total_penalty)
+
+
+def resolve_medical_topics_with_confidence(query: str, requested_analytes: list[str]) -> list[dict[str, Any]]:
+    topics_raw = list(resolve_medical_topic(query or "") or [])
+    if not topics_raw:
+        return []
+    qn = norm_text(query or "")
+    enriched: list[dict[str, Any]] = []
+    for topic_name in topics_raw:
+        topic = str(topic_name or "").strip()
+        if not topic:
+            continue
+        base_conf = 0.75
+        analyte_bonus = 0.0
+        for analyte in requested_analytes:
+            if topic in ANALYTE_TOPIC_MAP.get(str(analyte), []):
+                analyte_bonus += 0.12
+        keyword_hits = 0
+        for keyword in TOPIC_KEYWORDS.get(topic, []):
+            if contains_exact_term(qn, keyword):
+                keyword_hits += 1
+        if keyword_hits >= 2:
+            keyword_bonus = 0.08
+        elif keyword_hits == 1:
+            keyword_bonus = 0.02
+        else:
+            keyword_bonus = -0.15
+        conf = max(0.30, min(1.0, base_conf + analyte_bonus + keyword_bonus))
+        enriched.append({"topic": topic, "confidence": round(conf, 2)})
+
+    enriched = sorted(enriched, key=lambda x: (-float(x.get("confidence") or 0.0), str(x.get("topic") or "")))
+    return enriched[:3]
+
+
+def score_all_intent_candidates(
+    query: str,
+    requested_doc_ids: list[str],
+    requested_analytes: list[str],
+    technical_condition: str | None,
+    medical_topics: list[dict[str, Any]],
+    intents_dict: dict[str, bool],
+    safety_intent: str | None,
+) -> list[tuple[str, float]]:
+    candidates = [intent_name for intent_name, is_true in (intents_dict or {}).items() if is_true and intent_name != "is_structured_query"]
+    if not candidates:
+        candidates = ["unstructured"]
+    scored: dict[str, float] = {}
+    for candidate in candidates:
+        lex_score = compute_lexical_score(candidate, query)
+        struct_score = compute_structural_score(candidate, requested_doc_ids, requested_analytes, technical_condition)
+        med_score = compute_medical_score(candidate, medical_topics)
+        penalty = apply_penalties(
+            candidate,
+            requested_doc_ids,
+            requested_analytes,
+            safety_intent,
+            lex_score,
+            struct_score,
+        )
+        raw = 0.45 * lex_score + 0.35 * struct_score + 0.20 * med_score - penalty
+        scored[candidate] = round(max(0.0, min(1.0, raw)), 2)
+    sorted_candidates = sorted(scored.items(), key=lambda x: (-x[1], x[0]))
+    return sorted_candidates[:3]
+
+
+def _align_candidates_with_legacy_intent(
+    legacy_intent: str,
+    scored_candidates: list[tuple[str, float]],
+) -> list[tuple[str, float]]:
+    legacy = str(legacy_intent or "").strip()
+    if not legacy:
+        return scored_candidates
+    if not scored_candidates:
+        return [(legacy, 0.0)]
+    scores = {name: score for name, score in scored_candidates}
+    if legacy not in scores:
+        baseline = max(float(scored_candidates[0][1]), 0.60)
+        aligned = [(legacy, round(baseline, 2))] + scored_candidates
+    else:
+        legacy_score = scores.get(legacy, 0.0)
+        top_score = float(scored_candidates[0][1])
+        promoted_score = round(max(legacy_score, top_score), 2)
+        rest = [(name, score) for name, score in scored_candidates if name != legacy]
+        aligned = [(legacy, promoted_score)] + rest
+    aligned = sorted(aligned, key=lambda x: (-x[1], x[0]))
+    if aligned and aligned[0][0] != legacy:
+        legacy_score = next((score for name, score in aligned if name == legacy), aligned[0][1])
+        aligned = [(legacy, legacy_score)] + [(name, score) for name, score in aligned if name != legacy]
+    return aligned[:3]
+
+
+def compute_ambiguity_flags(
+    requested_doc_ids: list[str],
+    requested_analytes: list[str],
+    detected_intent: str,
+    intent_candidates: list[tuple[str, float]],
+    safety_intent: str | None,
+    medical_topics: list[dict[str, Any]],
+    technical_condition: str | None,
+    alias_resolved: bool,
+) -> list[str]:
+    flags: list[str] = []
+    if detected_intent in DOC_SCOPED_INTENTS and not requested_doc_ids:
+        flags.append("missing_doc_scope")
+    if len(requested_doc_ids) > 1 and detected_intent in SINGLE_DOC_INTENTS:
+        flags.append("multiple_doc_scope_ambiguous")
+    if alias_resolved:
+        flags.append("analyte_alias_resolved")
+    if medical_topics and not requested_analytes and detected_intent not in {"small_talk", "identity_question", "help_question", "general_conversation"}:
+        flags.append("topic_vs_specific_analyte_ambiguous")
+    if not requested_doc_ids and not requested_analytes and not technical_condition and not medical_topics:
+        flags.append("insufficient_clinical_scope")
+    if str(safety_intent or "").strip().lower() in {"diagnosis_refusal", "diagnostic_safety_question"}:
+        flags.append("unsafe_diagnosis_request")
+    intent_conf = float(intent_candidates[0][1]) if intent_candidates else 0.0
+    if intent_conf < 0.60:
+        flags.append("confidence_below_threshold")
+    if len(intent_candidates) >= 2:
+        gap = float(intent_candidates[0][1]) - float(intent_candidates[1][1])
+        if gap < 0.10:
+            flags.append("multiple_candidates_clustered")
+    return list(dict.fromkeys(flags))
+
+
+def compute_scope_confidence(
+    requested_doc_ids: list[str],
+    requested_analytes: list[str],
+    technical_condition: str | None,
+    ambiguity_flags: list[str],
+) -> float:
+    score = 0.0
+    score += 0.55 if requested_doc_ids else 0.10
+    score += 0.30 if requested_analytes else 0.05
+    score += 0.15 if technical_condition else 0.02
+    penalty_map = {
+        "missing_doc_scope": -0.15,
+        "multiple_doc_scope_ambiguous": -0.20,
+        "topic_vs_specific_analyte_ambiguous": -0.10,
+        "insufficient_clinical_scope": -0.25,
+        "confidence_below_threshold": -0.05,
+        "multiple_candidates_clustered": -0.05,
+    }
+    for flag in ambiguity_flags or []:
+        score += penalty_map.get(str(flag), 0.0)
+    return round(max(0.0, min(1.0, score)), 2)
+
+
 def build_intent_arbitration_debug(qu: QueryUnderstanding) -> dict[str, Any]:
     intents = dict(getattr(qu, "intents", {}) or {})
     candidate_intents = [k for k, v in intents.items() if bool(v) and k != "is_structured_query"]
@@ -1957,6 +2392,12 @@ def parse_query_understanding(query: str) -> QueryUnderstanding:
         for k in ["t4_libre", "t3_libre", "tshus", "anti_tg", "trak", "anti_tpo"]:
             if k not in requested_analytes:
                 requested_analytes.append(k)
+    requested_analytes = [
+        canonicalize_analyte(str(a))
+        for a in requested_analytes
+        if canonicalize_analyte(str(a))
+    ]
+    requested_analytes = list(dict.fromkeys(requested_analytes))
     excluded_analytes = detect_excluded_analytes(query or "")
     intents = detect_query_intents(query or "", requested_doc_ids=requested_doc_ids, analytes=requested_analytes)
     requires_previous_results = intents.get("previous_result_comparison", False) or (
@@ -2020,6 +2461,42 @@ def parse_query_understanding(query: str) -> QueryUnderstanding:
         and preliminary_intent in {"unstructured", "response_transform"}
     ):
         preliminary_intent = "doc_scoped_results"
+    medical_topics = resolve_medical_topics_with_confidence(query or "", requested_analytes)
+    scored_candidates = score_all_intent_candidates(
+        query=query or "",
+        requested_doc_ids=requested_doc_ids,
+        requested_analytes=requested_analytes,
+        technical_condition=technical_condition,
+        medical_topics=medical_topics,
+        intents_dict=intents,
+        safety_intent=safety_intent,
+    )
+    scored_candidates = _align_candidates_with_legacy_intent(preliminary_intent, scored_candidates)
+    alias_resolved = detect_alias_resolution_used(query or "", requested_analytes)
+    ambiguity_flags = compute_ambiguity_flags(
+        requested_doc_ids=requested_doc_ids,
+        requested_analytes=requested_analytes,
+        detected_intent=preliminary_intent,
+        intent_candidates=scored_candidates,
+        safety_intent=safety_intent,
+        medical_topics=medical_topics,
+        technical_condition=technical_condition,
+        alias_resolved=alias_resolved,
+    )
+    scope_confidence = compute_scope_confidence(
+        requested_doc_ids=requested_doc_ids,
+        requested_analytes=requested_analytes,
+        technical_condition=technical_condition,
+        ambiguity_flags=ambiguity_flags,
+    )
+    intent_candidates = [
+        {
+            "intent": str(intent_name),
+            "confidence": round(float(conf), 2),
+        }
+        for intent_name, conf in scored_candidates[:3]
+    ]
+    intent_confidence = round(float(intent_candidates[0]["confidence"]) if intent_candidates else 0.0, 2)
     preview_qu = QueryUnderstanding(
         requested_doc_ids=requested_doc_ids,
         requested_analytes=requested_analytes,
@@ -2063,6 +2540,11 @@ def parse_query_understanding(query: str) -> QueryUnderstanding:
         use_patient_profile=use_patient_profile,
         request_all_reference_ranges=request_all_reference_ranges,
         requested_summary_points=requested_summary_points,
+        intent_candidates=intent_candidates,
+        intent_confidence=intent_confidence,
+        scope_confidence=scope_confidence,
+        ambiguity_flags=ambiguity_flags,
+        medical_topics=medical_topics,
     )
     strategy = decide_response_strategy(preview_qu, evidence_pack=None)
 

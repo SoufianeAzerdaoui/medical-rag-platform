@@ -104,8 +104,14 @@ export function SingleAnalyteResultCard({ content, sources }: Props) {
         <p>
           <span className="text-fg/70">Source :</span>{" "}
           {src ? (
-            <a href={src.href} className="underline underline-offset-2">
-              {src.label}
+            <a
+              href={src.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 rounded-lg border border-border/70 bg-card px-2.5 py-1 text-xs font-medium text-accent underline-offset-2 hover:underline"
+            >
+              <span aria-hidden="true">↗</span>
+              <span className="break-words">{src.label}</span>
             </a>
           ) : (
             <span>{parsed.sourceText}</span>
@@ -116,4 +122,3 @@ export function SingleAnalyteResultCard({ content, sources }: Props) {
     </div>
   );
 }
-

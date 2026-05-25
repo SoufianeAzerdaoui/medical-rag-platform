@@ -19,6 +19,7 @@ class TestConfigLoader(unittest.TestCase):
         self.assertIn("families", cl.get_analyte_families_config())
         self.assertIn("priority_scoring", cl.get_priority_scoring_config())
         self.assertIn("general_conversation", cl.get_assistant_messages_config())
+        self.assertIn("generation_routing", cl.get_generation_routing_config())
 
     def test_missing_file_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as td:
