@@ -1,0 +1,159 @@
+model,benchmark_model_requested,question_id,question,answer,generation_mode,generation_writer,validation_status,quality_final_status,fallback_reason,selected_route,llm_provider,llm_model_requested,llm_model_effective,ollama_model,model_verified,llm_model_override_applied,generation_strategy,llm_expected,llm_skipped_reason,deterministic_preferred_reason,llm_writer_attempted,llm_writer_accepted,hard_gate_rejected,repair_attempted,repair_success,llm_candidate_validation_status,llm_candidate_validation_errors,llm_candidate_validation_warnings,validation_errors,validation_warnings,llm_writer_ms,response_time,displayed_count,sources_count,score,debug_model_match,error
+llama3.2:latest,llama3.2:latest,Q1,"Fais une synthèse médico-biologique du report 12 en 6 lignes maximum, en séparant les anomalies et les résultats rassurants. Ne donne pas de diagnostic.","Anormaux : Bilirubine Directe (au-dessus), LDH (au-dessus), CKMB (CPKMB) (au-dessus), APOLIPOPROTÉINE A1 (APO A1) (au-dessus).
+Résultats dans la référence uniquement : aucun résultat strictement dans la référence parmi les éléments sélectionnés.
+Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic.",deterministic_doc_scoped_biological_summary,professional_fallback,pass,pass,,doc_scoped_biological_summary,ollama,llama3.2:latest,,,False,True,deterministic_preferred,False,biological_summary_deterministic_preferred,biological_summary_deterministic_preferred,False,False,False,False,False,,[],[],[],[],0.0,0.163,9,9,9,False,
+llama3.2:latest,llama3.2:latest,Q2,"Résume le report 24 comme une note courte pour un médecin, en restant strictement descriptif et sans diagnostic.","Anormaux : Réserve Alcaline (en dessous).
+Résultats dans la référence uniquement : Phosphore, LDH.
+Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic.",deterministic_doc_scoped_biological_summary,professional_fallback,pass,pass,,doc_scoped_biological_summary,ollama,llama3.2:latest,,,False,True,deterministic_preferred,False,biological_summary_deterministic_preferred,biological_summary_deterministic_preferred,False,False,False,False,False,,[],[],[],[],0.0,0.141,10,10,9,False,
+llama3.2:latest,llama3.2:latest,Q3,"Dans le report 10, explique les anomalies biologiques les plus importantes par priorité technique, avec une justification courte pour chaque anomalie. Ne pose pas de diagnostic.","Les anomalies techniques ci-dessous sont organisées par section du rapport.
+
+4 valeurs exploitables ont été retrouvées.
+
+| Priorité | Analyte | Valeur actuelle | Référence | Statut | Raison technique |
+| --- | --- | --- | --- | --- | --- |
+| high | Albumine | 8 g/l | 35 à 50 g/l | en dessous de la référence | écart relatif ≈ x4.38 vs borne. poids famille biologique technique. |
+| high | Triglycérides | 8 g/l | Normale: < 1,50 g/l limite haute: 1,50 - 1,99 g/l Haute: 2 - 4,99 g/l Très haute: > 5 g/l | au-dessus de la référence | catégorie textuelle de sévérité détectée (tres haute). termes de sévérité détectés dans la référence/interprétation. poids famille biologique technique. |
+| low | AMMONIUM | 20 µg/dl | (31,00 - 123.00)µg/dl | en dessous de la référence | écart relatif ≈ x1.55 vs borne. |
+| low | CRP | 7 mg/l | 0.00 mg/l - 5.00 mg/l | au-dessus de la référence | écart relatif ≈ x1.40 vs borne. poids famille biologique technique. |
+
+Sources :
+- [report (10).pdf — page 1, lignes 7–8](/viewer/pdf?doc_id=report_10&page=1)
+- [report (10).pdf — page 2, lignes 20–29](/viewer/pdf?doc_id=report_10&page=2)",deterministic_doc_scoped_priority_anomalies,professional_fallback,pass,warning,,doc_scoped_priority_anomalies,ollama,llama3.2:latest,,,False,True,deterministic_preferred,False,priority_deterministic_structure_preferred,priority_deterministic_structure_preferred,False,False,False,False,False,,[],[],[],"['Some numeric values were not found in evidence.', 'missing_conclusion', 'downgraded_non_fact_error:unsupported_value']",0.0,0.2,4,4,9,False,
+llama3.2:latest,llama3.2:latest,Q4,"Le bilan thyroïdien du report 16 est-il compatible avec une hyperthyroïdie primaire ? Explique prudemment à partir de TSH, T3, T4 et anticorps, sans conclure à un diagnostic.","Je ne peux pas poser ni évoquer un diagnostic à partir de ces résultats seuls.
+
+- TSHus : 55,00 mUI/L ; référence 0,35 - 4,94 ; au-dessus de la référence.
+- T3 LIBRE : 66,00 pmol/l ; référence 2,42 - 6,01 ; au-dessus de la référence.
+- T4 LIBRE : 112,00 pmol/l ; référence 9,01 - 19,05 ; au-dessus de la référence.
+- ANTI-TG : 77 IU/mL ; référence < 4,11 ; au-dessus de la référence.
+Limites : Les valeurs de TSHus, T3 LIBRE et T4 LIBRE sont supérieures à leurs références respectives, mais les valeurs d'ANTI-TG sont supérieures à leur référence. Il n'y a pas suffisamment d'informations pour établir un diagnostic précis.
+Conclusion technique : profil biologique discordant pour une hyperthyroïdie primaire ; aucune conclusion diagnostique ne peut être posée à partir de ces seuls éléments.",hybrid_structured_llm_writer,llm_writer,pass,pass,,doc_scoped_medical_interpretation_guarded,ollama,llama3.2:latest,llama3.2:latest,llama3.2:latest,True,True,llm_writer_expected,True,,,True,True,False,False,False,pass,[],[],[],[],58259.847,58.553,4,4,9,True,
+llama3.2:latest,llama3.2:latest,Q5,Résume les résultats de pharmacotoxicologie urinaire du report 27 en distinguant les résultats sous seuil et ceux au-dessus du seuil. Ne donne aucune interprétation clinique.,"Synthèse toxicologique technique
+
+- Sous seuil: 11
+- Au-dessus du seuil: 2
+- Référence manquante/ambiguë: 5
+
+Conclusion technique : profil majoritairement sous les seuils, sous réserve des lignes ambiguës. Aucune interprétation diagnostique n’est fournie.",deterministic_doc_scoped_toxicology_summary,deterministic_toxicology_renderer,pass,pass,,doc_scoped_toxicology_summary,ollama,llama3.2:latest,,,False,True,deterministic_only,False,route_deterministic_only,route_marked_deterministic_only,False,False,False,False,False,,[],[],[],[],0.0,0.164,18,18,9,False,
+qwen2.5:7b-instruct,qwen2.5:7b-instruct,Q1,"Fais une synthèse médico-biologique du report 12 en 6 lignes maximum, en séparant les anomalies et les résultats rassurants. Ne donne pas de diagnostic.","Anormaux : Bilirubine Directe (au-dessus), LDH (au-dessus), CKMB (CPKMB) (au-dessus), APOLIPOPROTÉINE A1 (APO A1) (au-dessus).
+Résultats dans la référence uniquement : aucun résultat strictement dans la référence parmi les éléments sélectionnés.
+Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic.",deterministic_doc_scoped_biological_summary,professional_fallback,pass,pass,,doc_scoped_biological_summary,ollama,qwen2.5:7b-instruct,,,False,True,deterministic_preferred,False,biological_summary_deterministic_preferred,biological_summary_deterministic_preferred,False,False,False,False,False,,[],[],[],[],0.0,0.149,9,9,9,False,
+qwen2.5:7b-instruct,qwen2.5:7b-instruct,Q2,"Résume le report 24 comme une note courte pour un médecin, en restant strictement descriptif et sans diagnostic.","Anormaux : Réserve Alcaline (en dessous).
+Résultats dans la référence uniquement : Phosphore, LDH.
+Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic.",deterministic_doc_scoped_biological_summary,professional_fallback,pass,pass,,doc_scoped_biological_summary,ollama,qwen2.5:7b-instruct,,,False,True,deterministic_preferred,False,biological_summary_deterministic_preferred,biological_summary_deterministic_preferred,False,False,False,False,False,,[],[],[],[],0.0,0.157,10,10,9,False,
+qwen2.5:7b-instruct,qwen2.5:7b-instruct,Q3,"Dans le report 10, explique les anomalies biologiques les plus importantes par priorité technique, avec une justification courte pour chaque anomalie. Ne pose pas de diagnostic.","Les anomalies techniques ci-dessous sont organisées par section du rapport.
+
+4 valeurs exploitables ont été retrouvées.
+
+| Priorité | Analyte | Valeur actuelle | Référence | Statut | Raison technique |
+| --- | --- | --- | --- | --- | --- |
+| high | Albumine | 8 g/l | 35 à 50 g/l | en dessous de la référence | écart relatif ≈ x4.38 vs borne. poids famille biologique technique. |
+| high | Triglycérides | 8 g/l | Normale: < 1,50 g/l limite haute: 1,50 - 1,99 g/l Haute: 2 - 4,99 g/l Très haute: > 5 g/l | au-dessus de la référence | catégorie textuelle de sévérité détectée (tres haute). termes de sévérité détectés dans la référence/interprétation. poids famille biologique technique. |
+| low | AMMONIUM | 20 µg/dl | (31,00 - 123.00)µg/dl | en dessous de la référence | écart relatif ≈ x1.55 vs borne. |
+| low | CRP | 7 mg/l | 0.00 mg/l - 5.00 mg/l | au-dessus de la référence | écart relatif ≈ x1.40 vs borne. poids famille biologique technique. |
+
+Sources :
+- [report (10).pdf — page 1, lignes 7–8](/viewer/pdf?doc_id=report_10&page=1)
+- [report (10).pdf — page 2, lignes 20–29](/viewer/pdf?doc_id=report_10&page=2)",deterministic_doc_scoped_priority_anomalies,professional_fallback,pass,warning,,doc_scoped_priority_anomalies,ollama,qwen2.5:7b-instruct,,,False,True,deterministic_preferred,False,priority_deterministic_structure_preferred,priority_deterministic_structure_preferred,False,False,False,False,False,,[],[],[],"['Some numeric values were not found in evidence.', 'missing_conclusion', 'downgraded_non_fact_error:unsupported_value']",0.0,0.213,4,4,9,False,
+qwen2.5:7b-instruct,qwen2.5:7b-instruct,Q4,"Le bilan thyroïdien du report 16 est-il compatible avec une hyperthyroïdie primaire ? Explique prudemment à partir de TSH, T3, T4 et anticorps, sans conclure à un diagnostic.","Je ne peux pas poser ni évoquer un diagnostic à partir de ces résultats seuls.
+
+Non, on ne peut pas conclure à un diagnostic à partir de ces seuls marqueurs.
+| Analyte | Valeur actuelle | Référence | Statut | Document |
+| --- | --- | --- | --- | --- |
+| TSHus | 55,00 mUI/L | 0,35 à 4,94 mUI/l | au-dessus de la référence | report_16 |
+| T3 LIBRE | 66,00 pmol/l | 2,42 à 6,01 pmol/l | au-dessus de la référence | report_16 |
+| T4 LIBRE | 112,00 pmol/l | 9,01 à 19,05 pmol/l | au-dessus de la référence | report_16 |
+| TSHus | 55,00 mUI/L | 0,35 à 4,94 mUI/l | au-dessus de la référence | report_16 |
+| ANTI-TG | 77 IU/mL | <4,11 IU/ml | au-dessus de la référence | report_16 |
+Éléments non retrouvés :
+- trak: non retrouvé dans report_16.
+- anti tpo: non retrouvé dans report_16.
+
+Sources :
+- [report (16).pdf — page 1, lignes 3–6](/viewer/pdf?doc_id=report_16&page=1)
+Conclusion technique : profil biologique discordant pour une hyperthyroïdie primaire ; aucune conclusion diagnostique ne peut être posée à partir de ces seuls éléments.",deterministic_guarded_medical_interpretation,professional_fallback,pass,warning,llm_timeout,doc_scoped_medical_interpretation_guarded,ollama,qwen2.5:7b-instruct,qwen2.5:7b-instruct,qwen2.5:7b-instruct,True,True,llm_writer_expected,True,,,True,False,False,False,False,,[],[],[],"['missing_conclusion', 'downgraded_non_fact_error:analyte_overmatch', 'downgraded_non_fact_error:false_missing_item']",90090.937,90.364,4,4,5,True,
+qwen2.5:7b-instruct,qwen2.5:7b-instruct,Q5,Résume les résultats de pharmacotoxicologie urinaire du report 27 en distinguant les résultats sous seuil et ceux au-dessus du seuil. Ne donne aucune interprétation clinique.,"Synthèse toxicologique technique
+
+- Sous seuil: 11
+- Au-dessus du seuil: 2
+- Référence manquante/ambiguë: 5
+
+Conclusion technique : profil majoritairement sous les seuils, sous réserve des lignes ambiguës. Aucune interprétation diagnostique n’est fournie.",deterministic_doc_scoped_toxicology_summary,deterministic_toxicology_renderer,pass,pass,,doc_scoped_toxicology_summary,ollama,qwen2.5:7b-instruct,,,False,True,deterministic_only,False,route_deterministic_only,route_marked_deterministic_only,False,False,False,False,False,,[],[],[],[],0.0,0.188,18,18,9,False,
+mistral:7b-instruct-q4_0,mistral:7b-instruct-q4_0,Q1,"Fais une synthèse médico-biologique du report 12 en 6 lignes maximum, en séparant les anomalies et les résultats rassurants. Ne donne pas de diagnostic.","Anormaux : Bilirubine Directe (au-dessus), LDH (au-dessus), CKMB (CPKMB) (au-dessus), APOLIPOPROTÉINE A1 (APO A1) (au-dessus).
+Résultats dans la référence uniquement : aucun résultat strictement dans la référence parmi les éléments sélectionnés.
+Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic.",deterministic_doc_scoped_biological_summary,professional_fallback,pass,pass,,doc_scoped_biological_summary,ollama,mistral:7b-instruct-q4_0,,,False,True,deterministic_preferred,False,biological_summary_deterministic_preferred,biological_summary_deterministic_preferred,False,False,False,False,False,,[],[],[],[],0.0,0.145,9,9,9,False,
+mistral:7b-instruct-q4_0,mistral:7b-instruct-q4_0,Q2,"Résume le report 24 comme une note courte pour un médecin, en restant strictement descriptif et sans diagnostic.","Anormaux : Réserve Alcaline (en dessous).
+Résultats dans la référence uniquement : Phosphore, LDH.
+Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic.",deterministic_doc_scoped_biological_summary,professional_fallback,pass,pass,,doc_scoped_biological_summary,ollama,mistral:7b-instruct-q4_0,,,False,True,deterministic_preferred,False,biological_summary_deterministic_preferred,biological_summary_deterministic_preferred,False,False,False,False,False,,[],[],[],[],0.0,0.154,10,10,9,False,
+mistral:7b-instruct-q4_0,mistral:7b-instruct-q4_0,Q3,"Dans le report 10, explique les anomalies biologiques les plus importantes par priorité technique, avec une justification courte pour chaque anomalie. Ne pose pas de diagnostic.","Les anomalies techniques ci-dessous sont organisées par section du rapport.
+
+4 valeurs exploitables ont été retrouvées.
+
+| Priorité | Analyte | Valeur actuelle | Référence | Statut | Raison technique |
+| --- | --- | --- | --- | --- | --- |
+| high | Albumine | 8 g/l | 35 à 50 g/l | en dessous de la référence | écart relatif ≈ x4.38 vs borne. poids famille biologique technique. |
+| high | Triglycérides | 8 g/l | Normale: < 1,50 g/l limite haute: 1,50 - 1,99 g/l Haute: 2 - 4,99 g/l Très haute: > 5 g/l | au-dessus de la référence | catégorie textuelle de sévérité détectée (tres haute). termes de sévérité détectés dans la référence/interprétation. poids famille biologique technique. |
+| low | AMMONIUM | 20 µg/dl | (31,00 - 123.00)µg/dl | en dessous de la référence | écart relatif ≈ x1.55 vs borne. |
+| low | CRP | 7 mg/l | 0.00 mg/l - 5.00 mg/l | au-dessus de la référence | écart relatif ≈ x1.40 vs borne. poids famille biologique technique. |
+
+Sources :
+- [report (10).pdf — page 1, lignes 7–8](/viewer/pdf?doc_id=report_10&page=1)
+- [report (10).pdf — page 2, lignes 20–29](/viewer/pdf?doc_id=report_10&page=2)",deterministic_doc_scoped_priority_anomalies,professional_fallback,pass,warning,,doc_scoped_priority_anomalies,ollama,mistral:7b-instruct-q4_0,,,False,True,deterministic_preferred,False,priority_deterministic_structure_preferred,priority_deterministic_structure_preferred,False,False,False,False,False,,[],[],[],"['Some numeric values were not found in evidence.', 'missing_conclusion', 'downgraded_non_fact_error:unsupported_value']",0.0,0.212,4,4,9,False,
+mistral:7b-instruct-q4_0,mistral:7b-instruct-q4_0,Q4,"Le bilan thyroïdien du report 16 est-il compatible avec une hyperthyroïdie primaire ? Explique prudemment à partir de TSH, T3, T4 et anticorps, sans conclure à un diagnostic.","Je ne peux pas poser ni évoquer un diagnostic à partir de ces résultats seuls.
+
+Non, on ne peut pas conclure à un diagnostic à partir de ces seuls marqueurs.
+| Analyte | Valeur actuelle | Référence | Statut | Document |
+| --- | --- | --- | --- | --- |
+| TSHus | 55,00 mUI/L | 0,35 à 4,94 mUI/l | au-dessus de la référence | report_16 |
+| T3 LIBRE | 66,00 pmol/l | 2,42 à 6,01 pmol/l | au-dessus de la référence | report_16 |
+| T4 LIBRE | 112,00 pmol/l | 9,01 à 19,05 pmol/l | au-dessus de la référence | report_16 |
+| TSHus | 55,00 mUI/L | 0,35 à 4,94 mUI/l | au-dessus de la référence | report_16 |
+| ANTI-TG | 77 IU/mL | <4,11 IU/ml | au-dessus de la référence | report_16 |
+Éléments non retrouvés :
+- trak: non retrouvé dans report_16.
+- anti tpo: non retrouvé dans report_16.
+
+Sources :
+- [report (16).pdf — page 1, lignes 3–6](/viewer/pdf?doc_id=report_16&page=1)
+Conclusion technique : profil biologique discordant pour une hyperthyroïdie primaire ; aucune conclusion diagnostique ne peut être posée à partir de ces seuls éléments.",deterministic_guarded_medical_interpretation,professional_fallback,pass,warning,llm_timeout,doc_scoped_medical_interpretation_guarded,ollama,mistral:7b-instruct-q4_0,mistral:7b-instruct-q4_0,mistral:7b-instruct-q4_0,True,True,llm_writer_expected,True,,,True,False,False,False,False,,[],[],[],"['missing_conclusion', 'downgraded_non_fact_error:analyte_overmatch', 'downgraded_non_fact_error:false_missing_item']",90089.787,90.429,4,4,5,True,
+mistral:7b-instruct-q4_0,mistral:7b-instruct-q4_0,Q5,Résume les résultats de pharmacotoxicologie urinaire du report 27 en distinguant les résultats sous seuil et ceux au-dessus du seuil. Ne donne aucune interprétation clinique.,"Synthèse toxicologique technique
+
+- Sous seuil: 11
+- Au-dessus du seuil: 2
+- Référence manquante/ambiguë: 5
+
+Conclusion technique : profil majoritairement sous les seuils, sous réserve des lignes ambiguës. Aucune interprétation diagnostique n’est fournie.",deterministic_doc_scoped_toxicology_summary,deterministic_toxicology_renderer,pass,pass,,doc_scoped_toxicology_summary,ollama,mistral:7b-instruct-q4_0,,,False,True,deterministic_only,False,route_deterministic_only,route_marked_deterministic_only,False,False,False,False,False,,[],[],[],[],0.0,0.404,18,18,9,False,
+gemma3:4b,gemma3:4b,Q1,"Fais une synthèse médico-biologique du report 12 en 6 lignes maximum, en séparant les anomalies et les résultats rassurants. Ne donne pas de diagnostic.","Anormaux : Bilirubine Directe (au-dessus), LDH (au-dessus), CKMB (CPKMB) (au-dessus), APOLIPOPROTÉINE A1 (APO A1) (au-dessus).
+Résultats dans la référence uniquement : aucun résultat strictement dans la référence parmi les éléments sélectionnés.
+Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic.",deterministic_doc_scoped_biological_summary,professional_fallback,pass,pass,,doc_scoped_biological_summary,ollama,gemma3:4b,,,False,True,deterministic_preferred,False,biological_summary_deterministic_preferred,biological_summary_deterministic_preferred,False,False,False,False,False,,[],[],[],[],0.0,0.385,9,9,9,False,
+gemma3:4b,gemma3:4b,Q2,"Résume le report 24 comme une note courte pour un médecin, en restant strictement descriptif et sans diagnostic.","Anormaux : Réserve Alcaline (en dessous).
+Résultats dans la référence uniquement : Phosphore, LDH.
+Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic.",deterministic_doc_scoped_biological_summary,professional_fallback,pass,pass,,doc_scoped_biological_summary,ollama,gemma3:4b,,,False,True,deterministic_preferred,False,biological_summary_deterministic_preferred,biological_summary_deterministic_preferred,False,False,False,False,False,,[],[],[],[],0.0,0.403,10,10,9,False,
+gemma3:4b,gemma3:4b,Q3,"Dans le report 10, explique les anomalies biologiques les plus importantes par priorité technique, avec une justification courte pour chaque anomalie. Ne pose pas de diagnostic.","Les anomalies techniques ci-dessous sont organisées par section du rapport.
+
+4 valeurs exploitables ont été retrouvées.
+
+| Priorité | Analyte | Valeur actuelle | Référence | Statut | Raison technique |
+| --- | --- | --- | --- | --- | --- |
+| high | Albumine | 8 g/l | 35 à 50 g/l | en dessous de la référence | écart relatif ≈ x4.38 vs borne. poids famille biologique technique. |
+| high | Triglycérides | 8 g/l | Normale: < 1,50 g/l limite haute: 1,50 - 1,99 g/l Haute: 2 - 4,99 g/l Très haute: > 5 g/l | au-dessus de la référence | catégorie textuelle de sévérité détectée (tres haute). termes de sévérité détectés dans la référence/interprétation. poids famille biologique technique. |
+| low | AMMONIUM | 20 µg/dl | (31,00 - 123.00)µg/dl | en dessous de la référence | écart relatif ≈ x1.55 vs borne. |
+| low | CRP | 7 mg/l | 0.00 mg/l - 5.00 mg/l | au-dessus de la référence | écart relatif ≈ x1.40 vs borne. poids famille biologique technique. |
+
+Sources :
+- [report (10).pdf — page 1, lignes 7–8](/viewer/pdf?doc_id=report_10&page=1)
+- [report (10).pdf — page 2, lignes 20–29](/viewer/pdf?doc_id=report_10&page=2)",deterministic_doc_scoped_priority_anomalies,professional_fallback,pass,warning,,doc_scoped_priority_anomalies,ollama,gemma3:4b,,,False,True,deterministic_preferred,False,priority_deterministic_structure_preferred,priority_deterministic_structure_preferred,False,False,False,False,False,,[],[],[],"['Some numeric values were not found in evidence.', 'missing_conclusion', 'downgraded_non_fact_error:unsupported_value']",0.0,0.544,4,4,9,False,
+gemma3:4b,gemma3:4b,Q4,"Le bilan thyroïdien du report 16 est-il compatible avec une hyperthyroïdie primaire ? Explique prudemment à partir de TSH, T3, T4 et anticorps, sans conclure à un diagnostic.","Je ne peux pas poser ni évoquer un diagnostic à partir de ces résultats seuls.
+
+**Faits techniques observés :**
+Le profil biologique présente une TSHus us (55,00 mUI/L) et une T4 libre (112,00 pmol/l) au-dessus des valeurs de référence. De même, la T3 libre (66,00 pmol/l) est également élevée. L'anticorps anti-TG (77 IU/mL) est également élevé.
+**Limites :**
+L’interprétation reste limitée aux données biologiques fournies.
+**Conclusion technique :**
+Conclusion technique : profil biologique discordant pour une hyperthyroïdie primaire ; aucune conclusion diagnostique ne peut être posée à partir de ces seuls éléments.",hybrid_structured_llm_writer,llm_writer,pass,pass,,doc_scoped_medical_interpretation_guarded,ollama,gemma3:4b,gemma3:4b,gemma3:4b,True,True,llm_writer_expected,True,,,True,True,False,False,False,pass,[],[],[],[],65761.866,66.227,4,4,9,True,
+gemma3:4b,gemma3:4b,Q5,Résume les résultats de pharmacotoxicologie urinaire du report 27 en distinguant les résultats sous seuil et ceux au-dessus du seuil. Ne donne aucune interprétation clinique.,"Synthèse toxicologique technique
+
+- Sous seuil: 11
+- Au-dessus du seuil: 2
+- Référence manquante/ambiguë: 5
+
+Conclusion technique : profil majoritairement sous les seuils, sous réserve des lignes ambiguës. Aucune interprétation diagnostique n’est fournie.",deterministic_doc_scoped_toxicology_summary,deterministic_toxicology_renderer,pass,pass,,doc_scoped_toxicology_summary,ollama,gemma3:4b,,,False,True,deterministic_only,False,route_deterministic_only,route_marked_deterministic_only,False,False,False,False,False,,[],[],[],[],0.0,0.172,18,18,9,False,

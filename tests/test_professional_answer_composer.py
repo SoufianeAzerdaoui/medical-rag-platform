@@ -4,6 +4,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +17,7 @@ for root in (SCRIPTS_ROOT, GENERATION_ROOT):
 from answer_validator import validate_answer
 from llm_client import LLMClientError
 from professional_answer_composer import (
+    LOGGER,
     PROFESSIONAL_WRITER_SYSTEM_PROMPT,
     build_writer_evidence_pack,
     choose_presentation_format,
@@ -24,6 +26,7 @@ from professional_answer_composer import (
     format_result_count,
     format_source_label,
     render_professional_fallback,
+    _validate_writer_evidence_pack_contract,
 )
 from query_understanding import parse_query_understanding
 
@@ -849,14 +852,173 @@ class TestProfessionalAnswerComposer(unittest.TestCase):
         row = dict(results[0])
         self.assertEqual(
             sorted(row.keys()),
-            ["analyte", "reference", "source_label", "status", "unit", "value"],
+            ["analyte", "analyte_norm", "reference", "source_label", "status", "unit", "value"],
         )
         self.assertEqual(row["analyte"], "ACTH")
+        self.assertEqual(row["analyte_norm"], "acth")
         self.assertEqual(row["value"], "23,00")
         self.assertEqual(row["unit"], "pg/ml")
         self.assertEqual(row["reference"], "4,70 - 48,80 pg/ml")
         self.assertEqual(row["source_label"], "report (16).pdf — page 1, ligne 1")
         self.assertNotIn("<", "".join(str(v) for v in row.values()))
+
+    def test_21c_writer_pack_evidence_contract_scope_and_sources_are_normalized(self) -> None:
+        qu = parse_query_understanding("Listez tous les rapports qui ont la créatinine supérieure à 10.")
+        pack = {
+            "question": "Q",
+            "intent": "cohort_search",
+            "requested_doc_ids": [],
+            "requested_analytes": ["créat"],
+            "output_format": "table",
+            "answer_style": "standard",
+            "evidences": [
+                {
+                    "doc_id": "report_12",
+                    "analyte": "Créatinine",
+                    "analyte_norm": "creatinine",
+                    "current_value": "23",
+                    "unit": "mg/l",
+                    "reference": "7,2 - 12,5 mg/l",
+                    "technical_status": "au-dessus de la référence",
+                    "source_label": "<b>report (12).pdf — page 1, ligne 13</b>",
+                    "viewer_url": "/viewer/pdf?doc_id=report_12&page=1",
+                }
+            ],
+        }
+        writer_pack = build_writer_evidence_pack(
+            user_question="Listez tous les rapports qui ont la créatinine supérieure à 10.",
+            query_understanding=qu,
+            evidence_pack=pack,
+            source_citations=[
+                {
+                    "doc_id": "report_12",
+                    "filename": "report (12).pdf",
+                    "page": 1,
+                    "row": 13,
+                    "viewer_url": "/viewer/pdf?doc_id=report_12&page=1",
+                }
+            ],
+        )
+        contract = dict(writer_pack.get("evidence_contract") or {})
+        scope = dict(writer_pack.get("scope") or {})
+        sources = list(writer_pack.get("sources") or [])
+        constraints = dict(writer_pack.get("constraints") or {})
+        self.assertEqual(contract.get("contract_version"), "v1")
+        self.assertTrue(bool(contract.get("rows_filtered")))
+        self.assertTrue(bool(contract.get("rows_fact_locked")))
+        self.assertTrue(bool(contract.get("sources_normalized")))
+        self.assertTrue(bool(contract.get("sources_deduplicated")))
+        self.assertEqual(constraints.get("requested_analytes"), ["creatinine"])
+        self.assertEqual(scope.get("requested_analytes"), ["creatinine"])
+        self.assertEqual(scope.get("effective_analytes"), ["creatinine"])
+        self.assertTrue(bool(scope.get("scope_coherent")))
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0].get("label"), "report (12).pdf — page 1, ligne 13")
+        self.assertEqual(sources[0].get("doc_id"), "report_12")
+        self.assertTrue(bool(sources[0].get("viewer_url")))
+
+    def test_21d_writer_pack_filters_out_scope_incoherent_rows(self) -> None:
+        qu = parse_query_understanding("Dans report 16, donne la valeur ACTH.")
+        pack = {
+            "question": "Q",
+            "intent": "doc_scoped_results",
+            "requested_doc_ids": ["report_16"],
+            "requested_analytes": ["acth"],
+            "output_format": "table",
+            "answer_style": "standard",
+            "evidences": [
+                {
+                    "doc_id": "report_16",
+                    "analyte": "ACTH",
+                    "analyte_norm": "acth",
+                    "current_value": "23,00",
+                    "unit": "pg/ml",
+                    "reference": "4,70 - 48,80 pg/ml",
+                    "technical_status": "dans la référence",
+                },
+                {
+                    "doc_id": "report_12",
+                    "analyte": "Créatinine",
+                    "analyte_norm": "creatinine",
+                    "current_value": "23",
+                    "unit": "mg/l",
+                    "reference": "7,2 - 12,5 mg/l",
+                    "technical_status": "au-dessus de la référence",
+                },
+            ],
+        }
+        writer_pack = build_writer_evidence_pack(
+            user_question="Dans report 16, donne la valeur ACTH.",
+            query_understanding=qu,
+            evidence_pack=pack,
+            source_citations=[],
+        )
+        results = list(writer_pack.get("results_locked") or [])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].get("analyte_norm"), "acth")
+
+    def test_21e_writer_pack_contract_validator_rejects_incoherent_payload(self) -> None:
+        bad_pack = {
+            "results_locked": [
+                {
+                    "analyte": "ACTH",
+                    "analyte_norm": "",
+                    "value": "23,00",
+                    "unit": "pg/ml",
+                    "reference": "4,70 - 48,80 pg/ml",
+                    "status": "dans la référence",
+                    "source_label": "doc_id=report_16",
+                }
+            ],
+            "sources": [{"label": ""}],
+            "scope": {"scope_coherent": False},
+            "evidence_contract": {"contract_version": "v0", "rows_fact_locked": False, "sources_normalized": False},
+            "constraints": {"requested_analytes": ["acth"]},
+        }
+        ok, errors = _validate_writer_evidence_pack_contract(bad_pack)
+        self.assertFalse(ok)
+        self.assertIn("results_locked_row_empty_analyte_norm:0", errors)
+        self.assertIn("results_locked_row_bad_source_label:0", errors)
+        self.assertIn("scope_incoherent", errors)
+        self.assertIn("evidence_contract_version_invalid", errors)
+
+    def test_21f_contract_violation_forces_fallback_and_logs(self) -> None:
+        qu = parse_query_understanding("Dans report 16, donne la valeur ACTH.")
+        bad_pack = {
+            "question": "Q",
+            "intent": "doc_scoped_results",
+            "requested_doc_ids": ["report_16"],
+            "requested_analytes": ["acth"],
+            "output_format": "table",
+            "answer_style": "standard",
+            "evidences": [
+                {
+                    "doc_id": "report_16",
+                    "analyte": "",
+                    "analyte_norm": "",
+                    "current_value": "23,00",
+                    "unit": "pg/ml",
+                    "reference": "4,70 - 48,80 pg/ml",
+                    "technical_status": "dans la référence",
+                    "source_label": "doc_id=report_16",
+                }
+            ],
+        }
+        with mock.patch.object(LOGGER, "warning") as warning_mock:
+            composed = compose_professional_answer(
+                user_question="Dans report 16, donne la valeur ACTH.",
+                query_understanding=qu,
+                evidence_pack=bad_pack,
+                mode="llm_professional_writer",
+                source_citations=[],
+                llm_client=_FakeLLMClient("unused"),
+            )
+        self.assertEqual(str(composed.get("mode") or ""), "writer_contract_violation_fallback")
+        self.assertEqual(str(composed.get("llm_error") or ""), "writer_evidence_contract_violation")
+        self.assertTrue(list(composed.get("contract_violation") or []))
+        warning_mock.assert_called()
+        logged = " ".join(str(arg) for arg in warning_mock.call_args.args)
+        self.assertIn("contract_violation", logged)
 
     def test_22_multi_doc_comparison_identical_is_specific(self) -> None:
         qu = parse_query_understanding("Compare le glucose entre report 10 et report 12.")

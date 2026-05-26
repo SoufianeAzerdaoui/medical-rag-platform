@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import unittest
@@ -431,6 +432,11 @@ class TestChatApiContract(unittest.TestCase):
                     "selected_route": "doc_scoped_single_analyte_status",
                     "answerability_status": "answerable_alias",
                     "specialized_fallback_kind": "partial_answer",
+                    "generation_writer": "professional_fallback",
+                    "llm_route_class": "deterministic_only",
+                    "llm_writer_attempted": True,
+                    "llm_writer_accepted": False,
+                    "fallback_reason": "llm_validation_failed",
                 },
             }
 
@@ -448,10 +454,376 @@ class TestChatApiContract(unittest.TestCase):
         summary_call = next((entry for entry in joined_calls if "chat_request_summary" in entry), "")
         self.assertIn('"intent": "doc_scoped_results"', summary_call)
         self.assertIn('"selected_route": "doc_scoped_single_analyte_status"', summary_call)
+        self.assertIn('"generation_writer": "professional_fallback"', summary_call)
         self.assertIn('"answerability_status": "answerable_alias"', summary_call)
         self.assertIn('"fallback_kind": "partial_answer"', summary_call)
+        self.assertIn('"llm_route_class": "deterministic_only"', summary_call)
+        self.assertIn('"llm_attempt_rate": 1.0', summary_call)
+        self.assertIn('"llm_accept_rate": 0.0', summary_call)
+        self.assertIn('"llm_reject_rate": 1.0', summary_call)
+        self.assertIn('"llm_timeout_rate": 0.0', summary_call)
+        self.assertIn('"repair_attempt_rate": 0.0', summary_call)
+        self.assertIn('"repair_success_rate": 0.0', summary_call)
+        self.assertIn('"fallback_after_llm_rate": 1.0', summary_call)
+        self.assertIn('"hallucination_rejection_rate": 1.0', summary_call)
+        self.assertIn('"llm_writer_ms": 0.0', summary_call)
+        self.assertIn('"contract_violation_count": 0', summary_call)
+        self.assertIn('"validation_hard_gate_reason": null', summary_call)
+        self.assertIn('"validation_hard_gate_reason_count": 0', summary_call)
         self.assertIn('"response_time_ms": 123.0', summary_call)
         self.assertIn('"failure_signals": ["hallucination"]', summary_call)
+
+    def test_advanced_debug_exposes_llm_observability_fields(self) -> None:
+        def _fake_run_generation(**_kwargs):
+            return {
+                "answer": "ok",
+                "generation_time_seconds": 0.1,
+                "generation_mode": "hybrid_structured_llm_writer",
+                "validation": {"validation_status": "pass", "warnings": [], "errors": []},
+                "quality_report": {"final_status": "pass"},
+                "query_understanding": {
+                    "intent": "doc_scoped_results",
+                    "requested_doc_ids": ["report_16"],
+                    "requested_analytes": ["TSH"],
+                },
+                "sources": [],
+                "displayed_evidences": [],
+                "debug": {
+                    "selected_route": "doc_scoped_medical_interpretation_guarded",
+                    "generation_writer": "llm_writer",
+                    "selected_policy": "hybrid_controlled",
+                    "policy_level": "hybrid_controlled",
+                    "llm_writer_allowed": True,
+                    "llm_writer_attempted": True,
+                    "llm_writer_accepted": True,
+                    "llm_prompt_policy_version": "v2",
+                },
+            }
+
+        old_app_env = os.environ.get("APP_ENV")
+        try:
+            os.environ["APP_ENV"] = "test"
+            response = chat_service.process_chat(
+                payload=ChatRequest(conversation_id="conv_llm_debug", message="q"),
+                current_user={"id": "u1"},
+                state_service=_FakeStateService(),
+                run_generation=_fake_run_generation,
+                logger=logging.getLogger("test.chat.contract"),
+            )
+        finally:
+            if old_app_env is None:
+                os.environ.pop("APP_ENV", None)
+            else:
+                os.environ["APP_ENV"] = old_app_env
+
+        dbg = response.debug or {}
+        self.assertEqual(dbg.get("llm_route_class"), "llm_allowed")
+        self.assertEqual(dbg.get("llm_prompt_policy_version"), "v2")
+        self.assertEqual(dbg.get("llm_attempt_rate"), 1.0)
+        self.assertEqual(dbg.get("llm_accept_rate"), 1.0)
+        self.assertEqual(dbg.get("llm_reject_rate"), 0.0)
+        self.assertEqual(dbg.get("llm_timeout_rate"), 0.0)
+        self.assertEqual(dbg.get("repair_attempt_rate"), 0.0)
+        self.assertEqual(dbg.get("repair_success_rate"), 0.0)
+        self.assertEqual(dbg.get("fallback_after_llm_rate"), 0.0)
+        self.assertEqual(dbg.get("hallucination_rejection_rate"), 0.0)
+        self.assertEqual(dbg.get("contract_violation_count"), 0)
+        self.assertEqual(dbg.get("validation_hard_gate_reason_count"), 0)
+        raw = dbg.get("raw_debug") if isinstance(dbg.get("raw_debug"), dict) else {}
+        self.assertEqual(raw.get("llm_route_class"), "llm_allowed")
+        self.assertEqual(raw.get("llm_prompt_policy_version"), "v2")
+        self.assertEqual(raw.get("llm_reject_rate"), 0.0)
+        self.assertEqual(raw.get("llm_timeout_rate"), 0.0)
+        self.assertEqual(raw.get("repair_attempt_rate"), 0.0)
+        self.assertEqual(raw.get("repair_success_rate"), 0.0)
+        self.assertEqual(raw.get("hallucination_rejection_rate"), 0.0)
+        self.assertEqual(raw.get("contract_violation_count"), 0)
+        self.assertEqual(raw.get("validation_hard_gate_reason_count"), 0)
+
+    def test_contract_violation_resets_llm_attempt_metrics_in_debug_and_logs(self) -> None:
+        def _fake_run_generation(**_kwargs):
+            return {
+                "answer": "Réponse de fallback déterministe.",
+                "generation_time_seconds": 0.05,
+                "generation_mode": "writer_contract_violation_fallback",
+                "validation": {"validation_status": "pass", "warnings": [], "errors": []},
+                "quality_report": {"final_status": "pass"},
+                "query_understanding": {
+                    "intent": "doc_scoped_biological_summary",
+                    "requested_doc_ids": ["report_12"],
+                    "requested_analytes": ["CRP"],
+                },
+                "sources": [],
+                "displayed_evidences": [],
+                "debug": {
+                    "selected_route": "doc_scoped_biological_summary",
+                    "generation_writer": "professional_fallback",
+                    "selected_policy": "hybrid_controlled",
+                    "policy_level": "hybrid_controlled",
+                    "llm_writer_allowed": True,
+                    "llm_writer_attempted": True,
+                    "llm_writer_accepted": False,
+                    "llm_prompt_policy_version": "v2",
+                    "fallback_reason": "writer_evidence_contract_violation",
+                    "contract_violation": ["scope_incoherent", "results_locked_empty"],
+                },
+            }
+
+        old_app_env = os.environ.get("APP_ENV")
+        logger = logging.getLogger("test.chat.contract.contract_violation")
+        try:
+            os.environ["APP_ENV"] = "test"
+            with patch.object(logger, "info") as info_mock:
+                response = chat_service.process_chat(
+                    payload=ChatRequest(conversation_id="conv_contract_violation", message="q"),
+                    current_user={"id": "u1"},
+                    state_service=_FakeStateService(),
+                    run_generation=_fake_run_generation,
+                    logger=logger,
+                )
+        finally:
+            if old_app_env is None:
+                os.environ.pop("APP_ENV", None)
+            else:
+                os.environ["APP_ENV"] = old_app_env
+
+        dbg = response.debug or {}
+        self.assertEqual(dbg.get("contract_violation_count"), 2)
+        self.assertEqual(dbg.get("llm_attempt_rate"), 0.0)
+        self.assertEqual(dbg.get("llm_accept_rate"), 0.0)
+        self.assertEqual(dbg.get("llm_reject_rate"), 0.0)
+        self.assertEqual(dbg.get("llm_timeout_rate"), 0.0)
+        self.assertEqual(dbg.get("repair_attempt_rate"), 0.0)
+        self.assertEqual(dbg.get("repair_success_rate"), 0.0)
+        self.assertEqual(dbg.get("fallback_after_llm_rate"), 0.0)
+        raw = dbg.get("raw_debug") if isinstance(dbg.get("raw_debug"), dict) else {}
+        self.assertEqual(raw.get("contract_violation_count"), 2)
+        self.assertEqual(raw.get("llm_attempt_rate"), 0.0)
+        self.assertEqual(raw.get("llm_reject_rate"), 0.0)
+        self.assertEqual(raw.get("validation_hard_gate_reason_count"), 0)
+        joined_calls = [" ".join(str(arg) for arg in call.args) for call in info_mock.call_args_list]
+        summary_call = next((entry for entry in joined_calls if "chat_request_summary" in entry), "")
+        self.assertIn('"contract_violation_count": 2', summary_call)
+        self.assertIn('"llm_attempt_rate": 0.0', summary_call)
+
+    def test_hard_gate_reason_is_exposed_in_debug_and_summary(self) -> None:
+        def _fake_run_generation(**_kwargs):
+            return {
+                "answer": "Fallback déterministe.",
+                "generation_time_seconds": 0.04,
+                "generation_mode": "deterministic_safety_fallback_after_llm_validation_failure",
+                "validation": {"validation_status": "warning", "warnings": [], "errors": []},
+                "quality_report": {"final_status": "warning"},
+                "query_understanding": {
+                    "intent": "doc_scoped_results",
+                    "requested_doc_ids": ["report_12"],
+                    "requested_analytes": ["crp"],
+                },
+                "sources": [],
+                "displayed_evidences": [],
+                "debug": {
+                    "selected_route": "doc_scoped_results",
+                    "hard_gate_triggered": True,
+                    "hard_gate_errors": ["source_mismatch", "raw_internal_source"],
+                },
+            }
+
+        old_app_env = os.environ.get("APP_ENV")
+        logger = logging.getLogger("test.chat.contract.hard_gate_reason")
+        try:
+            os.environ["APP_ENV"] = "test"
+            with patch.object(logger, "info") as info_mock:
+                response = chat_service.process_chat(
+                    payload=ChatRequest(conversation_id="conv_hg", message="q"),
+                    current_user={"id": "u1"},
+                    state_service=_FakeStateService(),
+                    run_generation=_fake_run_generation,
+                    logger=logger,
+                )
+        finally:
+            if old_app_env is None:
+                os.environ.pop("APP_ENV", None)
+            else:
+                os.environ["APP_ENV"] = old_app_env
+
+        dbg = response.debug or {}
+        self.assertEqual(dbg.get("validation_hard_gate_reason"), "source_mismatch")
+        self.assertEqual(dbg.get("validation_hard_gate_reason_count"), 2)
+        self.assertEqual(dbg.get("validation_hard_gate_reasons"), ["source_mismatch", "raw_internal_source"])
+        raw = dbg.get("raw_debug") if isinstance(dbg.get("raw_debug"), dict) else {}
+        self.assertEqual(raw.get("validation_hard_gate_reason"), "source_mismatch")
+        self.assertEqual(raw.get("validation_hard_gate_reason_count"), 2)
+        joined_calls = [" ".join(str(arg) for arg in call.args) for call in info_mock.call_args_list]
+        summary_call = next((entry for entry in joined_calls if "chat_request_summary" in entry), "")
+        self.assertIn('"validation_hard_gate_reason": "source_mismatch"', summary_call)
+        self.assertIn('"validation_hard_gate_reason_count": 2', summary_call)
+
+    def test_llm_timeout_and_repair_rates_are_exposed(self) -> None:
+        def _fake_run_generation(**_kwargs):
+            return {
+                "answer": "Fallback déterministe.",
+                "generation_time_seconds": 0.06,
+                "generation_mode": "deterministic_safety_fallback_after_llm_validation_failure",
+                "validation": {"validation_status": "warning", "warnings": [], "errors": []},
+                "quality_report": {"final_status": "warning"},
+                "query_understanding": {
+                    "intent": "doc_scoped_biological_summary",
+                    "requested_doc_ids": ["report_16"],
+                    "requested_analytes": ["tsh"],
+                },
+                "sources": [],
+                "displayed_evidences": [],
+                "debug": {
+                    "selected_route": "doc_scoped_biological_summary",
+                    "generation_writer": "professional_fallback",
+                    "llm_writer_attempted": True,
+                    "llm_writer_accepted": False,
+                    "fallback_reason": "llm_timeout",
+                    "llm_repair_attempted": True,
+                },
+            }
+
+        response = chat_service.process_chat(
+            payload=ChatRequest(conversation_id="conv_timeout_rates", message="q"),
+            current_user={"id": "u1"},
+            state_service=_FakeStateService(),
+            run_generation=_fake_run_generation,
+            logger=logging.getLogger("test.chat.contract.timeout_rates"),
+        )
+
+        dbg = response.debug or {}
+        self.assertEqual(dbg.get("llm_attempt_rate"), 1.0)
+        self.assertEqual(dbg.get("llm_reject_rate"), 1.0)
+        self.assertEqual(dbg.get("llm_timeout_rate"), 1.0)
+        self.assertEqual(dbg.get("repair_attempt_rate"), 1.0)
+        self.assertEqual(dbg.get("repair_success_rate"), 0.0)
+
+    def test_debug_exposes_fallback_decision_path(self) -> None:
+        def _fake_run_generation(**_kwargs):
+            return {
+                "answer": "Clarification requise.",
+                "generation_time_seconds": 0.02,
+                "generation_mode": "deterministic_no_evidence_response",
+                "validation": {"validation_status": "warning", "warnings": [], "errors": []},
+                "quality_report": {"final_status": "warning"},
+                "query_understanding": {
+                    "intent": "doc_scoped_results",
+                    "requested_doc_ids": [],
+                    "requested_analytes": [],
+                },
+                "sources": [],
+                "displayed_evidences": [],
+                "debug": {
+                    "selected_route": "doc_scoped_results",
+                    "generation_writer": "deterministic_clarification",
+                    "generation_mode_before_fallback": "hybrid_structured_llm_writer",
+                    "fallback_decision_path": [
+                        "planner:selected_plan:doc_scoped_results",
+                        "answerability:ambiguous",
+                        "fallback_stage:answerability_gate",
+                        "fallback_reason:ambiguous_scope",
+                        "specialized_fallback:ambiguous_document_scope",
+                    ],
+                },
+            }
+
+        old_app_env = os.environ.get("APP_ENV")
+        try:
+            os.environ["APP_ENV"] = "test"
+            response = chat_service.process_chat(
+                payload=ChatRequest(conversation_id="conv_fallback_path", message="q"),
+                current_user={"id": "u1"},
+                state_service=_FakeStateService(),
+                run_generation=_fake_run_generation,
+                logger=logging.getLogger("test.chat.contract.fallback_path"),
+            )
+        finally:
+            if old_app_env is None:
+                os.environ.pop("APP_ENV", None)
+            else:
+                os.environ["APP_ENV"] = old_app_env
+
+        dbg = response.debug or {}
+        self.assertEqual(
+            dbg.get("fallback_decision_path"),
+            [
+                "planner:selected_plan:doc_scoped_results",
+                "answerability:ambiguous",
+                "fallback_stage:answerability_gate",
+                "fallback_reason:ambiguous_scope",
+                "specialized_fallback:ambiguous_document_scope",
+            ],
+        )
+        self.assertEqual(str(dbg.get("generation_mode_before_fallback") or ""), "hybrid_structured_llm_writer")
+
+    def test_integration_run_generation_process_chat_observability_contract(self) -> None:
+        from scripts.generation.generate_answer import run_generation as real_run_generation
+
+        logger = logging.getLogger("test.chat.contract.integration_observability")
+        with patch.object(logger, "info") as info_mock:
+            response = chat_service.process_chat(
+                payload=ChatRequest(
+                    conversation_id="conv_obs_contract_integration",
+                    message="Dans le report 29, la créatinine est-elle normale, basse ou élevée ?",
+                ),
+                current_user={"id": "u1"},
+                state_service=_FakeStateService(),
+                run_generation=real_run_generation,
+                logger=logger,
+            )
+
+        dbg = response.debug or {}
+        required_debug_keys = [
+            "llm_expected",
+            "llm_writer_attempted",
+            "llm_writer_accepted",
+            "llm_skipped_reason",
+            "generation_mode_before_fallback",
+            "fallback_decision_path",
+        ]
+        for key in required_debug_keys:
+            self.assertIn(key, dbg)
+
+        payload: dict[str, object] | None = None
+        for call in info_mock.call_args_list:
+            args = list(call.args)
+            if not args:
+                continue
+            if str(args[0]).strip() != "chat_request_summary %s":
+                continue
+            if len(args) < 2:
+                continue
+            try:
+                payload = json.loads(str(args[1]))
+            except Exception:
+                payload = None
+            break
+        self.assertIsNotNone(payload)
+        payload = dict(payload or {})
+
+        required_summary_keys = [
+            "intent",
+            "selected_route",
+            "generation_mode",
+            "generation_writer",
+            "validation_status",
+            "quality_final_status",
+            "answerability_status",
+            "fallback_kind",
+            "response_time_ms",
+            "llm_attempt_rate",
+            "llm_accept_rate",
+            "llm_reject_rate",
+            "llm_timeout_rate",
+            "repair_attempt_rate",
+            "repair_success_rate",
+            "fallback_after_llm_rate",
+            "hallucination_rejection_rate",
+            "avg_llm_writer_ms",
+            "p95_llm_writer_ms",
+        ]
+        for key in required_summary_keys:
+            self.assertIn(key, payload)
 
 
 if __name__ == "__main__":

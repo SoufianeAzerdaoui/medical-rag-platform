@@ -1253,10 +1253,63 @@ class TestGenerationDocScope(unittest.TestCase):
                 os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
         debug = dict(result.get("debug") or {})
         self.assertEqual(str(debug.get("selected_route") or ""), "doc_scoped_medical_interpretation_guarded")
+        self.assertEqual(str(debug.get("llm_route_class") or ""), "llm_allowed")
+        self.assertEqual(str(debug.get("llm_prompt_policy_version") or ""), "v2")
         self.assertEqual(str(debug.get("generation_strategy") or ""), "llm_writer_expected")
         self.assertIn(debug.get("llm_expected"), {True, 1})
         self.assertIn(debug.get("llm_writer_attempted"), {True, 1})
+        self.assertIn(debug.get("llm_attempt_rate"), {1.0, 1})
         self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+
+    def test_contract_violation_never_sets_llm_attempt_rate_to_one(self) -> None:
+        ga = __import__("generate_answer")
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        original_policy = ga._level2_prompt_policy
+
+        def _policy_without_micro(route: str) -> dict[str, object]:
+            policy = dict(original_policy(route))
+            if str(route or "").strip().lower() == "doc_scoped_biological_summary":
+                policy["use_micro_prompt"] = False
+            return policy
+
+        def _contract_violation_writer(**_kwargs: object) -> dict[str, object]:
+            return {
+                "mode": "writer_contract_violation_fallback",
+                "answer": (
+                    "Synthèse technique indisponible en rédaction assistée. "
+                    "Réponse déterministe de repli utilisée à partir des faits disponibles."
+                ),
+                "llm_error": "writer_evidence_contract_violation",
+                "contract_violation": ["scope_incoherent", "results_locked_empty"],
+                "llm_prompt_policy_version": "v2",
+            }
+
+        try:
+            with mock.patch("generate_answer._level2_prompt_policy", side_effect=_policy_without_micro):
+                with mock.patch("generate_answer.compose_professional_answer", side_effect=_contract_violation_writer):
+                    result = run_generation(
+                        query="Fais une synthèse médico-biologique du report 12 en 6 lignes maximum, en séparant les anomalies et les résultats rassurants. Ne donne pas de diagnostic.",
+                        mode="keyword",
+                        top_k=30,
+                        index_dir="data/indexes",
+                    )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        debug = dict(result.get("debug") or {})
+        self.assertEqual(str(debug.get("selected_route") or ""), "doc_scoped_biological_summary")
+        self.assertEqual(int(debug.get("contract_violation_count") or 0), 2)
+        self.assertEqual(list(debug.get("contract_violation") or []), ["scope_incoherent", "results_locked_empty"])
+        self.assertIn(debug.get("llm_writer_attempted"), {False, 0})
+        self.assertEqual(float(debug.get("llm_attempt_rate") or 0.0), 0.0)
+        self.assertEqual(float(debug.get("llm_accept_rate") or 0.0), 0.0)
+        self.assertEqual(float(debug.get("fallback_after_llm_rate") or 0.0), 0.0)
+        self.assertEqual(float((debug.get("stage_timings_ms") or {}).get("llm_writer_ms") or 0.0), 0.0)
+        self.assertEqual(str(debug.get("llm_prompt_policy_version") or ""), "v2")
 
     def test_benchmark_does_not_penalize_deterministic_preferred_routes(self) -> None:
         response = {
@@ -1707,6 +1760,93 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertNotIn("chunk_id=", str(result.get("answer") or "").lower())
         self.assertTrue(str(result.get("generation_mode") or "").startswith("deterministic_"))
 
+    def test_hard_gate_source_mismatch(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        original_validate = __import__("generate_answer").validate_answer
+        call_count = {"n": 0}
+
+        def _fake_validate(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return {"validation_status": "fail", "errors": ["source_mismatch"], "warnings": []}
+            return original_validate(*args, **kwargs)
+
+        try:
+            with mock.patch("generate_answer.validate_answer", side_effect=_fake_validate):
+                result = run_generation(
+                    query="Résume uniquement les anomalies biologiques du report (16), sans poser de diagnostic.",
+                    mode="keyword",
+                    top_k=20,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+        self.assertTrue(str(result.get("generation_mode") or "").startswith("deterministic_"))
+        dbg = dict(result.get("debug") or {})
+        self.assertIn("source_mismatch", list(dbg.get("hard_gate_errors") or []))
+
+    def test_hard_gate_raw_internal_source(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        original_validate = __import__("generate_answer").validate_answer
+        call_count = {"n": 0}
+
+        def _fake_validate(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return {"validation_status": "fail", "errors": ["raw_internal_source"], "warnings": []}
+            return original_validate(*args, **kwargs)
+
+        try:
+            with mock.patch("generate_answer.validate_answer", side_effect=_fake_validate):
+                result = run_generation(
+                    query="Résume uniquement les anomalies biologiques du report (16), sans poser de diagnostic.",
+                    mode="keyword",
+                    top_k=20,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+        self.assertTrue(str(result.get("generation_mode") or "").startswith("deterministic_"))
+        dbg = dict(result.get("debug") or {})
+        self.assertIn("raw_internal_source", list(dbg.get("hard_gate_errors") or []))
+
+    def test_hard_gate_pii_exposure(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        original_validate = __import__("generate_answer").validate_answer
+        call_count = {"n": 0}
+
+        def _fake_validate(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return {"validation_status": "fail", "errors": ["pii_exposure"], "warnings": []}
+            return original_validate(*args, **kwargs)
+
+        try:
+            with mock.patch("generate_answer.validate_answer", side_effect=_fake_validate):
+                result = run_generation(
+                    query="Résume uniquement les anomalies biologiques du report (16), sans poser de diagnostic.",
+                    mode="keyword",
+                    top_k=20,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+        self.assertTrue(str(result.get("generation_mode") or "").startswith("deterministic_"))
+        dbg = dict(result.get("debug") or {})
+        self.assertIn("pii_exposure", list(dbg.get("hard_gate_errors") or []))
+
     def test_small_talk_plus_medical_not_general_conversation(self) -> None:
         result = run_generation(
             query="Bonjour, peux-tu résumer le report 16 ?",
@@ -1745,6 +1885,41 @@ class TestGenerationDocScope(unittest.TestCase):
         answer = str(result.get("answer") or "")
         self.assertTrue(answer.startswith("Je ne peux pas recommander de traitement à partir de ces résultats seuls."))
         self.assertIn(str(result.get("validation", {}).get("validation_status") or ""), {"pass", "warning"})
+
+    def test_response_transform_validation_fail_forces_deterministic_fallback(self) -> None:
+        first = run_generation(
+            query="Dans report 19, compare l’insuline et la T4 libre avec leurs résultats antérieurs. Retourne la réponse sous forme de tableau.",
+            mode="keyword",
+            top_k=5,
+            index_dir="data/indexes",
+        )
+        previous_pack = first.get("structured_evidence_pack") or {}
+        self.assertTrue(previous_pack.get("evidences"))
+
+        ga = __import__("generate_answer")
+        original_validate = ga.validate_answer
+        call_count = {"n": 0}
+
+        def _fake_validate(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return {"validation_status": "fail", "errors": ["source_mismatch"], "warnings": []}
+            return original_validate(*args, **kwargs)
+
+        with mock.patch("generate_answer.validate_answer", side_effect=_fake_validate):
+            transformed = run_generation(
+                query="Convertis la réponse précédente en style paragraphe médical pro.",
+                mode="keyword",
+                top_k=5,
+                index_dir="data/indexes",
+                search_engine=_FailIfCalledSearchEngine(),
+                previous_structured_evidence_pack=previous_pack,
+            )
+
+        self.assertEqual(str(transformed.get("generation_mode") or ""), "deterministic_response_transform_professional")
+        self.assertGreaterEqual(call_count["n"], 2)
+        dbg = dict(transformed.get("debug") or {})
+        self.assertEqual(str(dbg.get("fallback_reason") or ""), "llm_validation_failed")
 
     def test_abnormal_results_without_scope_uses_deterministic_clarification(self) -> None:
         result = run_generation(

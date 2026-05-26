@@ -6,6 +6,9 @@ import os
 import re
 import traceback
 import unicodedata
+from collections import deque
+from threading import Lock
+import math
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -15,6 +18,7 @@ from backend.models import ChatRequest, ChatResponse, SourceItem
 from backend.services import conversation_service, message_service
 from backend.services.conversation_state_store import ConversationStateService, transformable_context
 from scripts.generation.source_normalization import dedup_normalized_sources
+from scripts.generation.policy_matrix import HARD_GATE_ERRORS, get_llm_route_class
 from scripts.generation.model_settings import (
     DEFAULT_LLM_MAX_TOKENS,
     DEFAULT_LLM_MODEL,
@@ -27,6 +31,10 @@ try:
     from scripts.generation.medical_entity_resolver import canonicalize_analyte
 except Exception:  # pragma: no cover
     canonicalize_analyte = None  # type: ignore
+
+
+_LLM_WRITER_MS_WINDOW: deque[float] = deque(maxlen=2000)
+_LLM_WRITER_MS_WINDOW_LOCK = Lock()
 
 
 def _debug_or_devtest_enabled() -> bool:
@@ -141,6 +149,30 @@ def _validation_failure_signals(validation_errors: list[str], validation_warning
     return signals
 
 
+def _validation_hard_gate_snapshot(
+    generation_debug: dict[str, Any],
+    validation_errors: list[str],
+) -> dict[str, Any]:
+    reasons: list[str] = []
+
+    for raw in list(generation_debug.get("hard_gate_errors") or []):
+        token = str(raw or "").strip().lower()
+        if token:
+            reasons.append(token)
+    for raw in list(validation_errors or []):
+        token = str(raw or "").strip().lower()
+        if token in HARD_GATE_ERRORS:
+            reasons.append(token)
+
+    deduped = _dedup_keep_order(reasons)
+    primary_reason = deduped[0] if deduped else None
+    return {
+        "validation_hard_gate_reasons": deduped,
+        "validation_hard_gate_reason": primary_reason,
+        "validation_hard_gate_reason_count": len(deduped),
+    }
+
+
 def _emit_request_summary_log(
     *,
     logger: logging.Logger,
@@ -153,6 +185,12 @@ def _emit_request_summary_log(
 ) -> None:
     quality_report = generation.get("quality_report") if isinstance(generation.get("quality_report"), dict) else {}
     response_time_ms = round(float(generation.get("generation_time_seconds") or 0.0) * 1000.0, 3)
+    llm_observability = _llm_observability_snapshot(
+        generation_debug,
+        validation_errors=validation_errors,
+        validation_warnings=validation_warnings,
+    )
+    hard_gate_snapshot = _validation_hard_gate_snapshot(generation_debug, validation_errors)
     payload = {
         "event": "chat_request_summary",
         "request_id": request_id,
@@ -160,14 +198,164 @@ def _emit_request_summary_log(
         "intent": str(((generation.get("query_understanding") or {}).get("intent") or "")) or None,
         "selected_route": str(generation_debug.get("selected_route") or "") or None,
         "generation_mode": str(generation.get("generation_mode") or "") or None,
+        "generation_writer": str(generation_debug.get("generation_writer") or "") or None,
         "validation_status": str(((generation.get("validation") or {}).get("validation_status") or "")) or None,
         "quality_final_status": str(quality_report.get("final_status") or "") or None,
         "answerability_status": str(generation_debug.get("answerability_status") or "") or None,
         "fallback_kind": str(generation_debug.get("specialized_fallback_kind") or "") or None,
         "response_time_ms": response_time_ms,
+        "llm_route_class": llm_observability["llm_route_class"],
+        "llm_prompt_policy_version": llm_observability["llm_prompt_policy_version"],
+        "llm_attempt_rate": llm_observability["llm_attempt_rate"],
+        "llm_accept_rate": llm_observability["llm_accept_rate"],
+        "llm_reject_rate": llm_observability["llm_reject_rate"],
+        "llm_timeout_rate": llm_observability["llm_timeout_rate"],
+        "repair_attempt_rate": llm_observability["repair_attempt_rate"],
+        "repair_success_rate": llm_observability["repair_success_rate"],
+        "fallback_after_llm_rate": llm_observability["fallback_after_llm_rate"],
+        "hallucination_rejection_rate": llm_observability["hallucination_rejection_rate"],
+        "avg_llm_writer_ms": llm_observability["avg_llm_writer_ms"],
+        "p95_llm_writer_ms": llm_observability["p95_llm_writer_ms"],
+        "llm_writer_ms": llm_observability["llm_writer_ms"],
+        "contract_violation_count": llm_observability["contract_violation_count"],
+        "validation_hard_gate_reasons": hard_gate_snapshot["validation_hard_gate_reasons"],
+        "validation_hard_gate_reason": hard_gate_snapshot["validation_hard_gate_reason"],
+        "validation_hard_gate_reason_count": hard_gate_snapshot["validation_hard_gate_reason_count"],
         "failure_signals": _validation_failure_signals(validation_errors, validation_warnings),
     }
     logger.info("chat_request_summary %s", json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
+def _extract_llm_writer_ms(generation_debug: dict[str, Any]) -> float:
+    stage = generation_debug.get("stage_timings_ms") if isinstance(generation_debug.get("stage_timings_ms"), dict) else {}
+    raw = stage.get("llm_writer_ms")
+    try:
+        return max(0.0, float(raw or 0.0))
+    except Exception:
+        return 0.0
+
+
+def _rolling_llm_latency_metrics(llm_writer_ms: float, llm_attempted: bool) -> tuple[float, float]:
+    with _LLM_WRITER_MS_WINDOW_LOCK:
+        if llm_attempted and llm_writer_ms > 0.0:
+            _LLM_WRITER_MS_WINDOW.append(llm_writer_ms)
+        values = list(_LLM_WRITER_MS_WINDOW)
+    if not values:
+        return 0.0, 0.0
+    avg = round(sum(values) / len(values), 3)
+    ordered = sorted(values)
+    idx = max(0, min(len(ordered) - 1, int(math.ceil(0.95 * len(ordered))) - 1))
+    p95 = round(float(ordered[idx]), 3)
+    return avg, p95
+
+
+def _has_timeout_signal(generation_debug: dict[str, Any]) -> bool:
+    candidates = [
+        generation_debug.get("fallback_reason"),
+        generation_debug.get("generation_mode_before_fallback"),
+        generation_debug.get("llm_skipped_reason"),
+        generation_debug.get("llm_error"),
+        generation_debug.get("llm_repair_error_type"),
+        generation_debug.get("llm_repair_error_message"),
+    ]
+    for raw in candidates:
+        token = str(raw or "").strip().lower()
+        if token and "timeout" in token:
+            return True
+    return False
+
+
+def _llm_observability_snapshot(
+    generation_debug: dict[str, Any],
+    *,
+    validation_errors: list[str] | None = None,
+    validation_warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    selected_route = str(generation_debug.get("selected_route") or "").strip().lower()
+    selected_policy_name = str(generation_debug.get("selected_policy") or "").strip().lower()
+    policy_level = str(generation_debug.get("policy_level") or "").strip().lower()
+    llm_writer_allowed = generation_debug.get("llm_writer_allowed")
+    if llm_writer_allowed is None:
+        llm_writer_allowed = generation_debug.get("llm_allowed")
+    policy_hint = {
+        "selected_policy": selected_policy_name or policy_level or None,
+        "llm_writer_allowed": bool(llm_writer_allowed),
+    }
+    if selected_route:
+        llm_route_class = str(
+            generation_debug.get("llm_route_class")
+            or get_llm_route_class(selected_route, policy_hint)
+        ).strip() or None
+    else:
+        llm_route_class = str(generation_debug.get("llm_route_class") or "").strip() or None
+
+    prompt_policy_version = str(generation_debug.get("llm_prompt_policy_version") or "").strip() or None
+    if not prompt_policy_version and llm_route_class == "llm_allowed":
+        prompt_policy_version = "v2"
+
+    raw_contract_violation = generation_debug.get("contract_violation")
+    if isinstance(raw_contract_violation, list):
+        contract_violation_count = len([item for item in raw_contract_violation if str(item or "").strip()])
+    else:
+        try:
+            contract_violation_count = max(0, int(generation_debug.get("contract_violation_count") or 0))
+        except Exception:
+            contract_violation_count = 0
+
+    llm_attempted = bool(generation_debug.get("llm_writer_attempted")) and contract_violation_count <= 0
+    llm_accepted_raw = generation_debug.get("llm_writer_accepted")
+    if llm_accepted_raw is None:
+        llm_accepted = (
+            str(generation_debug.get("generation_writer") or "").strip().lower() == "llm_writer"
+            and contract_violation_count <= 0
+        )
+    else:
+        llm_accepted = bool(llm_accepted_raw) and contract_violation_count <= 0
+    fallback_after_llm = bool(
+        llm_attempted
+        and (
+            str(generation_debug.get("fallback_reason") or "").strip()
+            or str(generation_debug.get("generation_mode_before_fallback") or "").strip()
+        )
+    )
+    llm_rejected = bool(llm_attempted and not llm_accepted)
+    llm_timed_out = bool(llm_attempted and _has_timeout_signal(generation_debug))
+    repair_attempted = bool(generation_debug.get("llm_repair_attempted") or generation_debug.get("llm_candidate_repair_used"))
+    hard_gate_triggered = bool(generation_debug.get("hard_gate_triggered"))
+    repair_success = bool(repair_attempted and not hard_gate_triggered and not str(generation_debug.get("fallback_reason") or "").strip())
+
+    combined_validation = [
+        str(item or "").strip().lower()
+        for item in [*(validation_errors or []), *(validation_warnings or []), *(generation_debug.get("hard_gate_errors") or [])]
+        if str(item or "").strip()
+    ]
+    hallucination_rejected = bool(llm_rejected and any("hallucination" in item for item in combined_validation))
+    llm_writer_ms = _extract_llm_writer_ms(generation_debug)
+    avg_llm_writer_ms, p95_llm_writer_ms = _rolling_llm_latency_metrics(llm_writer_ms, llm_attempted)
+
+    return {
+        "llm_route_class": llm_route_class,
+        "llm_prompt_policy_version": prompt_policy_version,
+        "llm_attempt": llm_attempted,
+        "llm_accept": llm_accepted,
+        "llm_reject": llm_rejected,
+        "llm_timeout": llm_timed_out,
+        "repair_attempted": repair_attempted,
+        "repair_success": repair_success,
+        "fallback_after_llm": fallback_after_llm,
+        "llm_attempt_rate": 1.0 if llm_attempted else 0.0,
+        "llm_accept_rate": 1.0 if llm_accepted else 0.0,
+        "llm_reject_rate": 1.0 if llm_rejected else 0.0,
+        "llm_timeout_rate": 1.0 if llm_timed_out else 0.0,
+        "repair_attempt_rate": 1.0 if repair_attempted else 0.0,
+        "repair_success_rate": 1.0 if repair_success else 0.0,
+        "fallback_after_llm_rate": 1.0 if fallback_after_llm else 0.0,
+        "hallucination_rejection_rate": 1.0 if hallucination_rejected else 0.0,
+        "llm_writer_ms": llm_writer_ms,
+        "avg_llm_writer_ms": avg_llm_writer_ms,
+        "p95_llm_writer_ms": p95_llm_writer_ms,
+        "contract_violation_count": contract_violation_count,
+    }
 
 
 def _canonicalize_analyte_token(value: str) -> str:
@@ -490,6 +678,12 @@ def process_chat(
         if qu_debug:
             qu_debug["requested_analytes"] = canonical_requested_analytes
             qu_debug["requested_analyte_labels"] = requested_analyte_labels
+        llm_observability = _llm_observability_snapshot(
+            generation_debug,
+            validation_errors=validation_errors,
+            validation_warnings=validation_warnings,
+        )
+        hard_gate_snapshot = _validation_hard_gate_snapshot(generation_debug, validation_errors)
         response_debug: dict[str, Any] = {
             "debug_contract_version": "v2",
             "intent": str(qu.get("intent") or "") or None,
@@ -517,6 +711,7 @@ def process_chat(
                     "excluded_rows": list((generation_debug.get("excluded_rows") or [])),
                     "fallback_reason": str((generation_debug.get("fallback_reason") or "")) or None,
                     "generation_mode_before_fallback": str((generation_debug.get("generation_mode_before_fallback") or "")) or None,
+                    "fallback_decision_path": list((generation_debug.get("fallback_decision_path") or [])),
                     "llm_provider": llm_provider,
                     "llm_model_override_requested": requested_model_override,
                     "llm_model_override_allowed": allow_model_override,
@@ -526,22 +721,57 @@ def process_chat(
                     "llm_model_effective": llm_model_effective,
                     "ollama_model": str((generation_debug.get("ollama_model") or "")) or None,
                     "model_verified": model_verified,
+                    "llm_route_class": llm_observability["llm_route_class"],
+                    "llm_prompt_policy_version": llm_observability["llm_prompt_policy_version"],
                     "generation_strategy": str((generation_debug.get("generation_strategy") or "")) or None,
                     "llm_expected": bool(generation_debug.get("llm_expected")),
                     "llm_skipped_reason": str((generation_debug.get("llm_skipped_reason") or "")) or None,
                     "deterministic_preferred_reason": str((generation_debug.get("deterministic_preferred_reason") or "")) or None,
-                    "llm_writer_attempted": bool(generation_debug.get("llm_writer_attempted")),
-                    "llm_writer_accepted": bool(generation_debug.get("llm_writer_accepted"))
-                    if generation_debug.get("llm_writer_accepted") is not None
-                    else (str((generation_debug.get("generation_writer") or "")).strip().lower() == "llm_writer"),
+                    "llm_writer_attempted": llm_observability["llm_attempt"],
+                    "llm_writer_accepted": llm_observability["llm_accept"],
+                    "llm_attempt_rate": llm_observability["llm_attempt_rate"],
+                    "llm_accept_rate": llm_observability["llm_accept_rate"],
+                    "llm_reject_rate": llm_observability["llm_reject_rate"],
+                    "llm_timeout_rate": llm_observability["llm_timeout_rate"],
+                    "repair_attempt_rate": llm_observability["repair_attempt_rate"],
+                    "repair_success_rate": llm_observability["repair_success_rate"],
+                    "fallback_after_llm_rate": llm_observability["fallback_after_llm_rate"],
+                    "hallucination_rejection_rate": llm_observability["hallucination_rejection_rate"],
+                    "llm_writer_ms": llm_observability["llm_writer_ms"],
+                    "avg_llm_writer_ms": llm_observability["avg_llm_writer_ms"],
+                    "p95_llm_writer_ms": llm_observability["p95_llm_writer_ms"],
+                    "contract_violation_count": llm_observability["contract_violation_count"],
+                    "validation_hard_gate_reasons": hard_gate_snapshot["validation_hard_gate_reasons"],
+                    "validation_hard_gate_reason": hard_gate_snapshot["validation_hard_gate_reason"],
+                    "validation_hard_gate_reason_count": hard_gate_snapshot["validation_hard_gate_reason_count"],
                     "hard_gate_rejected": bool(generation_debug.get("hard_gate_triggered")),
-                    "repair_attempted": bool(generation_debug.get("llm_repair_attempted") or generation_debug.get("llm_candidate_repair_used")),
-                    "repair_success": bool(generation_debug.get("llm_repair_attempted") or generation_debug.get("llm_candidate_repair_used"))
-                    and not bool(generation_debug.get("hard_gate_triggered"))
-                    and str((generation_debug.get("generation_writer") or "")).strip().lower() == "llm_writer",
+                    "repair_attempted": llm_observability["repair_attempted"],
+                    "repair_success": llm_observability["repair_success"],
                     "stage_timings_ms": stage_timings_ms,
                     "raw_debug": {
                         **generation_debug,
+                        "llm_route_class": llm_observability["llm_route_class"],
+                        "llm_prompt_policy_version": llm_observability["llm_prompt_policy_version"],
+                        "llm_attempt": llm_observability["llm_attempt"],
+                        "llm_accept": llm_observability["llm_accept"],
+                        "fallback_after_llm": llm_observability["fallback_after_llm"],
+                        "llm_attempt_rate": llm_observability["llm_attempt_rate"],
+                        "llm_accept_rate": llm_observability["llm_accept_rate"],
+                        "llm_reject_rate": llm_observability["llm_reject_rate"],
+                        "llm_timeout_rate": llm_observability["llm_timeout_rate"],
+                        "repair_attempt_rate": llm_observability["repair_attempt_rate"],
+                        "repair_success_rate": llm_observability["repair_success_rate"],
+                        "fallback_after_llm_rate": llm_observability["fallback_after_llm_rate"],
+                        "hallucination_rejection_rate": llm_observability["hallucination_rejection_rate"],
+                        "llm_writer_ms": llm_observability["llm_writer_ms"],
+                        "avg_llm_writer_ms": llm_observability["avg_llm_writer_ms"],
+                        "p95_llm_writer_ms": llm_observability["p95_llm_writer_ms"],
+                        "repair_attempted": llm_observability["repair_attempted"],
+                        "repair_success": llm_observability["repair_success"],
+                        "contract_violation_count": llm_observability["contract_violation_count"],
+                        "validation_hard_gate_reasons": hard_gate_snapshot["validation_hard_gate_reasons"],
+                        "validation_hard_gate_reason": hard_gate_snapshot["validation_hard_gate_reason"],
+                        "validation_hard_gate_reason_count": hard_gate_snapshot["validation_hard_gate_reason_count"],
                         "requested_analytes": canonical_requested_analytes,
                         "requested_analyte_labels": requested_analyte_labels,
                     },

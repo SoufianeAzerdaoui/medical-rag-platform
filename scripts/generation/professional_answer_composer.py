@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
-from typing import Any
+from typing import Any, NotRequired, TypedDict
 
 from llm_client import LLMClient, LLMClientError
 from model_settings import (
@@ -13,6 +14,66 @@ from model_settings import (
     DEFAULT_LLM_TEMPERATURE,
 )
 from query_understanding import QueryUnderstanding, analyte_display_name, norm_text
+from medical_entity_resolver import canonicalize_analyte, get_display_analyte_label
+from source_normalization import dedup_normalized_sources, normalize_source_for_response
+
+
+LOGGER = logging.getLogger("medical_rag.writer_contract")
+
+
+class WriterLockedResultRow(TypedDict):
+    analyte: str
+    analyte_norm: str
+    value: str
+    unit: str
+    reference: str
+    status: str
+    source_label: str
+
+
+class WriterScopePayload(TypedDict):
+    requested_doc_ids: list[str]
+    effective_doc_ids: list[str]
+    requested_analytes: list[str]
+    effective_analytes: list[str]
+    technical_condition: str | None
+    row_count: int
+    scope_coherent: bool
+
+
+class WriterEvidenceContractPayload(TypedDict):
+    contract_version: str
+    rows_filtered: bool
+    rows_fact_locked: bool
+    scope_coherent: bool
+    sources_normalized: bool
+    sources_deduplicated: bool
+    noise_reduction: list[str]
+    canonical_requested_analytes: list[str]
+    source_labels_normalized: bool
+
+
+class WriterEvidencePack(TypedDict):
+    original_user_question: str
+    user_question: str
+    intent: str
+    response_strategy: str
+    response_strategy_reason: NotRequired[str | None]
+    output_format: str
+    answer_style: str
+    language: str
+    presentation_intent: dict[str, Any]
+    visualization_facts: dict[str, Any]
+    constraints: dict[str, Any]
+    results: list[WriterLockedResultRow]
+    results_locked: list[WriterLockedResultRow]
+    missing_items: list[Any]
+    sources: list[dict[str, Any]]
+    scope: WriterScopePayload
+    evidence_contract: WriterEvidenceContractPayload
+    response_brief: dict[str, Any]
+    recent_style_history: list[dict[str, Any]]
+    source_policy: dict[str, Any]
 
 
 PROFESSIONAL_WRITER_SYSTEM_PROMPT = """Tu es un rédacteur médical technique intégré à un système RAG.
@@ -29,6 +90,8 @@ Source de vérité :
 Rôle exact :
 - Le backend sélectionne les valeurs, les références, les sources, les statuts, les tableaux et les visualisations.
 - Tu reformules uniquement.
+- Tu n'es ni routeur, ni planner, ni answerability gate.
+- Tu ne décides jamais si la requête est answerable, ambiguë ou unsafe.
 - Tu ne choisis jamais une valeur, une plage physiologique, un résultat antérieur, une source ou un diagnostic.
 - Tu ne sélectionnes jamais des lignes toi-même et tu ne recalcules jamais une valeur, un écart ou un statut.
 - Tu reformules uniquement les lignes déjà fournies dans results (et results_locked quand présent).
@@ -74,6 +137,7 @@ Sécurité :
 - Ne donne pas de diagnostic.
 - Si la question demande une interprétation médicale, limite-toi à une interprétation technique fondée sur les références fournies.
 - Si le contexte est insuffisant, dis-le clairement.
+- Si la question est ouverte ou ambiguë, n'invente jamais de réponse clinique: reformule seulement les faits disponibles et leurs limites.
 """
 
 
@@ -90,6 +154,61 @@ Règles de formulation visualisation :
 - Ne modifie jamais les valeurs de visualization_facts.
 - Ton texte doit être fluide, comme un expert s'adressant à un utilisateur.
 """
+
+
+def _route_specific_writer_block(query_understanding: QueryUnderstanding) -> str:
+    intent = str(getattr(query_understanding, "intent", "") or "").strip().lower()
+    if intent == "response_transform":
+        return (
+            "RÈGLES SPÉCIFIQUES response_transform :\n"
+            "- Tu transforms uniquement la forme de la réponse précédente, jamais le fond.\n"
+            "- Tu conserves strictement les mêmes résultats, les mêmes sources et le même périmètre documentaire.\n"
+            "- Tu n'ajoutes aucune ligne, aucun analyte, aucune source, aucun document et aucun regroupement implicite.\n"
+            "- Tu ne fusionnes pas plusieurs résultats en une phrase si cela fait disparaître une information factuelle.\n"
+            "- Si le backend demande un tableau, JSON ou résumé, applique seulement ce format à partir de results_locked.\n"
+            "- Tu ne réintroduis jamais un contexte ancien ou externe absent de results_locked.\n"
+        )
+    if intent in {"cohort_search", "global_patient_lookup"}:
+        return (
+            "RÈGLES SPÉCIFIQUES cohort/global search :\n"
+            "- Tu conserves chaque ligne de résultat comme une observation distincte.\n"
+            "- Tu ne fusionnes jamais plusieurs patients, documents ou analytes en une seule conclusion globale.\n"
+            "- Tu ne transformes jamais un critère numérique en jugement clinique.\n"
+            "- Si le backend a sélectionné plusieurs résultats, tu ne réduis pas arbitrairement la liste à un seul cas.\n"
+            "- Tu respectes strictement le filtre demandé; tu ne rajoutes aucun patient ou document absent de results_locked.\n"
+        )
+    if intent in {"multi_doc_comparison", "doc_pair_comparison", "multi_doc_presence_diff"}:
+        return (
+            "RÈGLES SPÉCIFIQUES comparaison multi-doc :\n"
+            "- Tu conserves strictement la séparation par document.\n"
+            "- Tu ne permutes jamais report A et report B.\n"
+            "- Tu ne recalcules jamais un delta, une tendance ou une amélioration si le backend ne l'a pas déjà fournie.\n"
+            "- Tu ne résumes jamais une comparaison en une phrase vague si cela masque les écarts documentaires.\n"
+            "- Tu gardes visibles les différences de présence/absence, de valeurs et de sources déjà fournies.\n"
+        )
+    if intent in {"doc_scoped_summary", "immunoanalysis_summary", "toxicology_summary"}:
+        return (
+            "RÈGLES SPÉCIFIQUES summary :\n"
+            "- Tu distingues clairement les faits anormaux des faits simplement descriptifs.\n"
+            "- Tu n'inventes jamais une anomalie, une normalité rassurante ou une hiérarchie clinique.\n"
+            "- Tu ne remplaces jamais une référence textuelle complexe par une borne simplifiée.\n"
+            "- Tu gardes la synthèse descriptive, sans extrapolation clinique.\n"
+        )
+    if intent in {"doc_scoped_results", "previous_result_comparison"}:
+        return (
+            "RÈGLES SPÉCIFIQUES résultats ciblés :\n"
+            "- Tu reprends uniquement les mesures explicitement fournies par le backend.\n"
+            "- Tu ne transformes jamais une mesure actuelle en résultat antérieur, ni l'inverse.\n"
+            "- Tu ne déduis jamais un statut technique si le backend ne l'a pas fourni.\n"
+        )
+    if intent == "diagnostic_safety_question":
+        return (
+            "RÈGLES SPÉCIFIQUES safety diagnostic :\n"
+            "- Tu conserves un refus technique explicite de diagnostic.\n"
+            "- Tu ne reformules jamais le refus en quasi-diagnostic probabiliste.\n"
+            "- Tu peux résumer les résultats disponibles, mais sans conclure à une maladie ni proposer une conduite thérapeutique.\n"
+        )
+    return ""
 
 
 def _llm_quality_guard_disabled() -> bool:
@@ -854,20 +973,23 @@ def _normalized_writer_result(ev: dict[str, Any]) -> dict[str, Any]:
     elif not status:
         status = "non interprétable"
 
-    analyte_norm = _safe_str(ev.get("analyte_norm"))
+    analyte_norm = canonicalize_analyte(_safe_str(ev.get("analyte_norm") or ev.get("analyte")))
     analyte_raw = _safe_str(ev.get("analyte"))
-    analyte_human = analyte_display_name(analyte_raw or analyte_norm, analyte_norm or None) or analyte_raw
+    analyte_human = _strip_html(get_display_analyte_label(ev)) or analyte_display_name(analyte_raw or analyte_norm, analyte_norm or None) or analyte_raw
 
-    source_label = _strip_html(_safe_str(ev.get("source_label")))
-    if not source_label:
-        source_label = format_source_label(
-            {
-                "filename": ev.get("filename"),
-                "doc_id": ev.get("doc_id"),
-                "page": ev.get("page"),
-                "row": ev.get("row"),
-            }
-        )
+    normalized_source = normalize_source_for_response(
+        {
+            "label": _strip_html(_safe_str(ev.get("source_label"))),
+            "filename": ev.get("filename"),
+            "doc_id": ev.get("doc_id"),
+            "page": ev.get("page"),
+            "row": ev.get("row"),
+            "viewer_url": ev.get("viewer_url"),
+            "source_url": ev.get("source_url"),
+            "url": ev.get("url"),
+        }
+    )
+    source_label = _strip_html(_safe_str(normalized_source.get("label")))
     value = _strip_html(_safe_str(ev.get("current_value") or ev.get("value_raw")))
     reference = _strip_html(_safe_str(ev.get("reference") or ev.get("reference_range")))
     return {
@@ -885,8 +1007,8 @@ def _normalized_writer_result(ev: dict[str, Any]) -> dict[str, Any]:
         "previous_result": ev.get("previous_result"),
         "variation": ev.get("variation"),
         "source_label": source_label,
-        "source_url": _safe_str(ev.get("source_url")),
-        "viewer_url": _safe_str(ev.get("viewer_url")),
+        "source_url": _safe_str(normalized_source.get("source_url")),
+        "viewer_url": _safe_str(normalized_source.get("viewer_url")),
     }
 
 
@@ -894,6 +1016,7 @@ def _llm_locked_result_row(result: dict[str, Any]) -> dict[str, Any]:
     """Strict row contract sent to LLM writer: facts only, no rendering/HTML payload."""
     return {
         "analyte": _strip_html(_safe_str(result.get("analyte"), "non précisé")),
+        "analyte_norm": _strip_html(_safe_str(result.get("analyte_norm"))),
         "value": _strip_html(_safe_str(result.get("value"), "non disponible")),
         "unit": _strip_html(_safe_str(result.get("unit"))),
         "reference": _strip_html(_safe_str(result.get("reference"), "non disponible")),
@@ -902,20 +1025,186 @@ def _llm_locked_result_row(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _canonical_requested_analytes(values: list[str] | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in list(values or []):
+        key = canonicalize_analyte(_safe_str(raw))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _writer_row_matches_scope(
+    *,
+    row: dict[str, Any],
+    intent: str,
+    requested_doc_ids: list[str],
+    requested_analytes: list[str],
+) -> bool:
+    row_doc_id = _safe_str(row.get("doc_id"))
+    row_analyte_norm = canonicalize_analyte(_safe_str(row.get("analyte_norm") or row.get("analyte")))
+    comparison_like = intent in {"multi_doc_comparison", "doc_pair_comparison", "multi_doc_presence_diff"}
+    if requested_doc_ids and not comparison_like and row_doc_id and row_doc_id not in requested_doc_ids:
+        return False
+    if requested_analytes and row_analyte_norm and row_analyte_norm not in requested_analytes:
+        return False
+    return True
+
+
+def _filter_writer_results_for_contract(
+    *,
+    query_understanding: QueryUnderstanding,
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    requested_doc_ids = [d for d in (query_understanding.requested_doc_ids or []) if _safe_str(d)]
+    requested_analytes = _canonical_requested_analytes(list(query_understanding.requested_analytes or []))
+    intent = _safe_str(query_understanding.intent).lower()
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        if not _safe_str(row.get("analyte")):
+            continue
+        if not _writer_row_matches_scope(
+            row=row,
+            intent=intent,
+            requested_doc_ids=requested_doc_ids,
+            requested_analytes=requested_analytes,
+        ):
+            continue
+        filtered.append(row)
+    return filtered
+
+
+def _build_writer_scope(query_understanding: QueryUnderstanding, results_locked: list[dict[str, Any]]) -> dict[str, Any]:
+    requested_doc_ids = [d for d in (query_understanding.requested_doc_ids or []) if _safe_str(d)]
+    canonical_requested = _canonical_requested_analytes(list(query_understanding.requested_analytes or []))
+    intent = _safe_str(query_understanding.intent).lower()
+    comparison_like = intent in {"multi_doc_comparison", "doc_pair_comparison", "multi_doc_presence_diff"}
+    row_doc_ids = sorted({_safe_str(r.get("doc_id")) for r in results_locked if _safe_str(r.get("doc_id"))})
+    row_analytes = sorted(
+        {
+            canonicalize_analyte(_safe_str(r.get("analyte_norm") or r.get("analyte")))
+            for r in results_locked
+            if canonicalize_analyte(_safe_str(r.get("analyte_norm") or r.get("analyte")))
+        }
+    )
+    return {
+        "requested_doc_ids": requested_doc_ids,
+        "effective_doc_ids": row_doc_ids,
+        "requested_analytes": canonical_requested,
+        "effective_analytes": row_analytes,
+        "technical_condition": query_understanding.technical_condition,
+        "row_count": len(results_locked),
+        "scope_coherent": (
+            (comparison_like or not requested_doc_ids or all(doc in requested_doc_ids for doc in row_doc_ids))
+            and (not canonical_requested or all(analyte in canonical_requested for analyte in row_analytes))
+        ),
+    }
+
+
+def _validate_writer_evidence_pack_contract(
+    writer_pack: dict[str, Any],
+) -> tuple[bool, list[str]]:
+    errors: list[str] = []
+    if not isinstance(writer_pack, dict):
+        return False, ["writer_pack_not_dict"]
+
+    results_locked = writer_pack.get("results_locked")
+    if not isinstance(results_locked, list):
+        errors.append("results_locked_missing")
+        results_locked = []
+    elif not results_locked:
+        errors.append("results_locked_empty")
+
+    required_row_keys = {"analyte", "analyte_norm", "value", "unit", "reference", "status", "source_label"}
+    for idx, row in enumerate(results_locked):
+        if not isinstance(row, dict):
+            errors.append(f"results_locked_row_not_dict:{idx}")
+            continue
+        missing = sorted(required_row_keys - set(row.keys()))
+        if missing:
+            errors.append(f"results_locked_row_missing_keys:{idx}:{','.join(missing)}")
+        analyte = _safe_str(row.get("analyte"))
+        analyte_norm = canonicalize_analyte(_safe_str(row.get("analyte_norm")))
+        source_label = _safe_str(row.get("source_label"))
+        if not analyte:
+            errors.append(f"results_locked_row_empty_analyte:{idx}")
+        if not analyte_norm:
+            errors.append(f"results_locked_row_empty_analyte_norm:{idx}")
+        if "<" in source_label or "chunk_id" in source_label.lower() or "doc_id=" in source_label.lower():
+            errors.append(f"results_locked_row_bad_source_label:{idx}")
+
+    sources = writer_pack.get("sources")
+    if not isinstance(sources, list):
+        errors.append("sources_missing")
+        sources = []
+    for idx, src in enumerate(sources):
+        if not isinstance(src, dict):
+            errors.append(f"sources_row_not_dict:{idx}")
+            continue
+        if not _safe_str(src.get("label")):
+            errors.append(f"sources_label_missing:{idx}")
+
+    scope = writer_pack.get("scope")
+    if not isinstance(scope, dict):
+        errors.append("scope_missing")
+    else:
+        if not isinstance(scope.get("scope_coherent"), bool):
+            errors.append("scope_coherent_missing")
+        elif not bool(scope.get("scope_coherent")):
+            errors.append("scope_incoherent")
+
+    contract = writer_pack.get("evidence_contract")
+    if not isinstance(contract, dict):
+        errors.append("evidence_contract_missing")
+    else:
+        if str(contract.get("contract_version") or "") != "v1":
+            errors.append("evidence_contract_version_invalid")
+        if contract.get("rows_fact_locked") is not True:
+            errors.append("evidence_contract_rows_fact_locked_false")
+        if contract.get("sources_normalized") is not True:
+            errors.append("evidence_contract_sources_not_normalized")
+
+    constraints = writer_pack.get("constraints") if isinstance(writer_pack.get("constraints"), dict) else {}
+    requested_analytes = {
+        canonicalize_analyte(_safe_str(item))
+        for item in list(constraints.get("requested_analytes") or [])
+        if canonicalize_analyte(_safe_str(item))
+    }
+    effective_analytes = set()
+    for row in results_locked:
+        if isinstance(row, dict):
+            norm_val = canonicalize_analyte(_safe_str(row.get("analyte_norm") or row.get("analyte")))
+            if norm_val:
+                effective_analytes.add(norm_val)
+    if requested_analytes and effective_analytes and not effective_analytes.issubset(requested_analytes):
+        errors.append("requested_analytes_effective_analytes_mismatch")
+
+    return not errors, errors
+
+
 def build_writer_evidence_pack(
     *,
     user_question: str,
     query_understanding: QueryUnderstanding,
     evidence_pack: dict[str, Any],
     source_citations: list[dict[str, Any]],
-) -> dict[str, Any]:
+) -> WriterEvidencePack:
     presentation = getattr(query_understanding, "presentation_intent", None)
-    results_full = [_normalized_writer_result(ev) for ev in (evidence_pack.get("evidences") or evidence_pack.get("results") or [])]
+    raw_rows = [_normalized_writer_result(ev) for ev in (evidence_pack.get("evidences") or evidence_pack.get("results") or [])]
+    results_full = _filter_writer_results_for_contract(
+        query_understanding=query_understanding,
+        rows=raw_rows,
+    )
     results_locked = [_llm_locked_result_row(r) for r in results_full]
     recent_style_history = list(evidence_pack.get("recent_style_history") or [])
+    normalized_sources = dedup_normalized_sources(list(source_citations or []))
+    scope_payload = _build_writer_scope(query_understanding, results_full)
     constraints = {
         "requested_doc_ids": list(query_understanding.requested_doc_ids or []),
-        "requested_analytes": list(query_understanding.requested_analytes or []),
+        "requested_analytes": _canonical_requested_analytes(list(query_understanding.requested_analytes or [])),
         "excluded_analytes": list(getattr(query_understanding, "excluded_analytes", []) or []),
         "technical_condition": query_understanding.technical_condition,
         "comparison_operator": getattr(query_understanding, "comparison_operator", None),
@@ -971,7 +1260,24 @@ def build_writer_evidence_pack(
         "results": results_locked,
         "results_locked": results_locked,
         "missing_items": list(evidence_pack.get("missing_items") or []),
-        "sources": deduplicate_sources(source_citations or []),
+        "sources": normalized_sources,
+        "scope": scope_payload,
+        "evidence_contract": {
+            "contract_version": "v1",
+            "rows_filtered": True,
+            "rows_fact_locked": True,
+            "scope_coherent": scope_payload.get("scope_coherent"),
+            "sources_normalized": True,
+            "sources_deduplicated": True,
+            "noise_reduction": [
+                "results_locked_only",
+                "sources_normalized",
+                "sources_deduplicated",
+                "style_history_capped_20",
+            ],
+            "canonical_requested_analytes": _canonical_requested_analytes(list(query_understanding.requested_analytes or [])),
+            "source_labels_normalized": all(_safe_str(src.get("label")) for src in normalized_sources),
+        },
         "response_brief": {
             "task_goal": "Répondre à la question utilisateur de manière claire et sourcée.",
             "audience": "Utilisateur non technique consultant des résultats biologiques.",
@@ -1949,6 +2255,28 @@ def compose_professional_answer(
         evidence_pack=evidence_pack,
         source_citations=source_citations or [],
     )
+    contract_ok, contract_errors = _validate_writer_evidence_pack_contract(compact_pack)
+    if not contract_ok:
+        LOGGER.warning(
+            "contract_violation %s",
+            json.dumps(
+                {
+                    "event": "contract_violation",
+                    "component": "professional_writer",
+                    "intent": str(getattr(query_understanding, "intent", "") or "") or None,
+                    "mode": mode,
+                    "errors": contract_errors,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        )
+        out = dict(fallback)
+        out["mode"] = "writer_contract_violation_fallback"
+        out["llm_error"] = "writer_evidence_contract_violation"
+        out["contract_violation"] = contract_errors
+        return out
+    route_specific_block = _route_specific_writer_block(query_understanding)
 
     prompt = (
         f"{PROFESSIONAL_WRITER_SYSTEM_PROMPT}\n\n{PROFESSIONAL_WRITER_VISUALIZATION_RULES}\n\n"
@@ -1956,6 +2284,7 @@ def compose_professional_answer(
         "INTERDIT: ajouter/supprimer/modifier analyte, valeur, unité, référence, statut ou source.\n"
         "INTERDIT: recalculer, diagnostiquer, proposer un traitement, utiliser un résultat antérieur comme valeur actuelle.\n"
         "Si une donnée manque, écrire 'non présent' ou 'non disponible'.\n"
+        f"{route_specific_block}\n"
         "Sortie attendue: réponse finale uniquement.\n"
         "/no_think\n\n"
         "Question utilisateur:\n"
