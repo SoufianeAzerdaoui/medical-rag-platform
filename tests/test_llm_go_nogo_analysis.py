@@ -42,8 +42,10 @@ class TestLlmGoNoGoAnalysis(unittest.TestCase):
             }
         }
         llm_on = {
+            "llm_expected_count": 4,
             "llm_timeout_rate": 0.02,
             "fallback_after_llm_rate": 0.10,
+            "fallback_reasons": ["llm_validation_failed"],
             "llm_accept_rate": 0.75,
             "p95_response_time_ms": 1200.0,
             "p95_llm_writer_ms": 800.0,
@@ -51,6 +53,8 @@ class TestLlmGoNoGoAnalysis(unittest.TestCase):
             "avg_score_llm_expected": 9.2,
         }
         llm_off = {
+            "llm_expected_count": 4,
+            "llm_timeout_rate": 0.01,
             "avg_score_llm_expected": 8.5,
         }
         report = build_llm_go_nogo_report(
@@ -72,8 +76,10 @@ class TestLlmGoNoGoAnalysis(unittest.TestCase):
             }
         }
         llm_on = {
+            "llm_expected_count": 4,
             "llm_timeout_rate": 0.40,
             "fallback_after_llm_rate": 0.40,
+            "fallback_reasons": [],
             "llm_accept_rate": 0.10,
             "p95_response_time_ms": 4500.0,
             "p95_llm_writer_ms": 3300.0,
@@ -81,6 +87,8 @@ class TestLlmGoNoGoAnalysis(unittest.TestCase):
             "avg_score_llm_expected": 7.0,
         }
         llm_off = {
+            "llm_expected_count": 4,
+            "llm_timeout_rate": 0.01,
             "avg_score_llm_expected": 7.5,
         }
         report = build_llm_go_nogo_report(
@@ -93,7 +101,43 @@ class TestLlmGoNoGoAnalysis(unittest.TestCase):
         self.assertFalse(report["all_targets_met"])
         self.assertFalse(report["gates"]["zero_hallucination_final_accepted"])
         self.assertFalse(report["gates"]["llm_timeout_rate_low"])
+        self.assertFalse(report["gates"]["llm_timeout_rate_stable"])
+        self.assertFalse(report["gates"]["fallback_after_llm_explained"])
         self.assertFalse(report["gates"]["system_better_with_llm_on_allowed_routes"])
+
+    def test_build_go_nogo_report_fails_when_llm_expected_coverage_missing(self) -> None:
+        suite15_targets = {
+            "violations": {
+                "hallucination": {"count": 0, "cases": []},
+                "diagnosis": {"count": 0, "cases": []},
+                "treatment": {"count": 0, "cases": []},
+                "pii": {"count": 0, "cases": []},
+            }
+        }
+        llm_on = {
+            "llm_expected_count": 0,
+            "llm_timeout_rate": 0.0,
+            "fallback_after_llm_rate": 0.0,
+            "llm_accept_rate": 0.0,
+            "p95_response_time_ms": 200.0,
+            "p95_llm_writer_ms": 0.0,
+            "professional_llm_accept_rate": 0.0,
+            "avg_score_llm_expected": 0.0,
+        }
+        llm_off = {
+            "llm_expected_count": 0,
+            "llm_timeout_rate": 0.0,
+            "avg_score_llm_expected": 0.0,
+        }
+        report = build_llm_go_nogo_report(
+            suite15_targets=suite15_targets,
+            runtime_metrics={},
+            llm_on_metrics=llm_on,
+            llm_off_metrics=llm_off,
+            thresholds=GoNoGoThresholds(min_llm_expected_count=1),
+        )
+        self.assertFalse(report["all_targets_met"])
+        self.assertFalse(report["gates"]["llm_expected_coverage_sufficient"])
 
     def test_benchmark_metrics_extracts_professionality(self) -> None:
         rows = [
@@ -142,4 +186,3 @@ class TestLlmGoNoGoAnalysis(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

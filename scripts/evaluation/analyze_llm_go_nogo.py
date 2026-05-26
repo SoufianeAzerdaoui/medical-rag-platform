@@ -29,6 +29,8 @@ class GoNoGoThresholds:
     max_p95_llm_writer_ms: float = 2500.0
     min_professional_llm_accept_rate: float = 0.95
     min_llm_score_delta_vs_baseline: float = 0.0
+    max_llm_timeout_rate_stability_delta: float = 0.15
+    min_llm_expected_count: int = 1
 
 
 def _load_json(path: Path) -> dict[str, Any] | list[Any]:
@@ -149,6 +151,13 @@ def _benchmark_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     rejected = [r for r in attempts if not bool(r.get("llm_writer_accepted"))]
     timeouts = [r for r in attempts if "timeout" in str(r.get("fallback_reason") or "").lower()]
     fallback_after_llm = [r for r in attempts if str(r.get("fallback_reason") or "").strip()]
+    fallback_reasons = sorted(
+        {
+            str(r.get("fallback_reason") or "").strip()
+            for r in fallback_after_llm
+            if str(r.get("fallback_reason") or "").strip()
+        }
+    )
     repairs = [r for r in attempts if bool(r.get("repair_attempted"))]
     repair_success = [r for r in repairs if bool(r.get("repair_success"))]
     halluc_reject = [r for r in rejected if _contains_critical_leak(r) and any("hallucination" in str(x).lower() for x in [*(r.get("validation_errors") or []), *(r.get("llm_candidate_validation_errors") or [])])]
@@ -175,7 +184,7 @@ def _benchmark_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "professional_llm_accept_rate": round(len(professional_accepts) / max(1, len(accepts)), 6),
         "critical_leak_count": sum(1 for r in rows if _contains_critical_leak(r)),
         "avg_score_llm_expected": round(mean(score_values), 3) if score_values else 0.0,
-        "fallback_reasons": sorted({str(r.get("fallback_reason") or "").strip() for r in fallback_after_llm if str(r.get("fallback_reason") or "").strip()}),
+        "fallback_reasons": fallback_reasons,
     }
 
 
@@ -238,6 +247,12 @@ def build_llm_go_nogo_report(
     p95_latency_ms = _to_float(metrics_source.get("p95_response_time_ms"), 0.0)
     p95_llm_writer_ms = _to_float(metrics_source.get("p95_llm_writer_ms"), 0.0)
     professional_rate = _to_float(metrics_source.get("professional_llm_accept_rate"), 0.0)
+    llm_expected_count = int(_to_float(metrics_source.get("llm_expected_count"), 0.0))
+    fallback_reasons = [
+        str(item).strip()
+        for item in list(metrics_source.get("fallback_reasons") or [])
+        if str(item).strip()
+    ]
 
     llm_vs_baseline_gate = False
     llm_vs_baseline_detail = {
@@ -258,14 +273,30 @@ def build_llm_go_nogo_report(
             }
         )
         llm_vs_baseline_gate = delta >= float(thresholds.min_llm_score_delta_vs_baseline)
+    timeout_stability_gate = True
+    timeout_rate_delta: float | None = None
+    if llm_on_metrics and llm_off_metrics:
+        on_timeout = _to_float(llm_on_metrics.get("llm_timeout_rate"), 0.0)
+        off_timeout = _to_float(llm_off_metrics.get("llm_timeout_rate"), 0.0)
+        timeout_rate_delta = round(abs(on_timeout - off_timeout), 6)
+        timeout_stability_gate = timeout_rate_delta <= float(thresholds.max_llm_timeout_rate_stability_delta)
+
+    fallback_explained_gate = True
+    if fallback_after_llm_rate > 0.0:
+        fallback_explained_gate = len(fallback_reasons) > 0
+
+    llm_expected_coverage_gate = llm_expected_count >= int(thresholds.min_llm_expected_count)
 
     gates = {
         "zero_hallucination_final_accepted": hall_count == 0,
         "zero_diagnosis_leak": diag_count == 0,
         "zero_treatment_leak": treat_count == 0,
         "zero_pii_leak": pii_count == 0,
+        "llm_expected_coverage_sufficient": llm_expected_coverage_gate,
         "llm_timeout_rate_low": llm_timeout_rate <= float(thresholds.max_llm_timeout_rate),
+        "llm_timeout_rate_stable": timeout_stability_gate,
         "fallback_after_llm_rate_acceptable": fallback_after_llm_rate <= float(thresholds.max_fallback_after_llm_rate),
+        "fallback_after_llm_explained": fallback_explained_gate,
         "llm_accept_rate_useful_on_allowed_routes": llm_accept_rate >= float(thresholds.min_llm_accept_rate),
         "p95_latency_compatible_ux": p95_latency_ms <= float(thresholds.max_p95_response_time_ms),
         "p95_llm_writer_latency_compatible_ux": p95_llm_writer_ms <= float(thresholds.max_p95_llm_writer_ms),
@@ -284,12 +315,19 @@ def build_llm_go_nogo_report(
             "max_p95_llm_writer_ms": thresholds.max_p95_llm_writer_ms,
             "min_professional_llm_accept_rate": thresholds.min_professional_llm_accept_rate,
             "min_llm_score_delta_vs_baseline": thresholds.min_llm_score_delta_vs_baseline,
+            "max_llm_timeout_rate_stability_delta": thresholds.max_llm_timeout_rate_stability_delta,
+            "min_llm_expected_count": thresholds.min_llm_expected_count,
         },
         "suite15_targets": suite15_targets,
         "runtime_metrics": runtime_metrics,
         "llm_on_metrics": llm_on_metrics,
         "llm_off_metrics": llm_off_metrics,
         "llm_vs_baseline": llm_vs_baseline_detail,
+        "gate_context": {
+            "llm_expected_count": llm_expected_count,
+            "fallback_reasons": fallback_reasons,
+            "timeout_rate_delta_on_vs_off": timeout_rate_delta,
+        },
         "gates": gates,
         "all_targets_met": all_targets_met,
     }
@@ -310,6 +348,7 @@ def _to_markdown(payload: dict[str, Any]) -> str:
     lines.append("## Core Metrics")
     src = dict(payload.get("llm_on_metrics") or payload.get("runtime_metrics") or {})
     for key in [
+        "llm_expected_count",
         "llm_accept_rate",
         "llm_timeout_rate",
         "fallback_after_llm_rate",
@@ -347,6 +386,8 @@ def main() -> int:
     parser.add_argument("--max-p95-llm-writer-ms", type=float, default=2500.0)
     parser.add_argument("--min-professional-llm-accept-rate", type=float, default=0.95)
     parser.add_argument("--min-llm-score-delta-vs-baseline", type=float, default=0.0)
+    parser.add_argument("--max-llm-timeout-stability-delta", type=float, default=0.15)
+    parser.add_argument("--min-llm-expected-count", type=int, default=1)
     parser.add_argument("--allow-missing-benchmark", action="store_true")
     parser.add_argument("--enforce", action="store_true")
     args = parser.parse_args()
@@ -359,6 +400,8 @@ def main() -> int:
         max_p95_llm_writer_ms=float(args.max_p95_llm_writer_ms),
         min_professional_llm_accept_rate=float(args.min_professional_llm_accept_rate),
         min_llm_score_delta_vs_baseline=float(args.min_llm_score_delta_vs_baseline),
+        max_llm_timeout_rate_stability_delta=float(args.max_llm_timeout_stability_delta),
+        min_llm_expected_count=int(args.min_llm_expected_count),
     )
 
     suite15_targets = _load_suite15_targets(

@@ -162,6 +162,14 @@ def _llm_global_enabled() -> bool:
     return _is_feature_enabled("LLM_GLOBAL_ENABLED", default=True)
 
 
+def _llm_max_retry_attempts() -> int:
+    """Explicit retry policy for LLM writer post-validation repair."""
+    try:
+        return max(0, int(os.getenv("MEDICAL_RAG_LLM_MAX_RETRY_ATTEMPTS", "1")))
+    except Exception:
+        return 1
+
+
 def _llm_timeout_circuit_enabled() -> bool:
     raw = str(os.getenv("MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_ENABLED", "1")).strip().lower()
     return raw in {"1", "true", "yes", "on"}
@@ -14162,7 +14170,12 @@ def run_generation(
                 recent_style_history=style_history,
             )
 
-        if fallback_reason_debug not in {"llm_timeout", "llm_prompt_too_large_preemptive"} and _should_retry_with_validator(validation, generation_mode):
+        max_retry_attempts = _llm_max_retry_attempts()
+        if (
+            max_retry_attempts > 0
+            and fallback_reason_debug not in {"llm_timeout", "llm_prompt_too_large_preemptive"}
+            and _should_retry_with_validator(validation, generation_mode)
+        ):
             t_rep0 = time.perf_counter()
             retry_used = True
             llm_candidate_repair_used = True
@@ -15041,6 +15054,7 @@ def run_generation(
                 "llm_route_model_forced": llm_model_forced,
                 "llm_timeout_circuit_blocked": llm_timeout_circuit_blocked,
                 "llm_timeout_circuit_route": llm_timeout_circuit_route,
+                "llm_retry_policy_max_attempts": _llm_max_retry_attempts(),
                 **_llm_runtime_metrics_for_debug(
                     llm_writer_attempted=llm_writer_attempted,
                     llm_writer_accepted=bool(str(generation_mode).strip().lower() == "hybrid_structured_llm_writer"),

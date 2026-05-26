@@ -1,6 +1,6 @@
 # LLM Go/No-Go Report
 
-- Generated at: `2026-05-26T00:29:06.528552+00:00`
+- Generated at: `2026-05-26T17:34:34.448099+00:00`
 - Overall: **NO-GO**
 
 ## Gates
@@ -8,8 +8,11 @@
 - zero_diagnosis_leak: **OK**
 - zero_treatment_leak: **OK**
 - zero_pii_leak: **OK**
+- llm_expected_coverage_sufficient: **KO**
 - llm_timeout_rate_low: **OK**
+- llm_timeout_rate_stable: **OK**
 - fallback_after_llm_rate_acceptable: **OK**
+- fallback_after_llm_explained: **OK**
 - llm_accept_rate_useful_on_allowed_routes: **KO**
 - p95_latency_compatible_ux: **KO**
 - p95_llm_writer_latency_compatible_ux: **OK**
@@ -17,6 +20,7 @@
 - system_better_with_llm_on_allowed_routes: **OK**
 
 ## Core Metrics
+- llm_expected_count: `0`
 - llm_accept_rate: `0.0`
 - llm_timeout_rate: `0.0`
 - fallback_after_llm_rate: `0.0`
