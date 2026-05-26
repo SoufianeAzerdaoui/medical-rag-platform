@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from unittest.mock import patch
@@ -167,6 +168,41 @@ class TestLlmPolicyMatrix(unittest.TestCase):
         self.assertIn("- Conclusion technique", prompt)
         self.assertIn("Si des éléments manquent pour conclure, écris explicitement que le contexte est insuffisant.", prompt)
         self.assertIn("N'emploie jamais 'probablement', 'suggère une maladie', 'traitement recommandé'.", prompt)
+
+    def test_timeout_circuit_opens_only_for_configured_routes(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_ENABLED": "1",
+                "MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_ROUTES": "doc_scoped_medical_interpretation_guarded",
+                "MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_TTL_S": "300",
+            },
+            clear=False,
+        ):
+            generate_answer._LLM_TIMEOUT_CIRCUIT_STATE.clear()
+            self.assertFalse(
+                generate_answer._is_llm_timeout_circuit_open(
+                    "doc_scoped_medical_interpretation_guarded",
+                    "llama3.2:latest",
+                )
+            )
+            generate_answer._open_llm_timeout_circuit(
+                "doc_scoped_medical_interpretation_guarded",
+                "llama3.2:latest",
+            )
+            self.assertTrue(
+                generate_answer._is_llm_timeout_circuit_open(
+                    "doc_scoped_medical_interpretation_guarded",
+                    "llama3.2:latest",
+                )
+            )
+            self.assertFalse(
+                generate_answer._is_llm_timeout_circuit_open(
+                    "doc_scoped_biological_summary",
+                    "llama3.2:latest",
+                )
+            )
+            generate_answer._LLM_TIMEOUT_CIRCUIT_STATE.clear()
 
     def test_professional_writer_system_prompt_states_non_router_role(self) -> None:
         self.assertIn("Tu n'es ni routeur, ni planner, ni answerability gate.", PROFESSIONAL_WRITER_SYSTEM_PROMPT)

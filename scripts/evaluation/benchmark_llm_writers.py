@@ -168,6 +168,8 @@ def _route_from_generation_mode(generation_mode: str | None) -> str:
         "deterministic_doc_scoped_toxicology_summary": "doc_scoped_toxicology_summary",
         "deterministic_doc_scoped_abnormal_results": "doc_scoped_abnormal_results",
         "deterministic_doc_scoped_biological_summary": "doc_scoped_biological_summary",
+        "deterministic_guarded_medical_interpretation": "doc_scoped_medical_interpretation_guarded",
+        "hybrid_structured_llm_writer": "doc_scoped_medical_interpretation_guarded",
         "deterministic_reference_range_multi_profile": "reference_range_lookup",
     }
     return mapping.get(mode, "")
@@ -192,6 +194,7 @@ def _extract_response_fields(model: str, question_id: str, question: str, respon
     generation_writer = _normalize_string(response.get("generation_writer") or _dbg("generation_writer"))
     generation_mode = _normalize_string(response.get("generation_mode"))
     generation_strategy = _normalize_string(_dbg("generation_strategy")) or None
+    selected_route = _normalize_string(_dbg("selected_route")) or _route_from_generation_mode(generation_mode) or None
     llm_expected_raw = _dbg("llm_expected")
     llm_expected = bool(llm_expected_raw) if llm_expected_raw is not None else generation_mode == "llm"
     llm_skipped_reason = _normalize_string(_dbg("llm_skipped_reason")) or None
@@ -237,7 +240,21 @@ def _extract_response_fields(model: str, question_id: str, question: str, respon
         and llm_model_effective == model
         and debug_model_match
     )
-    llm_writer_attempted = bool(_dbg("llm_writer_attempted"))
+    llm_routes = {
+        "doc_scoped_medical_interpretation_guarded",
+        "open_grounded_medical_question",
+        "response_transform",
+    }
+    llm_writer_attempted_raw = _dbg("llm_writer_attempted")
+    llm_writer_attempted = bool(llm_writer_attempted_raw) if llm_writer_attempted_raw is not None else False
+    if not llm_expected and selected_route in llm_routes:
+        llm_expected = True
+    if not llm_writer_attempted:
+        llm_writer_attempted = bool(
+            str(generation_writer).strip().lower() == "llm_writer"
+            or str(generation_mode).strip().lower() == "hybrid_structured_llm_writer"
+            or str(fallback_reason or "").strip().lower() in {"llm_timeout", "llm_prompt_too_large_preemptive"}
+        )
     llm_writer_accepted = str(generation_writer).strip().lower() == "llm_writer"
     hard_gate_rejected = bool(_dbg("hard_gate_rejected") or _dbg("hard_gate_triggered"))
     repair_attempted = bool(_dbg("repair_attempted") or _dbg("llm_repair_attempted") or _dbg("llm_candidate_repair_used"))
@@ -258,7 +275,7 @@ def _extract_response_fields(model: str, question_id: str, question: str, respon
         "validation_status": validation_status or None,
         "quality_final_status": quality_final_status or None,
         "fallback_reason": fallback_reason,
-        "selected_route": _normalize_string(_dbg("selected_route")) or _route_from_generation_mode(generation_mode) or None,
+        "selected_route": selected_route,
         "llm_provider": llm_provider,
         "llm_model_requested": llm_model_requested,
         "llm_model_effective": llm_model_effective,

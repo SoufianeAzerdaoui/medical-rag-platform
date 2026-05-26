@@ -146,6 +146,7 @@ except Exception:  # pragma: no cover - fallback for CLI-only runs without backe
     _runtime_get_feature_flag = None
 
 LOGGER = logging.getLogger("medical_rag.generation")
+_LLM_TIMEOUT_CIRCUIT_STATE: dict[str, float] = {}
 
 
 def _is_feature_enabled(name: str, default: bool = True) -> bool:
@@ -159,6 +160,69 @@ def _is_feature_enabled(name: str, default: bool = True) -> bool:
 
 def _llm_global_enabled() -> bool:
     return _is_feature_enabled("LLM_GLOBAL_ENABLED", default=True)
+
+
+def _llm_timeout_circuit_enabled() -> bool:
+    raw = str(os.getenv("MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_ENABLED", "1")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _llm_timeout_circuit_ttl_s() -> int:
+    try:
+        return max(30, int(os.getenv("MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_TTL_S", "900")))
+    except Exception:
+        return 900
+
+
+def _llm_timeout_circuit_routes() -> set[str]:
+    raw = str(
+        os.getenv(
+            "MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_ROUTES",
+            "doc_scoped_medical_interpretation_guarded",
+        )
+    ).strip()
+    routes = {
+        str(item).strip().lower()
+        for item in raw.split(",")
+        if str(item).strip()
+    }
+    return routes or {"doc_scoped_medical_interpretation_guarded"}
+
+
+def _llm_timeout_circuit_key(route: str, model: str) -> str:
+    return f"{str(route or '').strip().lower()}::{str(model or '').strip().lower()}"
+
+
+def _is_llm_timeout_circuit_open(route: str, model: str) -> bool:
+    if not _llm_timeout_circuit_enabled():
+        return False
+    route_norm = str(route or "").strip().lower()
+    if route_norm not in _llm_timeout_circuit_routes():
+        return False
+    key = _llm_timeout_circuit_key(route_norm, model)
+    expires_at = float(_LLM_TIMEOUT_CIRCUIT_STATE.get(key, 0.0) or 0.0)
+    now = time.time()
+    if expires_at <= now:
+        _LLM_TIMEOUT_CIRCUIT_STATE.pop(key, None)
+        return False
+    return True
+
+
+def _open_llm_timeout_circuit(route: str, model: str) -> None:
+    if not _llm_timeout_circuit_enabled():
+        return
+    route_norm = str(route or "").strip().lower()
+    if route_norm not in _llm_timeout_circuit_routes():
+        return
+    ttl_s = _llm_timeout_circuit_ttl_s()
+    key = _llm_timeout_circuit_key(route_norm, model)
+    _LLM_TIMEOUT_CIRCUIT_STATE[key] = time.time() + float(ttl_s)
+    LOGGER.warning(
+        "llm_timeout_circuit_opened route=%s model=%s ttl_s=%s",
+        route_norm,
+        str(model or "").strip(),
+        ttl_s,
+    )
 
 
 def _is_critical_medical_intent(query_understanding: QueryUnderstanding) -> bool:
@@ -280,6 +344,7 @@ def _level2_llm_runtime_config(
     *,
     selected_route: str,
     selected_policy: dict[str, Any],
+    requested_model: str,
     force_llm_writer: bool,
     safety_intent_norm: str,
     displayed_evidences: list[dict[str, Any]],
@@ -292,6 +357,10 @@ def _level2_llm_runtime_config(
     llm_expected = bool(selected_policy.get("llm_expected", False))
     is_level2 = route_norm in LEVEL2_HYBRID_INTENT_POLICY
     has_evidence = bool(displayed_evidences)
+    preferred_model = str(selected_policy.get("preferred_model") or "").strip()
+    enforce_model_lock = bool(selected_policy.get("enforce_model_lock", False))
+    llm_model_forced = bool(route_norm == "doc_scoped_medical_interpretation_guarded" and enforce_model_lock and preferred_model)
+    llm_model_effective = preferred_model if llm_model_forced else str(requested_model or "").strip()
     hard_block_safety = safety_intent_norm in {"diagnostic_safety_question"} and route_norm not in {
         "doc_scoped_medical_interpretation_guarded",
     }
@@ -327,6 +396,9 @@ def _level2_llm_runtime_config(
             "generation_strategy": generation_strategy,
             "llm_expected": llm_expected,
             "llm_skipped_reason": llm_skipped_reason,
+            "llm_model_requested": str(requested_model or "").strip(),
+            "llm_model_effective": llm_model_effective,
+            "llm_model_forced": llm_model_forced,
         }
     return {
         "use_llm": True,
@@ -336,6 +408,9 @@ def _level2_llm_runtime_config(
         "generation_strategy": generation_strategy,
         "llm_expected": llm_expected,
         "llm_skipped_reason": None,
+        "llm_model_requested": str(requested_model or "").strip(),
+        "llm_model_effective": llm_model_effective,
+        "llm_model_forced": llm_model_forced,
     }
 
 
@@ -7792,13 +7867,20 @@ def _apply_level2_intent_llm_limits(
 ) -> tuple[int, int]:
     route = str(selected_route or "").strip().lower()
     profile = str(os.getenv("MEDICAL_RAG_L2_TIMEOUT_PROFILE", "local")).strip().lower()
+    if route == "doc_scoped_medical_interpretation_guarded":
+        guarded_timeout_cap_s = int(os.getenv("MEDICAL_RAG_GUARDED_TIMEOUT_CAP_S", "30"))
+        guarded_tokens_cap = int(os.getenv("MEDICAL_RAG_GUARDED_MAX_TOKENS", "160"))
+        return (
+            max(12, min(int(timeout_s), max(12, guarded_timeout_cap_s))),
+            max(96, min(int(max_tokens), max(96, guarded_tokens_cap))),
+        )
     if profile == "prod":
         default_timeout = min(timeout_s, 30)
     else:
         default_timeout = max(timeout_s, 90)
     if route in {"doc_scoped_biological_summary", "doc_scoped_priority_anomalies"}:
         return max(12, default_timeout), max(180, min(max_tokens, 220))
-    if route in {"doc_scoped_medical_interpretation_guarded", "open_grounded_medical_question"}:
+    if route in {"open_grounded_medical_question"}:
         return max(12, default_timeout), max(220, min(max_tokens, 280))
     return timeout_s, max_tokens
 
@@ -7821,11 +7903,11 @@ _LEVEL2_LLM_PROMPT_POLICY: dict[str, dict[str, Any]] = {
         "use_micro_prompt": True,
     },
     "doc_scoped_medical_interpretation_guarded": {
-        "prompt_target_chars": 3500,
-        "prompt_hard_limit_chars": 5000,
-        "num_predict": 240,
-        "timeout_ms": 90000,
-        "max_evidence_rows": 10,
+        "prompt_target_chars": 1800,
+        "prompt_hard_limit_chars": 2400,
+        "num_predict": 140,
+        "timeout_ms": 30000,
+        "max_evidence_rows": 6,
         "use_micro_prompt": True,
     },
     "open_grounded_medical_question": {
@@ -7976,38 +8058,16 @@ def _compose_level2_micro_prompt_answer(
             f"{within_block}\n"
         )
     elif route == "doc_scoped_medical_interpretation_guarded":
-        forbidden_style_patterns = _safety_guardrail_list(
-            ["diagnostic_safety", "forbidden_clinical_style_patterns"],
-            [
-                "cause sous-jacente",
-                "évaluation clinique",
-                "diverses conditions médicales",
-            ],
-        )
-        forbidden_style_hint = ", ".join(
-            sorted(
-                {
-                    re.sub(r"^\(\?im\)\^\.\*|\.\*\$$", "", p).replace("\\", "")
-                    for p in forbidden_style_patterns[:4]
-                    if str(p).strip()
-                }
-            )
-        )
         discordance_replacement = str(
             _safety_guardrail(
                 ["diagnostic_safety", "discordance_replacement"],
                 "profil biologique discordant pour une hyperthyroïdie primaire",
             )
         ).strip()
-        strong_patterns = _safety_guardrail_list(
-            ["diagnostic_safety", "strong_suggestion_patterns"],
-            [r"sugg[eè]re\s+une?\s+hyperthyro", r"compatible\s+avec\s+une?\s+hyperthyro", r"[eé]voque\s+une?\s+hyperthyro"],
-        )
-        strong_hint = ", ".join([re.sub(r"\\b|\\s\+|\(\?:|\)|\?","",p) for p in strong_patterns[:3]])
         prompt = (
             "Tu es un rédacteur médical technique prudent.\n"
             "Réponds uniquement avec les faits fournis.\n"
-            f"Maximum {max(3, min(max_lines, 8))} lignes.\n"
+            "Maximum 5 lignes.\n"
             "Structure attendue :\n"
             "- Faits techniques observés\n"
             "- Limites\n"
@@ -8017,9 +8077,8 @@ def _compose_level2_micro_prompt_answer(
             "- N’affirme aucun diagnostic.\n"
             "- Écris explicitement : « On ne peut pas conclure à un diagnostic à partir de ces seuls éléments. »\n"
             "- Ne propose aucun traitement.\n\n"
-            f"- Évite les formulations cliniques générales ({forbidden_style_hint or 'cause sous-jacente, évaluation clinique'}).\n"
-            "- Utilise un vocabulaire technique factuel: profil biologique discordant, interprétation limitée aux données disponibles.\n\n"
-            f"- N'écris jamais de formulation de type: {strong_hint or 'suggère/évoque/compatible avec hyperthyroïdie'}.\n"
+            "- Utilise un vocabulaire factuel (pas de cause, pas de certitude clinique).\n"
+            "- N'écris jamais « suggère », « évoque », « compatible avec » un diagnostic.\n"
             f"- Écris seulement: {discordance_replacement}.\n\n"
             f"{guardrail_block}\n"
             "Faits anormaux :\n"
@@ -13138,12 +13197,16 @@ def run_generation(
         llm_cfg = _level2_llm_runtime_config(
             selected_route=selected_route,
             selected_policy=selected_policy,
+            requested_model=model,
             force_llm_writer=force_llm_writer,
             safety_intent_norm=safety_intent_norm,
             displayed_evidences=displayed_evidences,
             default_timeout=timeout,
             default_max_tokens=max_tokens,
         )
+        writer_model = str(llm_cfg.get("llm_model_effective") or model).strip() or model
+        llm_model_requested = str(llm_cfg.get("llm_model_requested") or model).strip() or model
+        llm_model_forced = bool(llm_cfg.get("llm_model_forced", False))
         llm_writer_allowed = bool(selected_policy.get("llm_writer_allowed", False))
         llm_writer_used = False
         llm_writer_attempted = False
@@ -13151,6 +13214,8 @@ def run_generation(
         llm_expected = bool(llm_cfg.get("llm_expected", selected_policy.get("llm_expected", False)))
         llm_skipped_reason = str(llm_cfg.get("llm_skipped_reason") or "").strip() or None
         deterministic_preferred_reason = str(selected_policy.get("deterministic_preferred_reason") or "").strip() or None
+        llm_timeout_circuit_blocked = False
+        llm_timeout_circuit_route = str(selected_route or query_understanding.intent or "").strip().lower()
         if generation_strategy == "deterministic_preferred" and not bool(llm_cfg.get("use_llm", False)):
             if selected_route == "doc_scoped_biological_summary":
                 llm_skipped_reason = "biological_summary_deterministic_preferred"
@@ -13158,6 +13223,16 @@ def run_generation(
             elif selected_route == "doc_scoped_priority_anomalies":
                 llm_skipped_reason = "priority_deterministic_structure_preferred"
                 deterministic_preferred_reason = "priority_deterministic_structure_preferred"
+        if bool(llm_cfg.get("use_llm", False)) and _is_llm_timeout_circuit_open(llm_timeout_circuit_route, writer_model):
+            llm_cfg["use_llm"] = False
+            llm_cfg["compose_mode"] = "fallback"
+            llm_timeout_circuit_blocked = True
+            llm_skipped_reason = "llm_timeout_circuit_open"
+            LOGGER.info(
+                "llm_timeout_circuit_block route=%s model=%s",
+                llm_timeout_circuit_route,
+                writer_model,
+            )
         policy_timeout_s = int(llm_cfg.get("timeout_s") or timeout)
         policy_max_tokens = int(llm_cfg.get("max_tokens") or max_tokens)
         prompt_policy = _level2_prompt_policy(selected_route)
@@ -13354,7 +13429,7 @@ def run_generation(
                 llm_pack=llm_evidence_pack,
                 llm_client=writer_llm_client,
                 provider=provider,
-                model=model,
+                model=writer_model,
                 num_ctx=num_ctx,
             )
         else:
@@ -13366,7 +13441,7 @@ def run_generation(
                 source_citations=source_citations,
                 llm_client=writer_llm_client,
                 provider=provider,
-                model=model,
+                model=writer_model,
                 temperature=temperature,
                 num_ctx=num_ctx,
                 max_tokens=policy_max_tokens,
@@ -13528,6 +13603,9 @@ def run_generation(
             )
         writer_error = str(composed.get("llm_error") or "") or None
         fallback_reason_debug = writer_error
+        if llm_timeout_circuit_blocked and not fallback_reason_debug:
+            fallback_reason_debug = "llm_timeout_circuit_open"
+            fallback_stage = "llm_precheck"
         llm_call_skipped_due_prompt_budget = bool(composed.get("llm_call_skipped_due_prompt_budget"))
         if compose_mode == "hybrid_structured_llm_writer" and not writer_error:
             candidate_raw = str(composed.get("llm_candidate_answer") or composed.get("answer") or "").strip()
@@ -13536,6 +13614,7 @@ def run_generation(
         if writer_error and "timeout" in writer_error.lower():
             fallback_reason_debug = "llm_timeout"
             fallback_stage = "llm_call"
+            _open_llm_timeout_circuit(llm_timeout_circuit_route, writer_model)
             llm_candidate_answer = None
             llm_candidate_validation_status = None
             llm_candidate_validation_errors = None
@@ -14096,7 +14175,7 @@ def run_generation(
                         llm_pack=llm_evidence_pack,
                         llm_client=writer_llm_client,
                         provider=provider,
-                        model=model,
+                        model=writer_model,
                         num_ctx=num_ctx,
                         retry_feedback=retry_feedback,
                     )
@@ -14109,7 +14188,7 @@ def run_generation(
                         source_citations=source_citations,
                         llm_client=writer_llm_client,
                         provider=provider,
-                        model=model,
+                        model=writer_model,
                         temperature=temperature,
                         num_ctx=num_ctx,
                         max_tokens=policy_max_tokens,
@@ -14957,6 +15036,11 @@ def run_generation(
                     selected_policy=selected_policy,
                     composed=composed if isinstance(composed, dict) else None,
                 ),
+                "llm_route_model_requested": llm_model_requested,
+                "llm_route_model_used": writer_model,
+                "llm_route_model_forced": llm_model_forced,
+                "llm_timeout_circuit_blocked": llm_timeout_circuit_blocked,
+                "llm_timeout_circuit_route": llm_timeout_circuit_route,
                 **_llm_runtime_metrics_for_debug(
                     llm_writer_attempted=llm_writer_attempted,
                     llm_writer_accepted=bool(str(generation_mode).strip().lower() == "hybrid_structured_llm_writer"),

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-25T23:59:59.169257+00:00",
+  "generated_at": "2026-05-26T00:29:06.528552+00:00",
   "thresholds": {
     "max_llm_timeout_rate": 0.1,
     "max_fallback_after_llm_rate": 0.25,
@@ -73,30 +73,7 @@
   },
   "llm_on_metrics": {
     "rows_count": 20,
-    "llm_expected_count": 4,
-    "llm_attempt_count": 4,
-    "llm_accept_count": 2,
-    "llm_attempt_rate": 1.0,
-    "llm_accept_rate": 0.5,
-    "llm_reject_rate": 0.5,
-    "llm_timeout_rate": 0.5,
-    "repair_attempt_rate": 0.0,
-    "repair_success_rate": 0.0,
-    "fallback_after_llm_rate": 0.5,
-    "hallucination_rejection_rate": 0.0,
-    "avg_llm_writer_ms": 76050.609,
-    "p95_llm_writer_ms": 90090.937,
-    "p95_response_time_ms": 90364.0,
-    "professional_llm_accept_rate": 1.0,
-    "critical_leak_count": 0,
-    "avg_score_llm_expected": 7.0,
-    "fallback_reasons": [
-      "llm_timeout"
-    ]
-  },
-  "llm_off_metrics": {
-    "rows_count": 20,
-    "llm_expected_count": 4,
+    "llm_expected_count": 0,
     "llm_attempt_count": 0,
     "llm_accept_count": 0,
     "llm_attempt_rate": 0.0,
@@ -109,16 +86,37 @@
     "hallucination_rejection_rate": 0.0,
     "avg_llm_writer_ms": 0.0,
     "p95_llm_writer_ms": 0.0,
-    "p95_response_time_ms": 201.0,
+    "p95_response_time_ms": 15523.0,
     "professional_llm_accept_rate": 0.0,
     "critical_leak_count": 0,
-    "avg_score_llm_expected": 7.0,
+    "avg_score_llm_expected": 0.0,
+    "fallback_reasons": []
+  },
+  "llm_off_metrics": {
+    "rows_count": 20,
+    "llm_expected_count": 0,
+    "llm_attempt_count": 0,
+    "llm_accept_count": 0,
+    "llm_attempt_rate": 0.0,
+    "llm_accept_rate": 0.0,
+    "llm_reject_rate": 0.0,
+    "llm_timeout_rate": 0.0,
+    "repair_attempt_rate": 0.0,
+    "repair_success_rate": 0.0,
+    "fallback_after_llm_rate": 0.0,
+    "hallucination_rejection_rate": 0.0,
+    "avg_llm_writer_ms": 0.0,
+    "p95_llm_writer_ms": 0.0,
+    "p95_response_time_ms": 214.0,
+    "professional_llm_accept_rate": 0.0,
+    "critical_leak_count": 0,
+    "avg_score_llm_expected": 0.0,
     "fallback_reasons": []
   },
   "llm_vs_baseline": {
     "enabled": true,
-    "llm_on_avg_score": 7.0,
-    "llm_off_avg_score": 7.0,
+    "llm_on_avg_score": 0.0,
+    "llm_off_avg_score": 0.0,
     "score_delta": 0.0
   },
   "gates": {
@@ -126,12 +124,12 @@
     "zero_diagnosis_leak": true,
     "zero_treatment_leak": true,
     "zero_pii_leak": true,
-    "llm_timeout_rate_low": false,
-    "fallback_after_llm_rate_acceptable": false,
+    "llm_timeout_rate_low": true,
+    "fallback_after_llm_rate_acceptable": true,
     "llm_accept_rate_useful_on_allowed_routes": false,
     "p95_latency_compatible_ux": false,
-    "p95_llm_writer_latency_compatible_ux": false,
-    "llm_writer_calls_professional": true,
+    "p95_llm_writer_latency_compatible_ux": true,
+    "llm_writer_calls_professional": false,
     "system_better_with_llm_on_allowed_routes": true
   },
   "all_targets_met": false
