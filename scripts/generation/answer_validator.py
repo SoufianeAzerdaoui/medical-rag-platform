@@ -8,11 +8,18 @@ from config_loader import get_safety_guardrails_config
 from prompt_builder import INSUFFICIENT_CONTEXT_SENTENCE
 from query_understanding import contains_exact_term, detect_exact_analyte, detect_exact_analytes, find_analyte_mentions
 try:
-    from medical_entity_resolver import canonicalize_analyte, are_equivalent_analytes, get_analyte_family, is_analyte_match
+    from medical_entity_resolver import (
+        canonicalize_analyte,
+        are_equivalent_analytes,
+        get_aliases_for_canonical,
+        get_analyte_family,
+        is_analyte_match,
+    )
 except Exception:  # pragma: no cover
     from scripts.generation.medical_entity_resolver import (  # type: ignore
         canonicalize_analyte,
         are_equivalent_analytes,
+        get_aliases_for_canonical,
         get_analyte_family,
         is_analyte_match,
     )
@@ -656,37 +663,35 @@ def _is_markdown_table(text: str) -> bool:
 
 def _extract_reference_only_section(answer_text: str) -> str:
     txt = str(answer_text or "")
-    low = _norm(txt)
-    if not re.search(
-        r"(?im)^\s*(?:[-*]\s*)?(?:resultats?\s+dans\s+la\s+reference(?:\s+uniquement)?|résultats?\s+dans\s+la\s+référence(?:\s+uniquement)?|normaux|rassurants|within reference)\s*:",
-        txt,
-    ):
+    if not txt.strip():
         return ""
-    markers = [
-        "resultats dans la reference",
-        "résultats dans la référence",
-        "resultats strictement dans la reference",
-        "résultats strictement dans la référence",
-        "normaux",
-        "rassurants",
-    ]
-    start = -1
-    selected = ""
-    for m in markers:
-        p = low.find(_norm(m))
-        if p != -1 and (start == -1 or p < start):
-            start = p
-            selected = m
-    if start == -1:
+    lines = txt.splitlines()
+    start_idx = -1
+    start_re = re.compile(
+        r"(?im)^\s*(?:[-*]\s*)?"
+        r"(?:resultats?\s+dans\s+la\s+reference(?:\s+uniquement)?|"
+        r"résultats?\s+dans\s+la\s+référence(?:\s+uniquement)?|"
+        r"resultats?\s+strictement\s+dans\s+la\s+reference|"
+        r"résultats?\s+strictement\s+dans\s+la\s+référence|"
+        r"normaux|rassurants|within reference)\s*:"
+    )
+    stop_re = re.compile(
+        r"(?im)^\s*(?:[-*]\s*)?"
+        r"(?:anormaux|anomalies|conclusion(?:\s+technique)?|sources?|priorit[eé])\s*:"
+    )
+    for idx, line in enumerate(lines):
+        if start_re.search(line):
+            start_idx = idx
+            break
+    if start_idx < 0:
         return ""
-    # Stop at common next sections.
-    end = len(txt)
-    stop_markers = ["conclusion", "sources", "anormaux", "anomalies"]
-    for s in stop_markers:
-        p = low.find(_norm(s), start + max(8, len(selected)))
-        if p != -1:
-            end = min(end, p)
-    return txt[start:end].strip()
+    out: list[str] = []
+    for idx in range(start_idx, len(lines)):
+        line = lines[idx].strip()
+        if idx > start_idx and stop_re.search(line):
+            break
+        out.append(line)
+    return "\n".join(out).strip()
 
 
 def _extract_section_block(answer_text: str, section_title_norm: str) -> str:
@@ -729,6 +734,16 @@ def _multi_doc_analyte_represented(core_norm: str, analyte: str) -> bool:
         "t3 libre": {"t3 libre", "t3_libre", "ft3"},
     }
     aliases = alias_groups.get(a, {a})
+    try:
+        dyn_aliases = {str(x or "").strip() for x in (get_aliases_for_canonical(analyte) or set())}
+    except Exception:
+        dyn_aliases = set()
+    for raw in dyn_aliases:
+        k = _canonical_analyte_key(raw)
+        if k and len(k) >= 3:
+            aliases.add(k)
+            aliases.add(k.replace("_", " ").strip())
+    aliases = {al for al in aliases if isinstance(al, str) and len(al.strip()) >= 3}
     return any(alias in core_norm for alias in aliases)
 
 
@@ -1256,7 +1271,24 @@ def validate_answer(
                 if str(ev.get("analyte") or ev.get("parameter") or "").strip()
             }
             if abnormal_analytes:
-                mentioned = any(a and a in core_norm for a in abnormal_analytes)
+                abnormal_block_norm = _norm(_extract_section_block(core_text, "anormaux"))
+                mention_space = abnormal_block_norm or core_norm
+                mentioned = any(
+                    _multi_doc_analyte_represented(mention_space, analyte)
+                    for analyte in abnormal_analytes
+                    if analyte
+                )
+                if not mentioned and abnormal_block_norm:
+                    mentioned = any(
+                        marker in abnormal_block_norm
+                        for marker in [
+                            "au dessus",
+                            "au-dessus",
+                            "en dessous",
+                            "above_reference",
+                            "below_reference",
+                        ]
+                    )
                 if not mentioned:
                     errors.append("summary_missing_abnormal_coverage")
 
@@ -1869,7 +1901,7 @@ def validate_answer(
     intro_sentences = [s for s in re.split(r"[.!?]+", intro_block) if s.strip()]
     section_intro_ok = bool(
         re.match(
-            r"(?is)^\s*(anormaux|résultats?\s+dans\s+la\s+référence\s+uniquement|resultats?\s+dans\s+la\s+reference\s+uniquement|priorité\s+élevée|priorite\s+elevee|priorité\s+modérée/faible|priorite\s+moderee/faible|faits\s+techniques\s+observés|faits\s+techniques\s+observes|limites|conclusion\s+technique|synthèse\s+toxicologique\s+technique|synthese\s+toxicologique\s+technique|résultat\s+correspondant|resultat\s+correspondant)\s*:",
+            r"(?is)^\s*(anormaux|résultats?\s+dans\s+la\s+référence\s+uniquement|resultats?\s+dans\s+la\s+reference\s+uniquement|priorité\s+élevée|priorite\s+elevee|priorité\s+modérée/faible|priorite\s+moderee/faible|faits\s+techniques\s+observés|faits\s+techniques\s+observes|limites|conclusion\s+technique|synthèse\s+toxicologique\s+technique|synthese\s+toxicologique\s+technique|résultat\s+correspondant|resultat\s+correspondant|note\s+de\s+synth[eè]se\s+m[ée]dicale|note\s+m[ée]dicale)\s*[:—-]?",
             intro_block or "",
             flags=re.IGNORECASE,
         )

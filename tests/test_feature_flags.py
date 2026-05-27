@@ -36,11 +36,13 @@ class TestFeatureFlags(unittest.TestCase):
         self.assertIn("LLM_REWRITE_ENABLED", flags)
         self.assertIn("LLM_FALLBACK_NON_CRITICAL_ONLY", flags)
         self.assertIn("LLM_QUERY_UNDERSTANDING_ENABLED", flags)
+        self.assertIn("LLM_SUMMARY_WRITER_ENABLED", flags)
         self.assertTrue(flags["REFERENCE_RANGE_STRICT_MODE"]["enabled"])
         self.assertTrue(flags["LLM_GLOBAL_ENABLED"]["enabled"])
         self.assertTrue(flags["LLM_REWRITE_ENABLED"]["enabled"])
         self.assertTrue(flags["LLM_FALLBACK_NON_CRITICAL_ONLY"]["enabled"])
         self.assertFalse(flags["LLM_QUERY_UNDERSTANDING_ENABLED"]["enabled"])
+        self.assertFalse(flags["LLM_SUMMARY_WRITER_ENABLED"]["enabled"])
 
     def test_toggle_flag_without_restart(self) -> None:
         from backend.services.feature_flag_service import get_feature_flag, set_feature_flag

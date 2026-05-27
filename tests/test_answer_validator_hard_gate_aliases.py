@@ -50,6 +50,92 @@ def _base_sources() -> list[dict[str, object]]:
 
 
 class TestAnswerValidatorHardGateAliases(unittest.TestCase):
+    def test_summary_abnormal_coverage_accepts_aliases_like_crp(self) -> None:
+        evidences = [
+            {
+                "doc_id": "report_24",
+                "chunk_id": "chk_report_24_crp",
+                "analyte": "C Reactive Protein",
+                "analyte_norm": "crp",
+                "value_raw": "12",
+                "current_value": "12",
+                "unit": "mg/l",
+                "reference_range": "0 - 5 mg/l",
+                "technical_status_code": "above_reference",
+                "interpretation_status": "above_reference",
+            },
+            {
+                "doc_id": "report_24",
+                "chunk_id": "chk_report_24_calcium",
+                "analyte": "Calcium",
+                "analyte_norm": "calcium",
+                "value_raw": "92",
+                "current_value": "92",
+                "unit": "mg/l",
+                "reference_range": "80 - 100 mg/l",
+                "technical_status_code": "within_reference",
+                "interpretation_status": "within_reference",
+            },
+        ]
+        answer = (
+            "Anormaux : CRP (au-dessus).\n"
+            "Résultats dans la référence uniquement : Calcium.\n"
+            "Conclusion technique : synthèse descriptive limitée aux données disponibles."
+        )
+        validation = validate_answer(
+            query="Résume report 24 en 5 lignes max, strictement technique",
+            answer_text=answer,
+            evidence_pack=evidences,
+            displayed_evidences=evidences,
+            source_citations=[],
+            generation_mode="hybrid_structured_llm_writer",
+            query_intents={"doc_scoped_summary": True},
+        )
+        self.assertNotIn("summary_missing_abnormal_coverage", list(validation.get("errors") or []))
+
+    def test_reference_only_section_does_not_match_inside_anormaux_word(self) -> None:
+        evidences = [
+            {
+                "doc_id": "report_24",
+                "chunk_id": "chk_report_24_crp",
+                "analyte": "CRP",
+                "analyte_norm": "crp",
+                "value_raw": "12",
+                "current_value": "12",
+                "unit": "mg/l",
+                "reference_range": "0 - 5 mg/l",
+                "technical_status_code": "above_reference",
+                "interpretation_status": "above_reference",
+            },
+            {
+                "doc_id": "report_24",
+                "chunk_id": "chk_report_24_calcium",
+                "analyte": "Calcium",
+                "analyte_norm": "calcium",
+                "value_raw": "92",
+                "current_value": "92",
+                "unit": "mg/l",
+                "reference_range": "80 - 100 mg/l",
+                "technical_status_code": "within_reference",
+                "interpretation_status": "within_reference",
+            },
+        ]
+        answer = (
+            "Anormaux : CRP (au-dessus).\n"
+            "Résultats dans la référence uniquement : Calcium.\n"
+            "Conclusion technique : synthèse descriptive limitée aux données disponibles."
+        )
+        validation = validate_answer(
+            query="Résume report 24 en 5 lignes max, strictement technique",
+            answer_text=answer,
+            evidence_pack=evidences,
+            displayed_evidences=evidences,
+            source_citations=[],
+            generation_mode="hybrid_structured_llm_writer",
+            query_intents={"doc_scoped_summary": True},
+        )
+        self.assertNotIn("section_status_mismatch", list(validation.get("errors") or []))
+
     def test_source_mismatch_alias_emitted(self) -> None:
         validation = validate_answer(
             query="CRP report 12 ?",

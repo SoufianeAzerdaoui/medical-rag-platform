@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useMemo, useState } from "react";
 import { FileText } from "lucide-react";
 import type { ChatSource, LegacySourceItem, SourceCitation } from "@/types/chat";
 
@@ -214,20 +215,35 @@ export function SourceLinks({
   sources,
   showTitle = true,
   compact = false,
+  maxVisible,
 }: {
   sources?: ChatSource[];
   showTitle?: boolean;
   compact?: boolean;
+  maxVisible?: number;
 }) {
-  const normalized = (sources || []).map(normalizeSource).filter((item) => item.label);
-  const list = groupSources(normalized);
+  const [expanded, setExpanded] = useState(false);
+  const normalized = useMemo(
+    () => (sources || []).map(normalizeSource).filter((item) => item.label),
+    [sources],
+  );
+  const list = useMemo(() => groupSources(normalized), [normalized]);
+  const visibleLimit = typeof maxVisible === "number" && maxVisible > 0 ? maxVisible : null;
+  const canToggle = Boolean(visibleLimit && list.length > visibleLimit);
+  const visible = canToggle && !expanded ? list.slice(0, visibleLimit as number) : list;
+  const hiddenCount = canToggle ? list.length - (visibleLimit as number) : 0;
+
+  useEffect(() => {
+    setExpanded(false);
+  }, [sources, maxVisible]);
+
   if (list.length === 0) return null;
 
   return (
     <div className={compact ? "rounded-xl border border-border/70 bg-card/40 p-3" : "mt-3 rounded-xl border border-border/70 bg-card/40 p-3"}>
       {showTitle ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-fg/70">Sources</div> : null}
       <ul className="space-y-2 text-sm">
-        {list.map((source) => (
+        {visible.map((source) => (
           <li key={source.key} className="flex items-start gap-2">
             <FileText size={14} className="mt-0.5 shrink-0 text-fg/70" />
             <div className="min-w-0">
@@ -253,6 +269,17 @@ export function SourceLinks({
           </li>
         ))}
       </ul>
+      {canToggle ? (
+        <div className="mt-3 border-t border-border/60 pt-2">
+          <button
+            type="button"
+            onClick={() => setExpanded((prev) => !prev)}
+            className="text-xs font-medium text-accent underline-offset-2 transition hover:underline"
+          >
+            {expanded ? "Voir moins" : `Voir plus (${hiddenCount})`}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

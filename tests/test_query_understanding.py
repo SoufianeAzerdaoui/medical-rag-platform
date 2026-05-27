@@ -113,6 +113,12 @@ class TestQueryUnderstanding(unittest.TestCase):
         self.assertEqual(qu.output_format, "json")
         self.assertTrue(qu.is_response_transform)
 
+    def test_response_transform_paragraph_not_misdetected_as_chart(self) -> None:
+        qu = parse_query_understanding("Convertis la réponse précédente en style paragraphe médical pro.")
+        self.assertEqual(qu.intent, "response_transform")
+        self.assertEqual(qu.output_format, "paragraph")
+        self.assertFalse(bool(getattr(qu.presentation_intent, "user_requested_visualization", False)))
+
     def test_tshus_does_not_match_trak(self) -> None:
         self.assertFalse(match_analyte("ANTICORPS ANTI RECEPTEUR DE LA TSH (TRAK)", "tshus"))
         self.assertTrue(match_analyte("TSHus", "tshus"))
@@ -201,6 +207,13 @@ class TestQueryUnderstanding(unittest.TestCase):
         self.assertEqual(qu.intent, "reference_range_lookup")
         self.assertIn("cholesterol_total", qu.requested_analytes)
         self.assertFalse(qu.is_small_talk)
+
+    def test_reference_ranges_summary_intent_for_doc_scoped_request(self) -> None:
+        qu = parse_query_understanding(
+            "Tu peux faire une note sur les différentes plages physiologiques et références selon sexe/âge dans report 12 ?"
+        )
+        self.assertEqual(qu.intent, "reference_ranges_summary")
+        self.assertEqual(qu.requested_doc_ids, ["report_12"])
 
     def test_ok_transform_followup_is_response_transform(self) -> None:
         qu = parse_query_understanding("ok donne moi le résultat en JSON strict")
@@ -435,6 +448,13 @@ class TestQueryUnderstanding(unittest.TestCase):
         self.assertEqual(qu.requested_doc_ids, ["report_16"])
         self.assertEqual(qu.intent, "doc_scoped_abnormal_results")
         self.assertEqual(qu.safety_intent, "no_diagnosis_constraint")
+
+    def test_note_medecin_without_diagnostic_stays_numeric_context(self) -> None:
+        qu = parse_query_understanding("Fais une note médecin courte pour report 12, sans diagnostic.")
+        self.assertEqual(qu.requested_doc_ids, ["report_12"])
+        self.assertEqual(qu.safety_intent, "no_diagnosis_constraint")
+        self.assertEqual(qu.requested_context_type, "biological_numeric_results")
+        self.assertEqual(qu.answer_style, "doctor_note")
 
     def test_pure_diagnostic_question_without_data_scope(self) -> None:
         qu = parse_query_understanding("Peut-on conclure à un cancer avec ces marqueurs ?")

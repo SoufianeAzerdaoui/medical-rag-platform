@@ -10,6 +10,7 @@ import { QualityReportCard } from "@/components/chat/quality-report-card";
 import { SourceLinks, stripSourcesSection } from "@/components/sources/source-links";
 import { PatientInventoryRenderer } from "@/components/chat/patient-inventory-renderer";
 import { SingleAnalyteResultCard } from "@/components/chat/single-analyte-result-card";
+import { StructuredSummaryCard } from "@/components/chat/structured-summary-card";
 import { useChatStore } from "@/store/chat-store";
 import { useEffect, useRef } from "react";
 
@@ -115,6 +116,23 @@ export function ChatMessages() {
         const generationMode = String(
           message?.diagnostics?.generation_mode || message?.generation_mode || "",
         ).toLowerCase();
+        let contentToRender = shouldRenderSourceLinks ? stripSourcesSection(message.content) : message.content;
+        
+        if (canRenderVisualization) {
+          contentToRender = stripVisualizationUnavailableText(contentToRender);
+        }
+        
+        // If we have interactive components (Visualisation or Patient Inventory), we might want to hide the Markdown table
+        if (hasPatients) {
+          contentToRender = stripMarkdownTable(contentToRender);
+        }
+
+        const looksLikeDoctorNote =
+          /^note de synth[èe]se m[ée]dicale\s*[—-]/i.test(contentToRender) ||
+          /^note m[ée]dicale\s*[—-]/i.test(contentToRender);
+        const looksLikeTechnicalSummary =
+          /(?:^|\n)\s*anormaux\s*:/i.test(contentToRender) &&
+          /(?:^|\n)\s*conclusion technique\s*:/i.test(contentToRender);
         const isCohortLike =
           selectedRoute === "cohort_search" ||
           intent === "cohort_search" ||
@@ -133,17 +151,17 @@ export function ChatMessages() {
           (message.diagnostics?.displayed_evidences_count === 1 || message.diagnostics?.included_rows_count === 1) &&
           !hasPatients &&
           !isCohortLike;
-        
-        let contentToRender = shouldRenderSourceLinks ? stripSourcesSection(message.content) : message.content;
-        
-        if (canRenderVisualization) {
-          contentToRender = stripVisualizationUnavailableText(contentToRender);
-        }
-        
-        // If we have interactive components (Visualisation or Patient Inventory), we might want to hide the Markdown table
-        if (hasPatients) {
-          contentToRender = stripMarkdownTable(contentToRender);
-        }
+        const isStructuredSummaryRoute =
+          isAssistant &&
+          isDone &&
+          (
+            selectedRoute === "doc_scoped_biological_summary" ||
+            intent === "doc_scoped_summary" ||
+            generationMode === "deterministic_doc_scoped_biological_summary" ||
+            generationMode === "hybrid_structured_llm_writer" ||
+            looksLikeDoctorNote ||
+            looksLikeTechnicalSummary
+          );
 
         const contentHasTable = hasMarkdownTable(contentToRender);
         const useSingleAnalyteCard =
@@ -191,6 +209,12 @@ export function ChatMessages() {
                     
                     {useSingleAnalyteCard ? (
                       <SingleAnalyteResultCard content={contentToRender} sources={message.sources} />
+                    ) : isStructuredSummaryRoute ? (
+                      <StructuredSummaryCard
+                        content={contentToRender}
+                        sources={message.sources}
+                        diagnostics={message.diagnostics}
+                      />
                     ) : (
                       <AssistantMarkdown content={contentToRender} />
                     )}
@@ -207,7 +231,7 @@ export function ChatMessages() {
                           {message.sources?.length || 0}
                         </span>
                       </div>
-                      <SourceLinks sources={message.sources} showTitle={false} compact />
+                      <SourceLinks sources={message.sources} showTitle={false} compact maxVisible={6} />
                     </div>
                   )
                 ) : null}

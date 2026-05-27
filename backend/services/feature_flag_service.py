@@ -31,6 +31,11 @@ DEFAULT_FLAGS: tuple[tuple[str, int, str], ...] = (
         0,
         "Enable LLM-assisted query understanding before deterministic backend processing",
     ),
+    (
+        "LLM_SUMMARY_WRITER_ENABLED",
+        0,
+        "Enable controlled LLM rewrite for doc-scoped summary and note-style requests",
+    ),
 )
 
 

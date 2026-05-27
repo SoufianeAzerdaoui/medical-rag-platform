@@ -66,6 +66,8 @@ class MessageItemResponse(BaseModel):
     conversation_id: str
     role: Literal["user", "assistant", "system"]
     content: str
+    sources: list[SourceItem] = Field(default_factory=list)
+    diagnostics: dict[str, Any] | None = None
     created_at: str
 
 

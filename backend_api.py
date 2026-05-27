@@ -131,8 +131,23 @@ def _touch_conversation(conversation_id: str) -> None:
     conversation_service.touch_conversation(conversation_id)
 
 
-def _save_message(conversation_id: str, role: str, content: str) -> MessageItemResponse:
-    return MessageItemResponse(**message_service.save_message(conversation_id, role, content))
+def _save_message(
+    conversation_id: str,
+    role: str,
+    content: str,
+    *,
+    sources: list[dict[str, Any]] | None = None,
+    diagnostics: dict[str, Any] | None = None,
+) -> MessageItemResponse:
+    return MessageItemResponse(
+        **message_service.save_message(
+            conversation_id,
+            role,
+            content,
+            sources=sources,
+            diagnostics=diagnostics,
+        )
+    )
 
 
 def _load_state_from_db(conversation_id: str) -> dict[str, Any] | None:

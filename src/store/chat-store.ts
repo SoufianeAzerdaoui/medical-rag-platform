@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import {
   ApiError,
+  type BackendMessageResponse,
   clearConversation,
   createConversation,
   deleteConversation as deleteConversationApi,
@@ -97,7 +98,9 @@ function toChatItem(row: { id: string; title: string; created_at: string; update
   };
 }
 
-function toMessage(chatId: string, row: { id: string; role: "user" | "assistant" | "system"; content: string; created_at: string }): MessageItem {
+function toMessage(chatId: string, row: BackendMessageResponse): MessageItem {
+  const sources = Array.isArray(row.sources) ? row.sources : [];
+  const diagnostics = row.diagnostics && typeof row.diagnostics === "object" ? (row.diagnostics as AssistantDiagnostics) : undefined;
   return {
     id: row.id,
     chatId,
@@ -105,7 +108,8 @@ function toMessage(chatId: string, row: { id: string; role: "user" | "assistant"
     content: row.content,
     createdAt: row.created_at,
     status: "done",
-    sources: [],
+    sources,
+    diagnostics,
   };
 }
 

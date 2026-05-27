@@ -64,11 +64,21 @@ def init_schema() -> None:
                 conversation_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
+                sources_json TEXT,
+                diagnostics_json TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
             )
             """
         )
+        message_columns = {
+            str(row[1]).strip().lower()
+            for row in cur.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        if "sources_json" not in message_columns:
+            cur.execute("ALTER TABLE messages ADD COLUMN sources_json TEXT")
+        if "diagnostics_json" not in message_columns:
+            cur.execute("ALTER TABLE messages ADD COLUMN diagnostics_json TEXT")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS conversation_states (

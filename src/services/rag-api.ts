@@ -27,6 +27,8 @@ export interface BackendMessageResponse {
   conversation_id: string;
   role: "user" | "assistant" | "system";
   content: string;
+  sources?: ChatSource[];
+  diagnostics?: Record<string, unknown> | null;
   created_at: string;
 }
 

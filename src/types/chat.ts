@@ -90,6 +90,20 @@ export interface AssistantDiagnostics {
   generation_mode?: string;
   generation_writer?: "llm_writer" | "professional_fallback";
   response_time?: number;
+  intent?: string | null;
+  selected_route?: string | null;
+  route_reason?: string | null;
+  technical_condition?: string | null;
+  requested_doc_ids?: string[] | null;
+  requested_analytes?: string[] | null;
+  answerability_status?: string | null;
+  fallback_kind?: string | null;
+  llm_route_class?: string | null;
+  llm_writer_attempted?: boolean | null;
+  llm_writer_accepted?: boolean | null;
+  llm_skipped_reason?: string | null;
+  generation_mode_before_fallback?: string | null;
+  fallback_decision_path?: string | null;
 }
 
 export interface MessageItem {
@@ -139,4 +153,13 @@ export interface RagResponse {
   chart_data?: VisualizationPayload;
   patients?: Array<Record<string, unknown>>;
   inventory_view?: InventoryView;
+  intent?: string | null;
+  selected_route?: string | null;
+  route_reason?: string | null;
+  technical_condition?: string | null;
+  requested_doc_ids?: string[] | null;
+  requested_analytes?: string[] | null;
+  answerability_status?: string | null;
+  fallback_kind?: string | null;
+  debug?: Record<string, unknown> | null;
 }

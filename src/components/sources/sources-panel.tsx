@@ -22,7 +22,7 @@ export function SourcesPanel({ mobileOpen, onClose }: { mobileOpen: boolean; onC
         <h3 className="mb-3 text-sm font-semibold">Sources</h3>
         <p className="mb-3 text-xs text-fg/70">Cette réponse ne remplace pas l'avis médical.</p>
         <div className="space-y-2 overflow-auto">
-          {sources.length === 0 ? <p className="text-xs text-fg/70">Aucune source pour le moment.</p> : <SourceLinks sources={sources} showTitle={false} compact />}
+          {sources.length === 0 ? <p className="text-xs text-fg/70">Aucune source pour le moment.</p> : <SourceLinks sources={sources} showTitle={false} compact maxVisible={12} />}
         </div>
       </aside>
       <AnimatePresence>
@@ -49,7 +49,7 @@ export function SourcesPanel({ mobileOpen, onClose }: { mobileOpen: boolean; onC
                 </button>
               </div>
               <div className="space-y-2 overflow-auto">
-                {sources.length === 0 ? <p className="text-xs text-fg/70">Aucune source pour le moment.</p> : <SourceLinks sources={sources} showTitle={false} compact />}
+                {sources.length === 0 ? <p className="text-xs text-fg/70">Aucune source pour le moment.</p> : <SourceLinks sources={sources} showTitle={false} compact maxVisible={12} />}
               </div>
             </motion.aside>
           </motion.div>
