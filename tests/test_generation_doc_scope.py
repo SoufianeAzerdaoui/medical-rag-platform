@@ -1821,6 +1821,169 @@ class TestGenerationDocScope(unittest.TestCase):
         )
         self.assertIn("Note sur les valeurs physiologiques", answer)
         self.assertIn("Source :", answer)
+        self.assertNotIn("Paramètres hors référence notables", answer)
+        self.assertNotIn("Points biologiques notables", answer)
+
+    def test_reference_ranges_summary_facts_filters_ocr_noisy_analytes(self) -> None:
+        ga = __import__("generate_answer")
+        facts = ga._build_reference_ranges_summary_facts(
+            [
+                {
+                    "doc_id": "report_12",
+                    "page": 1,
+                    "analyte": "associés < 1 g/L après un infarctus du myocarde",
+                    "current_value": "0.23",
+                    "unit": "g/l",
+                    "reference": "cérébral ou chez les diabétiques à haut risque.",
+                    "technical_status_code": "unknown",
+                },
+                {
+                    "doc_id": "report_12",
+                    "page": 2,
+                    "analyte": "Créatinine",
+                    "current_value": "23",
+                    "unit": "mg/l",
+                    "reference": "Femme : 5,7 - 11,1 mg/l",
+                    "technical_status_code": "above_reference",
+                },
+            ]
+        )
+        total = int(facts.get("total_reference_items") or 0)
+        self.assertEqual(total, 1)
+        all_items = []
+        for key in [
+            "ranges_min_max",
+            "ranges_by_sex",
+            "ranges_by_age",
+            "threshold_ranges",
+            "interpretive_categories",
+            "unclassified",
+        ]:
+            all_items.extend(list(facts.get(key) or []))
+        analytes = {str(item.get("analyte") or "") for item in all_items}
+        self.assertIn("Créatinine", analytes)
+        self.assertNotIn("associés < 1 g/L après un infarctus du myocarde", analytes)
+
+    def test_reference_ranges_summary_postprocess_forces_conclusion(self) -> None:
+        ga = __import__("generate_answer")
+        qu_mod = __import__("query_understanding")
+        qu = qu_mod.parse_query_understanding(
+            "tu peux faire une note pour les differents plages qui exist dans les valeurs phisiologique dans report 12"
+        )
+        answer = ga._postprocess_reference_ranges_summary_answer(
+            answer_text="**Types de références physiologiques présentes dans le document**\n* min-max ...",
+            displayed_evidences=[
+                {
+                    "doc_id": "report_12",
+                    "page": 1,
+                    "analyte": "AMMONIUM",
+                    "current_value": "20",
+                    "unit": "µg/dl",
+                    "reference": "31,00 - 123,00",
+                    "technical_status_code": "below_reference",
+                }
+            ],
+            evidence_all_summary=None,
+            query_understanding=qu,
+        )
+        self.assertIn("Note sur les valeurs physiologiques", answer)
+        self.assertIn("Conclusion technique :", answer)
+        self.assertIn("Source :", answer)
+
+    def test_reference_ranges_summary_style_guard_production(self) -> None:
+        ga = __import__("generate_answer")
+        answer = ga._build_reference_ranges_summary_answer(
+            [
+                {
+                    "doc_id": "report_12",
+                    "page": 1,
+                    "analyte": "Albumine",
+                    "current_value": "40",
+                    "unit": "g/l",
+                    "reference": "35 à 50 g/l",
+                },
+                {
+                    "doc_id": "report_12",
+                    "page": 1,
+                    "analyte": "ACIDE URIQUE",
+                    "current_value": "23",
+                    "unit": "mg/l",
+                    "reference": "Homme : 35 - 72 mg/l Femme: 26-60 mg/l",
+                },
+                {
+                    "doc_id": "report_12",
+                    "page": 1,
+                    "analyte": "MAGNESIUM PLASMATIQUE",
+                    "current_value": "20",
+                    "unit": "mg/l",
+                    "reference": "Nouveau-né : 15 à 22 mg/l Enfant : 17 à 23 mg/l Adulte : 16 à 26 mg/l",
+                },
+                {
+                    "doc_id": "report_12",
+                    "page": 2,
+                    "analyte": "Lipase",
+                    "current_value": "14",
+                    "unit": "UI/l",
+                    "reference": "<60 UI/l",
+                },
+                {
+                    "doc_id": "report_12",
+                    "page": 2,
+                    "analyte": "CKMB (CPKMB)",
+                    "current_value": "40",
+                    "unit": "UI/L",
+                    "reference": "<25 UI/L",
+                },
+                {
+                    "doc_id": "report_12",
+                    "page": 2,
+                    "analyte": "Cholestérol total",
+                    "current_value": "1.60",
+                    "unit": "g/l",
+                    "reference": "Adulte Taux souhaitable: < 2 g/l Taux modéré: 2 - 2,39 g/l Taux élévé: > 2,40 g/l",
+                },
+            ],
+            max_lines=7,
+            no_diagnosis=True,
+        )
+        first_line = str(answer.splitlines()[0] if answer.splitlines() else "")
+        self.assertFalse(first_line.lower().startswith("plages min-max :"))
+        self.assertNotIn("\nPlages min-max :", answer)
+        self.assertNotIn("\nRéférences selon âge/sexe :", answer)
+        self.assertNotIn("\nSeuils et catégories interprétatives :", answer)
+        self.assertIn("Le rapport contient plusieurs formats de valeurs physiologiques", answer)
+        n = str(answer).lower()
+        self.assertIn("plages min-max", n)
+        self.assertIn("seuil", n)
+        self.assertIn("âge", answer)
+        self.assertIn("sexe", answer)
+        self.assertIn("catégories interprétatives", answer)
+        self.assertIn("sans diagnostic médical", n)
+
+    def test_reference_ranges_summary_llm_style_guard_rejects_list_like_answer(self) -> None:
+        ga = __import__("generate_answer")
+        list_like = (
+            "Note sur les valeurs physiologiques — report_12.\n"
+            "Le rapport contient plusieurs formats de valeurs physiologiques.\n"
+            "Note: Références selon âge/sexe : Créatinine, GGT.\n"
+            "Note: Seuils et catégories interprétatives : Lipase, CKMB.\n"
+            "Source : report_12, pages 1-3."
+        )
+        self.assertFalse(ga._is_reference_ranges_narrative_answer(list_like))
+
+    def test_reference_ranges_summary_llm_style_guard_accepts_narrative_answer(self) -> None:
+        ga = __import__("generate_answer")
+        narrative = (
+            "Note sur les valeurs physiologiques — report_12.\n"
+            "Le rapport contient plusieurs formats de valeurs physiologiques : plages min-max, seuils numériques, références selon l’âge, selon le sexe et catégories interprétatives.\n"
+            "Les plages min-max concernent notamment l’albumine, l’ammonium et le phosphore.\n"
+            "Certaines références varient selon le profil patient, notamment pour la créatinine et la GGT.\n"
+            "D'autres paramètres utilisent des seuils ou catégories, notamment la lipase, la CK-MB et les triglycérides.\n"
+            "Ces références servent à structurer une lecture technique du rapport.\n"
+            "Conclusion technique : note descriptive uniquement, sans diagnostic médical.\n"
+            "Source : report_12, pages 1-3."
+        )
+        self.assertTrue(ga._is_reference_ranges_narrative_answer(narrative))
 
     def test_llm_evidence_pack_keeps_doc_scope_fields_for_summary(self) -> None:
         ga = __import__("generate_answer")
@@ -2055,6 +2218,8 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertIsNone(debug.get("llm_candidate_validation_status"))
         self.assertTrue(debug.get("llm_candidate_validation_errors") in (None, []))
         self.assertEqual(str(debug.get("fallback_renderer_used") or ""), "deterministic_biological_summary_short")
+        self.assertFalse(bool(result.get("llm_writer_accepted")))
+        self.assertEqual(str(result.get("final_answer_source") or ""), "deterministic_renderer")
 
     def test_level2_candidate_valid_kept_as_final_answer(self) -> None:
         old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")

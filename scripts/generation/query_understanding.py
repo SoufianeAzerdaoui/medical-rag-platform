@@ -728,44 +728,62 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
             or "toutes les plages" in qn
         )
     )
+    reference_ranges_core_markers = [
+        "plage",
+        "plages",
+        "reference",
+        "référence",
+        "references",
+        "références",
+        "intervalle",
+        "intervalles",
+        "norme",
+        "normes",
+        "seuil",
+        "seuils",
+        "types de references",
+        "types de références",
+    ]
+    physiological_stems = ["physiolog", "phisiolog"]
+    note_style_markers = [
+        "note",
+        "resume",
+        "résume",
+        "synthese",
+        "synthèse",
+        "classe",
+        "classer",
+        "categorie",
+        "catégorie",
+        "categories",
+        "catégories",
+        "types",
+    ]
+    profile_axes_markers = [
+        "selon sexe",
+        "selon age",
+        "selon âge",
+        "homme",
+        "femme",
+        "enfant",
+        "adulte",
+        "nourrisson",
+        "nouveau ne",
+        "nouveau-né",
+    ]
+    has_reference_ranges_semantic = (
+        any(k in qn for k in reference_ranges_core_markers)
+        and (
+            any(stem in qn for stem in physiological_stems)
+            or any(k in qn for k in profile_axes_markers)
+            or "valeurs de reference" in qn
+            or "valeurs de référence" in qn
+        )
+    )
     has_reference_ranges_summary = (
         len(doc_ids) >= 1
-        and any(
-            k in qn
-            for k in [
-                "valeurs physiologiques",
-                "valeurs de reference",
-                "valeurs de référence",
-                "plages de reference",
-                "plages de référence",
-                "plages physiologiques",
-                "differentes plages",
-                "différentes plages",
-                "references selon",
-                "références selon",
-                "selon sexe",
-                "selon age",
-                "selon âge",
-                "seuil",
-                "seuils",
-                "intervalle normal",
-            ]
-        )
-        and any(
-            k in qn
-            for k in [
-                "note",
-                "resume",
-                "résume",
-                "synthese",
-                "synthèse",
-                "classe",
-                "categorie",
-                "catégorie",
-                "categories",
-                "catégories",
-            ]
-        )
+        and has_reference_ranges_semantic
+        and any(k in qn for k in note_style_markers)
         and len(analyte_list) <= 1
     )
     has_no_diagnostic_constraint = any(

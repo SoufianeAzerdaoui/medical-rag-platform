@@ -109,6 +109,12 @@ class ChatResponse(BaseModel):
     validation_status: Literal["pass", "warning", "fail"] | None = None
     generation_mode: str | None = None
     generation_writer: str | None = None
+    selected_route: str | None = None
+    llm_writer_attempted: bool | None = None
+    llm_writer_accepted: bool | None = None
+    final_answer_source: Literal["llm_writer", "deterministic_renderer"] | None = None
+    renderer_used: str | None = None
+    fallback_reason: str | None = None
     visualization: dict[str, Any] | None = None
     chart_data: dict[str, Any] | None = None
     patients: list[dict[str, Any]] | None = None

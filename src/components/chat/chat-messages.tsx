@@ -59,6 +59,7 @@ function hasMarkdownTable(content: string): boolean {
 }
 
 export function ChatMessages() {
+  const SOURCE_TOP_N = 6;
   const chats = useChatStore((s) => s.chats);
   const activeChatId = useChatStore((s) => s.activeChatId);
   const qualityDebugEnabled = useChatStore((s) => s.qualityDebugEnabled);
@@ -156,8 +157,11 @@ export function ChatMessages() {
           isDone &&
           (
             selectedRoute === "doc_scoped_biological_summary" ||
+            selectedRoute === "reference_ranges_summary" ||
             intent === "doc_scoped_summary" ||
+            intent === "reference_ranges_summary" ||
             generationMode === "deterministic_doc_scoped_biological_summary" ||
+            generationMode === "deterministic_reference_ranges_summary" ||
             generationMode === "hybrid_structured_llm_writer" ||
             looksLikeDoctorNote ||
             looksLikeTechnicalSummary
@@ -231,7 +235,7 @@ export function ChatMessages() {
                           {message.sources?.length || 0}
                         </span>
                       </div>
-                      <SourceLinks sources={message.sources} showTitle={false} compact maxVisible={6} />
+                      <SourceLinks sources={message.sources} showTitle={false} compact maxVisible={SOURCE_TOP_N} />
                     </div>
                   )
                 ) : null}

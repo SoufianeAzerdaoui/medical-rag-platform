@@ -12,7 +12,7 @@ type Props = {
 };
 
 type ParsedSummary = {
-  kind: "technical_summary" | "doctor_note";
+  kind: "technical_summary" | "doctor_note" | "reference_ranges_note";
   title: string;
   context: string;
   anomalies: string[];
@@ -121,13 +121,28 @@ function extractLine(text: string, keys: string[]): string {
   return "";
 }
 
-function parseSummary(content: string): ParsedSummary {
+function firstSentenceOnly(value: string): string {
+  const text = normalizeMedicalUnits(cleanSegment(value));
+  if (!text) return "";
+  const m = text.match(/^(.+?[.!?])(?:\s|$)/);
+  return sanitizeForSentence(m?.[1] || text);
+}
+
+function parseSummary(content: string, diagnostics?: AssistantDiagnostics): ParsedSummary {
   const lines = content
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
-  const titleLine = lines.find((line) => /^note de synth[eè]se m[eé]dicale/i.test(line));
+  const titleLine = lines.find(
+    (line) =>
+      /^note de synth[eè]se m[eé]dicale/i.test(line) ||
+      /^note m[eé]dicale/i.test(line) ||
+      /^note sur les valeurs physiologiques/i.test(line),
+  );
   if (titleLine) {
+    const isReferenceRangesNote = /^note sur les valeurs physiologiques/i.test(titleLine);
+    const llmNarrativeReferenceNote =
+      isReferenceRangesNote && String(diagnostics?.final_answer_source || "").toLowerCase() === "llm_writer";
     const noteLines: string[] = [];
     const notableRaw = extractLine(content, ["points biologiques notables", "paramètres hors référence notables", "parametres hors reference notables"]);
     const rangesRaw = extractLine(content, ["plages et statuts documentés", "plages et statuts documentes", "plages de référence documentées", "plages de reference documentees"]);
@@ -143,9 +158,14 @@ function parseSummary(content: string): ParsedSummary {
     const conclusionRaw = extractLine(content, ["conclusion technique", "synthèse", "synthese"]);
     const rangeItems = splitLineItems(rangesRaw);
 
+    const documentAnalyzedRaw = extractLine(content, ["document analysé", "document analyse"]);
+
     const contextLine = lines.find(
       (line) =>
         !/^note de synth[eè]se m[eé]dicale/i.test(line) &&
+        !/^note m[eé]dicale/i.test(line) &&
+        !/^note sur les valeurs physiologiques/i.test(line) &&
+        !/^document analys[ée]\s*:/i.test(line) &&
         !/^points biologiques notables\s*:/i.test(line) &&
         !/^param[eè]tres hors r[ée]f[ée]rence notables\s*:/i.test(line) &&
         !/^plages et statuts document[ée]s\s*:/i.test(line) &&
@@ -157,13 +177,38 @@ function parseSummary(content: string): ParsedSummary {
         !/^conclusion technique\s*:/i.test(line),
     ) || "";
 
-    if (notableRaw) noteLines.push(ensureSentence(`Le bilan montre plusieurs écarts biologiques documentés, notamment : ${notableRaw}`));
-    if (extraRaw) noteLines.push(ensureSentence(`Autres écarts documentés : ${extraRaw}`));
-    if (normalRaw) noteLines.push(ensureSentence(`Dans les références indiquées : ${normalRaw}`));
+    if (isReferenceRangesNote && !llmNarrativeReferenceNote) {
+      for (const line of lines) {
+        if (
+          /^plages min-max\s*:/i.test(line) ||
+          /^seuils\s*\(/i.test(line) ||
+          /^seuils et cat[ée]gories interpr[ée]tatives/i.test(line) ||
+          /^r[ée]f[ée]rences selon sexe\/[âa]ge\s*:/i.test(line) ||
+          /^r[ée]f[ée]rences selon [âa]ge\/sexe\s*:/i.test(line) ||
+          /^cat[ée]gories interpr[ée]tatives\s*:/i.test(line)
+        ) {
+          noteLines.push(ensureSentence(line));
+        }
+      }
+    } else {
+      if (notableRaw) noteLines.push(ensureSentence(`Le bilan montre plusieurs écarts biologiques documentés, notamment : ${notableRaw}`));
+      if (extraRaw) noteLines.push(ensureSentence(`Autres écarts documentés : ${extraRaw}`));
+      if (normalRaw) noteLines.push(ensureSentence(`Dans les références indiquées : ${normalRaw}`));
+    }
+
+    const sourcePagesHint = (() => {
+      const source = String(sourceRaw || "");
+      const rangeMatch = source.match(/pages?\s*\d+\s*[-–]\s*\d+/i);
+      const pageMatch = source.match(/page\s*\d+/i);
+      return sanitizeForSentence(rangeMatch?.[0] || pageMatch?.[0] || "");
+    })();
 
     for (const line of lines) {
       if (
         /^note de synth[eè]se m[eé]dicale/i.test(line) ||
+        /^note m[eé]dicale/i.test(line) ||
+        /^note sur les valeurs physiologiques/i.test(line) ||
+        /^document analys[ée]\s*:/i.test(line) ||
         /^points biologiques notables\s*:/i.test(line) ||
         /^param[eè]tres hors r[ée]f[ée]rence notables\s*:/i.test(line) ||
         /^plages et statuts document[ée]s\s*:/i.test(line) ||
@@ -183,13 +228,17 @@ function parseSummary(content: string): ParsedSummary {
     }
 
     return {
-      kind: "doctor_note",
+      kind: isReferenceRangesNote ? "reference_ranges_note" : "doctor_note",
       title: normalizeMedicalUnits(cleanSegment(titleLine)),
-      context: normalizeMedicalUnits(cleanSegment(contextLine)),
+      context: isReferenceRangesNote
+        ? (sourcePagesHint || firstSentenceOnly(documentAnalyzedRaw))
+        : normalizeMedicalUnits(cleanSegment(contextLine)),
       anomalies: splitLineItems(notableRaw),
       normals: splitLineItems(normalRaw),
       notableExtra: splitLineItems(extraRaw),
-      warning: normalizeMedicalUnits(cleanSegment(warningRaw)),
+      warning: isReferenceRangesNote
+        ? "Note descriptive uniquement, sans diagnostic médical."
+        : normalizeMedicalUnits(cleanSegment(warningRaw)),
       source: normalizeMedicalUnits(cleanSegment(sourceRaw)),
       conclusion: normalizeMedicalUnits(cleanSegment(conclusionRaw)),
       noteLines,
@@ -272,12 +321,13 @@ function firstSentence(value: string): string {
 
 export function StructuredSummaryCard({ content, sources = [], diagnostics }: Props) {
   const [showAllRanges, setShowAllRanges] = useState(false);
-  const parsed = parseSummary(content);
+  const parsed = parseSummary(content, diagnostics);
   const sourceHint = firstSourceHint(sources);
   const sourceLink = firstSourceLink(sources);
   const parsedSource = parsed.source && !/^document fourni\.?$/i.test(parsed.source) ? parsed.source : "";
   const synthesis = synthesisText(parsed.warning || parsed.conclusion);
-  const isDoctorNote = parsed.kind === "doctor_note";
+  const isDoctorNote = parsed.kind === "doctor_note" || parsed.kind === "reference_ranges_note";
+  const isReferenceRangesNote = parsed.kind === "reference_ranges_note";
   const docScope = Array.isArray(diagnostics?.requested_doc_ids) && diagnostics?.requested_doc_ids?.length
     ? diagnostics.requested_doc_ids.join(", ")
     : null;
@@ -289,9 +339,8 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
   const rangePreviewCount = 4;
   const visibleRangeItems = showAllRanges ? rangeItems : rangeItems.slice(0, rangePreviewCount);
   const hasMoreRanges = rangeItems.length > rangePreviewCount;
-  const hiddenRangesCount = Math.max(0, rangeItems.length - visibleRangeItems.length);
   const rangeSentence = visibleRangeItems.length
-    ? `Plages et statuts documentés : ${visibleRangeItems.join("; ")}${hiddenRangesCount > 0 ? `; +${hiddenRangesCount} autre(s)` : ""}.`
+    ? `Plages et statuts documentés : ${visibleRangeItems.join("; ")}.`
     : "";
 
   return (
@@ -304,7 +353,7 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
       <div className="flex flex-wrap items-center gap-2">
         <span className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-xs font-medium text-fg/80 transition hover:-translate-y-px">
           <FlaskConical size={12} />
-          {isDoctorNote ? "Note médicale" : "Résumé technique"}
+          {isDoctorNote ? (isReferenceRangesNote ? "Note sur les valeurs physiologiques" : "Note médicale") : "Résumé technique"}
         </span>
         <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-200 transition hover:-translate-y-px">
           <ShieldCheck size={12} />

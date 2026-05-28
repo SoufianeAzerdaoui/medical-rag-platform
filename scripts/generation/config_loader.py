@@ -274,6 +274,125 @@ _DEFAULT_GENERATION_ROUTING: dict[str, Any] = {
 }
 
 
+_DEFAULT_GENERATION_TEMPLATES: dict[str, Any] = {
+    "reference_ranges_summary": {
+        "interpretive_markers": ["cholesterol hdl", "cholesterol total", "triglycerides"],
+        "target_counts": {
+            "minmax": 8,
+            "sex_age": 11,
+            "threshold": 7,
+            "interpretive": 4,
+        },
+        "priority_order": [
+            "albumine",
+            "ammonium",
+            "bilirubine totale",
+            "bilirubine directe",
+            "phosphore",
+            "ldh",
+            "crp",
+            "reserve alcaline",
+            "magnesium plasmatique",
+            "calcium",
+            "glucose",
+            "acide urique",
+            "creatinine",
+            "ggt",
+            "c3",
+            "c4",
+            "phosphatase alcaline",
+            "haptoglobine",
+            "ige totales",
+            "lipase",
+            "ckmb (cpkmb)",
+            "microalbuminurie",
+            "aslo",
+            "cholesterol total",
+            "cholesterol hdl",
+            "triglycerides",
+        ],
+        "must_include": {
+            "minmax": ["CRP", "Albumine", "Réserve Alcaline"],
+            "sex_age": [
+                "MAGNESIUM PLASMATIQUE",
+                "Calcium",
+                "Glucose",
+                "ACIDE URIQUE",
+                "Créatinine",
+                "GGT",
+                "C3",
+                "C4",
+                "Phosphatase Alcaline",
+                "Haptoglobine",
+                "IGE TOTALES",
+            ],
+            "threshold": [
+                "Lipase",
+                "CKMB (CPKMB)",
+                "MICROALBUMINURIE",
+                "ASLO",
+                "Cholestérol total",
+                "Cholestérol HDL",
+                "Triglycérides",
+            ],
+        },
+        "line_labels": {
+            "title": "Note sur les valeurs physiologiques",
+            "document_prefix": "Document analysé :",
+            "minmax_prefix": "Plages min-max :",
+            "sex_age_prefix": "Références selon âge/sexe :",
+            "threshold_prefix": "Seuils et catégories interprétatives (incluant seuils interprétatifs de risque) :",
+            "source_prefix": "Source :",
+        },
+        "narrative_intro": (
+            "Le rapport contient plusieurs formats de valeurs physiologiques : "
+            "plages min-max, seuils numériques, références selon l’âge, selon le sexe "
+            "et catégories interprétatives."
+        ),
+        "conclusion_no_diagnosis": (
+            "Conclusion technique : note descriptive uniquement, sans diagnostic médical."
+        ),
+        "conclusion_default": "Conclusion technique : note descriptive des références physiologiques.",
+        "line_limits": {
+            "min": 7,
+            "max": 8,
+            "default": 7,
+            "llm_note_min": 5,
+            "llm_note_max": 7,
+        },
+        "llm_intro_filters": {
+            "max_colon_line_length": 140,
+            "max_line_length": 220,
+            "excluded_prefixes": [
+                "note sur les valeurs physiologiques",
+                "plages min max",
+                "seuils",
+                "references selon",
+                "categories interpretatives",
+                "conclusion technique",
+                "source",
+            ],
+        },
+        "llm_style_guard": {
+            "banned_line_prefixes": [
+                "Plages min-max :",
+                "Références selon âge/sexe :",
+                "Seuils et catégories interprétatives :",
+                "Catégories interprétatives :",
+            ],
+            "required_narrative_markers": [
+                "Le rapport contient plusieurs formats de valeurs physiologiques",
+                "Les plages min-max concernent",
+                "Certaines références varient",
+                "D'autres paramètres utilisent",
+                "Ces références servent à",
+            ],
+            "min_narrative_marker_hits": 3,
+        },
+    }
+}
+
+
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     out = dict(base)
     for k, v in (override or {}).items():
@@ -351,6 +470,11 @@ def get_generation_routing_config() -> dict[str, Any]:
     return load_yaml_config(CONFIG_DIR / "generation_routing.yml", _DEFAULT_GENERATION_ROUTING)
 
 
+@lru_cache(maxsize=1)
+def get_generation_templates_config() -> dict[str, Any]:
+    return load_yaml_config(CONFIG_DIR / "generation_templates.yml", _DEFAULT_GENERATION_TEMPLATES)
+
+
 __all__ = [
     "load_yaml_config",
     "get_medical_topics_config",
@@ -360,4 +484,5 @@ __all__ = [
     "get_safety_guardrails_config",
     "get_medical_entity_resolver_config",
     "get_generation_routing_config",
+    "get_generation_templates_config",
 ]

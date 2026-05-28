@@ -84,12 +84,29 @@ export function useChatActions() {
             (rawDebug.llm_route_class as string | null) ??
             null,
           llm_writer_attempted:
+            (response.llm_writer_attempted as boolean | null) ??
             (debug.llm_writer_attempted as boolean | null) ??
             (rawDebug.llm_writer_attempted as boolean | null) ??
             null,
           llm_writer_accepted:
+            (response.llm_writer_accepted as boolean | null) ??
             (debug.llm_writer_accepted as boolean | null) ??
             (rawDebug.llm_writer_accepted as boolean | null) ??
+            null,
+          final_answer_source:
+            (response.final_answer_source as "llm_writer" | "deterministic_renderer" | null) ??
+            (debug.final_answer_source as "llm_writer" | "deterministic_renderer" | null) ??
+            (rawDebug.final_answer_source as "llm_writer" | "deterministic_renderer" | null) ??
+            null,
+          renderer_used:
+            (response.renderer_used as string | null) ??
+            (debug.renderer_used as string | null) ??
+            (rawDebug.renderer_used as string | null) ??
+            null,
+          fallback_reason:
+            (response.fallback_reason as string | null) ??
+            (debug.fallback_reason as string | null) ??
+            (rawDebug.fallback_reason as string | null) ??
             null,
           llm_skipped_reason:
             (debug.llm_skipped_reason as string | null) ??

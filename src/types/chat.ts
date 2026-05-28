@@ -101,6 +101,9 @@ export interface AssistantDiagnostics {
   llm_route_class?: string | null;
   llm_writer_attempted?: boolean | null;
   llm_writer_accepted?: boolean | null;
+  final_answer_source?: "llm_writer" | "deterministic_renderer" | null;
+  renderer_used?: string | null;
+  fallback_reason?: string | null;
   llm_skipped_reason?: string | null;
   generation_mode_before_fallback?: string | null;
   fallback_decision_path?: string | null;
@@ -149,6 +152,11 @@ export interface RagResponse {
   validation_status?: "pass" | "warning" | "fail";
   generation_mode?: string;
   generation_writer?: "llm_writer" | "professional_fallback";
+  llm_writer_attempted?: boolean | null;
+  llm_writer_accepted?: boolean | null;
+  final_answer_source?: "llm_writer" | "deterministic_renderer" | null;
+  renderer_used?: string | null;
+  fallback_reason?: string | null;
   visualization?: VisualizationPayload;
   chart_data?: VisualizationPayload;
   patients?: Array<Record<string, unknown>>;

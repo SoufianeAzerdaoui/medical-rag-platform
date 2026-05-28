@@ -215,6 +215,13 @@ class TestQueryUnderstanding(unittest.TestCase):
         self.assertEqual(qu.intent, "reference_ranges_summary")
         self.assertEqual(qu.requested_doc_ids, ["report_12"])
 
+    def test_reference_ranges_summary_intent_with_noisy_french_typo(self) -> None:
+        qu = parse_query_understanding(
+            "tu peux faire une note pour les differents plages qui exist dans les valeurs phisiologique dans report 12"
+        )
+        self.assertEqual(qu.intent, "reference_ranges_summary")
+        self.assertEqual(qu.requested_doc_ids, ["report_12"])
+
     def test_ok_transform_followup_is_response_transform(self) -> None:
         qu = parse_query_understanding("ok donne moi le résultat en JSON strict")
         self.assertEqual(qu.intent, "response_transform")
