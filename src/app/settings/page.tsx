@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import { useTheme } from "next-themes";
+import { WorkspaceShell } from "@/components/layout/workspace-shell";
 import { useChatStore } from "@/store/chat-store";
 
 export default function SettingsPage() {
@@ -30,8 +31,17 @@ export default function SettingsPage() {
   }
 
   return (
-    <main className="mx-auto max-w-4xl space-y-4 p-6">
-      <h1 className="text-2xl font-semibold">Settings</h1>
+    <WorkspaceShell
+      title="Paramètres"
+      subtitle="Préférences de la plateforme clinique"
+      breadcrumbs={["Clinical Assistant", "Settings"]}
+      actions={[
+        { href: "/chat", label: "Retour au chat" },
+        { href: "/documents", label: "Importer document" },
+        { href: "/chat", label: "Nouvelle conversation" },
+      ]}
+    >
+      <main className="mx-auto max-w-4xl space-y-4 p-6">
       <section className="rounded-xl border border-border p-4">
         <p className="text-sm">API Base URL: {apiUrl}</p>
       </section>
@@ -93,6 +103,7 @@ export default function SettingsPage() {
         </div>
       </section>
       <p className="text-xs text-fg/70">Cette réponse ne remplace pas l'avis médical.</p>
-    </main>
+      </main>
+    </WorkspaceShell>
   );
 }

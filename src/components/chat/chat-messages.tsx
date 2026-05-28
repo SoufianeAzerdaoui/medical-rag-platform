@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { AlertTriangle, Copy, FileText, RotateCcw, Sparkles } from "lucide-react";
+import { Copy, Eye, EyeOff, FileDown, FileSearch, FileText, FlaskConical, GitCompareArrows, RotateCcw, Sparkles } from "lucide-react";
 import { AssistantLoadingMessage } from "@/components/chat/assistant-loading-message";
 import { AssistantConversationCard } from "@/components/chat/assistant-conversation-card";
 import { AssistantMarkdown } from "@/components/chat/assistant-markdown";
@@ -13,8 +13,9 @@ import { SourceLinks, stripSourcesSection } from "@/components/sources/source-li
 import { PatientInventoryRenderer } from "@/components/chat/patient-inventory-renderer";
 import { SingleAnalyteResultCard } from "@/components/chat/single-analyte-result-card";
 import { StructuredSummaryCard } from "@/components/chat/structured-summary-card";
+import { useChatActions } from "@/hooks/use-chat-actions";
 import { useChatStore } from "@/store/chat-store";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 function isRenderableVisualization(message: {
   visualization?: { requested?: boolean; rendered_type?: string | null; type?: string; data?: unknown[] } | undefined;
@@ -64,6 +65,106 @@ function isGreetingLike(value: string): boolean {
   const text = String(value || "").trim().toLowerCase();
   if (!text) return false;
   return /^(bonjour|salut|hello|hi|bonsoir|coucou|hey|salam)\b/.test(text);
+}
+
+function isStaleLoadingMessage(createdAt?: string, thresholdMs = 90_000): boolean {
+  if (!createdAt) return false;
+  const ts = Date.parse(createdAt);
+  if (!Number.isFinite(ts)) return false;
+  return Date.now() - ts > thresholdMs;
+}
+
+type EvidenceMeter = {
+  level: "Élevé" | "Moyen" | "Faible";
+  sourcesFound: number;
+  extractedValues: number;
+  missingElements: number;
+  diagnosisProposed: "Oui" | "Non";
+  fromBackendMetrics: boolean;
+};
+
+function computeEvidenceMeter(message: {
+  content?: string;
+  sources?: unknown[];
+  diagnostics?: Record<string, unknown>;
+}): EvidenceMeter {
+  const content = String(message.content || "");
+  const diagnostics = (message.diagnostics || {}) as Record<string, unknown>;
+  const sourcesFoundFallback = Array.isArray(message.sources) ? message.sources.length : 0;
+  const hasDisplayedEvidences =
+    diagnostics.displayed_evidences_count !== undefined ||
+    diagnostics.included_rows_count !== undefined ||
+    diagnostics.used_sources_count !== undefined;
+  const sourcesFoundFromDiagnostics = Number(
+    diagnostics.displayed_evidences_count ??
+    diagnostics.included_rows_count ??
+    diagnostics.used_sources_count ??
+    NaN,
+  );
+  const sourcesFound = Number.isFinite(sourcesFoundFromDiagnostics)
+    ? Math.max(0, Math.round(sourcesFoundFromDiagnostics))
+    : sourcesFoundFallback;
+
+  const tableRows = content
+    .split("\n")
+    .filter((line) => /^\s*\|.*\|\s*$/.test(line) && !/^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(line)).length;
+  const listedValues = (content.match(/\b(?:TSH|T3|T4|Anti-TG|Hb|CRP|ASAT|ALAT|Leucocytes|Plaquettes)\b/gi) || []).length;
+  const extractedValues = Math.max(
+    0,
+    Math.max(tableRows > 1 ? tableRows - 1 : 0, listedValues),
+  );
+
+  const hasMissingValues =
+    diagnostics.missing_values_count !== undefined ||
+    diagnostics.missing_elements_count !== undefined ||
+    diagnostics.unresolved_items_count !== undefined;
+  const missingFromDiagnostics = Number(
+    diagnostics.missing_values_count ??
+    diagnostics.missing_elements_count ??
+    diagnostics.unresolved_items_count ??
+    0,
+  );
+  const uncertainMentions = (content.match(/(non trouv|non disponible|à vérifier|a verifier|indétermin|indetermine)/gi) || []).length;
+  const missingElements = Math.max(0, Number.isFinite(missingFromDiagnostics) ? missingFromDiagnostics : uncertainMentions);
+
+  const diagnosisProposed = /(diagnostic\s*:|diagnostic proposé|diagnostic propose|diagnostic retenu)/i.test(content)
+    ? "Oui"
+    : "Non";
+
+  const hasSafetyScore =
+    diagnostics.safety_score !== undefined ||
+    (diagnostics.quality_report as Record<string, unknown> | undefined)?.safety_score !== undefined;
+  const safetyRaw = Number(
+    diagnostics.safety_score ??
+    (diagnostics.quality_report as Record<string, unknown> | undefined)?.safety_score ??
+    NaN,
+  );
+  const safetyScore = Number.isFinite(safetyRaw)
+    ? (safetyRaw <= 1 ? safetyRaw * 100 : safetyRaw)
+    : 70;
+
+  const score =
+    sourcesFound * 24 +
+    extractedValues * 7 -
+    missingElements * 12 -
+    (diagnosisProposed === "Oui" ? 8 : 0) +
+    safetyScore * 0.25;
+  const level: EvidenceMeter["level"] = score >= 65 ? "Élevé" : score >= 35 ? "Moyen" : "Faible";
+
+  return {
+    level,
+    sourcesFound,
+    extractedValues,
+    missingElements,
+    diagnosisProposed,
+    fromBackendMetrics: hasDisplayedEvidences && hasMissingValues && hasSafetyScore,
+  };
+}
+
+function evidenceBadgeClass(level: EvidenceMeter["level"]): string {
+  if (level === "Élevé") return "border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200";
+  if (level === "Moyen") return "border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-200";
+  return "border-rose-500/35 bg-rose-500/10 text-rose-700 dark:text-rose-200";
 }
 
 type AssistantRenderType = "medical_structured" | "conversational" | "general_markdown";
@@ -138,12 +239,49 @@ export function ChatMessages() {
   const qualityDebugEnabled = useChatStore((s) => s.qualityDebugEnabled);
   const chat = chats.find((c) => c.id === activeChatId);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const { sendMessage, sending } = useChatActions();
+  const [hiddenDetails, setHiddenDetails] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [chat?.messages]);
 
   if (!chat || chat.messages.length === 0) {
+    const quickActions = [
+      {
+        id: "analyser-bilan",
+        title: "Analyser un bilan",
+        description: "Résumé biologique + anomalies principales",
+        prompt: "Analyse ce bilan biologique et donne les anomalies principales avec statut technique.",
+        mode: "document_analysis" as const,
+        icon: FlaskConical,
+      },
+      {
+        id: "comparer-rapports",
+        title: "Comparer deux rapports",
+        description: "Comparer les valeurs actuelles et antérieures",
+        prompt: "Compare ces deux rapports et indique les variations importantes.",
+        mode: "comparison" as const,
+        icon: GitCompareArrows,
+      },
+      {
+        id: "chercher-valeur",
+        title: "Chercher une valeur",
+        description: "Ex : Quelle est la TSH dans report 16 ?",
+        prompt: "Quelle est la TSH dans report 16 ?",
+        mode: "general" as const,
+        icon: FileSearch,
+      },
+      {
+        id: "note-clinique",
+        title: "Préparer une note clinique",
+        description: "Synthèse prudente avec sources",
+        prompt: "Prépare une note clinique prudente avec les sources documentaires utilisées.",
+        mode: "summary" as const,
+        icon: FileText,
+      },
+    ] as const;
+
     return (
       <div className="mx-auto flex min-h-full w-full max-w-5xl flex-col justify-center gap-6 px-5 py-10">
         <div className="max-w-2xl">
@@ -155,23 +293,24 @@ export function ChatMessages() {
           <p className="mt-3 max-w-xl text-sm leading-6 text-fg/[0.68]">
             Analyse les documents médicaux, compare les résultats et met en avant les points à vérifier avec les sources disponibles.
           </p>
+          <p className="mt-2 text-sm text-fg/[0.62]">Aucun document sélectionné. Importez un rapport ou choisissez une question suggérée.</p>
         </div>
         <div className="grid w-full gap-3 md:grid-cols-2">
-          {[
-            "Résume ce rapport biologique.",
-            "Quels résultats semblent anormaux ?",
-            "Explique les valeurs importantes.",
-            "Compare ces deux documents.",
-            "Quels éléments nécessitent vérification ?",
-          ].map((s) => (
+          {quickActions.map((action) => (
             <button
-              key={s}
-              className="premium-surface group flex min-h-16 items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition hover:-translate-y-0.5 hover:border-accent/35 hover:bg-card"
+              key={action.id}
+              type="button"
+              disabled={sending}
+              onClick={() => void sendMessage({ content: action.prompt, mode: action.mode })}
+              className="premium-surface group flex min-h-24 items-start gap-3 rounded-xl px-4 py-3 text-left text-sm transition hover:-translate-y-0.5 hover:border-accent/35 hover:bg-card"
             >
               <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
-                <FileText size={16} />
+                <action.icon size={16} />
               </span>
-              <span className="font-medium text-fg/[0.86]">{s}</span>
+              <span className="space-y-1">
+                <span className="block font-semibold text-fg/[0.9]">{action.title}</span>
+                <span className="block text-xs text-fg/[0.62]">{action.description}</span>
+              </span>
             </button>
           ))}
         </div>
@@ -186,10 +325,13 @@ export function ChatMessages() {
       {chat.messages.map((message: any, idx: number) => {
         const status = message.status || "done";
         const isAssistant = message.role === "assistant";
-        const isLoading = isAssistant && status === "loading";
+        const staleLoading = isAssistant && status === "loading" && isStaleLoadingMessage(message.createdAt);
+        const isLoading = isAssistant && status === "loading" && !staleLoading;
         const isError = isAssistant && status === "error";
         const isDone = isAssistant && status === "done";
         const shouldRenderSourceLinks = isDone && (message.sources?.length || 0) > 0;
+        const evidenceMeter = isDone && isAssistant ? computeEvidenceMeter(message) : null;
+        const detailsHidden = Boolean(hiddenDetails[message.id]);
         const canRenderVisualization =
           isAssistant && isDone && isRenderableVisualization(message) && !message.content.includes("Le format demandé est ambigu");
         const hasPatients = isAssistant && isDone && Array.isArray(message.patients) && message.patients.length > 0;
@@ -294,6 +436,16 @@ export function ChatMessages() {
           >
             {isLoading ? (
               <AssistantLoadingMessage />
+            ) : staleLoading ? (
+              <>
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-amber-500" />
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg/[0.52]">Assistant</p>
+                </div>
+                <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-100">
+                  La génération a pris trop de temps. Relance la question.
+                </div>
+              </>
             ) : (
               <>
                 <div className="mb-3 flex items-center gap-2">
@@ -338,13 +490,13 @@ export function ChatMessages() {
                       />
                     )}
                     
-                    {canRenderVisualization && contentHasTable ? (
+                    {canRenderVisualization && contentHasTable && !detailsHidden ? (
                       <p className="mt-3 text-xs uppercase tracking-wide text-fg/65">Données utilisées</p>
                     ) : null}
                     
                     {useSingleAnalyteCard ? (
                       <SingleAnalyteResultCard content={contentToRender} sources={message.sources} />
-                    ) : isStructuredSummaryRoute ? (
+                    ) : detailsHidden ? null : isStructuredSummaryRoute ? (
                       <StructuredSummaryCard
                         content={contentToRender}
                         sources={message.sources}
@@ -367,7 +519,36 @@ export function ChatMessages() {
                 ) : (
                   <p className="whitespace-pre-wrap text-sm leading-6">{contentToRender}</p>
                 )}
-                {isDone && shouldRenderSourceLinks ? (
+                {isDone && !shouldRenderSourceLinks && isAssistant ? (
+                  <div className="mt-4 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-100">
+                    <p className="font-medium">Aucune source trouvée</p>
+                    <p className="mt-1 text-xs">La réponse ne doit pas être utilisée sans document justificatif.</p>
+                  </div>
+                ) : null}
+                {isDone && isAssistant ? (
+                  <div className="mt-4 rounded-xl border border-border/70 bg-fg/[0.025] p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-fg/70">Niveau de support documentaire</p>
+                      <div className="flex items-center gap-2">
+                        {evidenceMeter!.fromBackendMetrics ? (
+                          <span className="rounded-full border border-accent/35 bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
+                            Basé sur métriques backend
+                          </span>
+                        ) : null}
+                        <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${evidenceBadgeClass(evidenceMeter!.level)}`}>
+                          {evidenceMeter!.level}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-fg/80 sm:grid-cols-4">
+                      <p>Sources trouvées : <span className="font-semibold text-fg">{evidenceMeter!.sourcesFound}</span></p>
+                      <p>Valeurs extraites : <span className="font-semibold text-fg">{evidenceMeter!.extractedValues}</span></p>
+                      <p>Éléments manquants : <span className="font-semibold text-fg">{evidenceMeter!.missingElements}</span></p>
+                      <p>Diagnostic proposé : <span className="font-semibold text-fg">{evidenceMeter!.diagnosisProposed}</span></p>
+                    </div>
+                  </div>
+                ) : null}
+                {isDone && shouldRenderSourceLinks && !detailsHidden ? (
                   useSingleAnalyteCard ? null : (
                     <div className="mt-4 rounded-xl border border-border/70 bg-fg/[0.025] p-3 shadow-sm">
                       <div className="mb-2 flex items-center justify-between gap-3">
@@ -386,16 +567,52 @@ export function ChatMessages() {
                   )
                 ) : null}
                 {isDone && isAssistant && qualityDebugEnabled ? <QualityReportCard diagnostics={message.diagnostics} /> : null}
-                {isDone && (
+                {isDone && isAssistant && (
                   <div className="mt-4 flex gap-2">
-                    <button aria-label="Copier" className="icon-button">
+                    <button
+                      aria-label="Copier la réponse"
+                      className="icon-button"
+                      onClick={() => void navigator.clipboard.writeText(contentToRender || "")}
+                      title="Copier la réponse"
+                    >
                       <Copy size={14} />
                     </button>
-                    <button aria-label="Régénérer" className="icon-button">
-                      <RotateCcw size={14} />
+                    <button
+                      aria-label="Exporter en PDF"
+                      className="icon-button"
+                      title="Exporter en PDF"
+                      onClick={() => {
+                        const w = window.open("", "_blank", "noopener,noreferrer");
+                        if (!w) return;
+                        w.document.write(`<html><head><title>Réponse Assistant</title></head><body><pre style="white-space:pre-wrap;font-family:system-ui;padding:20px;">${(contentToRender || "").replace(/</g, "&lt;")}</pre></body></html>`);
+                        w.document.close();
+                        w.focus();
+                        w.print();
+                      }}
+                    >
+                      <FileDown size={14} />
                     </button>
-                    <button aria-label="Feedback" className="icon-button">
-                      <AlertTriangle size={14} />
+                    <button
+                      aria-label={detailsHidden ? "Afficher les détails" : "Masquer les détails"}
+                      className="icon-button"
+                      title={detailsHidden ? "Afficher les détails" : "Masquer les détails"}
+                      onClick={() =>
+                        setHiddenDetails((prev) => ({ ...prev, [message.id]: !prev[message.id] }))
+                      }
+                    >
+                      {detailsHidden ? <Eye size={14} /> : <EyeOff size={14} />}
+                    </button>
+                    <button
+                      aria-label="Régénérer"
+                      className="icon-button"
+                      title="Régénérer"
+                      onClick={() => {
+                        const userPrompt = chat.messages[idx - 1]?.role === "user" ? chat.messages[idx - 1]?.content : "";
+                        if (!userPrompt || sending) return;
+                        void sendMessage({ content: userPrompt, mode: chat.mode || "general" });
+                      }}
+                    >
+                      <RotateCcw size={14} />
                     </button>
                   </div>
                 )}

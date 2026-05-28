@@ -26,6 +26,15 @@ type SourceSummary = {
   href?: string;
 };
 
+type EvolutionItem = {
+  analyte: string;
+  previous: number;
+  current: number;
+  previousRaw: string;
+  currentRaw: string;
+  variationPct: number | null;
+};
+
 const SECTION_CHROME = "rounded-xl border border-border/70 bg-card/[0.58] p-4 shadow-sm";
 
 function normalize(value: string): string {
@@ -170,6 +179,60 @@ function sourceSummary(source: ChatSource): SourceSummary | null {
   return { label: `${label}${page}`, href: href || undefined };
 }
 
+function parseNumeric(value: string): number | null {
+  const cleaned = normalize(value).replace(",", ".").match(/-?\d+(?:\.\d+)?/);
+  if (!cleaned) return null;
+  const parsed = Number(cleaned[0]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseEvolutionFromTable(table: MarkdownTable): EvolutionItem[] {
+  const headers = table.headers.map((h) => normalizeKey(h));
+  const analyteIdx = headers.findIndex((h) => /analyse|analyte|param|marqueur|test|examen/.test(h));
+  const oldIdx = headers.findIndex((h) => /ancien|precedent|précédent|old|anterieur|antérieur/.test(h));
+  const currentIdx = headers.findIndex((h) => /actuel|current|nouveau|recent|récent/.test(h));
+  if (analyteIdx < 0 || oldIdx < 0 || currentIdx < 0) return [];
+
+  return table.rows
+    .map((row) => {
+      const analyte = normalize(row[analyteIdx] || "");
+      const previousRaw = normalize(row[oldIdx] || "");
+      const currentRaw = normalize(row[currentIdx] || "");
+      const previous = parseNumeric(previousRaw);
+      const current = parseNumeric(currentRaw);
+      if (!analyte || previous === null || current === null) return null;
+      const variationPct = previous !== 0 ? ((current - previous) / Math.abs(previous)) * 100 : null;
+      return { analyte, previous, current, previousRaw, currentRaw, variationPct };
+    })
+    .filter((item): item is EvolutionItem => Boolean(item));
+}
+
+function parseEvolutionFromText(content: string): EvolutionItem[] {
+  const lines = content.split("\n").map((line) => line.trim()).filter(Boolean);
+  const out: EvolutionItem[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const analyteLine = lines[i].replace(/^[-*]\s*/, "");
+    const oldLine = lines[i + 1] || "";
+    const currentLine = lines[i + 2] || "";
+    if (!/^ancien\s*:/i.test(oldLine) || !/^actuel\s*:/i.test(currentLine)) continue;
+    const analyte = normalize(analyteLine.replace(/:$/, ""));
+    const previousRaw = normalize(oldLine.split(":").slice(1).join(":"));
+    const currentRaw = normalize(currentLine.split(":").slice(1).join(":"));
+    const previous = parseNumeric(previousRaw);
+    const current = parseNumeric(currentRaw);
+    if (!analyte || previous === null || current === null) continue;
+    const variationPct = previous !== 0 ? ((current - previous) / Math.abs(previous)) * 100 : null;
+    out.push({ analyte, previous, current, previousRaw, currentRaw, variationPct });
+  }
+  return out;
+}
+
+function variationLabel(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "n/a";
+  const rounded = Math.round(value);
+  return `${rounded >= 0 ? "+" : ""}${rounded}%`;
+}
+
 function MedicalResultCard({ result }: { result: MedicalResult }) {
   return (
     <article className="rounded-xl border border-border/70 bg-card/80 p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-accent/30">
@@ -197,6 +260,9 @@ function MedicalResultCard({ result }: { result: MedicalResult }) {
 export function MedicalAnswerBlocks({ content, sources = [] }: { content: string; sources?: ChatSource[] }) {
   const tables = parseMarkdownTables(content);
   const results = tables.flatMap(resultFromTable);
+  const evolutionFromTables = tables.flatMap(parseEvolutionFromTable);
+  const evolutionFromText = evolutionFromTables.length === 0 ? parseEvolutionFromText(content) : [];
+  const evolutionItems = [...evolutionFromTables, ...evolutionFromText];
   const contentWithoutTables = results.length > 0 ? removeTables(content, tables) : content;
   const abnormalResults = results.filter((result) => result.tone === "high" || result.tone === "low" || result.tone === "critical");
   const missingResults = results.filter((result) => result.tone === "unknown");
@@ -228,6 +294,30 @@ export function MedicalAnswerBlocks({ content, sources = [] }: { content: string
           <div className="grid gap-3 md:grid-cols-2">
             {results.map((result, index) => (
               <MedicalResultCard key={`${result.analyte}-${result.value}-${index}`} result={result} />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {evolutionItems.length > 0 ? (
+        <section className={SECTION_CHROME}>
+          <div className="mb-3 flex items-center gap-2">
+            <BadgeCheck size={16} className="text-accent" />
+            <h3 className="text-sm font-semibold">Analyse timeline</h3>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            {evolutionItems.map((item, index) => (
+              <article key={`${item.analyte}-${item.previous}-${item.current}-${index}`} className="rounded-xl border border-border/70 bg-card/80 p-4">
+                <p className="text-sm font-semibold text-fg">{item.analyte}</p>
+                <dl className="mt-2 space-y-1 text-xs text-fg/78">
+                  <div className="flex justify-between gap-3"><dt>Ancien</dt><dd className="font-medium text-fg">{item.previousRaw}</dd></div>
+                  <div className="flex justify-between gap-3"><dt>Actuel</dt><dd className="font-medium text-fg">{item.currentRaw}</dd></div>
+                  <div className="flex justify-between gap-3"><dt>Variation</dt><dd className="font-semibold text-accent">{variationLabel(item.variationPct)}</dd></div>
+                </dl>
+                <p className="mt-3 rounded-md border border-border/60 bg-fg/[0.03] px-2 py-2 text-center text-xs text-fg/85">
+                  {item.previousRaw} ───────────────▶ {item.currentRaw}
+                </p>
+              </article>
             ))}
           </div>
         </section>
