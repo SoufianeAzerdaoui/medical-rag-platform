@@ -1,4 +1,4 @@
-import { ChatShell } from "@/components/layout/chat-shell";
+import { ConversationPageClient } from "@/app/chat/[conversationId]/conversation-page-client";
 
 interface ChatConversationPageProps {
   params: Promise<{
@@ -8,5 +8,5 @@ interface ChatConversationPageProps {
 
 export default async function ChatConversationPage({ params }: ChatConversationPageProps) {
   const resolvedParams = await params;
-  return <ChatShell routeConversationId={resolvedParams.conversationId} />;
+  return <ConversationPageClient conversationId={resolvedParams.conversationId} />;
 }

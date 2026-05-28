@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from query_understanding import analyte_display_name, normalize_analyte
+from query_understanding import analyte_display_name, normalize_analyte, norm_text
 from reference_range_parser import parse_reference_ranges
 from reference_range_selector import select_reference_range
 
@@ -17,7 +17,8 @@ def _range_signature(r: dict[str, Any]) -> str:
 def _range_text(r: dict[str, Any]) -> str:
     def _fmt_num(v: Any) -> str:
         if isinstance(v, float):
-            txt = f"{v:.2f}".rstrip("0").rstrip(".")
+            # Preserve source precision as much as possible (avoid aggressive rounding).
+            txt = format(v, ".15g")
             return txt.replace(".", ",")
         return str(v)
     if str(r.get("operator") or "") == "range":
@@ -440,7 +441,10 @@ def run_reference_range_lookup_from_rows(
             for c in dedup[:8]:
                 age_txt = _age_band_text(c) if (c.get("age_min") is not None or c.get("age_operator") is not None) else "âge non précisé"
                 label = _clean_profile_label(c)
-                lines.append(f"- {label} — {age_txt} : {_range_text(c)}")
+                if age_txt != "âge non précisé" and norm_text(age_txt) in norm_text(label):
+                    lines.append(f"- {label} : {_range_text(c)}")
+                else:
+                    lines.append(f"- {label} — {age_txt} : {_range_text(c)}")
             docs_with_links = _format_docs_with_clickable_links(grouped_sources)
             if docs_with_links:
                 lines.append("")

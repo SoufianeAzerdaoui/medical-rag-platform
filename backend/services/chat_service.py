@@ -223,7 +223,26 @@ def _emit_request_summary_log(
         "validation_hard_gate_reason_count": hard_gate_snapshot["validation_hard_gate_reason_count"],
         "failure_signals": _validation_failure_signals(validation_errors, validation_warnings),
     }
-    logger.info("chat_request_summary %s", json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    message = "chat_request_summary %s"
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    level = str(os.getenv("MEDICAL_RAG_REQUEST_SUMMARY_LOG_LEVEL", "info") or "info").strip().lower()
+    if level == "warning":
+        logger.warning(message, serialized)
+    elif level == "error":
+        logger.error(message, serialized)
+    else:
+        logger.info(message, serialized)
+
+    if str(os.getenv("MEDICAL_RAG_TRACE_LLM", "0")).strip().lower() in {"1", "true", "yes", "on"}:
+        logger.warning(
+            "llm_trace route=%s class=%s attempted=%s accepted=%s fallback_after_llm=%s writer_ms=%.3f",
+            str(payload.get("selected_route") or ""),
+            str(payload.get("llm_route_class") or ""),
+            float(payload.get("llm_attempt_rate") or 0.0) > 0.0,
+            float(payload.get("llm_accept_rate") or 0.0) > 0.0,
+            float(payload.get("fallback_after_llm_rate") or 0.0) > 0.0,
+            float(payload.get("llm_writer_ms") or 0.0),
+        )
 
 
 def _extract_llm_writer_ms(generation_debug: dict[str, Any]) -> float:
@@ -652,9 +671,6 @@ def process_chat(
         if not answer:
             answer = "Aucune réponse générée. Cette réponse ne remplace pas l'avis médical."
 
-        message_service.save_message(conversation_id, "assistant", answer)
-        conversation_service.touch_conversation(conversation_id)
-
         sources = to_source_items(generation)
         document_ids = sorted({item.documentId for item in sources if item.documentId})
         validation = generation.get("validation") if isinstance(generation.get("validation"), dict) else {}
@@ -788,6 +804,65 @@ def process_chat(
             validation_warnings=validation_warnings,
         )
 
+        selected_route_top = (
+            str(generation.get("selected_route") or "").strip()
+            or str(generation_debug.get("selected_route") or "").strip()
+            or None
+        )
+        llm_writer_attempted_top = generation.get("llm_writer_attempted")
+        if llm_writer_attempted_top is None:
+            llm_writer_attempted_top = llm_observability.get("llm_attempt")
+        llm_writer_accepted_top = generation.get("llm_writer_accepted")
+        if llm_writer_accepted_top is None:
+            llm_writer_accepted_top = llm_observability.get("llm_accept")
+        final_answer_source_top = str(generation.get("final_answer_source") or "").strip().lower()
+        if final_answer_source_top not in {"llm_writer", "deterministic_renderer"}:
+            final_answer_source_top = "llm_writer" if bool(llm_writer_accepted_top) else "deterministic_renderer"
+        renderer_used_top = (
+            str(generation.get("renderer_used") or "").strip()
+            or str(generation_debug.get("renderer_used") or "").strip()
+            or str(generation_debug.get("fallback_renderer_used") or "").strip()
+            or None
+        )
+        fallback_reason_top = (
+            str(generation.get("fallback_reason") or "").strip()
+            or str(generation_debug.get("fallback_reason") or "").strip()
+            or None
+        )
+
+        persisted_diagnostics: dict[str, Any] = {
+            "quality_report": generation.get("quality_report") if isinstance(generation.get("quality_report"), dict) else None,
+            "validation_status": str((generation.get("validation") or {}).get("validation_status") or "") or None,
+            "generation_mode": str(generation.get("generation_mode") or "") or None,
+            "generation_writer": str((generation_debug.get("generation_writer") or "")) or None,
+            "response_time": float(generation.get("generation_time_seconds") or 0.0),
+            "intent": str(qu.get("intent") or "") or None,
+            "selected_route": str((generation_debug.get("selected_route") or "")) or None,
+            "route_reason": str((generation_debug.get("route_reason") or "")) or None,
+            "technical_condition": str(qu.get("technical_condition") or "") or None,
+            "requested_doc_ids": list(qu.get("requested_doc_ids") or []),
+            "requested_analytes": canonical_requested_analytes,
+            "answerability_status": str(generation_debug.get("answerability_status") or "") or None,
+            "fallback_kind": str(generation_debug.get("specialized_fallback_kind") or "") or None,
+            "llm_route_class": llm_observability.get("llm_route_class"),
+            "llm_writer_attempted": llm_observability.get("llm_attempt"),
+            "llm_writer_accepted": llm_observability.get("llm_accept"),
+            "final_answer_source": final_answer_source_top,
+            "renderer_used": renderer_used_top,
+            "fallback_reason": fallback_reason_top,
+            "llm_skipped_reason": str(generation_debug.get("llm_skipped_reason") or "") or None,
+            "generation_mode_before_fallback": str(generation_debug.get("generation_mode_before_fallback") or "") or None,
+            "fallback_decision_path": generation_debug.get("fallback_decision_path"),
+        }
+        message_service.save_message(
+            conversation_id,
+            "assistant",
+            answer,
+            sources=[item.model_dump() for item in sources],
+            diagnostics=persisted_diagnostics,
+        )
+        conversation_service.touch_conversation(conversation_id)
+
         return ChatResponse(
             conversation_id=conversation_id,
             answer=answer,
@@ -799,6 +874,12 @@ def process_chat(
             validation_status=str((generation.get("validation") or {}).get("validation_status") or "") or None,
             generation_mode=str(generation.get("generation_mode") or "") or None,
             generation_writer=str(((generation.get("debug") or {}).get("generation_writer") or "")) or None,
+            selected_route=selected_route_top,
+            llm_writer_attempted=bool(llm_writer_attempted_top) if llm_writer_attempted_top is not None else None,
+            llm_writer_accepted=bool(llm_writer_accepted_top) if llm_writer_accepted_top is not None else None,
+            final_answer_source=final_answer_source_top if final_answer_source_top in {"llm_writer", "deterministic_renderer"} else None,
+            renderer_used=renderer_used_top,
+            fallback_reason=fallback_reason_top,
             visualization=(generation.get("visualization") if isinstance(generation.get("visualization"), dict) else None),
             chart_data=(generation.get("chart_data") if isinstance(generation.get("chart_data"), dict) else None),
             patients=generation.get("patients"),

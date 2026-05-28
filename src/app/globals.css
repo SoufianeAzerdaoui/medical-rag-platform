@@ -3,25 +3,58 @@
 @tailwind utilities;
 
 :root {
-  --bg: 220 35% 97%;
-  --fg: 220 30% 12%;
+  --bg: 210 42% 98%;
+  --fg: 218 32% 13%;
   --card: 0 0% 100%;
-  --border: 220 20% 85%;
-  --accent: 205 90% 46%;
+  --border: 214 24% 88%;
+  --accent: 190 84% 36%;
 }
 
 .dark {
-  --bg: 222 45% 8%;
-  --fg: 210 40% 98%;
-  --card: 222 35% 11%;
-  --border: 222 20% 24%;
-  --accent: 194 94% 52%;
+  --bg: 218 34% 8%;
+  --fg: 210 36% 96%;
+  --card: 218 28% 12%;
+  --border: 216 20% 24%;
+  --accent: 186 78% 44%;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--border)) transparent;
 }
 
 body {
   @apply bg-bg text-fg antialiased;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 16% 8%, hsl(var(--accent) / 0.16), transparent 28rem),
+    linear-gradient(135deg, hsl(166 45% 96% / 0.82), transparent 34%),
+    hsl(var(--bg));
+}
+
+.dark body::before {
+  background:
+    radial-gradient(circle at 18% 4%, hsl(var(--accent) / 0.14), transparent 30rem),
+    linear-gradient(135deg, hsl(215 38% 13% / 0.86), transparent 42%),
+    hsl(var(--bg));
 }
 
 .glass {
-  @apply bg-card/80 backdrop-blur-xl border border-border;
+  @apply border border-white/70 bg-card/[0.82] shadow-[0_18px_60px_rgba(15,23,42,0.08)] backdrop-blur-xl dark:border-white/10 dark:shadow-[0_18px_60px_rgba(0,0,0,0.28)];
+}
+
+.premium-surface {
+  @apply border border-border/80 bg-card/[0.86] shadow-[0_16px_50px_rgba(15,23,42,0.07)] dark:bg-card/[0.76] dark:shadow-[0_16px_50px_rgba(0,0,0,0.28)];
+}
+
+.icon-button {
+  @apply inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border/80 bg-card/70 text-fg/[0.72] transition hover:border-accent/40 hover:bg-accent/10 hover:text-fg disabled:cursor-not-allowed disabled:opacity-45;
 }

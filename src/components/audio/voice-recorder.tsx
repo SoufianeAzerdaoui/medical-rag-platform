@@ -42,11 +42,11 @@ export function VoiceRecorder({ onTranscript }: { onTranscript: (value: string) 
   return (
     <div className="flex items-center gap-2">
       {!recording ? (
-        <button aria-label="Démarrer enregistrement" className="rounded-lg border border-border p-2" onClick={start}>
+        <button aria-label="Démarrer enregistrement" className="icon-button" onClick={start}>
           <Mic size={16} />
         </button>
       ) : (
-        <button aria-label="Arrêter enregistrement" className="rounded-lg border border-border p-2 text-red-400" onClick={stop}>
+        <button aria-label="Arrêter enregistrement" className="icon-button text-red-400" onClick={stop}>
           <Square size={16} />
         </button>
       )}

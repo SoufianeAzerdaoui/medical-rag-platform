@@ -38,6 +38,7 @@ LLM_ALLOWED_ROUTES = {
     "doc_scoped_medical_interpretation_guarded",
     "open_grounded_medical_question",
     "response_transform",
+    "reference_ranges_summary",
 }
 
 LLM_WRITER_EXPECTED_ROUTES = set(LLM_ALLOWED_ROUTES)
@@ -84,6 +85,16 @@ LEVEL2_HYBRID_INTENT_POLICY: dict[str, dict[str, Any]] = {
         "max_tokens": 280,
         "validator_policy": "facts_safety_insufficient_context",
         "fallback_mode": "deterministic_no_evidence_response",
+    },
+    "reference_ranges_summary": {
+        "selected_policy": "hybrid_controlled",
+        "policy_level": "hybrid_controlled",
+        "facts_source": "evidence_rows_only",
+        "llm_allowed": True,
+        "timeout_s": 45,
+        "max_tokens": 240,
+        "validator_policy": "facts_safety_style",
+        "fallback_mode": "deterministic_reference_ranges_summary",
     },
 }
 

@@ -1,0 +1,97 @@
+{
+  "generated_at": "2026-05-26T21:04:03Z",
+  "total": 7,
+  "passed": 3,
+  "failed": 4,
+  "results": [
+    {
+      "name": "doc_scoped_biological_summary_short",
+      "query": "Résume report 24 en 5 lignes max, strictement technique",
+      "route": "doc_scoped_biological_summary",
+      "generation_mode": "hybrid_structured_llm_writer",
+      "validation_status": "pass",
+      "llm_writer_attempted": true,
+      "llm_writer_accepted": true,
+      "fallback_reason": "",
+      "llm_skipped_reason": "",
+      "critical_leak": false,
+      "pass": true,
+      "message": "ok"
+    },
+    {
+      "name": "doc_scoped_biological_summary_note",
+      "query": "Fais une note médecin courte pour report 12, sans diagnostic.",
+      "route": "doc_scoped_biological_summary",
+      "generation_mode": "hybrid_structured_llm_writer",
+      "validation_status": "pass",
+      "llm_writer_attempted": true,
+      "llm_writer_accepted": true,
+      "fallback_reason": "",
+      "llm_skipped_reason": "",
+      "critical_leak": false,
+      "pass": true,
+      "message": "ok"
+    },
+    {
+      "name": "doc_scoped_medical_interpretation_guarded",
+      "query": "Le bilan thyroïdien du report 16 est-il compatible avec une hyperthyroïdie primaire ? Explique prudemment à partir de TSH, T3, T4 et anticorps, sans conclure à un diagnostic.",
+      "route": "doc_scoped_medical_interpretation_guarded",
+      "generation_mode": "deterministic_guarded_medical_interpretation",
+      "validation_status": "pass",
+      "llm_writer_attempted": true,
+      "llm_writer_accepted": false,
+      "fallback_reason": "llm_timeout",
+      "llm_skipped_reason": "",
+      "critical_leak": false,
+      "pass": true,
+      "message": "ok"
+    },
+    {
+      "name": "open_grounded_medical_question#1",
+      "query": "Les rapports disponibles permettent-ils d’affirmer une pathologie endocrinienne active ?",
+      "route": "open_grounded_medical_question",
+      "generation_mode": "deterministic_no_evidence_response",
+      "validation_status": "pass",
+      "llm_writer_attempted": false,
+      "llm_writer_accepted": false,
+      "critical_leak": false,
+      "pass": false,
+      "message": "route_or_llm_not_matching"
+    },
+    {
+      "name": "open_grounded_medical_question#2",
+      "query": "À partir des rapports disponibles, quels éléments biologiques documentés nécessitent une surveillance, sans poser de diagnostic ?",
+      "route": "unstructured",
+      "generation_mode": "llm",
+      "validation_status": "fail",
+      "llm_writer_attempted": false,
+      "llm_writer_accepted": false,
+      "critical_leak": false,
+      "pass": false,
+      "message": "route_or_llm_not_matching"
+    },
+    {
+      "name": "open_grounded_medical_question#3",
+      "query": "Donne une réponse médicale prudente basée uniquement sur les données biologiques disponibles, sans diagnostic.",
+      "route": "cohort_search",
+      "generation_mode": "deterministic_no_evidence_response",
+      "validation_status": "warning",
+      "llm_writer_attempted": false,
+      "llm_writer_accepted": false,
+      "critical_leak": false,
+      "pass": false,
+      "message": "route_or_llm_not_matching"
+    },
+    {
+      "name": "response_transform",
+      "query": "Convertis la réponse précédente en style paragraphe médical pro.",
+      "route": "",
+      "generation_mode": "deterministic_response_transform_professional",
+      "validation_status": "fail",
+      "fallback_reason": "llm_validation_failed",
+      "critical_leak": false,
+      "pass": false,
+      "message": "route_mismatch:"
+    }
+  ]
+}

@@ -247,6 +247,30 @@ class TestProfessionalAnswerComposer(unittest.TestCase):
         self.assertIn("results", parsed)
         self.assertNotIn("Sources :", answer)
 
+    def test_09b_response_transform_paragraph_forces_paragraph_presentation(self) -> None:
+        qu = parse_query_understanding("Convertis la réponse précédente en style paragraphe médical pro.")
+        pack = self._cohort_pack(2)
+        pack["intent"] = "response_transform"
+        pack["output_format"] = "paragraph"
+        pack["requested_table_columns"] = ["analyte", "valeur_actuelle", "reference", "source"]
+        fmt = choose_presentation_format(qu, pack)
+        self.assertEqual(fmt, "paragraph")
+
+    def test_09c_response_transform_paragraph_has_conclusion(self) -> None:
+        qu = parse_query_understanding("Convertis la réponse précédente en style paragraphe médical pro.")
+        pack = self._cohort_pack(2)
+        pack["intent"] = "response_transform"
+        pack["output_format"] = "paragraph"
+        pack["requested_table_columns"] = []
+        composed = render_professional_fallback(
+            evidence_pack=pack,
+            query_understanding=qu,
+            user_question="Convertis la réponse précédente en style paragraphe médical pro.",
+            source_citations=self._sources([1, 2]),
+        )
+        answer = str(composed.get("answer") or "").lower()
+        self.assertIn("conclusion technique", answer)
+
     def test_10_no_hallucination_against_validator(self) -> None:
         qu = parse_query_understanding("Dans report 16, donne la valeur ACTH.")
         pack = {

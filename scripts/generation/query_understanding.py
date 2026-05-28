@@ -99,6 +99,7 @@ DOC_SCOPED_INTENTS: set[str] = {
     "toxicology_summary",
     "immunoanalysis_summary",
     "doc_scoped_single_analyte_status",
+    "reference_ranges_summary",
 }
 
 SINGLE_DOC_INTENTS: set[str] = {
@@ -110,6 +111,7 @@ SINGLE_DOC_INTENTS: set[str] = {
     "doc_scoped_priority_anomalies",
     "toxicology_summary",
     "immunoanalysis_summary",
+    "reference_ranges_summary",
 }
 
 ANALYTE_SCOPED_INTENTS: set[str] = {
@@ -160,6 +162,12 @@ LEXICAL_MARKERS: dict[str, dict[str, Any]] = {
         "weak": ["valeur"],
         "weight": 1.0,
     },
+    "reference_ranges_summary": {
+        "strong": ["valeurs physiologiques", "plages de reference", "plages physiologiques", "types de references", "references selon"],
+        "medium": ["seuil", "sexe", "age", "categories", "intervalle"],
+        "weak": ["note", "resume", "synthese"],
+        "weight": 1.15,
+    },
     "global_analyte_abnormal_search": {
         "strong": ["tous les rapports", "quels rapports", "liste", "cohorte", "patients"],
         "medium": ["hors reference", "anormal", "au dessus", "en dessous"],
@@ -186,6 +194,7 @@ INTENT_TOPIC_RELEVANCE: dict[str, dict[str, float]] = {
     "doc_scoped_biological_summary": {"renal": 0.75, "thyroid": 0.75, "cardio": 0.75, "hepatic": 0.8, "inflammation": 0.75, "toxicology": 0.6},
     "doc_scoped_abnormal_results": {"renal": 0.85, "thyroid": 0.8, "cardio": 0.85, "hepatic": 0.8, "inflammation": 0.8},
     "reference_range_lookup": {"renal": 0.9, "thyroid": 0.9, "cardio": 0.8, "hepatic": 0.8},
+    "reference_ranges_summary": {"renal": 0.85, "thyroid": 0.85, "cardio": 0.8, "hepatic": 0.8, "inflammation": 0.75, "toxicology": 0.7},
     "global_analyte_abnormal_search": {"renal": 0.9, "thyroid": 0.9, "cardio": 0.9, "hepatic": 0.85, "inflammation": 0.8, "toxicology": 0.7},
     "cohort_search": {"renal": 0.85, "thyroid": 0.85, "cardio": 0.85, "hepatic": 0.8, "toxicology": 0.75},
 }
@@ -719,6 +728,64 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
             or "toutes les plages" in qn
         )
     )
+    reference_ranges_core_markers = [
+        "plage",
+        "plages",
+        "reference",
+        "référence",
+        "references",
+        "références",
+        "intervalle",
+        "intervalles",
+        "norme",
+        "normes",
+        "seuil",
+        "seuils",
+        "types de references",
+        "types de références",
+    ]
+    physiological_stems = ["physiolog", "phisiolog"]
+    note_style_markers = [
+        "note",
+        "resume",
+        "résume",
+        "synthese",
+        "synthèse",
+        "classe",
+        "classer",
+        "categorie",
+        "catégorie",
+        "categories",
+        "catégories",
+        "types",
+    ]
+    profile_axes_markers = [
+        "selon sexe",
+        "selon age",
+        "selon âge",
+        "homme",
+        "femme",
+        "enfant",
+        "adulte",
+        "nourrisson",
+        "nouveau ne",
+        "nouveau-né",
+    ]
+    has_reference_ranges_semantic = (
+        any(k in qn for k in reference_ranges_core_markers)
+        and (
+            any(stem in qn for stem in physiological_stems)
+            or any(k in qn for k in profile_axes_markers)
+            or "valeurs de reference" in qn
+            or "valeurs de référence" in qn
+        )
+    )
+    has_reference_ranges_summary = (
+        len(doc_ids) >= 1
+        and has_reference_ranges_semantic
+        and any(k in qn for k in note_style_markers)
+        and len(analyte_list) <= 1
+    )
     has_no_diagnostic_constraint = any(
         k in qn
         for k in [
@@ -1197,6 +1264,7 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         "doc_pair_comparison": has_doc_pair_comparison,
         "doc_scoped_medical_interpretation_guarded": has_doc_scoped_medical_interpretation_guarded,
         "doc_scoped_biological_summary": has_doc_scoped_biological_summary,
+        "reference_ranges_summary": has_reference_ranges_summary,
         "doc_scoped_priority_anomalies": has_doc_scoped_priority_anomalies,
         "doc_scoped_abnormal_results": has_doc_scoped_abnormal_results,
         "single_analyte_lookup": has_single_analyte_lookup,
@@ -1281,7 +1349,6 @@ def detect_presentation_intent(query: str) -> PresentationIntent:
         "graphique",
         "courbe",
         "chart",
-        "graph",
         "line graph",
         "line-graph",
         "bar chart",
@@ -1301,6 +1368,7 @@ def detect_presentation_intent(query: str) -> PresentationIntent:
         "arithmetic line graph",
         "arithmetic line-graph",
     ]
+    chart_word_re = re.compile(r"\b(graph|graphique|chart|plot|diagramme|visualisation|visualization|courbe)\b", flags=re.IGNORECASE)
 
     raw_phrase = _extract_raw_format_phrase(text)
     requested_output = "auto"
@@ -1312,13 +1380,19 @@ def detect_presentation_intent(query: str) -> PresentationIntent:
     user_visualization = False
     unhandled: list[str] = []
 
+    has_paragraph_request = any(m in qn for m in paragraph_markers)
+    has_chart_request = bool(any(m in qn for m in chart_markers) or chart_word_re.search(text))
+
     if any(m in qn for m in yes_no_markers):
         requested_output = "yes_no"
         confidence = 0.95
     elif any(m in qn for m in json_markers):
         requested_output = "json"
         confidence = 0.95
-    elif any(m in qn for m in chart_markers):
+    elif has_paragraph_request:
+        requested_output = "paragraph"
+        confidence = 0.85
+    elif has_chart_request:
         requested_output = "chart"
         user_visualization = True
         confidence = 0.9
@@ -1355,9 +1429,6 @@ def detect_presentation_intent(query: str) -> PresentationIntent:
     elif any(m in qn for m in table_markers):
         requested_output = "table"
         confidence = 0.9
-    elif any(m in qn for m in paragraph_markers):
-        requested_output = "paragraph"
-        confidence = 0.8
     elif any(m in qn for m in list_markers):
         requested_output = "list"
         confidence = 0.8
@@ -1365,7 +1436,10 @@ def detect_presentation_intent(query: str) -> PresentationIntent:
         raw_format_requested = _raw_format_instruction_detected(text)
         if raw_format_requested and raw_phrase:
             raw_norm = normalize_analyte(raw_phrase)
-            if any(k in raw_norm for k in ["graphique", "chart", "graph", "courbe", "radar", "scatter", "heatmap", "matrix", "matrice"]):
+            if (
+                re.search(r"\b(graphique|chart|graph|courbe|radar|scatter|heatmap|matrix|matrice)\b", raw_norm, flags=re.IGNORECASE)
+                and not re.search(r"\bparagraphe\b|\bparagraph\b", raw_norm, flags=re.IGNORECASE)
+            ):
                 requested_output = "chart"
                 user_visualization = True
                 chart_type = "unknown"
@@ -1495,7 +1569,15 @@ def decide_response_strategy(query_understanding: "QueryUnderstanding", evidence
         return ResponseStrategy("small_talk", "Conversation générale sans retrieval médical.", True, True)
     if qu.is_response_transform or intent == "response_transform":
         return ResponseStrategy("transform_previous_response", "Transformation de la réponse précédente.", False, True)
-    if qu.safety_intent or intent == "diagnostic_safety_question":
+    safety_intent = str(qu.safety_intent or "").strip().lower()
+    hard_safety_intents = {
+        "diagnosis_refusal",
+        "diagnostic_safety_question",
+        "treatment_refusal",
+        "treatment_safety_question",
+        "pii_refusal",
+    }
+    if safety_intent in hard_safety_intents or intent == "diagnostic_safety_question":
         return ResponseStrategy("safety_response", "Question à risque diagnostique.", True, True)
     if output == "json" or qu.answer_style == "strict_json":
         return ResponseStrategy("render_json", "Format JSON strict demandé.", False, True)
@@ -1594,6 +1676,21 @@ def detect_answer_style(query: str) -> str:
         or "only yes or no" in qn
     ):
         return "yes_no"
+    if any(
+        k in qn
+        for k in [
+            "note medecin",
+            "note médecin",
+            "note medicale",
+            "note médicale",
+            "note clinique",
+            "note courte",
+            "note de synthese",
+            "note de synthèse",
+            "note documentaire",
+        ]
+    ):
+        return "doctor_note"
     return "standard"
 
 
@@ -1926,7 +2023,9 @@ def detect_latest_report_flag(query: str) -> bool:
 
 def detect_requested_context_type(query: str) -> str | None:
     qn = norm_text(query or "")
-    if any(k in qn for k in ["commentaire", "note", "interpretation", "interprétation", "valeur seuil"]):
+    # Keep qualitative mode only for explicit qualitative/comment requests.
+    # Plain "note médecin" / "résumé" should stay on numerical biological context.
+    if any(k in qn for k in ["commentaire", "commentaire source", "valeur seuil", "interpretation qualitative", "interprétation qualitative"]):
         return "medical_qualitative_comment"
     return "biological_numeric_results"
 
@@ -2014,6 +2113,7 @@ def _resolve_primary_intent(intents: dict[str, bool], *, requested_doc_ids: list
         bool(intents.get(k))
         for k in [
             "reference_range_lookup",
+            "reference_ranges_summary",
             "response_transform",
             "global_biological_summary",
             "global_priority_anomalies_summary",
@@ -2065,6 +2165,8 @@ def _resolve_primary_intent(intents: dict[str, bool], *, requested_doc_ids: list
         return "multi_doc_comparison"
     if intents.get("doc_scoped_medical_interpretation_guarded"):
         return "doc_scoped_medical_interpretation_guarded"
+    if intents.get("reference_ranges_summary"):
+        return "reference_ranges_summary"
     if intents.get("doc_scoped_biological_summary"):
         return "doc_scoped_biological_summary"
     if intents.get("doc_scoped_priority_anomalies"):
@@ -2355,6 +2457,8 @@ def build_intent_arbitration_debug(qu: QueryUnderstanding) -> dict[str, Any]:
         reason = "Arbitrage: requête qualitative explicite (commentaire/note/interprétation)."
     elif winner == "reference_range_lookup":
         reason = "Arbitrage: requête de plage physiologique détectée."
+    elif winner == "reference_ranges_summary":
+        reason = "Arbitrage: note/synthèse des types de références physiologiques détectée."
     elif winner == "global_analyte_abnormal_search":
         reason = "Arbitrage: recherche globale/cohorte d’analytes hors référence."
     elif winner == "doc_pair_comparison":

@@ -47,12 +47,84 @@ export function useChatActions() {
           history: toHistory(chat?.messages || []),
           mode,
         }, token);
+        const enriched = response as typeof response & {
+          debug?: Record<string, unknown> | null;
+        };
+        const debug = (enriched.debug || {}) as Record<string, unknown>;
+        const rawDebug = ((debug.raw_debug || {}) as Record<string, unknown>);
+        const debugQuery = ((debug.query_understanding || rawDebug.query_understanding || {}) as Record<string, unknown>);
         resolveAssistantMessage(chatId, loading.id, response.answer, response.sources, {
           quality_report: response.quality_report,
           validation_status: response.validation_status,
           generation_mode: response.generation_mode,
           generation_writer: response.generation_writer,
           response_time: response.response_time,
+          intent: response.intent ?? (debugQuery.intent as string | null) ?? null,
+          selected_route: response.selected_route ?? (debug.selected_route as string | null) ?? (rawDebug.selected_route as string | null) ?? null,
+          route_reason: response.route_reason ?? (debug.route_reason as string | null) ?? (rawDebug.route_reason as string | null) ?? null,
+          technical_condition: response.technical_condition ?? (debugQuery.technical_condition as string | null) ?? null,
+          requested_doc_ids:
+            response.requested_doc_ids ??
+            ((debugQuery.requested_doc_ids as string[] | null) ?? null),
+          requested_analytes:
+            response.requested_analytes ??
+            ((debugQuery.requested_analytes as string[] | null) ?? null),
+          answerability_status:
+            response.answerability_status ??
+            (debug.answerability_status as string | null) ??
+            (rawDebug.answerability_status as string | null) ??
+            null,
+          fallback_kind:
+            response.fallback_kind ??
+            (debug.fallback_kind as string | null) ??
+            (rawDebug.fallback_kind as string | null) ??
+            null,
+          llm_route_class:
+            (debug.llm_route_class as string | null) ??
+            (rawDebug.llm_route_class as string | null) ??
+            null,
+          llm_writer_attempted:
+            (response.llm_writer_attempted as boolean | null) ??
+            (debug.llm_writer_attempted as boolean | null) ??
+            (rawDebug.llm_writer_attempted as boolean | null) ??
+            null,
+          llm_writer_accepted:
+            (response.llm_writer_accepted as boolean | null) ??
+            (debug.llm_writer_accepted as boolean | null) ??
+            (rawDebug.llm_writer_accepted as boolean | null) ??
+            null,
+          final_answer_source:
+            (response.final_answer_source as "llm_writer" | "deterministic_renderer" | null) ??
+            (debug.final_answer_source as "llm_writer" | "deterministic_renderer" | null) ??
+            (rawDebug.final_answer_source as "llm_writer" | "deterministic_renderer" | null) ??
+            null,
+          renderer_used:
+            (response.renderer_used as string | null) ??
+            (debug.renderer_used as string | null) ??
+            (rawDebug.renderer_used as string | null) ??
+            null,
+          fallback_reason:
+            (response.fallback_reason as string | null) ??
+            (debug.fallback_reason as string | null) ??
+            (rawDebug.fallback_reason as string | null) ??
+            null,
+          llm_skipped_reason:
+            (debug.llm_skipped_reason as string | null) ??
+            (rawDebug.llm_skipped_reason as string | null) ??
+            null,
+          generation_mode_before_fallback:
+            (debug.generation_mode_before_fallback as string | null) ??
+            (rawDebug.generation_mode_before_fallback as string | null) ??
+            null,
+          fallback_decision_path:
+            (debug.fallback_decision_path as string | null) ??
+            (rawDebug.fallback_decision_path as string | null) ??
+            null,
+          answer_type:
+            (response.answer_type as string | null) ??
+            (debug.answer_type as string | null) ??
+            (rawDebug.answer_type as string | null) ??
+            null,
         }, response.visualization, response.chart_data, response.patients, response.inventory_view);
         return response;
       } catch (error) {

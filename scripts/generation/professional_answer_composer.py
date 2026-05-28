@@ -194,6 +194,15 @@ def _route_specific_writer_block(query_understanding: QueryUnderstanding) -> str
             "- Tu ne remplaces jamais une référence textuelle complexe par une borne simplifiée.\n"
             "- Tu gardes la synthèse descriptive, sans extrapolation clinique.\n"
         )
+    if intent == "reference_ranges_summary":
+        return (
+            "RÈGLES SPÉCIFIQUES reference_ranges_summary :\n"
+            "- Tu décris les TYPES de références physiologiques documentées, pas l'interprétation clinique d'un patient.\n"
+            "- Tu classes les références en catégories: min-max, seuils (<, >, <=, >=), selon sexe, selon âge, catégories interprétatives.\n"
+            "- Tu donnes des exemples factuels issus de results_locked quand disponibles.\n"
+            "- Tu ne transformes jamais cette note en liste d'anomalies patient.\n"
+            "- Tu termines par une conclusion descriptive, sans diagnostic ni traitement.\n"
+        )
     if intent in {"doc_scoped_results", "previous_result_comparison"}:
         return (
             "RÈGLES SPÉCIFIQUES résultats ciblés :\n"
@@ -471,6 +480,14 @@ def select_intro_template(intent: str, query_understanding: QueryUnderstanding, 
                 "Les anomalies techniques ci-dessous sont organisées par section du rapport.",
             ],
         )
+    if intent == "reference_ranges_summary":
+        return _pick_variant(
+            seed,
+            [
+                f"Voici une note technique sur les types de références physiologiques documentées dans {doc_scope}.",
+                f"Le document {doc_scope} contient plusieurs formats de valeurs de référence physiologiques.",
+            ],
+        )
 
     if intent == "diagnostic_safety_question":
         return _pick_variant(
@@ -559,6 +576,8 @@ def choose_presentation_format(query_understanding: QueryUnderstanding, evidence
         return "json"
     if answer_style == "yes_no" or output_format == "yes_no":
         return "yes_no"
+    if output_format == "paragraph":
+        return "paragraph"
     if output_format == "unknown":
         return "table"
     if output_format == "chart":
@@ -567,6 +586,8 @@ def choose_presentation_format(query_understanding: QueryUnderstanding, evidence
         return "table"
     if query_understanding.intent in {"cohort_search", "global_patient_lookup"}:
         return "table"
+    if query_understanding.intent == "reference_ranges_summary":
+        return "paragraph"
     if output_format == "table" or requested_cols:
         return "table"
     if len(evidences) >= 2:
@@ -788,6 +809,9 @@ def build_short_conclusion(intent: str, evidence_pack: dict[str, Any], safety_in
         "doc_scoped_results": [
             "Conclusion technique : ces résultats proviennent uniquement du document demandé.",
             "Conclusion technique : la synthèse est strictement fondée sur les données extraites et les sources associées.",
+        ],
+        "response_transform": [
+            "Conclusion technique : reformulation fidèle aux données extraites, sans ajout d’information clinique.",
         ],
     }
     options = options_by_intent.get(intent) or []

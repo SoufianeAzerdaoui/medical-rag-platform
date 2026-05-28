@@ -358,6 +358,32 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertTrue(answer.startswith("{") and answer.endswith("}"))
         self.assertIn("report_19", answer)
 
+    def test_response_transform_paragraph_clears_inherited_table_columns(self) -> None:
+        ga = __import__("generate_answer")
+        qu_mod = __import__("query_understanding")
+        qu = qu_mod.parse_query_understanding("Convertis la réponse précédente en style paragraphe médical pro.")
+        previous_pack = {
+            "requested_table_columns": ["analyte", "valeur_actuelle", "reference", "source"],
+            "evidences": [
+                {
+                    "doc_id": "report_24",
+                    "analyte": "CRP",
+                    "current_value": "7",
+                    "unit": "mg/l",
+                    "reference": "0 - 5",
+                    "technical_status_code": "above_reference",
+                    "technical_status": "au-dessus de la référence",
+                }
+            ],
+        }
+        transformed = ga._build_response_transform_pack(
+            query="Convertis la réponse précédente en style paragraphe médical pro.",
+            query_understanding=qu,
+            previous_pack=previous_pack,
+        )
+        self.assertEqual(str(transformed.get("output_format") or ""), "paragraph")
+        self.assertEqual(list(transformed.get("requested_table_columns") or []), [])
+
     def test_doc_summary_anomalies_only_filters_within_reference(self) -> None:
         result = run_generation(
             query="Résume uniquement les anomalies biologiques du report (16), sans poser de diagnostic.",
@@ -879,6 +905,19 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertLessEqual(len(list(result.get("sources") or [])), 3)
         self.assertNotIn("max_display_results_exceeded_for_simple_query", list((result.get("validation") or {}).get("warnings") or []))
 
+    def test_doc_scoped_reference_range_query_keeps_reference_range_lookup_route(self) -> None:
+        result = run_generation(
+            query="Dans le report 12, donne la plage de MAGNESIUM PLASMATIQUE.",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "reference_range_lookup")
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_reference_range_lookup")
+        answer = str(result.get("answer") or "").lower()
+        self.assertIn("magnesium", answer)
+        self.assertNotIn("valeur :", answer)
+
     def test_doc_scoped_single_analyte_status_route(self) -> None:
         result = run_generation(
             query="Dans le report 24, quelle est la valeur d’acide urique et est-elle dans la référence pour une femme ?",
@@ -1195,13 +1234,21 @@ class TestGenerationDocScope(unittest.TestCase):
         old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
         if "MEDICAL_RAG_FORCE_LLM_WRITER" in os.environ:
             os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+
+        def _feature_enabled(name: str, default: bool = False) -> bool:
+            if str(name) == "LLM_SUMMARY_WRITER_ENABLED":
+                return False
+            if str(name) in {"LLM_GLOBAL_ENABLED", "LLM_REWRITE_ENABLED", "LLM_FALLBACK_NON_CRITICAL_ONLY"}:
+                return True
+            return default
         try:
-            result = run_generation(
-                query="Fais une synthèse médico-biologique du report 12 en 6 lignes maximum, en séparant les anomalies et les résultats rassurants. Ne donne pas de diagnostic.",
-                mode="keyword",
-                top_k=30,
-                index_dir="data/indexes",
-            )
+            with mock.patch("generate_answer._is_feature_enabled", side_effect=_feature_enabled):
+                result = run_generation(
+                    query="Fais une synthèse médico-biologique du report 12 en 6 lignes maximum, en séparant les anomalies et les résultats rassurants. Ne donne pas de diagnostic.",
+                    mode="keyword",
+                    top_k=30,
+                    index_dir="data/indexes",
+                )
         finally:
             if old_force is not None:
                 os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
@@ -1213,6 +1260,1079 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertEqual(str(debug.get("llm_skipped_reason") or ""), "biological_summary_deterministic_preferred")
         self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
         self.assertTrue(str(result.get("generation_mode") or "").startswith("deterministic_"))
+
+    def test_note_medecin_doc_scoped_uses_numeric_summary_context(self) -> None:
+        result = run_generation(
+            query="Fais une note médecin courte pour report 12, sans diagnostic.",
+            mode="keyword",
+            top_k=30,
+            index_dir="data/indexes",
+        )
+        self.assertNotEqual(str(result.get("generation_mode") or ""), "deterministic_no_evidence_response")
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "doc_scoped_biological_summary")
+        self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+
+    def test_summary_writer_opt_in_can_use_llm_when_feature_flag_enabled(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        if "MEDICAL_RAG_FORCE_LLM_WRITER" in os.environ:
+            os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+
+        def _feature_enabled(name: str, default: bool = False) -> bool:
+            if str(name) == "LLM_SUMMARY_WRITER_ENABLED":
+                return True
+            if str(name) in {"LLM_GLOBAL_ENABLED", "LLM_REWRITE_ENABLED", "LLM_FALLBACK_NON_CRITICAL_ONLY"}:
+                return True
+            return default
+
+        def _fake_micro(**_kwargs: object) -> dict[str, object]:
+            return {
+                "mode": "hybrid_structured_llm_writer",
+                "answer": (
+                    "Anormaux : Réserve Alcaline (en dessous).\n"
+                    "Résultats dans la référence uniquement : Phosphore, LDH.\n"
+                    "Conclusion technique : synthèse descriptive limitée aux données disponibles."
+                ),
+                "llm_error": None,
+            }
+
+        try:
+            with mock.patch("generate_answer._is_feature_enabled", side_effect=_feature_enabled):
+                with mock.patch("generate_answer._compose_level2_micro_prompt_answer", side_effect=_fake_micro):
+                    result = run_generation(
+                        query="Résume report 24 en 5 lignes max, strictement technique.",
+                        mode="keyword",
+                        top_k=30,
+                        index_dir="data/indexes",
+                    )
+        finally:
+            if old_force is not None:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+            else:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+
+        debug = dict(result.get("debug") or {})
+        self.assertEqual(str(debug.get("selected_route") or ""), "doc_scoped_biological_summary")
+        self.assertIn(debug.get("llm_writer_attempted"), {True, 1})
+        self.assertEqual(str(debug.get("generation_strategy") or ""), "llm_writer_expected")
+        self.assertEqual(str(debug.get("llm_route_class") or ""), "llm_allowed")
+        self.assertEqual(str(result.get("validation", {}).get("validation_status") or ""), "pass")
+
+    def test_biological_summary_contract_renderer_prevents_abnormal_in_within_section(self) -> None:
+        ga = __import__("generate_answer")
+        evidences = [
+            {
+                "doc_id": "report_24",
+                "page": 1,
+                "row": 1,
+                "analyte": "CRP",
+                "analyte_label": "CRP",
+                "display_name": "CRP",
+                "source_analyte": "CRP",
+                "technical_status_code": "above_reference",
+            },
+            {
+                "doc_id": "report_24",
+                "page": 1,
+                "row": 2,
+                "analyte": "Phosphore",
+                "analyte_label": "Phosphore",
+                "display_name": "Phosphore",
+                "source_analyte": "Phosphore",
+                "technical_status_code": "within_reference",
+            },
+        ]
+        llm_bad_json = (
+            '{"anormaux":[],"within_reference":["CRP","Phosphore"],'
+            '"conclusion":"Conclusion technique : synthèse descriptive."}'
+        )
+        rendered = ga._render_biological_summary_from_contract(
+            llm_answer=llm_bad_json,
+            evidences=evidences,
+            max_lines=5,
+            no_diagnosis=True,
+        )
+        normalized = rendered.lower()
+        self.assertIn("anormaux : crp", normalized)
+        self.assertIn("résultats dans la référence uniquement : phosphore", normalized)
+        within_line = next((ln for ln in rendered.splitlines() if ln.lower().startswith("résultats dans la référence uniquement")), "")
+        self.assertNotIn("crp", within_line.lower())
+
+    def test_biological_summary_contract_renderer_supports_status_field_only(self) -> None:
+        ga = __import__("generate_answer")
+        evidences = [
+            {
+                "doc_id": "report_24",
+                "page": 1,
+                "row": 1,
+                "analyte": "CRP",
+                "analyte_label": "CRP",
+                "display_name": "CRP",
+                "source_analyte": "CRP",
+                "status": "au-dessus de la référence",
+            },
+            {
+                "doc_id": "report_24",
+                "page": 1,
+                "row": 2,
+                "analyte": "Phosphore",
+                "analyte_label": "Phosphore",
+                "display_name": "Phosphore",
+                "source_analyte": "Phosphore",
+                "status": "dans la référence",
+            },
+        ]
+        llm_bad_json = (
+            '{"anormaux":[],"within_reference":["CRP","Phosphore"],'
+            '"conclusion":"Conclusion technique : synthèse descriptive."}'
+        )
+        rendered = ga._render_biological_summary_from_contract(
+            llm_answer=llm_bad_json,
+            evidences=evidences,
+            max_lines=5,
+            no_diagnosis=True,
+        )
+        normalized = rendered.lower()
+        self.assertIn("anormaux : crp", normalized)
+        self.assertIn("résultats dans la référence uniquement : phosphore", normalized)
+        within_line = next((ln for ln in rendered.splitlines() if ln.lower().startswith("résultats dans la référence uniquement")), "")
+        self.assertNotIn("crp", within_line.lower())
+
+    def test_biological_summary_contract_renderer_preserves_all_abnormal_rows(self) -> None:
+        ga = __import__("generate_answer")
+        evidences = [
+            {
+                "doc_id": "report_24",
+                "page": 1,
+                "row": 1,
+                "analyte": "CRP",
+                "analyte_label": "CRP",
+                "display_name": "CRP",
+                "source_analyte": "CRP",
+                "technical_status_code": "above_reference",
+            },
+            {
+                "doc_id": "report_24",
+                "page": 1,
+                "row": 2,
+                "analyte": "Réserve Alcaline",
+                "analyte_label": "Réserve Alcaline",
+                "display_name": "Réserve Alcaline",
+                "source_analyte": "Réserve Alcaline",
+                "technical_status_code": "below_reference",
+            },
+            {
+                "doc_id": "report_24",
+                "page": 1,
+                "row": 3,
+                "analyte": "Phosphore",
+                "analyte_label": "Phosphore",
+                "display_name": "Phosphore",
+                "source_analyte": "Phosphore",
+                "technical_status_code": "within_reference",
+            },
+        ]
+        llm_partial_json = (
+            '{"anormaux":["CRP"],"within_reference":["Phosphore"],'
+            '"conclusion":"Conclusion technique : synthèse descriptive."}'
+        )
+        rendered = ga._render_biological_summary_from_contract(
+            llm_answer=llm_partial_json,
+            evidences=evidences,
+            max_lines=5,
+            no_diagnosis=True,
+        )
+        normalized = rendered.lower()
+        self.assertIn("crp", normalized)
+        self.assertIn("réserve alcaline", normalized)
+
+    def test_biological_summary_contract_renderer_compact_rows_do_not_collapse(self) -> None:
+        ga = __import__("generate_answer")
+        # Simulate compact LLM rows (no doc_id/page/row).
+        evidences = [
+            {
+                "analyte": "CRP",
+                "status": "au-dessus de la référence",
+                "value_with_unit": "7 mg/l",
+                "reference_short": "0-5 mg/l",
+                "source_label": "report (24).pdf — page 1, ligne 9",
+            },
+            {
+                "analyte": "Réserve Alcaline",
+                "status": "en dessous de la référence",
+                "value_with_unit": "20 mmol/l",
+                "reference_short": "21-28 mmol/l",
+                "source_label": "report (24).pdf — page 1, ligne 10",
+            },
+            {
+                "analyte": "Phosphore",
+                "status": "dans la référence",
+                "value_with_unit": "30 mg/l",
+                "reference_short": "23-47 mg/l",
+                "source_label": "report (24).pdf — page 1, ligne 4",
+            },
+        ]
+        llm_json = (
+            '{"anormaux":["CRP"],"within_reference":["Phosphore"],'
+            '"conclusion":"Conclusion technique : synthèse descriptive."}'
+        )
+        rendered = ga._render_biological_summary_from_contract(
+            llm_answer=llm_json,
+            evidences=evidences,
+            max_lines=5,
+            no_diagnosis=True,
+        )
+        normalized = rendered.lower()
+        self.assertIn("crp", normalized)
+        self.assertIn("réserve alcaline", normalized)
+        self.assertIn("phosphore", normalized)
+
+    def test_biological_summary_template_includes_value_and_reference(self) -> None:
+        ga = __import__("generate_answer")
+        evidences = [
+            {
+                "analyte": "CRP",
+                "current_value": "7",
+                "unit": "mg/l",
+                "reference": "0 - 5 mg/l",
+                "technical_status_code": "above_reference",
+            },
+            {
+                "analyte": "Réserve Alcaline",
+                "current_value": "20",
+                "unit": "mmol/l",
+                "reference": "21 - 28 mmol/l",
+                "technical_status_code": "below_reference",
+            },
+            {
+                "analyte": "Phosphore",
+                "current_value": "30",
+                "unit": "mg/l",
+                "reference": "23 - 47 mg/l",
+                "technical_status_code": "within_reference",
+            },
+        ]
+        rendered = ga._build_doc_scoped_biological_summary_answer(
+            evidences,
+            max_lines=5,
+            no_diagnosis=True,
+        )
+        self.assertIn("CRP = 7 mg/l", rendered)
+        self.assertIn("réf 0 - 5", rendered)
+        self.assertIn("Réserve Alcaline = 20 mmol/l", rendered)
+        self.assertIn("réf 21 - 28", rendered)
+        self.assertIn("Phosphore = 30 mg/l", rendered)
+
+    def test_biological_summary_template_avoids_placeholder_reference_duplication(self) -> None:
+        ga = __import__("generate_answer")
+        evidences = [
+            {
+                "analyte": "Cholestérol total",
+                "current_value": "1.60",
+                "unit": "g/l",
+                "reference": "",
+                "technical_status_code": "below_reference",
+            }
+        ]
+        rendered = ga._build_doc_scoped_biological_summary_answer(
+            evidences,
+            max_lines=5,
+            no_diagnosis=True,
+        )
+        low = rendered.lower()
+        self.assertIn("cholestérol total = 1.60 g/l (en dessous)", low)
+        self.assertNotIn("réf réf. disponible", low)
+        self.assertNotIn("(réf non disponible", low)
+
+    def test_biological_summary_template_lists_normal_names_only_when_many(self) -> None:
+        ga = __import__("generate_answer")
+        evidences = [
+            {
+                "doc_id": "report_24",
+                "analyte": "CRP",
+                "current_value": "7",
+                "unit": "mg/l",
+                "reference": "0 - 5 mg/l",
+                "technical_status_code": "above_reference",
+            },
+            {
+                "doc_id": "report_24",
+                "analyte": "Réserve Alcaline",
+                "current_value": "20",
+                "unit": "mmol/l",
+                "reference": "21 - 28 mmol/l",
+                "technical_status_code": "below_reference",
+            },
+        ]
+        evidences.extend(
+            [
+                {
+                    "doc_id": "report_24",
+                    "analyte": f"N{i}",
+                    "current_value": "1",
+                    "unit": "u",
+                    "reference": "0 - 2",
+                    "technical_status_code": "within_reference",
+                }
+                for i in range(1, 7)
+            ]
+        )
+        rendered = ga._build_doc_scoped_biological_summary_answer(
+            evidences,
+            max_lines=5,
+            no_diagnosis=True,
+        )
+        self.assertIn("Résultats dans la référence uniquement : N1", rendered)
+        self.assertNotIn("N1 = 1 u", rendered)
+        self.assertNotIn("+1 autre(s)", rendered)
+
+    def test_biological_summary_doctor_note_profile_renders_narrative_style(self) -> None:
+        ga = __import__("generate_answer")
+        evidences = [
+            {
+                "doc_id": "report_12",
+                "page": 1,
+                "analyte": "Créatinine",
+                "current_value": "23",
+                "unit": "mg/l",
+                "reference": "4 - 9 mg/l",
+                "technical_status_code": "above_reference",
+            },
+            {
+                "doc_id": "report_12",
+                "page": 2,
+                "analyte": "Bilirubine Directe",
+                "current_value": "6",
+                "unit": "mg/l",
+                "reference": "0 - 5 mg/l",
+                "technical_status_code": "above_reference",
+            },
+            {
+                "doc_id": "report_12",
+                "page": 3,
+                "analyte": "Magnésium",
+                "current_value": "20",
+                "unit": "mg/l",
+                "reference": "15 - 22 mg/l",
+                "technical_status_code": "within_reference",
+            },
+        ]
+        rendered = ga._build_doc_scoped_biological_summary_answer(
+            evidences,
+            max_lines=6,
+            no_diagnosis=True,
+            render_profile="doctor_note",
+        )
+        low = rendered.lower()
+        self.assertIn("note de synthèse médicale", low)
+        self.assertIn("points biologiques notables", low)
+        self.assertIn("sans diagnostic médical", low)
+        self.assertIn("conclusion technique", low)
+        self.assertIn("source :", low)
+        self.assertNotIn("anormaux :", low)
+        self.assertTrue(rendered.startswith("Note de synthèse médicale"))
+        self.assertIn("\n\n", rendered)
+
+    def test_biological_summary_contract_doctor_note_enforces_default_conclusion(self) -> None:
+        ga = __import__("generate_answer")
+        evidences = [
+            {
+                "doc_id": "report_12",
+                "page": 1,
+                "analyte": "Créatinine",
+                "technical_status_code": "above_reference",
+                "status": "au-dessus de la référence",
+            },
+            {
+                "doc_id": "report_12",
+                "page": 2,
+                "analyte": "Magnésium",
+                "technical_status_code": "within_reference",
+                "status": "dans la référence",
+            },
+        ]
+        llm_json_missing_conclusion = '{"anormaux":["Créatinine"],"within_reference":["Magnésium"]}'
+        rendered = ga._render_biological_summary_from_contract(
+            llm_answer=llm_json_missing_conclusion,
+            evidences=evidences,
+            max_lines=6,
+            no_diagnosis=True,
+            render_profile="doctor_note",
+        )
+        low = rendered.lower()
+        self.assertIn("conclusion technique :", low)
+        self.assertIn("sans diagnostic", low)
+
+    def test_safe_llm_summary_conclusion_rejects_interpretive_conclusion(self) -> None:
+        ga = __import__("generate_answer")
+        conclusion = ga._safe_llm_summary_conclusion(
+            "Conclusion technique : Les résultats anormaux indiquent une inflammation.",
+            no_diagnosis=True,
+        )
+        self.assertIsNone(conclusion)
+
+    def test_doc_scoped_summary_render_profile_detects_doctor_note(self) -> None:
+        ga = __import__("generate_answer")
+        qu_mod = __import__("query_understanding")
+        qu = qu_mod.parse_query_understanding("Fais une note médecin courte pour report 12, sans diagnostic.")
+        profile = ga._doc_scoped_summary_render_profile(qu)
+        self.assertEqual(profile, "doctor_note")
+
+    def test_doc_scoped_summary_render_profile_detects_doctor_note_reference_ranges(self) -> None:
+        ga = __import__("generate_answer")
+        qu_mod = __import__("query_understanding")
+        qu = qu_mod.parse_query_understanding(
+            "Tu peux faire une note sur les plages physiologiques et les références dans report 12 ?"
+        )
+        profile = ga._doc_scoped_summary_render_profile(qu)
+        self.assertEqual(profile, "doctor_note_reference_ranges")
+
+    def test_biological_summary_doctor_note_reference_ranges_includes_range_section(self) -> None:
+        ga = __import__("generate_answer")
+        evidences = [
+            {
+                "doc_id": "report_12",
+                "page": 1,
+                "analyte": "Créatinine",
+                "current_value": "23",
+                "unit": "mg/l",
+                "reference": "4 - 9 mg/l",
+                "technical_status_code": "above_reference",
+            },
+            {
+                "doc_id": "report_12",
+                "page": 2,
+                "analyte": "Magnésium",
+                "current_value": "20",
+                "unit": "mg/l",
+                "reference": "15 - 22 mg/l",
+                "technical_status_code": "within_reference",
+            },
+        ]
+        rendered = ga._build_doc_scoped_biological_summary_answer(
+            evidences,
+            max_lines=7,
+            no_diagnosis=True,
+            render_profile="doctor_note_reference_ranges",
+        )
+        low = rendered.lower()
+        self.assertIn("plages et statuts documentés", low)
+        self.assertIn("créatinine", low)
+        self.assertIn("magnésium", low)
+        self.assertIn("= 23 mg/l", low)
+
+    def test_reference_ranges_summary_llm_pack_contains_structured_categories(self) -> None:
+        ga = __import__("generate_answer")
+        qu_mod = __import__("query_understanding")
+        qu = qu_mod.parse_query_understanding(
+            "Tu peux faire une note sur les différentes plages physiologiques et références selon sexe/âge dans report 12 ?"
+        )
+        pack = {
+            "evidences": [
+                {
+                    "doc_id": "report_12",
+                    "page": 1,
+                    "analyte": "Créatinine",
+                    "current_value": "23",
+                    "unit": "mg/l",
+                    "reference": "Homme: 7.2 - 12.5 ; Femme: 5.7 - 11.1",
+                    "technical_status_code": "above_reference",
+                    "technical_status": "au-dessus de la référence",
+                },
+                {
+                    "doc_id": "report_12",
+                    "page": 2,
+                    "analyte": "CKMB",
+                    "current_value": "40",
+                    "unit": "UI/L",
+                    "reference": "< 25",
+                    "technical_status_code": "above_reference",
+                    "technical_status": "au-dessus de la référence",
+                },
+                {
+                    "doc_id": "report_12",
+                    "page": 2,
+                    "analyte": "Cholestérol total",
+                    "current_value": "1.60",
+                    "unit": "g/L",
+                    "reference": "Souhaitable < 2.0 ; Modéré 2.0-2.4 ; Élevé > 2.4",
+                    "technical_status_code": "within_reference",
+                    "technical_status": "dans la référence",
+                },
+            ],
+            "evidence_all_summary": [
+                {
+                    "doc_id": "report_12",
+                    "page": 1,
+                    "analyte": "Créatinine",
+                    "current_value": "23",
+                    "unit": "mg/l",
+                    "reference": "Homme: 7.2 - 12.5 ; Femme: 5.7 - 11.1",
+                    "technical_status_code": "above_reference",
+                    "technical_status": "au-dessus de la référence",
+                },
+                {
+                    "doc_id": "report_12",
+                    "page": 2,
+                    "analyte": "CKMB",
+                    "current_value": "40",
+                    "unit": "UI/L",
+                    "reference": "< 25",
+                    "technical_status_code": "above_reference",
+                    "technical_status": "au-dessus de la référence",
+                },
+                {
+                    "doc_id": "report_12",
+                    "page": 2,
+                    "analyte": "Cholestérol total",
+                    "current_value": "1.60",
+                    "unit": "g/L",
+                    "reference": "Souhaitable < 2.0 ; Modéré 2.0-2.4 ; Élevé > 2.4",
+                    "technical_status_code": "within_reference",
+                    "technical_status": "dans la référence",
+                },
+            ],
+            "requested_doc_ids": ["report_12"],
+        }
+        llm_pack, _ = ga._build_llm_evidence_pack(
+            query_understanding=qu,
+            structured_pack=pack,
+            selected_route="reference_ranges_summary",
+        )
+        facts = dict(llm_pack.get("reference_ranges_summary_facts") or {})
+        counts = dict(facts.get("category_counts") or {})
+        self.assertGreaterEqual(int(counts.get("ranges_by_sex") or 0), 1)
+        self.assertGreaterEqual(int(counts.get("threshold_ranges") or 0), 1)
+        self.assertGreaterEqual(int(counts.get("interpretive_categories") or 0), 1)
+        self.assertEqual(
+            str((llm_pack.get("summary_selection_debug") or {}).get("summary_selection_strategy") or ""),
+            "reference_ranges_summary_structured_categories",
+        )
+
+    def test_reference_ranges_summary_route_specific_fallback_answer(self) -> None:
+        ga = __import__("generate_answer")
+        qu_mod = __import__("query_understanding")
+        qu = qu_mod.parse_query_understanding(
+            "Tu peux faire une note sur les différentes plages physiologiques dans report 12 ?"
+        )
+        answer = ga._build_route_specific_short_fallback_answer(
+            selected_route="reference_ranges_summary",
+            query_understanding=qu,
+            displayed_evidences=[
+                {
+                    "doc_id": "report_12",
+                    "page": 1,
+                    "analyte": "Bilirubine Directe",
+                    "current_value": "6",
+                    "unit": "mg/l",
+                    "reference": "0.00 - 5.00",
+                    "technical_status_code": "above_reference",
+                    "technical_status": "au-dessus de la référence",
+                }
+            ],
+            evidence_all_summary=None,
+            default_answer="fallback",
+        )
+        self.assertIn("Note sur les valeurs physiologiques", answer)
+        self.assertIn("Source :", answer)
+        self.assertNotIn("Paramètres hors référence notables", answer)
+        self.assertNotIn("Points biologiques notables", answer)
+
+    def test_reference_ranges_summary_facts_filters_ocr_noisy_analytes(self) -> None:
+        ga = __import__("generate_answer")
+        facts = ga._build_reference_ranges_summary_facts(
+            [
+                {
+                    "doc_id": "report_12",
+                    "page": 1,
+                    "analyte": "associés < 1 g/L après un infarctus du myocarde",
+                    "current_value": "0.23",
+                    "unit": "g/l",
+                    "reference": "cérébral ou chez les diabétiques à haut risque.",
+                    "technical_status_code": "unknown",
+                },
+                {
+                    "doc_id": "report_12",
+                    "page": 2,
+                    "analyte": "Créatinine",
+                    "current_value": "23",
+                    "unit": "mg/l",
+                    "reference": "Femme : 5,7 - 11,1 mg/l",
+                    "technical_status_code": "above_reference",
+                },
+            ]
+        )
+        total = int(facts.get("total_reference_items") or 0)
+        self.assertEqual(total, 1)
+        all_items = []
+        for key in [
+            "ranges_min_max",
+            "ranges_by_sex",
+            "ranges_by_age",
+            "threshold_ranges",
+            "interpretive_categories",
+            "unclassified",
+        ]:
+            all_items.extend(list(facts.get(key) or []))
+        analytes = {str(item.get("analyte") or "") for item in all_items}
+        self.assertIn("Créatinine", analytes)
+        self.assertNotIn("associés < 1 g/L après un infarctus du myocarde", analytes)
+
+    def test_reference_ranges_summary_postprocess_forces_conclusion(self) -> None:
+        ga = __import__("generate_answer")
+        qu_mod = __import__("query_understanding")
+        qu = qu_mod.parse_query_understanding(
+            "tu peux faire une note pour les differents plages qui exist dans les valeurs phisiologique dans report 12"
+        )
+        meta = ga._postprocess_reference_ranges_summary_answer(
+            answer_text="**Types de références physiologiques présentes dans le document**\n* min-max ...",
+            displayed_evidences=[
+                {
+                    "doc_id": "report_12",
+                    "page": 1,
+                    "analyte": "AMMONIUM",
+                    "current_value": "20",
+                    "unit": "µg/dl",
+                    "reference": "31,00 - 123,00",
+                    "technical_status_code": "below_reference",
+                }
+            ],
+            evidence_all_summary=None,
+            query_understanding=qu,
+        )
+        answer = str(meta.get("answer") or "")
+        self.assertIn("Note sur les valeurs physiologiques", answer)
+        self.assertIn("Conclusion technique :", answer)
+        self.assertIn("Source :", answer)
+        self.assertEqual(str(meta.get("answer_source") or ""), "deterministic_renderer")
+        self.assertEqual(str(meta.get("renderer_used") or ""), "reference_ranges_deterministic_fallback")
+
+    def test_reference_ranges_summary_fallback_has_no_report12_must_include_bias(self) -> None:
+        ga = __import__("generate_answer")
+        answer = ga._build_reference_ranges_deterministic_fallback(
+            [
+                {
+                    "doc_id": "report_99",
+                    "page": 1,
+                    "analyte": "AnA",
+                    "reference": "10 - 20",
+                },
+                {
+                    "doc_id": "report_99",
+                    "page": 1,
+                    "analyte": "AnB",
+                    "reference": "Homme : 10 - 20 ; Femme : 9 - 18",
+                },
+                {
+                    "doc_id": "report_99",
+                    "page": 1,
+                    "analyte": "AnC",
+                    "reference": "Adulte : 4 - 10 ; Enfant : 3 - 8",
+                },
+                {
+                    "doc_id": "report_99",
+                    "page": 2,
+                    "analyte": "AnD",
+                    "reference": "< 25",
+                },
+                {
+                    "doc_id": "report_99",
+                    "page": 2,
+                    "analyte": "AnE",
+                    "reference": "Taux souhaitable: < 2.0 ; Modéré 2.0-2.4 ; Élevé > 2.4",
+                },
+            ],
+            max_lines=7,
+            no_diagnosis=True,
+        )
+        n = ga.norm_text(answer)
+        self.assertIn("ana", n)
+        self.assertIn("anb", n)
+        self.assertIn("anc", n)
+        self.assertIn("and", n)
+        self.assertIn("ane", n)
+        for forbidden in ["crp", "albumine", "reserve alcaline", "magnesium plasmatique", "lipase", "ckmb", "aslo"]:
+            self.assertNotIn(forbidden, n)
+
+    def test_reference_ranges_summary_postprocess_rejects_list_like_llm_with_deterministic_source(self) -> None:
+        ga = __import__("generate_answer")
+        qu_mod = __import__("query_understanding")
+        qu = qu_mod.parse_query_understanding(
+            "tu peux faire une note pour les differents plages qui exist dans les valeurs phisiologique dans report 12"
+        )
+        meta = ga._postprocess_reference_ranges_summary_answer(
+            answer_text=(
+                "Note sur les valeurs physiologiques — report_12.\n"
+                "Plages min-max : Albumine, ASAT.\n"
+                "Références selon âge/sexe : Créatinine, GGT.\n"
+                "Seuils et catégories interprétatives : Lipase, CKMB.\n"
+                "Source : report_12, pages 1-3."
+            ),
+            displayed_evidences=[
+                {"doc_id": "report_12", "page": 1, "analyte": "Albumine", "reference": "35 - 50"},
+                {"doc_id": "report_12", "page": 2, "analyte": "Lipase", "reference": "< 60"},
+            ],
+            evidence_all_summary=None,
+            query_understanding=qu,
+            prefer_llm_text=True,
+        )
+        self.assertEqual(str(meta.get("answer_source") or ""), "deterministic_renderer")
+        self.assertEqual(str(meta.get("renderer_used") or ""), "reference_ranges_deterministic_fallback")
+        self.assertEqual(str(meta.get("fallback_reason") or ""), "llm_writer_too_deterministic_or_list_like")
+
+    def test_reference_ranges_summary_postprocess_accepts_valid_llm_narrative_source(self) -> None:
+        ga = __import__("generate_answer")
+        qu_mod = __import__("query_understanding")
+        qu = qu_mod.parse_query_understanding(
+            "tu peux faire une note pour les differents plages qui exist dans les valeurs phisiologique dans report 12"
+        )
+        narrative = (
+            "Note sur les valeurs physiologiques — report_12.\n"
+            "Le rapport contient plusieurs formats de valeurs physiologiques : plages min-max, seuils numériques, références selon l’âge, selon le sexe et catégories interprétatives.\n"
+            "Les plages min-max concernent notamment l’albumine et l’ASAT.\n"
+            "Certaines références varient selon le profil patient, notamment pour la créatinine et la GGT.\n"
+            "D'autres paramètres utilisent des seuils ou catégories, notamment la lipase et la CK-MB.\n"
+            "Ces références servent à structurer une lecture technique du rapport.\n"
+            "Note descriptive uniquement, sans diagnostic médical.\n"
+            "Source : report_12, pages 1-3."
+        )
+        meta = ga._postprocess_reference_ranges_summary_answer(
+            answer_text=narrative,
+            displayed_evidences=[
+                {"doc_id": "report_12", "page": 1, "analyte": "Albumine", "reference": "35 - 50"},
+                {"doc_id": "report_12", "page": 2, "analyte": "Lipase", "reference": "< 60"},
+            ],
+            evidence_all_summary=None,
+            query_understanding=qu,
+            prefer_llm_text=True,
+        )
+        self.assertEqual(str(meta.get("answer_source") or ""), "llm_writer")
+        self.assertIsNone(meta.get("renderer_used"))
+        self.assertIsNone(meta.get("fallback_reason"))
+
+    def test_reference_ranges_summary_postprocess_multidoc_requires_doc_mentions_in_body(self) -> None:
+        ga = __import__("generate_answer")
+        qu_mod = __import__("query_understanding")
+        qu = qu_mod.parse_query_understanding(
+            "fais une note des valeurs physiologiques dans report 12 et report 24"
+        )
+        narrative_missing_body_docs = (
+            "Note sur les valeurs physiologiques — report_12, report_24.\n"
+            "Le rapport contient plusieurs formats de valeurs physiologiques : plages min-max, seuils numériques, références selon l’âge, selon le sexe et catégories interprétatives.\n"
+            "Les plages min-max concernent notamment l’albumine et l’ASAT.\n"
+            "Certaines références varient selon le profil patient, notamment pour la créatinine et la GGT.\n"
+            "D'autres paramètres utilisent des seuils ou catégories, notamment la lipase et la CK-MB.\n"
+            "Ces références servent à structurer une lecture technique du rapport.\n"
+            "Note descriptive uniquement, sans diagnostic médical.\n"
+            "Source : report_12, report_24, pages 1-3."
+        )
+        meta = ga._postprocess_reference_ranges_summary_answer(
+            answer_text=narrative_missing_body_docs,
+            displayed_evidences=[
+                {"doc_id": "report_12", "page": 1, "analyte": "Albumine", "reference": "35 - 50"},
+                {"doc_id": "report_24", "page": 1, "analyte": "ACIDE URIQUE", "reference": "26-60"},
+            ],
+            evidence_all_summary=None,
+            query_understanding=qu,
+            prefer_llm_text=True,
+        )
+        self.assertEqual(str(meta.get("answer_source") or ""), "deterministic_renderer")
+        self.assertEqual(str(meta.get("fallback_reason") or ""), "llm_writer_multidoc_coverage_missing")
+
+    def test_reference_ranges_summary_postprocess_multidoc_accepts_when_docs_in_body(self) -> None:
+        ga = __import__("generate_answer")
+        qu_mod = __import__("query_understanding")
+        qu = qu_mod.parse_query_understanding(
+            "fais une note des valeurs physiologiques dans report 12 et report 24"
+        )
+        narrative_with_body_docs = (
+            "Note sur les valeurs physiologiques — report_12, report_24.\n"
+            "Le rapport contient plusieurs formats de valeurs physiologiques dans report_12 et report_24 : plages min-max, seuils numériques, références selon l’âge, selon le sexe et catégories interprétatives.\n"
+            "Dans report_12, les plages min-max concernent notamment l’albumine et l’ASAT.\n"
+            "Dans report_24, certaines références varient selon le profil patient, notamment pour l’acide urique et le calcium.\n"
+            "D'autres paramètres utilisent des seuils ou catégories interprétatives, comme la réserve alcaline et la CRP.\n"
+            "Ces références servent à structurer une lecture technique du rapport.\n"
+            "Note descriptive uniquement, sans diagnostic médical.\n"
+            "Source : report_12, report_24, pages 1-3."
+        )
+        meta = ga._postprocess_reference_ranges_summary_answer(
+            answer_text=narrative_with_body_docs,
+            displayed_evidences=[
+                {"doc_id": "report_12", "page": 1, "analyte": "Albumine", "reference": "35 - 50"},
+                {"doc_id": "report_24", "page": 1, "analyte": "ACIDE URIQUE", "reference": "26-60"},
+            ],
+            evidence_all_summary=None,
+            query_understanding=qu,
+            prefer_llm_text=True,
+        )
+        self.assertEqual(str(meta.get("answer_source") or ""), "llm_writer")
+        self.assertIsNone(meta.get("fallback_reason"))
+
+    def test_reference_ranges_summary_style_guard_production(self) -> None:
+        ga = __import__("generate_answer")
+        answer = ga._build_reference_ranges_summary_answer(
+            [
+                {
+                    "doc_id": "report_12",
+                    "page": 1,
+                    "analyte": "Albumine",
+                    "current_value": "40",
+                    "unit": "g/l",
+                    "reference": "35 à 50 g/l",
+                },
+                {
+                    "doc_id": "report_12",
+                    "page": 1,
+                    "analyte": "ACIDE URIQUE",
+                    "current_value": "23",
+                    "unit": "mg/l",
+                    "reference": "Homme : 35 - 72 mg/l Femme: 26-60 mg/l",
+                },
+                {
+                    "doc_id": "report_12",
+                    "page": 1,
+                    "analyte": "MAGNESIUM PLASMATIQUE",
+                    "current_value": "20",
+                    "unit": "mg/l",
+                    "reference": "Nouveau-né : 15 à 22 mg/l Enfant : 17 à 23 mg/l Adulte : 16 à 26 mg/l",
+                },
+                {
+                    "doc_id": "report_12",
+                    "page": 2,
+                    "analyte": "Lipase",
+                    "current_value": "14",
+                    "unit": "UI/l",
+                    "reference": "<60 UI/l",
+                },
+                {
+                    "doc_id": "report_12",
+                    "page": 2,
+                    "analyte": "CKMB (CPKMB)",
+                    "current_value": "40",
+                    "unit": "UI/L",
+                    "reference": "<25 UI/L",
+                },
+                {
+                    "doc_id": "report_12",
+                    "page": 2,
+                    "analyte": "Cholestérol total",
+                    "current_value": "1.60",
+                    "unit": "g/l",
+                    "reference": "Adulte Taux souhaitable: < 2 g/l Taux modéré: 2 - 2,39 g/l Taux élévé: > 2,40 g/l",
+                },
+            ],
+            max_lines=7,
+            no_diagnosis=True,
+        )
+        first_line = str(answer.splitlines()[0] if answer.splitlines() else "")
+        self.assertFalse(first_line.lower().startswith("plages min-max :"))
+        self.assertNotIn("\nPlages min-max :", answer)
+        self.assertNotIn("\nRéférences selon âge/sexe :", answer)
+        self.assertNotIn("\nSeuils et catégories interprétatives :", answer)
+        self.assertIn("Le rapport contient plusieurs formats de valeurs physiologiques", answer)
+        n = str(answer).lower()
+        self.assertIn("plages min-max", n)
+        self.assertIn("seuil", n)
+        self.assertIn("âge", answer)
+        self.assertIn("sexe", answer)
+        self.assertIn("catégories interprétatives", answer)
+        self.assertIn("sans diagnostic médical", n)
+
+    def test_reference_ranges_summary_llm_style_guard_rejects_list_like_answer(self) -> None:
+        ga = __import__("generate_answer")
+        list_like = (
+            "Note sur les valeurs physiologiques — report_12.\n"
+            "Le rapport contient plusieurs formats de valeurs physiologiques.\n"
+            "Note: Références selon âge/sexe : Créatinine, GGT.\n"
+            "Note: Seuils et catégories interprétatives : Lipase, CKMB.\n"
+            "Source : report_12, pages 1-3."
+        )
+        self.assertFalse(ga._is_reference_ranges_narrative_answer(list_like))
+
+    def test_reference_ranges_summary_llm_style_guard_accepts_narrative_answer(self) -> None:
+        ga = __import__("generate_answer")
+        narrative = (
+            "Note sur les valeurs physiologiques — report_12.\n"
+            "Le rapport contient plusieurs formats de valeurs physiologiques : plages min-max, seuils numériques, références selon l’âge, selon le sexe et catégories interprétatives.\n"
+            "Les plages min-max concernent notamment l’albumine, l’ammonium et le phosphore.\n"
+            "Certaines références varient selon le profil patient, notamment pour la créatinine et la GGT.\n"
+            "D'autres paramètres utilisent des seuils ou catégories, notamment la lipase, la CK-MB et les triglycérides.\n"
+            "Ces références servent à structurer une lecture technique du rapport.\n"
+            "Conclusion technique : note descriptive uniquement, sans diagnostic médical.\n"
+            "Source : report_12, pages 1-3."
+        )
+        self.assertTrue(ga._is_reference_ranges_narrative_answer(narrative))
+
+    def test_reference_ranges_summary_report1_mentions_age_sex_profiles(self) -> None:
+        ga = __import__("generate_answer")
+        result = run_generation(
+            query="tu peux faire une note pour les differents plages qui exist dans les valeurs phisiologique dans report 1",
+            mode="keyword",
+            top_k=30,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "reference_ranges_summary")
+        answer_n = ga.norm_text(str(result.get("answer") or ""))
+        self.assertNotIn("aucun exemple exploitable", answer_n)
+        self.assertTrue(any(token in answer_n for token in ["profil patient", "homme", "femme", "amh"]))
+
+    def test_report10_unknown_status_directional_claim_triggers_quality_gate_fallback(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        candidate = (
+            "Note médicale — report_10.\n"
+            "Le document contient plusieurs résultats biologiques exploitables.\n"
+            "Triglycérides est au-dessus de la référence selon les lignes analysées.\n"
+            "Conclusion technique : note descriptive uniquement, sans diagnostic médical.\n"
+            "Source : report_10, pages 1-3."
+        )
+
+        def _fake_micro(**kwargs: object) -> dict[str, object]:
+            return {
+                "mode": "hybrid_structured_llm_writer",
+                "answer": candidate,
+                "llm_candidate_answer": candidate,
+                "llm_error": None,
+                "use_micro_prompt": True,
+            }
+
+        original_validate = __import__("generate_answer").validate_answer
+
+        def _validate_pass_candidate(*args, **kwargs):
+            if str(kwargs.get("answer_text") or "").strip() == candidate.strip():
+                return {"validation_status": "pass", "errors": [], "warnings": []}
+            return original_validate(*args, **kwargs)
+
+        try:
+            with mock.patch("generate_answer._compose_level2_micro_prompt_answer", side_effect=_fake_micro), mock.patch(
+                "generate_answer.validate_answer", side_effect=_validate_pass_candidate
+            ):
+                result = run_generation(
+                    query="tu peux faire une note medcin de report 10",
+                    mode="keyword",
+                    top_k=30,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        self.assertEqual(str(result.get("final_answer_source") or ""), "deterministic_renderer")
+        self.assertFalse(bool(result.get("llm_writer_accepted")))
+        quality_gate = dict(result.get("quality_gate") or {})
+        reasons = [str(r) for r in list(quality_gate.get("reasons") or [])]
+        self.assertTrue(any(r.startswith("directional_claim_on_ambiguous_status") for r in reasons))
+
+    def test_summary_quality_gate_rejects_anomaly_contradiction(self) -> None:
+        ga = __import__("generate_answer")
+        gate = ga._evaluate_summary_quality_gate(
+            answer=(
+                "Résumé technique\n"
+                "Anomalies détectées · 1\n"
+                "• aucune anomalie objectivée dans les lignes exploitables."
+            ),
+            selected_route="doc_scoped_biological_summary",
+            displayed_evidences=[
+                {"analyte": "CRP", "technical_status_code": "above_reference"},
+            ],
+        )
+        self.assertFalse(bool(gate.get("pass")))
+        self.assertIn("contradictory_anomaly_claim", [str(r) for r in list(gate.get("reasons") or [])])
+
+    def test_summary_readability_normalizer_splits_concatenated_checkmarks(self) -> None:
+        ga = __import__("generate_answer")
+        raw = "✓ AMPHÉTAMINE QUALITATIF✓ BENZODIAZÉPINE QUALITATIF✓ COCAÏNE QUALITATIF."
+        before = ga._evaluate_summary_quality_gate(
+            answer=raw,
+            selected_route="doc_scoped_biological_summary",
+            displayed_evidences=[],
+        )
+        normalized = ga._normalize_summary_readability(raw)
+        after = ga._evaluate_summary_quality_gate(
+            answer=normalized,
+            selected_route="doc_scoped_biological_summary",
+            displayed_evidences=[],
+        )
+        self.assertIn("readability_concatenated_tokens", [str(r) for r in list(before.get("reasons") or [])])
+        self.assertNotIn("readability_concatenated_tokens", [str(r) for r in list(after.get("reasons") or [])])
+        self.assertIn(" ; ", normalized)
+
+    def test_llm_evidence_pack_keeps_doc_scope_fields_for_summary(self) -> None:
+        ga = __import__("generate_answer")
+        qu_mod = __import__("query_understanding")
+        qu = qu_mod.parse_query_understanding("Fais une note médecin courte pour report 12, sans diagnostic.")
+        pack = {
+            "evidences": [
+                {
+                    "doc_id": "report_12",
+                    "page": 2,
+                    "analyte": "Créatinine",
+                    "current_value": "23",
+                    "unit": "mg/l",
+                    "reference": "4 - 9",
+                    "technical_status_code": "above_reference",
+                    "technical_status": "au-dessus de la référence",
+                }
+            ],
+            "evidence_all_summary": [
+                {
+                    "doc_id": "report_12",
+                    "page": 2,
+                    "analyte": "Créatinine",
+                    "current_value": "23",
+                    "unit": "mg/l",
+                    "reference": "4 - 9",
+                    "technical_status_code": "above_reference",
+                    "technical_status": "au-dessus de la référence",
+                }
+            ],
+            "requested_doc_ids": ["report_12"],
+        }
+        llm_pack, _ = ga._build_llm_evidence_pack(
+            query_understanding=qu,
+            structured_pack=pack,
+            selected_route="doc_scoped_biological_summary",
+        )
+        first = dict((llm_pack.get("evidences") or [])[0])
+        self.assertEqual(str(first.get("doc_id") or ""), "report_12")
+        self.assertEqual(int(first.get("page") or 0), 2)
+
+    def test_llm_summary_pack_keeps_within_rows_when_available(self) -> None:
+        ga = __import__("generate_answer")
+        qu_mod = __import__("query_understanding")
+        qu = qu_mod.parse_query_understanding("Résume report 24 en 5 lignes max, strictement technique")
+        evidence_all = [
+            {
+                "analyte": f"A{i}",
+                "technical_status_code": "above_reference",
+                "technical_status": "au-dessus de la référence",
+                "current_value": "10",
+                "unit": "u",
+                "reference": "0-5",
+                "source": "src",
+            }
+            for i in range(1, 7)
+        ]
+        evidence_all.append(
+            {
+                "analyte": "Calcium",
+                "technical_status_code": "within_reference",
+                "technical_status": "dans la référence",
+                "current_value": "92",
+                "unit": "mg/l",
+                "reference": "80-100",
+                "source": "src",
+            }
+        )
+        llm_pack, _ = ga._build_llm_evidence_pack(
+            query_understanding=qu,
+            structured_pack={"evidences": evidence_all, "evidence_all_summary": evidence_all},
+            selected_route="doc_scoped_biological_summary",
+        )
+        self.assertGreaterEqual(int(llm_pack.get("llm_within_rows_count") or 0), 1)
+        compact_statuses = [str(ev.get("status") or "") for ev in list(llm_pack.get("evidences") or [])]
+        self.assertTrue(any("dans la référence" in s.lower() or "dans la reference" in s.lower() for s in compact_statuses))
 
     def test_priority_is_deterministic_preferred_by_default(self) -> None:
         old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
@@ -1371,6 +2491,8 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertIsNone(debug.get("llm_candidate_validation_status"))
         self.assertTrue(debug.get("llm_candidate_validation_errors") in (None, []))
         self.assertEqual(str(debug.get("fallback_renderer_used") or ""), "deterministic_biological_summary_short")
+        self.assertFalse(bool(result.get("llm_writer_accepted")))
+        self.assertEqual(str(result.get("final_answer_source") or ""), "deterministic_renderer")
 
     def test_level2_candidate_valid_kept_as_final_answer(self) -> None:
         old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
@@ -1422,6 +2544,105 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertIsNone(debug.get("fallback_reason"))
         self.assertIsNone(debug.get("generation_mode_before_fallback"))
         self.assertEqual(str(debug.get("llm_candidate_validation_status") or ""), "pass")
+
+    def test_reference_ranges_pipeline_marks_deterministic_source_when_llm_is_list_like(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        candidate = (
+            "Note sur les valeurs physiologiques — report_12.\n"
+            "Plages min-max : Albumine, ASAT.\n"
+            "Références selon âge/sexe : Créatinine, GGT.\n"
+            "Seuils et catégories interprétatives : Lipase, CKMB.\n"
+            "Source : report_12, pages 1-3."
+        )
+
+        def _fake_micro(**kwargs: object) -> dict[str, object]:
+            return {
+                "mode": "hybrid_structured_llm_writer",
+                "answer": candidate,
+                "llm_candidate_answer": candidate,
+                "llm_error": None,
+                "use_micro_prompt": True,
+            }
+
+        original_validate = __import__("generate_answer").validate_answer
+
+        def _validate_pass_candidate(*args, **kwargs):
+            if str(kwargs.get("answer_text") or "").strip() == candidate.strip():
+                return {"validation_status": "pass", "errors": [], "warnings": []}
+            return original_validate(*args, **kwargs)
+
+        try:
+            with mock.patch("generate_answer._compose_level2_micro_prompt_answer", side_effect=_fake_micro), mock.patch(
+                "generate_answer.validate_answer", side_effect=_validate_pass_candidate
+            ):
+                result = run_generation(
+                    query="tu peux faire une note pour les differents plages qui exist dans les valeurs phisiologique dans report 12",
+                    mode="keyword",
+                    top_k=30,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        self.assertEqual(str(result.get("final_answer_source") or ""), "deterministic_renderer")
+        self.assertEqual(str(result.get("renderer_used") or ""), "reference_ranges_deterministic_fallback")
+        self.assertEqual(str(result.get("fallback_reason") or ""), "llm_writer_too_deterministic_or_list_like")
+        self.assertFalse(bool(result.get("llm_writer_accepted")))
+
+    def test_reference_ranges_pipeline_keeps_llm_source_when_narrative_is_valid(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        candidate = (
+            "Note sur les valeurs physiologiques — report_12.\n"
+            "Le rapport contient plusieurs formats de valeurs physiologiques : plages min-max, seuils numériques, références selon l’âge, selon le sexe et catégories interprétatives.\n"
+            "Les plages min-max concernent notamment l’albumine et l’ASAT.\n"
+            "Certaines références varient selon le profil patient, notamment pour la créatinine et la GGT.\n"
+            "D'autres paramètres utilisent des seuils ou catégories, notamment la lipase et la CK-MB.\n"
+            "Ces références servent à structurer une lecture technique du rapport.\n"
+            "Note descriptive uniquement, sans diagnostic médical.\n"
+            "Source : report_12, pages 1-3."
+        )
+
+        def _fake_micro(**kwargs: object) -> dict[str, object]:
+            return {
+                "mode": "hybrid_structured_llm_writer",
+                "answer": candidate,
+                "llm_candidate_answer": candidate,
+                "llm_error": None,
+                "use_micro_prompt": True,
+            }
+
+        original_validate = __import__("generate_answer").validate_answer
+
+        def _validate_pass_candidate(*args, **kwargs):
+            if str(kwargs.get("answer_text") or "").strip() == candidate.strip():
+                return {"validation_status": "pass", "errors": [], "warnings": []}
+            return original_validate(*args, **kwargs)
+
+        try:
+            with mock.patch("generate_answer._compose_level2_micro_prompt_answer", side_effect=_fake_micro), mock.patch(
+                "generate_answer.validate_answer", side_effect=_validate_pass_candidate
+            ):
+                result = run_generation(
+                    query="tu peux faire une note pour les differents plages qui exist dans les valeurs phisiologique dans report 12",
+                    mode="keyword",
+                    top_k=30,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        self.assertEqual(str(result.get("final_answer_source") or ""), "llm_writer")
+        self.assertIsNone(result.get("renderer_used"))
+        self.assertIsNone(result.get("fallback_reason"))
+        self.assertTrue(bool(result.get("llm_writer_accepted")))
 
     def test_level2_postprocess_exception_sets_explicit_fallback_reason(self) -> None:
         old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
@@ -2006,6 +3227,89 @@ class TestGenerationDocScope(unittest.TestCase):
         )
         self.assertNotEqual(str(result.get("generation_mode") or ""), "deterministic_no_evidence_response")
         self.assertIn(str((result.get("debug") or {}).get("selected_route") or ""), {"cohort_search", "global_analyte_abnormal_search"})
+
+    def test_multi_doc_reference_ranges_query_forces_reference_ranges_summary_route(self) -> None:
+        result = run_generation(
+            query="fais une note des valeurs physiologiques dans report 12 et report 24",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertEqual(str((result.get("debug") or {}).get("selected_route") or ""), "reference_ranges_summary")
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_reference_ranges_summary")
+
+    def test_reference_range_lookup_validator_accepts_multi_profile_with_viewer_url(self) -> None:
+        av = __import__("answer_validator")
+        answer_text = (
+            "Pour AMH, plusieurs sous-profils valides existent pour la demande.\n"
+            "Sous-profils disponibles :\n"
+            "- Homme — âge non précisé : 4,35–5,35 ng/ml\n"
+            "- Femme — 20-24 ans : 3,55–4,33 ng/ml\n"
+            "- Femme — 25-29 ans : 3,03–3,87 ng/ml\n"
+            "Documents contenant cet analyte : [report 1](/viewer/pdf?doc_id=report_1&page=1)."
+        )
+        validation = av.validate_answer(
+            query="dans le meme document donne moi la plage de AMH",
+            answer_text=answer_text,
+            evidence_pack=[],
+            displayed_evidences=[],
+            source_citations=[{"doc_id": "report_1", "label": "report (1).pdf — page 1, ligne 4", "url": "/viewer/pdf?doc_id=report_1&page=1"}],
+            generation_mode="deterministic_reference_range_lookup",
+            retrieval_status="answerable",
+            query_intents={"reference_range_lookup": True},
+        )
+        errors = {str(e).strip() for e in list(validation.get("errors") or [])}
+        self.assertNotIn("reference_range_missing_main_fact", errors)
+        self.assertNotIn("reference_range_internal_source_leak", errors)
+
+    def test_response_transform_pack_includes_rows_when_evidences_missing(self) -> None:
+        ga = __import__("generate_answer")
+        qu_mod = __import__("query_understanding")
+        qu = qu_mod.parse_query_understanding("mets ça en tableau")
+        previous_pack = {
+            "intent": "doc_scoped_summary",
+            "requested_doc_ids": ["report_12", "report_24"],
+            "evidences": [],
+            "rows": [
+                {"doc_id": "report_12", "analyte": "Albumine", "value_raw": "40", "unit": "g/l", "reference_range": "35 à 50 g/l"},
+                {"doc_id": "report_24", "analyte": "APO A1", "value_raw": "2.3", "unit": "g/l", "reference_range": "1,1 - 1,6"},
+            ],
+        }
+        transformed = ga._build_response_transform_pack(
+            query="mets ça en tableau",
+            query_understanding=qu,
+            previous_pack=previous_pack,
+        )
+        docs = {str(r.get("doc_id") or "").strip().lower() for r in list(transformed.get("results") or [])}
+        self.assertIn("report_12", docs)
+        self.assertIn("report_24", docs)
+
+    def test_response_transform_blocks_value_changed_before_final_render(self) -> None:
+        first = run_generation(
+            query="fais une note des valeurs physiologiques dans report 12 et report 24",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        previous_pack = first.get("structured_evidence_pack") or {}
+        self.assertTrue(bool(previous_pack))
+
+        def _always_fail_validate(*args, **kwargs):
+            return {"validation_status": "fail", "errors": ["value_changed"], "warnings": []}
+
+        with mock.patch("generate_answer.validate_answer", side_effect=_always_fail_validate):
+            transformed = run_generation(
+                query="Convertis la réponse précédente en style paragraphe médical pro.",
+                mode="keyword",
+                top_k=5,
+                index_dir="data/indexes",
+                search_engine=_FailIfCalledSearchEngine(),
+                previous_structured_evidence_pack=previous_pack,
+            )
+        answer = str(transformed.get("answer") or "").lower()
+        self.assertIn("transformation demandée est bloquée", answer)
+        self.assertEqual(str((transformed.get("validation") or {}).get("validation_status") or ""), "fail")
+        self.assertIn("transform_blocked_value_changed", list((transformed.get("validation") or {}).get("errors") or []))
 
 
 if __name__ == "__main__":

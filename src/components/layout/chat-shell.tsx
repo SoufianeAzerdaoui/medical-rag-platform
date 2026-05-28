@@ -76,8 +76,8 @@ export function ChatShell({ routeConversationId = null }: ChatShellProps) {
 
   if (authStatus === "loading") {
     return (
-      <div className="flex h-screen items-center justify-center">
-        <p className="text-sm text-fg/70">Chargement de la session...</p>
+      <div className="flex h-screen items-center justify-center px-6">
+        <div className="glass rounded-xl px-5 py-4 text-sm text-fg/70">Chargement de la session...</div>
       </div>
     );
   }
@@ -87,12 +87,12 @@ export function ChatShell({ routeConversationId = null }: ChatShellProps) {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="flex h-screen overflow-hidden bg-transparent">
       <ChatSidebar />
       <main className="flex min-w-0 flex-1 flex-col">
-        <div className="border-b border-border px-4 py-2 xl:hidden">
+        <div className="border-b border-border/70 bg-card/70 px-4 py-2 backdrop-blur-xl xl:hidden">
           <button
-            className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-1 text-xs"
+            className="inline-flex items-center gap-2 rounded-lg border border-border/80 bg-card/70 px-3 py-1.5 text-xs font-medium shadow-sm"
             onClick={() => setSourcesOpenMobile((v) => !v)}
             aria-label="Ouvrir panneau sources"
           >
@@ -102,7 +102,7 @@ export function ChatShell({ routeConversationId = null }: ChatShellProps) {
         </div>
         <div className="flex-1 overflow-auto">
           {conversationError ? (
-            <div className="mx-6 mt-4 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+            <div className="mx-6 mt-4 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-700 dark:text-rose-100">
               {conversationError}
             </div>
           ) : null}
