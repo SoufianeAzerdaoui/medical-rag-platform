@@ -68,10 +68,20 @@ function sourceLink(sources: ChatSource[] | undefined): { label: string; href: s
 
 function statusBadgeClass(status: string): string {
   const s = status.toLowerCase();
-  if (s.includes("au-dessus")) return "bg-amber-100 text-amber-800 border-amber-200";
-  if (s.includes("en dessous")) return "bg-sky-100 text-sky-800 border-sky-200";
-  if (s.includes("dans la référence")) return "bg-emerald-100 text-emerald-800 border-emerald-200";
-  return "bg-zinc-100 text-zinc-800 border-zinc-200";
+  if (s.includes("critique") || s.includes("vérifier")) return "border-rose-500/35 bg-rose-500/10 text-rose-700 dark:text-rose-200";
+  if (s.includes("au-dessus")) return "border-amber-500/30 bg-amber-500/12 text-amber-800 dark:text-amber-200";
+  if (s.includes("en dessous")) return "border-sky-500/30 bg-sky-500/12 text-sky-800 dark:text-sky-200";
+  if (s.includes("dans la référence")) return "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200";
+  return "border-border bg-fg/[0.04] text-fg/65";
+}
+
+function statusLabel(status: string): string {
+  const s = status.toLowerCase();
+  if (s.includes("au-dessus")) return "Haut";
+  if (s.includes("en dessous")) return "Bas";
+  if (s.includes("dans la référence")) return "Normal";
+  if (s.includes("critique") || s.includes("vérifier")) return "À vérifier";
+  return status || "Non trouvé";
 }
 
 type Props = {
@@ -84,41 +94,37 @@ export function SingleAnalyteResultCard({ content, sources }: Props) {
   if (!parsed) return null;
   const src = sourceLink(sources);
   return (
-    <div className="rounded-xl border border-border bg-card p-4">
-      <h3 className="text-sm font-semibold">{parsed.title}</h3>
+    <div className="rounded-xl border border-border/70 bg-card/[0.78] p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <h3 className="min-w-0 text-sm font-semibold">{parsed.title}</h3>
+        <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${statusBadgeClass(parsed.status)}`}>
+          {statusLabel(parsed.status)}
+        </span>
+      </div>
+      <p className="mt-3 text-2xl font-semibold tracking-tight">{parsed.value}</p>
       <div className="mt-3 grid gap-2 text-sm">
-        <p>
-          <span className="text-fg/70">Valeur :</span>{" "}
-          <span className="font-semibold">{parsed.value}</span>
+        <p className="flex gap-2">
+          <span className="min-w-24 text-fg/58">{parsed.referenceLabel}</span>
+          <span className="text-fg/86">{parsed.referenceValue}</span>
         </p>
-        <p>
-          <span className="text-fg/70">{parsed.referenceLabel} :</span>{" "}
-          <span>{parsed.referenceValue}</span>
-        </p>
-        <p>
-          <span className="text-fg/70">Statut technique :</span>{" "}
-          <span className={`inline-flex rounded-md border px-2 py-0.5 text-xs font-medium ${statusBadgeClass(parsed.status)}`}>
-            {parsed.status}
-          </span>
-        </p>
-        <p>
-          <span className="text-fg/70">Source :</span>{" "}
+        <p className="flex gap-2">
+          <span className="min-w-24 text-fg/58">Source</span>
           {src ? (
             <a
               href={src.href}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 rounded-lg border border-border/70 bg-card px-2.5 py-1 text-xs font-medium text-accent underline-offset-2 hover:underline"
+              className="inline-flex min-w-0 items-center gap-1 rounded-lg border border-border/70 bg-card px-2.5 py-1 text-xs font-medium text-accent underline-offset-2 hover:underline"
             >
               <span aria-hidden="true">↗</span>
               <span className="break-words">{src.label}</span>
             </a>
           ) : (
-            <span>{parsed.sourceText}</span>
+            <span className="text-fg/86">{parsed.sourceText}</span>
           )}
         </p>
       </div>
-      <p className="mt-3 text-sm">{parsed.conclusion}</p>
+      <p className="mt-3 rounded-lg border border-border/70 bg-fg/[0.025] px-3 py-2 text-sm leading-6 text-fg/80">{parsed.conclusion}</p>
     </div>
   );
 }

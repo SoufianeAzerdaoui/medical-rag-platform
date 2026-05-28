@@ -335,6 +335,11 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
     .map((line) => sanitizeForSentence(line))
     .filter(Boolean)
     .join(" ");
+  const fallbackNarrative = content
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join(" ");
   const rangeItems = parsed.rangeItems || [];
   const rangePreviewCount = 4;
   const visibleRangeItems = showAllRanges ? rangeItems : rangeItems.slice(0, rangePreviewCount);
@@ -376,7 +381,7 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
               </p>
               <p className="text-sm text-fg/90">
                 <span className="font-medium">Note:</span>{" "}
-                {doctorNoteParagraph ? firstSentence(doctorNoteParagraph) : "Synthèse médicale narrative disponible."}
+                {doctorNoteParagraph ? firstSentence(doctorNoteParagraph) : firstSentence(fallbackNarrative)}
                 {rangeSentence ? ` ${firstSentence(rangeSentence)}` : ""}
               </p>
               <p className="text-sm text-fg/90">
@@ -429,7 +434,7 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
                 ) : null}
               </div>
             ) : (
-              <p className="text-sm text-fg/90">Synthèse médicale narrative disponible dans la réponse.</p>
+              <p className="text-sm text-fg/90">{fallbackNarrative || "Synthèse médicale narrative disponible dans la réponse."}</p>
             )}
           </section>
 

@@ -1,6 +1,7 @@
 export type MessageRole = "user" | "assistant" | "system";
 export type MessageStatus = "idle" | "loading" | "error" | "done";
 export type ChatMode = "general" | "document_analysis" | "comparison" | "summary";
+export type AnswerType = "medical_structured" | "conversational" | "general_markdown";
 
 export type SourceCitation = {
   doc_id: string;
@@ -107,6 +108,7 @@ export interface AssistantDiagnostics {
   llm_skipped_reason?: string | null;
   generation_mode_before_fallback?: string | null;
   fallback_decision_path?: string | null;
+  answer_type?: AnswerType | string | null;
 }
 
 export interface MessageItem {
@@ -169,5 +171,6 @@ export interface RagResponse {
   requested_analytes?: string[] | null;
   answerability_status?: string | null;
   fallback_kind?: string | null;
+  answer_type?: AnswerType | string | null;
   debug?: Record<string, unknown> | null;
 }

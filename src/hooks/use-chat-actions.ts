@@ -120,6 +120,11 @@ export function useChatActions() {
             (debug.fallback_decision_path as string | null) ??
             (rawDebug.fallback_decision_path as string | null) ??
             null,
+          answer_type:
+            (response.answer_type as string | null) ??
+            (debug.answer_type as string | null) ??
+            (rawDebug.answer_type as string | null) ??
+            null,
         }, response.visualization, response.chart_data, response.patients, response.inventory_view);
         return response;
       } catch (error) {

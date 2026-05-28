@@ -60,12 +60,17 @@ FRONTEND_ORIGIN = config.FRONTEND_ORIGIN
 AUTH_SCHEME = auth_service.AUTH_SCHEME
 get_current_user = auth_service.get_current_user
 
+ALLOWED_FRONTEND_ORIGINS = [origin.strip() for origin in FRONTEND_ORIGIN.split(",") if origin.strip()]
+# Dev-safe fallback: allow localhost / 127.0.0.1 on any port for preflight CORS.
+LOCAL_DEV_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[origin.strip() for origin in FRONTEND_ORIGIN.split(",") if origin.strip()],
+    allow_origins=ALLOWED_FRONTEND_ORIGINS,
+    allow_origin_regex=LOCAL_DEV_ORIGIN_REGEX,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 

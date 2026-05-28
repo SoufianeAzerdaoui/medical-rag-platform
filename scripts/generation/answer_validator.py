@@ -2362,7 +2362,23 @@ def validate_answer(
             and not has_structured_source
         ):
             errors.append("reference_range_source_required")
-        if not any(k in core_norm for k in ["plage", "intervalle", "norme", "reference", "référence"]):
+        has_reference_keyword = any(k in core_norm for k in ["plage", "intervalle", "norme", "reference", "référence"])
+        has_profile_markers = any(
+            marker in core_norm
+            for marker in [
+                "sous-profils",
+                "sous profils",
+                "homme",
+                "femme",
+                "age",
+                "ans",
+            ]
+        )
+        has_numeric_range = bool(
+            re.search(r"\b\d+(?:[.,]\d+)?\s*(?:-|–|a|à)\s*\d+(?:[.,]\d+)?\s*(?:ng/ml|mg/l|iu/ml|ui/l|pmol/l|mmol/l)?\b", core_norm)
+            or re.search(r"\b[<>]\s*\d+(?:[.,]\d+)?\s*(?:ng/ml|mg/l|iu/ml|ui/l|pmol/l|mmol/l)?\b", core_norm)
+        )
+        if not (has_reference_keyword or (has_profile_markers and has_numeric_range)):
             errors.append("reference_range_missing_main_fact")
         if "resultats correspondants ont ete retrouves" in core_norm or "résultats correspondants ont été retrouvés" in core_norm:
             errors.append("reference_range_forbidden_bulk_listing")
@@ -2372,7 +2388,8 @@ def validate_answer(
             errors.append("reference_range_forbidden_current_value_render")
         if "fallback" in core_norm and not any(k in core_norm for k in ["fallback", "pas trouve de plage specifique", "pas trouvé de plage spécifique"]):
             errors.append("reference_range_fallback_not_explicit")
-        if "chunk_id" in core_norm or "doc_id=" in core_norm or "sqlite_deterministic" in core_norm:
+        has_internal_docid_leak = bool(re.search(r"(?<![?&])doc_id=", core_norm))
+        if "chunk_id" in core_norm or has_internal_docid_leak or "sqlite_deterministic" in core_norm:
             errors.append("reference_range_internal_source_leak")
 
     if generation_mode_norm in {
