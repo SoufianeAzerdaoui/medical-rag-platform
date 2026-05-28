@@ -20,12 +20,21 @@ function buildPdfHref(docId: string, page: number | null): string {
 export default async function PdfViewerPage({
   searchParams,
 }: {
-  searchParams: Promise<{ doc_id?: string | string[]; page?: string | string[] }>;
+  searchParams: Promise<{
+    doc_id?: string | string[];
+    page?: string | string[];
+    row?: string | string[];
+    row_end?: string | string[];
+  }>;
 }) {
   const resolvedSearchParams = await searchParams;
   const docId = asString(resolvedSearchParams.doc_id).trim();
   const pageRaw = asString(resolvedSearchParams.page).trim();
+  const rowRaw = asString(resolvedSearchParams.row).trim();
+  const rowEndRaw = asString(resolvedSearchParams.row_end).trim();
   const page = pageRaw ? Number(pageRaw) : null;
+  const row = rowRaw ? Number(rowRaw) : null;
+  const rowEnd = rowEndRaw ? Number(rowEndRaw) : null;
 
   if (!docId) {
     return (
@@ -38,14 +47,30 @@ export default async function PdfViewerPage({
 
   const pdfHref = buildPdfHref(docId, Number.isFinite(page || NaN) ? page : null);
   const title = `Source ${docId}${page ? ` — page ${page}` : ""}`;
+  const hasRowFocus = Number.isFinite(row || NaN);
+  const lineFocusText = hasRowFocus
+    ? (Number.isFinite(rowEnd || NaN) && Number(rowEnd) > Number(row)
+      ? `Zone surlignée · lignes ${row}-${rowEnd}`
+      : `Zone surlignée · ligne ${row}`)
+    : null;
 
   return (
     <main className="h-screen p-3 md:p-4">
       <div className="mb-3 flex items-center justify-between rounded-lg border border-border bg-card/40 px-3 py-2">
-        <div className="text-sm font-medium">{title}</div>
-        <a href={pdfHref} target="_blank" rel="noopener noreferrer" className="text-sm text-accent hover:underline">
-          Ouvrir dans un nouvel onglet
-        </a>
+        <div>
+          <div className="text-sm font-medium">{title}</div>
+          {lineFocusText ? <div className="mt-0.5 text-xs font-medium text-accent">{lineFocusText}</div> : null}
+        </div>
+        <div className="flex items-center gap-3">
+          {lineFocusText ? (
+            <span className="rounded-full border border-accent/30 bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent">
+              {lineFocusText}
+            </span>
+          ) : null}
+          <a href={pdfHref} target="_blank" rel="noopener noreferrer" className="text-sm text-accent hover:underline">
+            Ouvrir dans un nouvel onglet
+          </a>
+        </div>
       </div>
       <iframe title={title} src={pdfHref} className="h-[calc(100vh-4.5rem)] w-full rounded-lg border border-border bg-background" />
     </main>

@@ -4,10 +4,11 @@ import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AuthPanel } from "@/components/auth/auth-panel";
 import { ChatMessages } from "@/components/chat/chat-messages";
+import { WorkspaceTopbar } from "@/components/layout/workspace-shell";
 import { MessageComposer } from "@/components/chat/message-composer";
 import { ChatSidebar } from "@/components/sidebar/chat-sidebar";
 import { SourcesPanel } from "@/components/sources/sources-panel";
-import { ApiError } from "@/services/rag-api";
+import { ApiError, healthcheck } from "@/services/rag-api";
 import { useAuthStore } from "@/store/auth-store";
 import { useChatStore } from "@/store/chat-store";
 
@@ -23,8 +24,16 @@ export function ChatShell({ routeConversationId = null }: ChatShellProps) {
   const logout = useAuthStore((s) => s.logout);
   const accessToken = useAuthStore((s) => s.accessToken);
   const authStatus = useAuthStore((s) => s.authStatus);
+  const chats = useChatStore((s) => s.chats);
+  const activeChatId = useChatStore((s) => s.activeChatId);
   const [sourcesOpenMobile, setSourcesOpenMobile] = useState(false);
   const [conversationError, setConversationError] = useState<string | null>(null);
+  const [backendOnline, setBackendOnline] = useState(true);
+  const activeChat = chats.find((chat) => chat.id === activeChatId) || null;
+  const topbarTitle = activeChat?.title && activeChat.title.trim() ? activeChat.title : "Workspace Chat";
+  const topbarBreadcrumbs = activeChat?.title && !/^nouvelle conversation$/i.test(activeChat.title.trim())
+    ? ["Clinical Assistant", "Chat", activeChat.title]
+    : ["Clinical Assistant", "Chat"];
 
   useEffect(() => {
     void initialize();
@@ -74,6 +83,20 @@ export function ChatShell({ routeConversationId = null }: ChatShellProps) {
     };
   }, [accessToken, authStatus, logout, routeConversationId, selectConversation, setActiveChat]);
 
+  useEffect(() => {
+    let active = true;
+    async function checkBackend() {
+      const status = await healthcheck();
+      if (active) setBackendOnline(status === "online");
+    }
+    void checkBackend();
+    const timer = window.setInterval(() => void checkBackend(), 30_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
   if (authStatus === "loading") {
     return (
       <div className="flex h-screen items-center justify-center px-6">
@@ -90,6 +113,18 @@ export function ChatShell({ routeConversationId = null }: ChatShellProps) {
     <div className="flex h-screen overflow-hidden bg-transparent">
       <ChatSidebar />
       <main className="flex min-w-0 flex-1 flex-col">
+        <div className="hidden xl:block">
+          <WorkspaceTopbar
+            title={topbarTitle}
+            subtitle="Espace conversationnel clinique"
+            breadcrumbs={topbarBreadcrumbs}
+            actions={[
+              { href: "/chat", label: "Retour au chat" },
+              { href: "/documents", label: "Importer document" },
+              { href: "/chat", label: "Nouvelle conversation" },
+            ]}
+          />
+        </div>
         <div className="border-b border-border/70 bg-card/70 px-4 py-2 backdrop-blur-xl xl:hidden">
           <button
             className="inline-flex items-center gap-2 rounded-lg border border-border/80 bg-card/70 px-3 py-1.5 text-xs font-medium shadow-sm"
@@ -101,6 +136,12 @@ export function ChatShell({ routeConversationId = null }: ChatShellProps) {
           </button>
         </div>
         <div className="flex-1 overflow-auto">
+          {!backendOnline ? (
+            <div className="mx-6 mt-4 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-100">
+              <p className="font-medium">Le service RAG est temporairement indisponible.</p>
+              <p className="mt-1 text-xs">Vérifiez l’API backend ou la base vectorielle.</p>
+            </div>
+          ) : null}
           {conversationError ? (
             <div className="mx-6 mt-4 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-700 dark:text-rose-100">
               {conversationError}

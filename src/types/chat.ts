@@ -132,7 +132,12 @@ export interface ChatItem {
   id: string;
   conversationId: string;
   title: string;
+  subtitle?: string;
+  sourceCount?: number;
+  lastMessagePreview?: string;
   titleSource?: "auto" | "manual";
+  titleGenerated?: boolean;
+  titleEditedByUser?: boolean;
   createdAt: string;
   updatedAt: string;
   messages: MessageItem[];

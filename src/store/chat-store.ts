@@ -87,6 +87,8 @@ function toChatItem(row: { id: string; title: string; created_at: string; update
     conversationId: row.id,
     title: row.title,
     titleSource: "auto",
+    titleGenerated: !/^nouvelle conversation$/i.test(String(row.title || "").trim()),
+    titleEditedByUser: false,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     favorite: false,
@@ -231,6 +233,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
               conversationId,
               title: "Conversation",
               titleSource: "auto",
+              titleGenerated: true,
+              titleEditedByUser: false,
               createdAt: now(),
               updatedAt: mapped.at(-1)?.createdAt || now(),
               favorite: false,
@@ -289,6 +293,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       conversationId: uid("chat-local-conv"),
       title: "Nouveau chat clinique",
       titleSource: "auto",
+      titleGenerated: false,
+      titleEditedByUser: false,
       createdAt: now(),
       updatedAt: now(),
       favorite: false,
@@ -337,9 +343,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
             ...(() => resolveAutoTitleUpdate({
               currentTitle: chat.title,
               titleSource: chat.titleSource ?? "auto",
-              message: content,
+              titleGenerated: chat.titleGenerated,
+              titleEditedByUser: chat.titleEditedByUser,
+              userMessage: content,
               mode,
-              messageCount: chat.messages.length,
+              sources: chat.messages.flatMap((m) => m.sources || []),
             }))(),
             mode,
             messages: [...chat.messages, msg],
@@ -408,7 +416,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
           : m,
       );
-      return { ...chat, messages, updatedAt: now() };
+      const firstUser = messages.find((m) => m.role === "user")?.content || "";
+      const resolvedTitle = resolveAutoTitleUpdate({
+        currentTitle: chat.title,
+        titleSource: chat.titleSource ?? "auto",
+        titleGenerated: chat.titleGenerated,
+        titleEditedByUser: chat.titleEditedByUser,
+        userMessage: firstUser,
+        assistantMessage: content,
+        mode: chat.mode,
+        sources: sources ?? [],
+      });
+      return { ...chat, ...resolvedTitle, messages, updatedAt: now() };
     });
     const active = updated.find((chat) => chat.id === chatId) || null;
     set({ chats: updated, conversations: updated, messages: active?.messages || get().messages });
@@ -445,7 +464,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
   renameChat: (chatId, title) => {
     const { chats } = get();
     const updated: ChatItem[] = chats.map((chat) =>
-      chat.id === chatId ? { ...chat, title: title || chat.title, titleSource: "manual" as const, updatedAt: now() } : chat,
+      chat.id === chatId
+        ? {
+            ...chat,
+            title: title || chat.title,
+            titleSource: "manual" as const,
+            titleGenerated: true,
+            titleEditedByUser: true,
+            updatedAt: now(),
+          }
+        : chat,
     );
     set({ chats: updated, conversations: updated });
   },

@@ -32,6 +32,30 @@ export interface BackendMessageResponse {
   created_at: string;
 }
 
+export interface DocumentRecord {
+  id: string;
+  name: string;
+}
+
+export type ContextUsageStatus = "safe" | "medium" | "warning" | "full";
+
+export interface ActiveModelInfo {
+  provider: string;
+  model: string;
+  context_window: number;
+  max_output_tokens: number;
+}
+
+export interface ConversationContextUsage {
+  conversation_id: string;
+  model: string;
+  context_window: number;
+  used_tokens: number;
+  remaining_tokens: number;
+  usage_percent: number;
+  status: ContextUsageStatus;
+}
+
 interface ChatPayload {
   conversation_id?: string;
   chat_id?: string;
@@ -43,6 +67,7 @@ interface ChatPayload {
 
 interface RequestOptions extends RequestInit {
   token?: string | null;
+  timeoutMs?: number;
 }
 
 export class ApiError extends Error {
@@ -91,10 +116,25 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
     headers.set("Authorization", `Bearer ${init.token}`);
   }
 
-  const res = await fetch(`${API_URL}${path}`, {
-    ...init,
-    headers,
-  });
+  const timeoutMs = init?.timeoutMs ?? 90_000;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}${path}`, {
+      ...init,
+      headers,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new ApiError(408, "Le serveur a mis trop de temps à répondre.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!res.ok) {
     let detail = "";
@@ -183,9 +223,41 @@ export async function sendChat(payload: ChatPayload, token: string): Promise<Rag
     method: "POST",
     token,
     body: JSON.stringify(payload),
+    timeoutMs: 90_000,
   });
   const sources = Array.isArray(response.sources) ? (response.sources as ChatSource[]) : undefined;
   return { ...response, sources };
+}
+
+export async function listDocumentsApi(token?: string | null): Promise<DocumentRecord[]> {
+  return request<DocumentRecord[]>("/documents", { token: token || null });
+}
+
+export async function reindexDocumentApi(docId: string, token?: string | null): Promise<{ success: boolean }> {
+  return request<{ success: boolean }>(`/documents/${encodeURIComponent(docId)}/reindex`, {
+    method: "POST",
+    token: token || null,
+  });
+}
+
+export async function deleteDocumentApi(docId: string, token?: string | null): Promise<{ success: boolean }> {
+  return request<{ success: boolean }>(`/documents/${encodeURIComponent(docId)}`, {
+    method: "DELETE",
+    token: token || null,
+  });
+}
+
+export async function getActiveModelApi(token?: string | null): Promise<ActiveModelInfo> {
+  return request<ActiveModelInfo>("/api/models/active", { token: token || null });
+}
+
+export async function getConversationContextUsageApi(
+  conversationId: string,
+  token?: string | null,
+): Promise<ConversationContextUsage> {
+  return request<ConversationContextUsage>(`/api/conversations/${encodeURIComponent(conversationId)}/context-usage`, {
+    token: token || null,
+  });
 }
 
 export async function transcribeAudio(blob: Blob, token?: string): Promise<string> {

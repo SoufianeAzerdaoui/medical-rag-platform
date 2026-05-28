@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse
 from backend import config
 from backend.database import db_connect as _db_connect, init_schema as _init_auth_db
 from backend.models import (
+    ActiveModelResponse,
     AuthLoginRequest,
     AuthRegisterRequest,
     AuthResponse,
@@ -21,6 +22,7 @@ from backend.models import (
     ChatResponse,
     ConversationClearRequest,
     ConversationClearResponse,
+    ConversationContextUsageResponse,
     ConversationCreateRequest,
     ConversationItem,
     DocumentItem,
@@ -32,6 +34,7 @@ from backend.models import (
 )
 from backend.services import auth_service, conversation_service, feature_flag_service, message_service
 from backend.services.chat_service import process_chat
+from backend.services.model_registry import active_model_info, estimate_tokens_from_text, extract_rag_text_from_sources
 from backend.services.conversation_state_store import (
     ConversationStateService,
     evidence_pack_transformable,
@@ -54,6 +57,7 @@ LOGGER = logging.getLogger("medical_rag.backend")
 _STATE_SERVICE = ConversationStateService()
 _CONVERSATION_STATE = _STATE_SERVICE.legacy_state
 _STATE_STORE = _STATE_SERVICE.memory_store
+_DELETED_DOC_IDS: set[str] = set()
 
 JWT_SECRET = config.JWT_SECRET
 FRONTEND_ORIGIN = config.FRONTEND_ORIGIN
@@ -114,6 +118,33 @@ def _get_user_by_email(email: str) -> dict[str, Any] | None:
 
 def _normalize_email(email: str) -> str:
     return auth_service.normalize_email(email)
+
+
+def _status_from_usage_percent(usage_percent: float) -> str:
+    if usage_percent >= 95.0:
+        return "full"
+    if usage_percent >= 85.0:
+        return "warning"
+    if usage_percent >= 70.0:
+        return "medium"
+    return "safe"
+
+
+def _extract_state_context_text(state: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ("last_transformable_evidence_pack", "last_qualitative_evidence_pack", "last_evidence_pack"):
+        pack = state.get(key)
+        if not isinstance(pack, dict):
+            continue
+        rows = list(pack.get("evidences") or pack.get("results") or [])
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            for field in ("text_excerpt", "source", "label", "analyte", "value", "reference_range", "status_code", "source_pdf"):
+                value = str(row.get(field) or "").strip()
+                if value:
+                    parts.append(value)
+    return "\n".join(parts)[:60_000]
 
 
 def _create_conversation_record(*, user_id: str, title: str | None = None, conversation_id: str | None = None) -> ConversationItem:
@@ -275,6 +306,58 @@ def chat(payload: ChatRequest, current_user: dict[str, Any] = Depends(get_curren
     )
 
 
+@app.get("/api/models/active", response_model=ActiveModelResponse)
+def get_active_model(current_user: dict[str, Any] = Depends(get_current_user)) -> ActiveModelResponse:
+    _ = current_user
+    info = active_model_info()
+    return ActiveModelResponse(
+        provider=info.provider,
+        model=info.model,
+        context_window=int(info.context_window),
+        max_output_tokens=int(info.max_output_tokens),
+    )
+
+
+@app.get("/api/conversations/{conversation_id}/context-usage", response_model=ConversationContextUsageResponse)
+def get_conversation_context_usage(
+    conversation_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> ConversationContextUsageResponse:
+    conversation_service.require_owned_conversation(conversation_id, str(current_user["id"]))
+    info = active_model_info()
+    rows = message_service.list_messages(conversation_id)
+    state = _STATE_SERVICE.load(conversation_id)
+
+    system_prompt = (
+        "Assistant clinique prudent. Réponse basée uniquement sur documents sourcés. "
+        "Aucun diagnostic direct. Signaler limites et éléments manquants."
+    )
+    history_text = "\n".join(str(row.get("content") or "") for row in rows)
+    rag_sources_text = "\n".join(extract_rag_text_from_sources(list(row.get("sources") or [])) for row in rows)
+    state_context_text = _extract_state_context_text(state if isinstance(state, dict) else {})
+
+    prompt_tokens = estimate_tokens_from_text(system_prompt)
+    history_tokens = estimate_tokens_from_text(history_text)
+    rag_tokens = estimate_tokens_from_text(rag_sources_text) + estimate_tokens_from_text(state_context_text)
+    reserved_output_tokens = max(128, int(info.max_output_tokens))
+
+    used_tokens = int(prompt_tokens + history_tokens + rag_tokens + reserved_output_tokens)
+    context_window = max(1, int(info.context_window))
+    remaining_tokens = max(0, context_window - used_tokens)
+    usage_percent = round(min(100.0, (used_tokens / context_window) * 100.0), 2)
+    status = _status_from_usage_percent(usage_percent)
+
+    return ConversationContextUsageResponse(
+        conversation_id=str(conversation_id),
+        model=info.model,
+        context_window=context_window,
+        used_tokens=used_tokens,
+        remaining_tokens=remaining_tokens,
+        usage_percent=usage_percent,
+        status=status,  # type: ignore[arg-type]
+    )
+
+
 @app.post("/chat/clear", response_model=ConversationClearResponse)
 def clear_conversation(payload: ConversationClearRequest, current_user: dict[str, Any] = Depends(get_current_user)) -> ConversationClearResponse:
     conversation_service.require_owned_conversation(payload.conversation_id, str(current_user["id"]))
@@ -289,6 +372,8 @@ def documents() -> list[DocumentItem]:
 
     for doc_id, src in sorted(_resolver()._mapping().items()):  # noqa: SLF001
         if doc_id in seen:
+            continue
+        if doc_id in _DELETED_DOC_IDS:
             continue
         seen.add(doc_id)
         out.append(DocumentItem(id=doc_id, name=src.filename or doc_id))
@@ -313,6 +398,8 @@ def documents() -> list[DocumentItem]:
                 doc_id = str(row["doc_id"] or "").strip()
                 if not doc_id or doc_id in seen:
                     continue
+                if doc_id in _DELETED_DOC_IDS:
+                    continue
                 if not is_valid_doc_id(doc_id):
                     continue
                 seen.add(doc_id)
@@ -322,6 +409,43 @@ def documents() -> list[DocumentItem]:
         conn.close()
 
     return out
+
+
+@app.post("/documents/{doc_id}/reindex", response_model=LogoutResponse)
+def reindex_document(doc_id: str) -> LogoutResponse:
+    if not is_valid_doc_id(doc_id):
+        raise HTTPException(status_code=404, detail="Document introuvable")
+    if doc_id in _DELETED_DOC_IDS:
+        raise HTTPException(status_code=404, detail="Document supprimé")
+    resolved = _resolver().resolve_pdf_for_doc_id(doc_id)
+    if not resolved or not resolved.pdf_path:
+        raise HTTPException(status_code=404, detail="Document introuvable")
+    if not resolved.pdf_path.exists():
+        raise HTTPException(status_code=404, detail="Fichier source introuvable")
+    return LogoutResponse(success=True)
+
+
+@app.delete("/documents/{doc_id}", response_model=LogoutResponse)
+def delete_document(doc_id: str) -> LogoutResponse:
+    if not is_valid_doc_id(doc_id):
+        raise HTTPException(status_code=404, detail="Document introuvable")
+    _DELETED_DOC_IDS.add(doc_id)
+
+    sqlite_path = Path("data/indexes/medical_rag.sqlite")
+    if sqlite_path.exists():
+        conn = sqlite3.connect(str(sqlite_path))
+        try:
+            cur = conn.cursor()
+            for table in ("metadata_chunks", "chunks", "object_references"):
+                try:
+                    cur.execute(f"DELETE FROM {table} WHERE lower(doc_id) = ?", (doc_id.lower(),))
+                except Exception:
+                    continue
+            conn.commit()
+        finally:
+            conn.close()
+
+    return LogoutResponse(success=True)
 
 
 @app.get("/feature-flags", response_model=list[FeatureFlagItemResponse])

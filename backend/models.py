@@ -128,6 +128,23 @@ class DocumentItem(BaseModel):
     name: str
 
 
+class ActiveModelResponse(BaseModel):
+    provider: str
+    model: str
+    context_window: int
+    max_output_tokens: int
+
+
+class ConversationContextUsageResponse(BaseModel):
+    conversation_id: str
+    model: str
+    context_window: int
+    used_tokens: int
+    remaining_tokens: int
+    usage_percent: float
+    status: Literal["safe", "medium", "warning", "full"]
+
+
 class FeatureFlagItemResponse(BaseModel):
     name: str
     enabled: bool
