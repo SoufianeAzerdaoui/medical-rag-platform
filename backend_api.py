@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
@@ -25,6 +26,8 @@ from backend.models import (
     ConversationContextUsageResponse,
     ConversationCreateRequest,
     ConversationItem,
+    DocsDiscoveryItem,
+    DocsIngestRequest,
     DocumentItem,
     FeatureFlagItemResponse,
     FeatureFlagUpdateRequest,
@@ -32,7 +35,14 @@ from backend.models import (
     MessageItemResponse,
     UserResponse,
 )
-from backend.services import auth_service, conversation_service, feature_flag_service, message_service
+from backend.services import (
+    auth_service,
+    conversation_service,
+    feature_flag_service,
+    ingestion_service,
+    message_service,
+    transcription_service,
+)
 from backend.services.chat_service import process_chat
 from backend.services.model_registry import (
     active_model_info,
@@ -135,6 +145,13 @@ def _status_from_usage_percent(usage_percent: float) -> str:
     return "safe"
 
 
+def _stt_debug_enabled() -> bool:
+    raw = str(os.getenv("APP_ENV", "")).strip().lower()
+    if raw in {"dev", "development", "test", "local"}:
+        return True
+    return str(os.getenv("STT_DEBUG", "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _extract_state_context_text(state: dict[str, Any]) -> str:
     parts: list[str] = []
     for key in ("last_transformable_evidence_pack", "last_qualitative_evidence_pack", "last_evidence_pack"):
@@ -155,6 +172,34 @@ def _extract_state_context_text(state: dict[str, Any]) -> str:
 def _chunks_count(sqlite_path: Path) -> int | None:
     if not sqlite_path.exists():
         return None
+
+
+def _indexed_doc_ids_from_sqlite(sqlite_path: Path) -> set[str]:
+    if not sqlite_path.exists():
+        return set()
+    out: set[str] = set()
+    try:
+        conn = sqlite3.connect(str(sqlite_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            cur = conn.cursor()
+            for table in ("metadata_chunks", "chunks", "object_references"):
+                try:
+                    cur.execute(
+                        f"SELECT DISTINCT lower(doc_id) AS doc_id FROM {table} "
+                        "WHERE doc_id IS NOT NULL AND trim(doc_id) != ''"
+                    )
+                except Exception:
+                    continue
+                for row in cur.fetchall():
+                    doc_id = str(row["doc_id"] or "").strip().lower()
+                    if doc_id:
+                        out.add(doc_id)
+        finally:
+            conn.close()
+    except Exception:
+        return set()
+    return out
     try:
         conn = sqlite3.connect(str(sqlite_path))
         try:
@@ -257,6 +302,14 @@ def _save_state_to_db(conversation_id: str, state: dict[str, Any]) -> None:
 
 def _delete_conversation_state(conversation_id: str) -> None:
     _STATE_SERVICE.delete_db_state(conversation_id)
+
+
+def _refresh_resolver_cache() -> None:
+    resolver = _resolver()
+    try:
+        resolver._mapping.cache_clear()  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 def _to_user_response(user_row: dict[str, Any]) -> UserResponse:
@@ -511,6 +564,22 @@ def documents() -> list[DocumentItem]:
     return out
 
 
+@app.get("/documents/discover", response_model=list[DocsDiscoveryItem])
+def discover_documents(current_user: dict[str, Any] = Depends(get_current_user)) -> list[DocsDiscoveryItem]:
+    _ = current_user
+    sqlite_path = Path("data/indexes/medical_rag.sqlite")
+    indexed_ids = _indexed_doc_ids_from_sqlite(sqlite_path)
+    candidates = ingestion_service.discover_docs_pdfs(indexed_doc_ids=indexed_ids)
+    return [DocsDiscoveryItem(**{
+        "filename": item.filename,
+        "doc_id": item.doc_id,
+        "absolute_path": item.absolute_path,
+        "size_bytes": item.size_bytes,
+        "modified_at": item.modified_at,
+        "already_indexed": item.already_indexed,
+    }) for item in candidates]
+
+
 @app.post("/documents/{doc_id}/reindex", response_model=LogoutResponse)
 def reindex_document(doc_id: str) -> LogoutResponse:
     if not is_valid_doc_id(doc_id):
@@ -522,6 +591,8 @@ def reindex_document(doc_id: str) -> LogoutResponse:
         raise HTTPException(status_code=404, detail="Document introuvable")
     if not resolved.pdf_path.exists():
         raise HTTPException(status_code=404, detail="Fichier source introuvable")
+    ingestion_service.reindex_single_doc(doc_id=doc_id, source_pdf_path=resolved.pdf_path)
+    _refresh_resolver_cache()
     return LogoutResponse(success=True)
 
 
@@ -544,6 +615,7 @@ def delete_document(doc_id: str) -> LogoutResponse:
             conn.commit()
         finally:
             conn.close()
+    _refresh_resolver_cache()
 
     return LogoutResponse(success=True)
 
@@ -596,15 +668,110 @@ def get_pdf(doc_id: str, page: int | None = Query(default=None, ge=1)) -> FileRe
 
 
 @app.post("/upload")
-def upload(payload: dict[str, Any]) -> dict[str, Any]:
+async def upload(
+    files: list[UploadFile] = File(...),
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    _ = current_user
+    if not files:
+        raise HTTPException(status_code=400, detail="Aucun fichier fourni.")
+
+    accepted: list[tuple[str, bytes]] = []
+    skipped: list[dict[str, Any]] = []
+    for file in files:
+        name = str(file.filename or "").strip()
+        if not name.lower().endswith(".pdf"):
+            skipped.append({"filename": name or "unknown", "reason": "unsupported_extension"})
+            continue
+        raw = await file.read()
+        if not raw:
+            skipped.append({"filename": name or "unknown", "reason": "empty_file"})
+            continue
+        accepted.append((name, raw))
+
+    if not accepted:
+        raise HTTPException(status_code=400, detail="Aucun PDF valide à ingérer.")
+
+    try:
+        results = ingestion_service.ingest_uploaded_pdfs(accepted)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Échec ingestion: {exc}") from exc
+    _refresh_resolver_cache()
     return {
-        "status": "received",
-        "payload": payload,
-        "message": "Upload endpoint placeholder. Use extraction/indexing pipeline.",
+        "success": True,
+        "ingested_count": len(results),
+        "ingested": [
+            {
+                "filename": item.filename,
+                "doc_id": item.doc_id,
+                "stored_path": item.stored_path,
+                "extraction_dir": item.extraction_dir,
+            }
+            for item in results
+        ],
+        "skipped": skipped,
+    }
+
+
+@app.post("/upload/from-docs")
+def upload_from_docs(
+    payload: DocsIngestRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    _ = current_user
+    filenames = [str(name or "").strip() for name in payload.filenames if str(name or "").strip()]
+    if not filenames:
+        raise HTTPException(status_code=400, detail="Aucun fichier sélectionné depuis docs/.")
+    try:
+        results = ingestion_service.ingest_docs_by_filenames(filenames)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Échec ingestion docs/: {exc}") from exc
+    _refresh_resolver_cache()
+    return {
+        "success": True,
+        "ingested_count": len(results),
+        "ingested": [
+            {
+                "filename": item.filename,
+                "doc_id": item.doc_id,
+                "stored_path": item.stored_path,
+                "extraction_dir": item.extraction_dir,
+            }
+            for item in results
+        ],
+        "skipped": [],
     }
 
 
 @app.post("/audio/transcribe")
-def audio_transcribe(payload: dict[str, Any]) -> dict[str, Any]:
-    _ = payload
-    return {"transcript": ""}
+async def audio_transcribe(
+    audio: UploadFile = File(...),
+    debug: bool = Query(False),
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    _ = current_user
+    raw = await audio.read()
+    if len(raw) < 2_000:
+        raise HTTPException(status_code=422, detail="Audio trop court ou silencieux.")
+    suffix = Path(str(audio.filename or "")).suffix or ".webm"
+    LOGGER.info("audio_transcribe_request filename=%s bytes=%s suffix=%s", str(audio.filename or ""), len(raw), suffix)
+    try:
+        detailed = transcription_service.transcribe_audio_bytes_debug(raw, suffix=suffix)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Transcription échouée: {exc}") from exc
+    transcript = detailed.transcript
+    LOGGER.info(
+        "audio_transcribe_response transcript_chars=%s quality=%s rejected_reason=%s accepted_strategy=%s",
+        len(transcript or ""),
+        detailed.quality_score,
+        detailed.rejected_reason,
+        detailed.accepted_strategy,
+    )
+    payload: dict[str, Any] = {"transcript": transcript}
+    if debug and _stt_debug_enabled():
+        payload["debug"] = detailed.as_dict()
+    return payload

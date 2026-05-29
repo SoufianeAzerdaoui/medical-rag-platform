@@ -128,6 +128,19 @@ class DocumentItem(BaseModel):
     name: str
 
 
+class DocsDiscoveryItem(BaseModel):
+    filename: str
+    doc_id: str
+    absolute_path: str
+    size_bytes: int
+    modified_at: str
+    already_indexed: bool
+
+
+class DocsIngestRequest(BaseModel):
+    filenames: list[str] = Field(default_factory=list)
+
+
 class ActiveModelResponse(BaseModel):
     provider: str
     model: str

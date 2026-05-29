@@ -37,6 +37,29 @@ export interface DocumentRecord {
   name: string;
 }
 
+export interface DocsDiscoveryRecord {
+  filename: string;
+  doc_id: string;
+  absolute_path: string;
+  size_bytes: number;
+  modified_at: string;
+  already_indexed: boolean;
+}
+
+export interface UploadIngestedItem {
+  filename: string;
+  doc_id: string;
+  stored_path: string;
+  extraction_dir: string;
+}
+
+export interface UploadResponse {
+  success: boolean;
+  ingested_count: number;
+  ingested: UploadIngestedItem[];
+  skipped: Array<{ filename: string; reason: string }>;
+}
+
 export interface ActiveModelInfo {
   provider: string;
   model: string;
@@ -53,6 +76,31 @@ export interface ConversationContextUsageInfo {
   remaining_tokens: number;
   usage_percent: number;
   status: "safe" | "medium" | "warning" | "full";
+}
+
+export interface TranscribeDebugAttempt {
+  strategy: string;
+  language: string;
+  vad_filter: boolean;
+  transcript_preview: string;
+  transcript_chars: number;
+  quality_score: number;
+  rejected_reason: string | null;
+  mean_no_speech: number;
+  mean_avg_logprob: number;
+  voiced_segments: number;
+}
+
+export interface TranscribeDebugInfo {
+  quality_score: number;
+  rejected_reason: string | null;
+  accepted_strategy: string | null;
+  attempts: TranscribeDebugAttempt[];
+}
+
+export interface TranscribeResponse {
+  transcript: string;
+  debug?: TranscribeDebugInfo;
 }
 
 interface ChatPayload {
@@ -232,6 +280,10 @@ export async function listDocumentsApi(token?: string | null): Promise<DocumentR
   return request<DocumentRecord[]>("/documents", { token: token || null });
 }
 
+export async function discoverDocsApi(token?: string | null): Promise<DocsDiscoveryRecord[]> {
+  return request<DocsDiscoveryRecord[]>("/documents/discover", { token: token || null });
+}
+
 export async function reindexDocumentApi(docId: string, token?: string | null): Promise<{ success: boolean }> {
   return request<{ success: boolean }>(`/documents/${encodeURIComponent(docId)}/reindex`, {
     method: "POST",
@@ -260,19 +312,74 @@ export async function getConversationContextUsageApi(
 }
 
 export async function transcribeAudio(blob: Blob, token?: string): Promise<string> {
-  if (!API_URL) return "";
+  const result = await transcribeAudioDetailed(blob, token);
+  return result.transcript || "";
+}
+
+export async function transcribeAudioDetailed(blob: Blob, token?: string): Promise<TranscribeResponse> {
+  if (!API_URL) throw new Error("API URL unavailable");
   const formData = new FormData();
-  formData.append("audio", blob);
+  const mime = String(blob.type || "").toLowerCase();
+  const filename =
+    mime.includes("ogg") ? "recording.ogg" :
+      mime.includes("webm") ? "recording.webm" :
+        mime.includes("wav") ? "recording.wav" : "recording.webm";
+  formData.append("audio", blob, filename);
   const headers = new Headers();
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch(`${API_URL}/audio/transcribe`, {
+  const debugEnabled = process.env.NODE_ENV !== "production";
+  const url = `${API_URL}/audio/transcribe${debugEnabled ? "?debug=1" : ""}`;
+  const res = await fetch(url, {
     method: "POST",
     body: formData,
     headers,
   });
-  if (!res.ok) return "";
-  const data = (await res.json()) as { transcript?: string };
-  return data.transcript || "";
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const payload = (await res.json()) as { detail?: unknown };
+      detail = formatApiDetail(payload.detail);
+    } catch {
+      detail = "";
+    }
+    throw new ApiError(res.status, detail || "Transcription audio échouée.");
+  }
+  const data = (await res.json()) as TranscribeResponse;
+  return { transcript: data.transcript || "", debug: data.debug };
+}
+
+export async function uploadDocumentsApi(files: File[], token?: string | null): Promise<UploadResponse> {
+  if (!API_URL) throw new Error("API URL unavailable");
+  const formData = new FormData();
+  for (const file of files) {
+    formData.append("files", file);
+  }
+  const headers = new Headers();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(`${API_URL}/upload`, {
+    method: "POST",
+    headers,
+    body: formData,
+  });
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const payload = (await res.json()) as { detail?: unknown };
+      detail = formatApiDetail(payload.detail);
+    } catch {
+      detail = "";
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return (await res.json()) as UploadResponse;
+}
+
+export async function uploadFromDocsApi(filenames: string[], token?: string | null): Promise<UploadResponse> {
+  return request<UploadResponse>("/upload/from-docs", {
+    method: "POST",
+    token: token || null,
+    body: JSON.stringify({ filenames }),
+  });
 }
 
 export function toHistory(messages: MessageItem[]) {
