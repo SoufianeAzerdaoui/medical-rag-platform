@@ -47,7 +47,7 @@ export function WorkspaceShell({ title, subtitle, breadcrumbs, actions = [], chi
       <ChatSidebar />
       <main className="flex min-w-0 flex-1 flex-col">
         <WorkspaceTopbar title={title} subtitle={subtitle} breadcrumbs={breadcrumbs} actions={actions} />
-        <div className="flex-1 overflow-auto">{children}</div>
+        <div className="flex-1 overflow-auto" tabIndex={0} aria-label="Zone de contenu défilable">{children}</div>
       </main>
     </div>
   );
@@ -65,12 +65,12 @@ export function WorkspaceTopbar({
   actions?: WorkspaceAction[];
 }) {
   return (
-    <header className="topbar h-[72px] border-b border-slate-400/20 bg-slate-900/72 px-5 backdrop-blur-2xl">
+    <header className="topbar h-[72px] border-b border-border/70 bg-card/75 px-5 backdrop-blur-2xl">
       <div className="flex h-full items-center justify-between gap-4">
         <div className="min-w-0">
-          <p className="text-xs font-medium text-fg/55">{breadcrumbs.join(" / ")}</p>
+          <p className="text-xs font-medium text-fg/72">{breadcrumbs.join(" / ")}</p>
           <h1 className="line-clamp-1 text-base font-semibold text-fg">{title}</h1>
-          <p className="line-clamp-1 text-xs text-fg/62">{subtitle}</p>
+          <p className="line-clamp-1 text-xs text-fg/78">{subtitle}</p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
           {actions.map((action) => (

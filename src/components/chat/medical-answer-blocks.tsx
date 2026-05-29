@@ -152,11 +152,11 @@ function removeTables(content: string, tables: MarkdownTable[]): string {
 }
 
 function toneBadge(tone: ResultTone): string {
-  if (tone === "normal") return "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200";
-  if (tone === "high") return "border-amber-500/30 bg-amber-500/12 text-amber-800 dark:text-amber-200";
-  if (tone === "low") return "border-sky-500/30 bg-sky-500/12 text-sky-800 dark:text-sky-200";
-  if (tone === "critical") return "border-rose-500/35 bg-rose-500/10 text-rose-700 dark:text-rose-200";
-  return "border-border bg-fg/[0.04] text-fg/65";
+  if (tone === "normal") return "status-success";
+  if (tone === "high") return "status-warning";
+  if (tone === "low") return "status-low";
+  if (tone === "critical") return "status-danger";
+  return "status-neutral";
 }
 
 function statusLabel(tone: ResultTone, fallback: string): string {

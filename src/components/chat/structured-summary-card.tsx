@@ -282,11 +282,11 @@ function toneForItem(item: string): "high" | "low" | "normal" | "unknown" | "neu
 }
 
 function badgeClass(tone: "high" | "low" | "normal" | "unknown" | "neutral"): string {
-  if (tone === "high") return "border-amber-500/40 bg-amber-500/15 text-amber-100";
-  if (tone === "low") return "border-sky-500/40 bg-sky-500/15 text-sky-100";
-  if (tone === "normal") return "border-emerald-500/35 bg-emerald-500/10 text-emerald-100";
-  if (tone === "unknown") return "border-violet-500/35 bg-violet-500/12 text-violet-100";
-  return "border-slate-600/60 bg-slate-800/70 text-slate-100";
+  if (tone === "high") return "status-warning";
+  if (tone === "low") return "status-low";
+  if (tone === "normal") return "status-success";
+  if (tone === "unknown") return "status-neutral";
+  return "status-neutral";
 }
 
 function statusPrefix(tone: "high" | "low" | "normal" | "unknown" | "neutral"): string {

@@ -68,11 +68,11 @@ function sourceLink(sources: ChatSource[] | undefined): { label: string; href: s
 
 function statusBadgeClass(status: string): string {
   const s = status.toLowerCase();
-  if (s.includes("critique") || s.includes("vérifier")) return "border-rose-500/35 bg-rose-500/10 text-rose-700 dark:text-rose-200";
-  if (s.includes("au-dessus")) return "border-amber-500/30 bg-amber-500/12 text-amber-800 dark:text-amber-200";
-  if (s.includes("en dessous")) return "border-sky-500/30 bg-sky-500/12 text-sky-800 dark:text-sky-200";
-  if (s.includes("dans la référence")) return "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200";
-  return "border-border bg-fg/[0.04] text-fg/65";
+  if (s.includes("critique") || s.includes("vérifier")) return "status-danger";
+  if (s.includes("au-dessus")) return "status-warning";
+  if (s.includes("en dessous")) return "status-low";
+  if (s.includes("dans la référence")) return "status-success";
+  return "status-neutral";
 }
 
 function statusLabel(status: string): string {

@@ -1,10 +1,11 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Copy, Eye, EyeOff, FileDown, FileSearch, FileText, FlaskConical, GitCompareArrows, RotateCcw, Sparkles } from "lucide-react";
+import { Copy, Eye, EyeOff, FileDown, RotateCcw } from "lucide-react";
 import { AssistantLoadingMessage } from "@/components/chat/assistant-loading-message";
 import { AssistantConversationCard } from "@/components/chat/assistant-conversation-card";
 import { AssistantMarkdown } from "@/components/chat/assistant-markdown";
+import { WelcomeScreen } from "@/components/chat/welcome-screen";
 import { MedicalAnswerBlocks } from "@/components/chat/medical-answer-blocks";
 import { VisualizationRenderer } from "@/components/chat/visualization-renderer";
 import { ConversationQualityPanel } from "@/components/chat/conversation-quality-panel";
@@ -162,9 +163,9 @@ function computeEvidenceMeter(message: {
 }
 
 function evidenceBadgeClass(level: EvidenceMeter["level"]): string {
-  if (level === "Élevé") return "border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200";
-  if (level === "Moyen") return "border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-200";
-  return "border-rose-500/35 bg-rose-500/10 text-rose-700 dark:text-rose-200";
+  if (level === "Élevé") return "status-success";
+  if (level === "Moyen") return "status-warning";
+  return "status-danger";
 }
 
 type AssistantRenderType = "medical_structured" | "conversational" | "general_markdown";
@@ -247,75 +248,13 @@ export function ChatMessages() {
   }, [chat?.messages]);
 
   if (!chat || chat.messages.length === 0) {
-    const quickActions = [
-      {
-        id: "analyser-bilan",
-        title: "Analyser un bilan",
-        description: "Résumé biologique + anomalies principales",
-        prompt: "Analyse ce bilan biologique et donne les anomalies principales avec statut technique.",
-        mode: "document_analysis" as const,
-        icon: FlaskConical,
-      },
-      {
-        id: "comparer-rapports",
-        title: "Comparer deux rapports",
-        description: "Comparer les valeurs actuelles et antérieures",
-        prompt: "Compare ces deux rapports et indique les variations importantes.",
-        mode: "comparison" as const,
-        icon: GitCompareArrows,
-      },
-      {
-        id: "chercher-valeur",
-        title: "Chercher une valeur",
-        description: "Ex : Quelle est la TSH dans report 16 ?",
-        prompt: "Quelle est la TSH dans report 16 ?",
-        mode: "general" as const,
-        icon: FileSearch,
-      },
-      {
-        id: "note-clinique",
-        title: "Préparer une note clinique",
-        description: "Synthèse prudente avec sources",
-        prompt: "Prépare une note clinique prudente avec les sources documentaires utilisées.",
-        mode: "summary" as const,
-        icon: FileText,
-      },
-    ] as const;
-
     return (
-      <div className="mx-auto flex min-h-full w-full max-w-5xl flex-col justify-center gap-6 px-5 py-10">
-        <div className="max-w-2xl">
-          <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-accent/25 bg-accent/10 px-3 py-1 text-xs font-medium text-accent">
-            <Sparkles size={14} />
-            Assistant clinique augmenté
-          </div>
-          <h2 className="text-3xl font-semibold tracking-tight text-fg sm:text-4xl">CHU Oujda Clinical Assistant</h2>
-          <p className="mt-3 max-w-xl text-sm leading-6 text-fg/[0.68]">
-            Analyse les documents médicaux, compare les résultats et met en avant les points à vérifier avec les sources disponibles.
-          </p>
-          <p className="mt-2 text-sm text-fg/[0.62]">Aucun document sélectionné. Importez un rapport ou choisissez une question suggérée.</p>
-        </div>
-        <div className="grid w-full gap-3 md:grid-cols-2">
-          {quickActions.map((action) => (
-            <button
-              key={action.id}
-              type="button"
-              disabled={sending}
-              onClick={() => void sendMessage({ content: action.prompt, mode: action.mode })}
-              className="premium-surface group flex min-h-24 items-start gap-3 rounded-xl px-4 py-3 text-left text-sm transition hover:-translate-y-0.5 hover:border-accent/35 hover:bg-card"
-            >
-              <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
-                <action.icon size={16} />
-              </span>
-              <span className="space-y-1">
-                <span className="block font-semibold text-fg/[0.9]">{action.title}</span>
-                <span className="block text-xs text-fg/[0.62]">{action.description}</span>
-              </span>
-            </button>
-          ))}
-        </div>
-        <p className="text-xs text-fg/[0.54]">Cette réponse ne remplace pas l'avis médical.</p>
-      </div>
+      <WelcomeScreen
+        sending={sending}
+        onActionSelect={(action) => {
+          void sendMessage({ content: action.prompt, mode: action.mode });
+        }}
+      />
     );
   }
 
@@ -442,7 +381,7 @@ export function ChatMessages() {
                   <span className="h-2 w-2 rounded-full bg-amber-500" />
                   <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg/[0.52]">Assistant</p>
                 </div>
-                <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-100">
+                <div className="status-warning rounded-xl px-4 py-3 text-sm">
                   La génération a pris trop de temps. Relance la question.
                 </div>
               </>
@@ -458,7 +397,7 @@ export function ChatMessages() {
                   <div
                     role="status"
                     aria-live="polite"
-                    className="rounded-xl border border-rose-600/40 bg-rose-950/20 px-4 py-3 text-sm text-rose-100"
+                    className="status-danger rounded-xl px-4 py-3 text-sm"
                   >
                     {contentToRender}
                   </div>
@@ -468,14 +407,14 @@ export function ChatMessages() {
                       <div
                         role="status"
                         aria-live="polite"
-                        className="mb-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-100"
+                        className="status-warning mb-3 rounded-xl px-4 py-3 text-sm"
                       >
                         <p className="font-medium">Réponse non fiable</p>
-                        <p className="mt-1 text-amber-100/90">La validation a détecté une incohérence factuelle. Utilise “Régénérer”.</p>
+                        <p className="mt-1 text-sm text-current/85">La validation a détecté une incohérence factuelle. Utilise “Régénérer”.</p>
                         <button
                           type="button"
                           aria-label="Régénérer"
-                          className="mt-2 rounded-md border border-amber-400/40 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-800 dark:text-amber-100"
+                          className="mt-2 rounded-md border border-current/30 bg-transparent px-2 py-1 text-xs font-medium transition hover:bg-fg/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
                         >
                           Régénérer
                         </button>
@@ -520,7 +459,7 @@ export function ChatMessages() {
                   <p className="whitespace-pre-wrap text-sm leading-6">{contentToRender}</p>
                 )}
                 {isDone && !shouldRenderSourceLinks && isAssistant ? (
-                  <div className="mt-4 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-100">
+                  <div className="status-neutral mt-4 rounded-xl px-4 py-3 text-sm">
                     <p className="font-medium">Aucune source trouvée</p>
                     <p className="mt-1 text-xs">La réponse ne doit pas être utilisée sans document justificatif.</p>
                   </div>

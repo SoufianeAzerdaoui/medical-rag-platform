@@ -73,7 +73,7 @@ function TooltipContent({ active, payload }: { active?: boolean; payload?: Array
   const rawValue = datum.raw_value ?? formatTooltipNumber(datum.value);
   const deviationText = datum.deviation_label || formatDeviation(datum.reference_deviation ?? null);
   return (
-    <div className="rounded-lg border border-slate-700 bg-slate-900/95 p-3 text-xs text-slate-100 shadow-lg">
+    <div className="rounded-lg border border-border/80 bg-card/[0.96] p-3 text-xs text-fg shadow-lg">
       <p className="mb-1 font-semibold">{datum.analyte || "Analyte"}</p>
       <p>Valeur : {rawValue} {datum.unit || ""}</p>
       <p>Référence: {datum.reference || "n/a"}</p>
@@ -91,6 +91,12 @@ export function VisualizationRenderer({
   visualization?: VisualizationPayload;
   chartData?: VisualizationPayload;
 }) {
+  const axisColor = "hsl(var(--text-soft))";
+  const gridColor = "hsl(var(--border-strong))";
+  const referenceLineColor = "hsl(var(--text-soft))";
+  const seriesLineColor = "hsl(var(--primary))";
+  const seriesBarColor = "hsl(var(--primary))";
+
   const data = safeData(visualization, chartData);
   const renderedType = String(
     chartData?.rendered_type || visualization?.rendered_type || chartData?.type || visualization?.type || "",
@@ -169,51 +175,51 @@ export function VisualizationRenderer({
       : `Voici le ${renderedLabel} généré à partir des résultats retrouvés.`;
 
   return (
-    <section className="mt-3 rounded-2xl border border-slate-700/70 bg-slate-950/50 p-4">
-      <p className="text-sm font-medium text-slate-100">{intro}</p>
-      {fallbackUsed && fallbackReason ? <p className="mt-1 text-xs text-slate-300">Raison : {fallbackReason}</p> : null}
-      <h4 className="mt-1 text-sm text-slate-300">{title}</h4>
+    <section className="mt-3 rounded-2xl border border-border/75 bg-card/[0.62] p-4">
+      <p className="text-sm font-medium text-fg">{intro}</p>
+      {fallbackUsed && fallbackReason ? <p className="mt-1 text-xs text-fg/72">Raison : {fallbackReason}</p> : null}
+      <h4 className="mt-1 text-sm text-fg/75">{title}</h4>
       {metricReason ? (
-        <p className="mt-2 text-xs text-slate-400">{metricReason}</p>
+        <p className="mt-2 text-xs text-fg/68">{metricReason}</p>
       ) : mixedUnits ? (
-        <p className="mt-2 text-xs text-slate-400">
+        <p className="mt-2 text-xs text-fg/68">
           Les unités biologiques étant différentes, l’axe vertical représente l’écart normalisé à la référence.
         </p>
       ) : null}
       {notCalculableCount > 0 ? (
-        <p className="mt-1 text-xs text-slate-500">{notCalculableCount} point(s) non calculable(s) ne sont pas tracés.</p>
+        <p className="mt-1 text-xs text-fg/62">{notCalculableCount} point(s) non calculable(s) ne sont pas tracés.</p>
       ) : null}
-      <div className="mt-3 h-72 w-full overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60 p-2 sm:h-80">
+      <div className="mt-3 h-72 w-full overflow-hidden rounded-xl border border-border/75 bg-card/[0.82] p-2 sm:h-80">
         <ResponsiveContainer width="100%" height="100%">
           {renderedType === "line" ? (
             <LineChart data={seriesData} margin={{ top: 8, right: 16, left: 8, bottom: 8 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-              <XAxis dataKey="analyte" stroke="#cbd5e1" tick={{ fontSize: 12 }} interval={0} angle={-20} textAnchor="end" height={70} />
+              <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
+              <XAxis dataKey="analyte" stroke={axisColor} tick={{ fontSize: 12 }} interval={0} angle={-20} textAnchor="end" height={70} />
               <YAxis
-                stroke="#cbd5e1"
+                stroke={axisColor}
                 tick={{ fontSize: 12 }}
                 tickFormatter={yField === "reference_deviation" ? (v) => `${(Number(v) * 100).toFixed(0)}%` : undefined}
-                label={{ value: metricLabel, angle: -90, position: "insideLeft", fill: "#cbd5e1", fontSize: 12 }}
+                label={{ value: metricLabel, angle: -90, position: "insideLeft", fill: axisColor, fontSize: 12 }}
               />
-              {yField === "reference_deviation" ? <ReferenceLine y={0} stroke="#94a3b8" strokeDasharray="4 4" /> : null}
+              {yField === "reference_deviation" ? <ReferenceLine y={0} stroke={referenceLineColor} strokeDasharray="4 4" /> : null}
               <Tooltip content={<TooltipContent />} />
               <Legend />
-              <Line type="monotone" dataKey={yField} name={metricLabel} stroke="#60a5fa" strokeWidth={2.2} dot={{ r: 4 }} />
+              <Line type="monotone" dataKey={yField} name={metricLabel} stroke={seriesLineColor} strokeWidth={2.2} dot={{ r: 4 }} />
             </LineChart>
           ) : (
             <BarChart data={seriesData} margin={{ top: 8, right: 16, left: 8, bottom: 8 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-              <XAxis dataKey="analyte" stroke="#cbd5e1" tick={{ fontSize: 12 }} interval={0} angle={-20} textAnchor="end" height={70} />
+              <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
+              <XAxis dataKey="analyte" stroke={axisColor} tick={{ fontSize: 12 }} interval={0} angle={-20} textAnchor="end" height={70} />
               <YAxis
-                stroke="#cbd5e1"
+                stroke={axisColor}
                 tick={{ fontSize: 12 }}
                 tickFormatter={yField === "reference_deviation" ? (v) => `${(Number(v) * 100).toFixed(0)}%` : undefined}
-                label={{ value: metricLabel, angle: -90, position: "insideLeft", fill: "#cbd5e1", fontSize: 12 }}
+                label={{ value: metricLabel, angle: -90, position: "insideLeft", fill: axisColor, fontSize: 12 }}
               />
-              {yField === "reference_deviation" ? <ReferenceLine y={0} stroke="#94a3b8" strokeDasharray="4 4" /> : null}
+              {yField === "reference_deviation" ? <ReferenceLine y={0} stroke={referenceLineColor} strokeDasharray="4 4" /> : null}
               <Tooltip content={<TooltipContent />} />
               <Legend />
-              <Bar dataKey={yField} name={metricLabel} fill="#38bdf8" radius={[6, 6, 0, 0]} />
+              <Bar dataKey={yField} name={metricLabel} fill={seriesBarColor} radius={[6, 6, 0, 0]} />
             </BarChart>
           )}
         </ResponsiveContainer>

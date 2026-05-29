@@ -85,7 +85,7 @@ export function PdfPreviewPanel({ source, onClose }: PdfPreviewPanelProps) {
     <div className="flex h-full min-h-0 flex-col">
       <div className="mb-3 flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="inline-flex items-center gap-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-200">
+          <p className="status-success inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium">
             <ShieldCheck size={12} />
             Source utilisée
           </p>
@@ -122,7 +122,7 @@ export function PdfPreviewPanel({ source, onClose }: PdfPreviewPanelProps) {
             href={withPdfPageAnchor(source.documentUrl, source.pageNumber)}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-card px-2.5 py-1.5 text-xs font-medium text-fg/75 hover:underline"
+            className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-card px-2.5 py-1.5 text-xs font-medium text-fg/80 transition hover:bg-fg/[0.03] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35"
           >
             Ouvrir le PDF <ExternalLink size={12} />
           </a>
@@ -130,13 +130,13 @@ export function PdfPreviewPanel({ source, onClose }: PdfPreviewPanelProps) {
         <button
           type="button"
           onClick={() => void copySource()}
-          className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-card px-2.5 py-1.5 text-xs font-medium text-fg/75 hover:underline"
+          className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-card px-2.5 py-1.5 text-xs font-medium text-fg/80 transition hover:bg-fg/[0.03] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35"
         >
           Copier la source <Copy size={12} />
         </button>
       </div>
 
-      {copied ? <p className="mb-2 text-[11px] text-emerald-600 dark:text-emerald-300">Source copiée</p> : null}
+      {copied ? <p className="mb-2 text-[11px] text-[hsl(var(--success))]">Source copiée</p> : null}
 
       <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-border/70 bg-card/[0.5]">
         {effectiveEngine === "pdfjs" ? (

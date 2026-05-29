@@ -37,23 +37,22 @@ export interface DocumentRecord {
   name: string;
 }
 
-export type ContextUsageStatus = "safe" | "medium" | "warning" | "full";
-
 export interface ActiveModelInfo {
   provider: string;
   model: string;
   context_window: number;
   max_output_tokens: number;
+  recommended_rag_budget?: number | null;
 }
 
-export interface ConversationContextUsage {
+export interface ConversationContextUsageInfo {
   conversation_id: string;
   model: string;
   context_window: number;
   used_tokens: number;
   remaining_tokens: number;
   usage_percent: number;
-  status: ContextUsageStatus;
+  status: "safe" | "medium" | "warning" | "full";
 }
 
 interface ChatPayload {
@@ -254,8 +253,8 @@ export async function getActiveModelApi(token?: string | null): Promise<ActiveMo
 export async function getConversationContextUsageApi(
   conversationId: string,
   token?: string | null,
-): Promise<ConversationContextUsage> {
-  return request<ConversationContextUsage>(`/api/conversations/${encodeURIComponent(conversationId)}/context-usage`, {
+): Promise<ConversationContextUsageInfo> {
+  return request<ConversationContextUsageInfo>(`/api/conversations/${encodeURIComponent(conversationId)}/context-usage`, {
     token: token || null,
   });
 }

@@ -34,7 +34,12 @@ from backend.models import (
 )
 from backend.services import auth_service, conversation_service, feature_flag_service, message_service
 from backend.services.chat_service import process_chat
-from backend.services.model_registry import active_model_info, estimate_tokens_from_text, extract_rag_text_from_sources
+from backend.services.model_registry import (
+    active_model_info,
+    estimate_tokens_from_text,
+    extract_rag_text_from_sources,
+    trim_text_to_token_budget,
+)
 from backend.services.conversation_state_store import (
     ConversationStateService,
     evidence_pack_transformable,
@@ -315,6 +320,7 @@ def get_active_model(current_user: dict[str, Any] = Depends(get_current_user)) -
         model=info.model,
         context_window=int(info.context_window),
         max_output_tokens=int(info.max_output_tokens),
+        recommended_rag_budget=int(info.recommended_rag_budget),
     )
 
 
@@ -332,17 +338,29 @@ def get_conversation_context_usage(
         "Assistant clinique prudent. Réponse basée uniquement sur documents sourcés. "
         "Aucun diagnostic direct. Signaler limites et éléments manquants."
     )
-    history_text = "\n".join(str(row.get("content") or "") for row in rows)
-    rag_sources_text = "\n".join(extract_rag_text_from_sources(list(row.get("sources") or [])) for row in rows)
+    context_window = max(1, int(info.context_window))
+    history_rows = rows[-20:]
+    history_text = "\n".join(f"{str(row.get('role') or '')}: {str(row.get('content') or '')}" for row in history_rows)
+
+    latest_rag_sources_text = ""
+    for row in reversed(rows):
+        sources = list(row.get("sources") or [])
+        if str(row.get("role") or "") == "assistant" and sources:
+            latest_rag_sources_text = extract_rag_text_from_sources(sources)
+            if latest_rag_sources_text.strip():
+                break
+
     state_context_text = _extract_state_context_text(state if isinstance(state, dict) else {})
+    rag_budget = max(512, min(int(info.recommended_rag_budget), int(context_window * 0.6)))
+    rag_text = trim_text_to_token_budget("\n".join([latest_rag_sources_text, state_context_text]).strip(), rag_budget)
+    history_budget = max(512, int(context_window * 0.35))
 
     prompt_tokens = estimate_tokens_from_text(system_prompt)
-    history_tokens = estimate_tokens_from_text(history_text)
-    rag_tokens = estimate_tokens_from_text(rag_sources_text) + estimate_tokens_from_text(state_context_text)
-    reserved_output_tokens = max(128, int(info.max_output_tokens))
+    history_tokens = min(estimate_tokens_from_text(history_text), history_budget)
+    rag_tokens = min(estimate_tokens_from_text(rag_text), rag_budget)
+    reserved_output_tokens = max(128, min(int(info.max_output_tokens), int(context_window * 0.25)))
 
     used_tokens = int(prompt_tokens + history_tokens + rag_tokens + reserved_output_tokens)
-    context_window = max(1, int(info.context_window))
     remaining_tokens = max(0, context_window - used_tokens)
     usage_percent = round(min(100.0, (used_tokens / context_window) * 100.0), 2)
     status = _status_from_usage_percent(usage_percent)

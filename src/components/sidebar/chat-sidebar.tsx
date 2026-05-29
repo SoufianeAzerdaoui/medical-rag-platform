@@ -190,9 +190,9 @@ export function ChatSidebar() {
             <span
               className={cn(
                 "font-medium",
-                backendStatus === "online" && "text-emerald-500",
-                backendStatus === "offline" && "text-rose-500",
-                backendStatus === "checking" && "text-amber-500",
+                backendStatus === "online" && "text-[hsl(var(--success))]",
+                backendStatus === "offline" && "text-[hsl(var(--danger))]",
+                backendStatus === "checking" && "text-[hsl(var(--warning))]",
               )}
             >
               {backendStatus}
@@ -204,7 +204,7 @@ export function ChatSidebar() {
       <button
         aria-label="Nouveau chat"
         onClick={() => void onStartConversation()}
-        className="mb-3 flex h-10 items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white shadow-sm transition duration-200 hover:-translate-y-0.5 hover:bg-accent/90 active:translate-y-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/55"
+        className="mb-3 flex h-10 items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-slate-950 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:bg-accent/90 active:translate-y-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/55"
       >
         <MessageSquarePlus size={16} /> Nouvelle conversation
       </button>
@@ -220,7 +220,7 @@ export function ChatSidebar() {
         />
       </div>
       <section className="mb-3 rounded-lg border border-border/70 bg-card/[0.45] p-2">
-        <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-fg/[0.45]">Navigation</p>
+        <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-fg/[0.72]">Navigation</p>
         <div className="space-y-1">
           {navItems.map((item) => {
             const active = pathname === item.href || (item.href === "/chat" && pathname?.startsWith("/chat"));
@@ -230,9 +230,9 @@ export function ChatSidebar() {
                 href={item.href}
                 className={cn(
                   "flex h-[42px] items-center gap-2 rounded-xl border px-3 text-sm transition",
-                  "text-[#94a3b8]",
+                  "text-fg/65",
                   active
-                    ? "border-cyan-300/20 bg-cyan-400/[0.10] text-cyan-300"
+                    ? "nav-active"
                     : "border-transparent hover:border-border/70 hover:bg-card/[0.72]",
                 )}
               >
@@ -247,7 +247,7 @@ export function ChatSidebar() {
         {Object.entries(grouped).map(([label, items]) =>
           items.length === 0 ? null : (
             <section key={label} aria-label={label}>
-              <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-fg/[0.45]">{label}</p>
+              <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-fg/[0.72]">{label}</p>
               <div className="space-y-1.5">
                 {items.map((chat) => {
                   const summary = summarizeConversation(chat);
@@ -272,7 +272,7 @@ export function ChatSidebar() {
                       aria-current={chat.id === activeChatId ? "page" : undefined}
                     >
                       <p className="line-clamp-1 text-sm font-medium text-fg/90">{chat.title}</p>
-                      <p className="mt-1 line-clamp-1 text-xs leading-5 text-fg/[0.62]">
+                      <p className="mt-1 line-clamp-1 text-xs leading-5 text-fg/[0.78]">
                         {summary.preview.toLowerCase() === "nouvelle conversation" ? "Conversation générale" : summary.preview}
                       </p>
                       <div className="mt-1.5 flex items-center gap-1.5">
@@ -281,12 +281,12 @@ export function ChatSidebar() {
                             "rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
                             summary.sourceCount > 0
                               ? "border-accent/25 bg-accent/10 text-accent"
-                              : "border-slate-400/25 bg-transparent text-slate-400",
+                              : "status-neutral",
                           )}
                         >
                           {summary.sourceCount > 0 ? `${summary.sourceCount} source${summary.sourceCount > 1 ? "s" : ""}` : "Sans source"}
                         </span>
-                        <span className="rounded-md border border-border/70 bg-card/70 px-1.5 py-0.5 text-[11px] text-fg/[0.62]">
+                        <span className="rounded-md border border-border/70 bg-card/70 px-1.5 py-0.5 text-[11px] text-fg/[0.78]">
                           {summary.meta}
                         </span>
                       </div>
