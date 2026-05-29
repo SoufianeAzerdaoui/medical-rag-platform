@@ -103,33 +103,62 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def _replace_doc_rows(existing: list[dict[str, Any]], new_rows: list[dict[str, Any]], doc_id: str) -> list[dict[str, Any]]:
-    kept = [row for row in existing if str(row.get("doc_id") or "").strip().lower() != doc_id.lower()]
+    incoming_chunk_ids = {
+        str(row.get("chunk_id") or "").strip()
+        for row in new_rows
+        if str(row.get("chunk_id") or "").strip()
+    }
+    kept = [
+        row
+        for row in existing
+        if str(row.get("doc_id") or "").strip().lower() != doc_id.lower()
+        and str(row.get("chunk_id") or "").strip() not in incoming_chunk_ids
+    ]
     kept.extend(new_rows)
     return kept
 
 
 def _rebuild_indexes(global_anonymized_path: Path) -> None:
-    _run_cmd(
-        [
-            sys.executable,
-            "scripts/indexing/build_indexes.py",
-            "--chunks",
-            str(global_anonymized_path),
-            "--index-dir",
-            "data/indexes",
-            "--collection",
-            "medical_chunks",
-            "--embedding-model",
-            "BAAI/bge-m3",
-            "--batch-size",
-            "2",
-            "--reset",
-        ],
-        cwd=config.ROOT_DIR,
-    )
+    try:
+        _run_cmd(
+            [
+                sys.executable,
+                "scripts/indexing/build_indexes.py",
+                "--chunks",
+                str(global_anonymized_path),
+                "--index-dir",
+                "data/indexes",
+                "--collection",
+                "medical_chunks",
+                "--embedding-model",
+                "BAAI/bge-m3",
+                "--batch-size",
+                "2",
+                "--reset",
+            ],
+            cwd=config.ROOT_DIR,
+        )
+    except RuntimeError as exc:
+        report_path = config.ROOT_DIR / "data" / "indexes" / "indexing_report.json"
+        try:
+            report = _read_json(report_path)
+            errors = list(report.get("validation_errors") or [])
+        except Exception:
+            errors = []
+        if errors:
+            preview = "; ".join(str(err) for err in errors[:3])
+            raise RuntimeError(
+                f"Indexation bloquée ({len(errors)} erreurs de validation). Exemples: {preview}"
+            ) from exc
+        raise
 
 
-def _process_single_pdf(pdf_path: Path, *, mapping_xlsx_path: Path) -> IngestionResult:
+def _process_single_pdf(
+    pdf_path: Path,
+    *,
+    mapping_xlsx_path: Path,
+    rebuild_indexes: bool = True,
+) -> IngestionResult:
     extraction_root = config.ROOT_DIR / "data" / "extraction"
     temp_root = config.ROOT_DIR / "data" / "tmp_ingestion"
     temp_root.mkdir(parents=True, exist_ok=True)
@@ -205,7 +234,8 @@ def _process_single_pdf(pdf_path: Path, *, mapping_xlsx_path: Path) -> Ingestion
     existing_anon = _load_jsonl(global_anon)
     _write_jsonl(global_raw, _replace_doc_rows(existing_raw, doc_raw_rows, doc_id))
     _write_jsonl(global_anon, _replace_doc_rows(existing_anon, doc_anon_rows, doc_id))
-    _rebuild_indexes(global_anon)
+    if rebuild_indexes:
+        _rebuild_indexes(global_anon)
 
     return IngestionResult(
         filename=pdf_path.name,
@@ -223,12 +253,14 @@ def ingest_uploaded_pdfs(files: list[tuple[str, bytes]]) -> list[IngestionResult
     mapping_xlsx_path.parent.mkdir(parents=True, exist_ok=True)
 
     results: list[IngestionResult] = []
+    global_anon = config.ROOT_DIR / "data" / "chunks" / "chunks.anonymized.jsonl"
     with _INGESTION_LOCK:
         for original_name, raw in files:
             safe_name = _safe_pdf_filename(original_name)
             destination = _ensure_unique_path(docs_dir, safe_name)
             destination.write_bytes(raw)
-            results.append(_process_single_pdf(destination, mapping_xlsx_path=mapping_xlsx_path))
+            results.append(_process_single_pdf(destination, mapping_xlsx_path=mapping_xlsx_path, rebuild_indexes=False))
+        _rebuild_indexes(global_anon)
     return results
 
 
@@ -277,6 +309,7 @@ def ingest_docs_by_filenames(filenames: list[str]) -> list[IngestionResult]:
 
     unique_names = sorted(set(safe_names))
     results: list[IngestionResult] = []
+    global_anon = config.ROOT_DIR / "data" / "chunks" / "chunks.anonymized.jsonl"
 
     with _INGESTION_LOCK:
         for name in unique_names:
@@ -287,7 +320,8 @@ def ingest_docs_by_filenames(filenames: list[str]) -> list[IngestionResult]:
                 pdf_path.relative_to(docs_dir.resolve())
             except Exception as exc:
                 raise RuntimeError(f"Chemin invalide: {name}") from exc
-            results.append(_process_single_pdf(pdf_path, mapping_xlsx_path=mapping_xlsx_path))
+            results.append(_process_single_pdf(pdf_path, mapping_xlsx_path=mapping_xlsx_path, rebuild_indexes=False))
+        _rebuild_indexes(global_anon)
 
     return results
 

@@ -60,6 +60,8 @@ export interface UploadResponse {
   skipped: Array<{ filename: string; reason: string }>;
 }
 
+const INGESTION_TIMEOUT_MS = 20 * 60 * 1000;
+
 export interface ActiveModelInfo {
   provider: string;
   model: string;
@@ -349,29 +351,16 @@ export async function transcribeAudioDetailed(blob: Blob, token?: string): Promi
 }
 
 export async function uploadDocumentsApi(files: File[], token?: string | null): Promise<UploadResponse> {
-  if (!API_URL) throw new Error("API URL unavailable");
   const formData = new FormData();
   for (const file of files) {
     formData.append("files", file);
   }
-  const headers = new Headers();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch(`${API_URL}/upload`, {
+  return request<UploadResponse>("/upload", {
     method: "POST",
-    headers,
+    token: token || null,
     body: formData,
+    timeoutMs: INGESTION_TIMEOUT_MS,
   });
-  if (!res.ok) {
-    let detail = "";
-    try {
-      const payload = (await res.json()) as { detail?: unknown };
-      detail = formatApiDetail(payload.detail);
-    } catch {
-      detail = "";
-    }
-    throw new ApiError(res.status, detail);
-  }
-  return (await res.json()) as UploadResponse;
 }
 
 export async function uploadFromDocsApi(filenames: string[], token?: string | null): Promise<UploadResponse> {
@@ -379,6 +368,7 @@ export async function uploadFromDocsApi(filenames: string[], token?: string | nu
     method: "POST",
     token: token || null,
     body: JSON.stringify({ filenames }),
+    timeoutMs: INGESTION_TIMEOUT_MS,
   });
 }
 
