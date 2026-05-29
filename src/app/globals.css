@@ -180,3 +180,34 @@ body::before {
   background: hsl(211 56% 18%);
   color: hsl(206 78% 74%);
 }
+
+@keyframes menuIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes menuOut {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(4px) scale(0.985);
+  }
+}
+
+.menu-panel {
+  animation: menuIn 150ms ease forwards;
+  transform-origin: bottom center;
+}
+
+.menu-panel-out {
+  animation: menuOut 100ms ease forwards;
+}

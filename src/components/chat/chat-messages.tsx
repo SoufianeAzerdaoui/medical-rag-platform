@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Copy, Eye, EyeOff, FileDown, RotateCcw } from "lucide-react";
+import { Check, Copy, Eye, EyeOff, FileDown, Pencil, RotateCcw, X } from "lucide-react";
 import { AssistantLoadingMessage } from "@/components/chat/assistant-loading-message";
 import { AssistantConversationCard } from "@/components/chat/assistant-conversation-card";
 import { AssistantMarkdown } from "@/components/chat/assistant-markdown";
@@ -242,6 +242,8 @@ export function ChatMessages() {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const { sendMessage, sending } = useChatActions();
   const [hiddenDetails, setHiddenDetails] = useState<Record<string, boolean>>({});
+  const [editingUserMessageId, setEditingUserMessageId] = useState<string | null>(null);
+  const [editedUserMessage, setEditedUserMessage] = useState("");
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -257,11 +259,38 @@ export function ChatMessages() {
       />
     );
   }
+  const activeChat = chat;
+
+  function previousUserPromptAt(index: number): string {
+    for (let i = index - 1; i >= 0; i -= 1) {
+      const candidate = activeChat.messages[i];
+      if (candidate?.role === "user") return String(candidate.content || "").trim();
+    }
+    return "";
+  }
+
+  function chatModeForResend(): "general" | "document_analysis" | "comparison" | "summary" {
+    return activeChat.mode || "general";
+  }
+
+  async function regenerateFromAssistantIndex(index: number) {
+    const userPrompt = previousUserPromptAt(index);
+    if (!userPrompt || sending) return;
+    await sendMessage({ content: userPrompt, mode: chatModeForResend() });
+  }
+
+  async function submitEditedUserMessage() {
+    const prompt = editedUserMessage.trim();
+    if (!prompt || sending) return;
+    setEditingUserMessageId(null);
+    setEditedUserMessage("");
+    await sendMessage({ content: prompt, mode: chatModeForResend() });
+  }
 
   return (
     <div className="mx-auto w-full max-w-5xl space-y-4 px-4 py-6 sm:px-6">
-      {qualityDebugEnabled ? <ConversationQualityPanel messages={chat.messages} /> : null}
-      {chat.messages.map((message: any, idx: number) => {
+      {qualityDebugEnabled ? <ConversationQualityPanel messages={activeChat.messages} /> : null}
+      {activeChat.messages.map((message: any, idx: number) => {
         const status = message.status || "done";
         const isAssistant = message.role === "assistant";
         const staleLoading = isAssistant && status === "loading" && isStaleLoadingMessage(message.createdAt);
@@ -274,7 +303,7 @@ export function ChatMessages() {
         const canRenderVisualization =
           isAssistant && isDone && isRenderableVisualization(message) && !message.content.includes("Le format demandé est ambigu");
         const hasPatients = isAssistant && isDone && Array.isArray(message.patients) && message.patients.length > 0;
-        const previousUserContent = String(chat.messages[idx - 1]?.role === "user" ? chat.messages[idx - 1]?.content || "" : "").toLowerCase();
+        const previousUserContent = String(activeChat.messages[idx - 1]?.role === "user" ? activeChat.messages[idx - 1]?.content || "" : "").toLowerCase();
         const expandPatientSourcesByDefault =
           hasPatients && (previousUserContent.includes("source") || previousUserContent.includes("cliquable"));
         const selectedRoute = String(
@@ -415,6 +444,8 @@ export function ChatMessages() {
                           type="button"
                           aria-label="Régénérer"
                           className="mt-2 rounded-md border border-current/30 bg-transparent px-2 py-1 text-xs font-medium transition hover:bg-fg/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                          disabled={sending}
+                          onClick={() => void regenerateFromAssistantIndex(idx)}
                         >
                           Régénérer
                         </button>
@@ -455,6 +486,40 @@ export function ChatMessages() {
                       </p>
                     ) : null}
                   </>
+                ) : editingUserMessageId === message.id ? (
+                  <div className="space-y-2">
+                    <textarea
+                      rows={3}
+                      aria-label="Modifier votre message"
+                      value={editedUserMessage}
+                      onChange={(e) => setEditedUserMessage(e.target.value)}
+                      className="w-full resize-y rounded-lg border border-border/80 bg-card/70 px-3 py-2 text-sm leading-6 outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                    />
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        className="icon-button"
+                        aria-label="Renvoyer le message modifié"
+                        title="Renvoyer"
+                        disabled={sending || editedUserMessage.trim().length === 0}
+                        onClick={() => void submitEditedUserMessage()}
+                      >
+                        <Check size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        aria-label="Annuler la modification"
+                        title="Annuler"
+                        onClick={() => {
+                          setEditingUserMessageId(null);
+                          setEditedUserMessage("");
+                        }}
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  </div>
                 ) : (
                   <p className="whitespace-pre-wrap text-sm leading-6">{contentToRender}</p>
                 )}
@@ -545,16 +610,30 @@ export function ChatMessages() {
                       aria-label="Régénérer"
                       className="icon-button"
                       title="Régénérer"
-                      onClick={() => {
-                        const userPrompt = chat.messages[idx - 1]?.role === "user" ? chat.messages[idx - 1]?.content : "";
-                        if (!userPrompt || sending) return;
-                        void sendMessage({ content: userPrompt, mode: chat.mode || "general" });
-                      }}
+                      disabled={sending}
+                      onClick={() => void regenerateFromAssistantIndex(idx)}
                     >
                       <RotateCcw size={14} />
                     </button>
                   </div>
                 )}
+                {isDone && message.role === "user" && editingUserMessageId !== message.id ? (
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="Modifier puis renvoyer"
+                      title="Modifier puis renvoyer"
+                      disabled={sending}
+                      onClick={() => {
+                        setEditingUserMessageId(message.id);
+                        setEditedUserMessage(String(message.content || ""));
+                      }}
+                    >
+                      <Pencil size={14} />
+                    </button>
+                  </div>
+                ) : null}
               </>
             )}
           </motion.article>

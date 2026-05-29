@@ -24,7 +24,7 @@ function statusFromPercent(percent: number): Status {
 function toneFromStatus(status: Status): string {
   if (status === "full") return "hsl(var(--danger))";
   if (status === "warning") return "hsl(var(--warning))";
-  if (status === "medium") return "hsl(212 86% 49%)";
+  if (status === "medium") return "hsl(var(--primary))";
   return "hsl(var(--success))";
 }
 
