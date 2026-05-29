@@ -213,12 +213,12 @@
   {
     "id": "FILT_SECTION",
     "suite": "filter",
-    "query": "calcitonine",
+    "query": "calcium",
     "query_type": "exact_entity",
     "filters": {
       "section": "Résultats biologiques"
     },
-    "expected_chunk_contains": "CALCITONINE"
+    "expected_chunk_contains": "CALCIUM"
   },
   {
     "id": "FILT_SOURCE_KIND",

@@ -1,9 +1,9 @@
 "use client";
 
-import { CheckCircle2, Eye, FileText, MessageSquare, RefreshCw, Scale, Search, Trash2 } from "lucide-react";
+import Link from "next/link";
+import { CheckCircle2, Eye, FileText, MessageSquare, RefreshCw, Scale, Search, Trash2, UploadCloud } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { UploadZone } from "@/components/documents/upload-zone";
 import { WorkspaceShell } from "@/components/layout/workspace-shell";
 import { useChatActions } from "@/hooks/use-chat-actions";
 import { ApiError, deleteDocumentApi, listDocumentsApi, reindexDocumentApi, type DocumentRecord } from "@/services/rag-api";
@@ -266,13 +266,28 @@ export default function DocumentsPage() {
       breadcrumbs={["Clinical Assistant", "Documents médicaux"]}
       actions={[
         { href: "/chat", label: "Retour au chat" },
-        { href: "/documents", label: "Importer document" },
+        { href: "/documents/upload", label: "Importer document" },
         { href: "/chat", label: "Nouvelle conversation" },
       ]}
     >
       <main className="mx-auto max-w-7xl space-y-5 px-5 py-6 sm:px-6">
-
-        <UploadZone />
+      <section className="rounded-xl border border-border/70 bg-card/[0.55] p-4">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="text-sm font-semibold text-fg">Ingestion des nouveaux rapports</h2>
+            <p className="mt-1 text-xs text-fg/65">
+              Utilisez la page d’ingestion dédiée pour lancer le pipeline complet (extraction, anonymisation, chunking, indexation).
+            </p>
+          </div>
+          <Link
+            href="/documents/upload"
+            className="inline-flex items-center gap-1 self-start rounded-md border border-accent/40 bg-accent/12 px-3 py-1.5 text-xs font-medium text-accent transition hover:bg-accent/18"
+          >
+            <UploadCloud size={13} />
+            Ouvrir l’ingestion pipeline
+          </Link>
+        </div>
+      </section>
 
       <section className="rounded-xl border border-border/70 bg-card/[0.55] p-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -414,7 +429,7 @@ export default function DocumentsPage() {
         <footer className="rounded-lg border border-border/70 bg-card/[0.4] px-4 py-3 text-xs text-fg/62">
         <div className="flex items-center gap-2">
           <FileText size={13} />
-          <span>Ce module est prêt pour brancher des endpoints backend réels de réindexation/suppression par document.</span>
+          <span>Les actions réindexer/supprimer sont reliées au backend. Utilisez “Ingestion pipeline” pour importer de nouveaux rapports.</span>
         </div>
         </footer>
       </main>

@@ -103,7 +103,7 @@ export default function DashboardPage() {
       breadcrumbs={["Clinical Assistant", "Dashboard clinique"]}
       actions={[
         { href: "/chat", label: "Retour au chat" },
-        { href: "/documents", label: "Documents" },
+        { href: "/documents/upload", label: "Importer document" },
         { href: "/chat", label: "Nouvelle conversation" },
       ]}
     >

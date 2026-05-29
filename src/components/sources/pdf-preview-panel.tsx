@@ -1,9 +1,9 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { Copy, ExternalLink, ShieldCheck, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { NativePdfRenderer } from "@/components/sources/pdf-renderers/native-pdf-renderer";
-import { PdfJsRenderer } from "@/components/sources/pdf-renderers/pdfjs-renderer";
 import { buildViewerPreviewUrl, resolvePdfDocumentUrl, withPdfPageAnchor } from "@/lib/pdf-preview";
 import type { SourceReference } from "@/types/source-reference";
 
@@ -13,6 +13,18 @@ export type PdfPreviewPanelProps = {
 };
 
 type PreviewEngine = "native" | "pdfjs";
+
+const PdfJsRenderer = dynamic(
+  () => import("@/components/sources/pdf-renderers/pdfjs-renderer").then((mod) => mod.PdfJsRenderer),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center p-4 text-sm text-fg/70">
+        Chargement du moteur pdf.js…
+      </div>
+    ),
+  },
+);
 
 function resolvePreviewEngine(): PreviewEngine {
   const raw = (process.env.NEXT_PUBLIC_PDF_PREVIEW_ENGINE || "").toLowerCase();

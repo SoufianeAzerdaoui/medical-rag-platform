@@ -120,7 +120,7 @@ export function ChatShell({ routeConversationId = null }: ChatShellProps) {
             breadcrumbs={topbarBreadcrumbs}
             actions={[
               { href: "/chat", label: "Retour au chat" },
-              { href: "/documents", label: "Importer document" },
+              { href: "/documents/upload", label: "Importer document" },
               { href: "/chat", label: "Nouvelle conversation" },
             ]}
           />
