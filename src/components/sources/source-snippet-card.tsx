@@ -50,7 +50,7 @@ export function SourceSnippetCard({ source, onPreview, compact = false }: Source
   }
 
   return (
-    <article className={`rounded-lg border border-border/70 bg-card/[0.66] p-3 shadow-sm ${compact ? "" : ""}`}>
+    <article className={`source-card p-3 shadow-sm ${compact ? "" : ""}`}>
       <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-fg/50">Source utilisée</p>
       <p className="mt-1 line-clamp-1 text-sm font-semibold text-fg/90">{source.documentName}</p>
       <p className="mt-1 text-xs text-fg/65">{pageText} · {lineLabel(source)}</p>
@@ -65,7 +65,7 @@ export function SourceSnippetCard({ source, onPreview, compact = false }: Source
           <button
             type="button"
             onClick={() => onPreview(source)}
-            className="inline-flex items-center gap-1 rounded-md border border-accent/35 bg-accent/10 px-2.5 py-1.5 text-xs font-medium text-accent hover:underline"
+            className="inline-flex items-center gap-1 rounded-md border border-accent/35 bg-accent/10 px-2.5 py-1.5 text-xs font-medium text-accent transition hover:bg-accent/14 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/45"
           >
             Aperçu PDF
           </button>
@@ -75,7 +75,7 @@ export function SourceSnippetCard({ source, onPreview, compact = false }: Source
             href={source.documentUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-card px-2.5 py-1.5 text-xs font-medium text-fg/75 hover:underline"
+            className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-card px-2.5 py-1.5 text-xs font-medium text-fg/80 transition hover:bg-fg/[0.03] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35"
           >
             Ouvrir le PDF <ExternalLink size={12} />
           </a>
@@ -87,12 +87,12 @@ export function SourceSnippetCard({ source, onPreview, compact = false }: Source
         <button
           type="button"
           onClick={() => void copySource()}
-          className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-card px-2.5 py-1.5 text-xs font-medium text-fg/75 hover:underline"
+          className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-card px-2.5 py-1.5 text-xs font-medium text-fg/80 transition hover:bg-fg/[0.03] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35"
         >
           Copier la source <Copy size={12} />
         </button>
       </div>
-      {copied ? <p className="mt-1 text-[11px] text-emerald-600 dark:text-emerald-300">Source copiée</p> : null}
+      {copied ? <p className="mt-1 text-[11px] text-[hsl(var(--success))]">Source copiée</p> : null}
     </article>
   );
 }

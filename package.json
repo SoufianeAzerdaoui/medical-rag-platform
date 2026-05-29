@@ -9,7 +9,10 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "ci:nonregression:reference-range": "bash scripts/ci/non_regression_reference_range.sh"
+    "ci:nonregression:reference-range": "bash scripts/ci/non_regression_reference_range.sh",
+    "test:e2e": "playwright test",
+    "test:e2e:visual": "playwright test tests/e2e/theme-visual.spec.ts",
+    "test:e2e:a11y": "playwright test tests/e2e/accessibility.spec.ts --project=desktop-chromium --workers=1 --timeout=180000"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.62.9",
@@ -29,6 +32,8 @@
     "zustand": "^5.0.2"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.10.2",
+    "@playwright/test": "^1.54.2",
     "@types/node": "^22.10.1",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",

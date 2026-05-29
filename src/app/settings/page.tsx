@@ -42,14 +42,14 @@ export default function SettingsPage() {
       ]}
     >
       <main className="mx-auto max-w-4xl space-y-4 p-6">
-      <section className="rounded-xl border border-border p-4">
+      <section className="card p-4">
         <p className="text-sm">API Base URL: {apiUrl}</p>
       </section>
-      <section className="rounded-xl border border-border p-4">
+      <section className="card p-4">
         <p className="mb-2 text-sm">Language</p>
         <select
           aria-label="Choisir la langue"
-          className="rounded-lg border border-border bg-transparent px-3 py-2 text-sm"
+          className="rounded-lg border border-border bg-card/80 px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           value={language}
           onChange={(e) => setLanguage(e.target.value as "fr" | "ar" | "en")}
         >
@@ -58,7 +58,7 @@ export default function SettingsPage() {
           <option value="en">English</option>
         </select>
       </section>
-      <section className="rounded-xl border border-border p-4">
+      <section className="card p-4">
         <p className="mb-2 text-sm">Theme</p>
         <div className="flex gap-2">
           {(["dark", "light", "system"] as const).map((theme) => (
@@ -68,7 +68,7 @@ export default function SettingsPage() {
                 setThemePref(theme);
                 setTheme(theme);
               }}
-              className={`rounded-lg border px-3 py-2 text-sm ${themePref === theme ? "border-accent" : "border-border"}`}
+              className={`rounded-lg border bg-card/75 px-3 py-2 text-sm transition hover:bg-fg/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${themePref === theme ? "border-accent text-accent" : "border-border text-fg/80"}`}
               aria-label={`Activer thème ${theme}`}
             >
               {theme}
@@ -76,28 +76,28 @@ export default function SettingsPage() {
           ))}
         </div>
       </section>
-      <section className="rounded-xl border border-border p-4">
+      <section className="card p-4">
         <p className="mb-2 text-sm">Microphone permissions are required for voice input.</p>
-        <button onClick={togglePrivacyMode} className="rounded-lg border border-border px-3 py-2 text-sm">
+        <button onClick={togglePrivacyMode} className="rounded-lg border border-border bg-card/75 px-3 py-2 text-sm transition hover:bg-fg/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40">
           Privacy mode: {privacyMode ? "ON" : "OFF"}
         </button>
       </section>
-      <section className="rounded-xl border border-border p-4">
+      <section className="card p-4">
         <p className="mb-2 text-sm">Generation quality debug dashboard</p>
-        <button onClick={toggleQualityDebug} className="rounded-lg border border-border px-3 py-2 text-sm">
+        <button onClick={toggleQualityDebug} className="rounded-lg border border-border bg-card/75 px-3 py-2 text-sm transition hover:bg-fg/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40">
           Quality debug: {qualityDebugEnabled ? "ON" : "OFF"}
         </button>
       </section>
-      <section className="rounded-xl border border-border p-4">
+      <section className="card p-4">
         <p className="mb-3 text-sm">Local conversations are stored in IndexedDB.</p>
         <div className="flex flex-wrap gap-2">
-          <button onClick={() => onExport("json")} className="rounded-lg border border-border px-3 py-2 text-sm">
+          <button onClick={() => onExport("json")} className="rounded-lg border border-border bg-card/75 px-3 py-2 text-sm transition hover:bg-fg/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40">
             Export all JSON
           </button>
-          <button onClick={() => onExport("txt")} className="rounded-lg border border-border px-3 py-2 text-sm">
+          <button onClick={() => onExport("txt")} className="rounded-lg border border-border bg-card/75 px-3 py-2 text-sm transition hover:bg-fg/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40">
             Export all TXT
           </button>
-          <button onClick={() => void clearAllData()} className="rounded-lg border border-red-400 px-3 py-2 text-sm text-red-300">
+          <button onClick={() => void clearAllData()} className="status-danger rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/40">
           Clear all conversations
           </button>
         </div>

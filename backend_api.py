@@ -34,7 +34,12 @@ from backend.models import (
 )
 from backend.services import auth_service, conversation_service, feature_flag_service, message_service
 from backend.services.chat_service import process_chat
-from backend.services.model_registry import active_model_info, estimate_tokens_from_text, extract_rag_text_from_sources
+from backend.services.model_registry import (
+    active_model_info,
+    estimate_tokens_from_text,
+    extract_rag_text_from_sources,
+    trim_text_to_token_budget,
+)
 from backend.services.conversation_state_store import (
     ConversationStateService,
     evidence_pack_transformable,
@@ -147,6 +152,62 @@ def _extract_state_context_text(state: dict[str, Any]) -> str:
     return "\n".join(parts)[:60_000]
 
 
+def _chunks_count(sqlite_path: Path) -> int | None:
+    if not sqlite_path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(sqlite_path))
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM chunks")
+            value = cur.fetchone()
+            return int(value[0]) if value else 0
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
+def _latest_assistant_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    for row in reversed(rows):
+        if str(row.get("role") or "") != "assistant":
+            continue
+        diagnostics = row.get("diagnostics")
+        if isinstance(diagnostics, dict):
+            return diagnostics
+    return {}
+
+
+def _is_llm_context_expected(diagnostics: dict[str, Any]) -> bool:
+    route_class = str(diagnostics.get("llm_route_class") or "").strip().lower()
+    final_answer_source = str(diagnostics.get("final_answer_source") or "").strip().lower()
+    generation_mode = str(diagnostics.get("generation_mode") or "").strip().lower()
+    llm_writer_attempted = bool(diagnostics.get("llm_writer_attempted"))
+    llm_writer_accepted = bool(diagnostics.get("llm_writer_accepted"))
+    llm_expected = bool(diagnostics.get("llm_expected"))
+
+    if llm_writer_attempted or llm_writer_accepted or llm_expected:
+        return True
+    if final_answer_source == "llm_writer":
+        return True
+    if route_class == "llm_allowed":
+        return True
+    return generation_mode in {"hybrid", "llm_writer", "llm_first"}
+
+
+def _build_history_text(rows: list[dict[str, Any]], *, max_rows: int, per_message_char_limit: int) -> str:
+    selected = rows[-max_rows:]
+    parts: list[str] = []
+    for row in selected:
+        role = str(row.get("role") or "").strip() or "message"
+        raw = str(row.get("content") or "").strip()
+        if not raw:
+            continue
+        content = raw[: max(64, per_message_char_limit)]
+        parts.append(f"{role}: {content}")
+    return "\n".join(parts)
+
+
 def _create_conversation_record(*, user_id: str, title: str | None = None, conversation_id: str | None = None) -> ConversationItem:
     return ConversationItem(**conversation_service.create_conversation_record(user_id=user_id, title=title, conversation_id=conversation_id))
 
@@ -229,11 +290,23 @@ def _require_feature_flag_admin(current_user: dict[str, Any]) -> None:
 @app.get("/health")
 def health() -> dict[str, Any]:
     index_dir = Path("data/indexes")
-    sqlite_exists = (index_dir / "medical_rag.sqlite").exists()
+    sqlite_path = index_dir / "medical_rag.sqlite"
+    sqlite_exists = sqlite_path.exists()
+    chunk_count = _chunks_count(sqlite_path)
+    if not sqlite_exists:
+        index_status = "missing"
+    elif chunk_count is None:
+        index_status = "error"
+    elif chunk_count <= 0:
+        index_status = "empty"
+    else:
+        index_status = "ready"
     return {
         "status": "ok",
         "service": "medical-rag-backend",
-        "index_ready": sqlite_exists,
+        "index_ready": bool(index_status == "ready"),
+        "index_status": index_status,
+        "index_chunks_count": chunk_count,
     }
 
 
@@ -315,6 +388,7 @@ def get_active_model(current_user: dict[str, Any] = Depends(get_current_user)) -
         model=info.model,
         context_window=int(info.context_window),
         max_output_tokens=int(info.max_output_tokens),
+        recommended_rag_budget=int(info.recommended_rag_budget),
     )
 
 
@@ -327,22 +401,48 @@ def get_conversation_context_usage(
     info = active_model_info()
     rows = message_service.list_messages(conversation_id)
     state = _STATE_SERVICE.load(conversation_id)
+    latest_diagnostics = _latest_assistant_diagnostics(rows)
+    llm_context_expected = _is_llm_context_expected(latest_diagnostics)
 
     system_prompt = (
         "Assistant clinique prudent. Réponse basée uniquement sur documents sourcés. "
         "Aucun diagnostic direct. Signaler limites et éléments manquants."
     )
-    history_text = "\n".join(str(row.get("content") or "") for row in rows)
-    rag_sources_text = "\n".join(extract_rag_text_from_sources(list(row.get("sources") or [])) for row in rows)
-    state_context_text = _extract_state_context_text(state if isinstance(state, dict) else {})
+    context_window = max(1, int(info.context_window))
+    history_text = _build_history_text(
+        rows,
+        max_rows=20 if llm_context_expected else 10,
+        per_message_char_limit=900 if llm_context_expected else 320,
+    )
+
+    latest_rag_sources_text = ""
+    if llm_context_expected:
+        for row in reversed(rows):
+            sources = list(row.get("sources") or [])
+            if str(row.get("role") or "") == "assistant" and sources:
+                latest_rag_sources_text = extract_rag_text_from_sources(sources)
+                if latest_rag_sources_text.strip():
+                    break
+
+    state_context_text = _extract_state_context_text(state if (llm_context_expected and isinstance(state, dict)) else {})
+    rag_budget = (
+        max(512, min(int(info.recommended_rag_budget), int(context_window * 0.6)))
+        if llm_context_expected
+        else 0
+    )
+    rag_text = trim_text_to_token_budget("\n".join([latest_rag_sources_text, state_context_text]).strip(), rag_budget)
+    history_budget = max(384, int(context_window * (0.35 if llm_context_expected else 0.18)))
 
     prompt_tokens = estimate_tokens_from_text(system_prompt)
-    history_tokens = estimate_tokens_from_text(history_text)
-    rag_tokens = estimate_tokens_from_text(rag_sources_text) + estimate_tokens_from_text(state_context_text)
-    reserved_output_tokens = max(128, int(info.max_output_tokens))
+    history_tokens = min(estimate_tokens_from_text(history_text), history_budget)
+    rag_tokens = 0 if rag_budget <= 0 else min(estimate_tokens_from_text(rag_text), rag_budget)
+    reserved_output_tokens = (
+        max(128, min(int(info.max_output_tokens), int(context_window * 0.25)))
+        if llm_context_expected
+        else max(64, min(256, int(context_window * 0.04)))
+    )
 
     used_tokens = int(prompt_tokens + history_tokens + rag_tokens + reserved_output_tokens)
-    context_window = max(1, int(info.context_window))
     remaining_tokens = max(0, context_window - used_tokens)
     usage_percent = round(min(100.0, (used_tokens / context_window) * 100.0), 2)
     status = _status_from_usage_percent(usage_percent)

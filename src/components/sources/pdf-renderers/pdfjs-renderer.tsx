@@ -159,8 +159,8 @@ export function PdfJsRenderer({ source, src, onFatalError }: PdfJsRendererProps)
           node.style.top = `${rect.y}px`;
           node.style.width = `${Math.max(rect.width, 2)}px`;
           node.style.height = `${Math.max(rect.height, 10)}px`;
-          node.style.background = "rgba(251, 191, 36, 0.32)";
-          node.style.border = "1px solid rgba(245, 158, 11, 0.45)";
+          node.style.background = "hsl(var(--warning) / 0.22)";
+          node.style.border = "1px solid hsl(var(--warning-border) / 0.9)";
           node.style.borderRadius = "2px";
           node.style.pointerEvents = "none";
           overlay.appendChild(node);

@@ -1,17 +1,19 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { Activity, Download, Ellipsis, FileText, Heart, LayoutDashboard, LogOut, MessageSquare, MessageSquarePlus, Search, Settings, SunMoon, Trash2 } from "lucide-react";
+import { Activity, Download, FileText, LayoutDashboard, LogOut, MessageSquare, MessageSquarePlus, Search, Settings, SunMoon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
+import { createPortal } from "react-dom";
 import { healthcheck } from "@/services/rag-api";
-import { buildSubtitleMeta } from "@/lib/chat-title";
 import { useAuthStore } from "@/store/auth-store";
 import { useChatStore } from "@/store/chat-store";
 import { cn } from "@/lib/utils";
 import type { ChatItem, ChatSource } from "@/types/chat";
+import { ConversationCard } from "@/components/sidebar/conversation-card";
+import { SidebarFooter } from "@/components/sidebar/sidebar-footer";
 
 function daysBetween(dateIso: string) {
   const now = new Date();
@@ -32,9 +34,7 @@ function sourceDocKey(source: ChatSource): string {
   return docId;
 }
 
-function summarizeConversation(chat: ChatItem): { preview: string; sourceCount: number; meta: string } {
-  const lastMessage = [...chat.messages].reverse().find((m) => m.role === "assistant" || m.role === "user") || chat.messages.at(-1);
-  const preview = lastMessage?.content?.replace(/\s+/g, " ").trim() || "Nouvelle conversation";
+function summarizeConversation(chat: ChatItem): { sourceCount: number } {
   const docs = new Set<string>();
   for (const message of chat.messages) {
     for (const source of message.sources || []) {
@@ -43,9 +43,7 @@ function summarizeConversation(chat: ChatItem): { preview: string; sourceCount: 
     }
   }
   return {
-    preview: preview.length > 44 ? `${preview.slice(0, 44)}…` : preview,
     sourceCount: docs.size,
-    meta: buildSubtitleMeta({ updatedAt: chat.updatedAt, sourceCount: docs.size }),
   };
 }
 
@@ -69,8 +67,12 @@ export function ChatSidebar() {
   const pathname = usePathname();
   const [menuChatId, setMenuChatId] = useState<string | null>(null);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [userMenuClosing, setUserMenuClosing] = useState(false);
+  const [userMenuPosition, setUserMenuPosition] = useState<{ left: number; right: number; bottom: number } | null>(null);
   const [backendStatus, setBackendStatus] = useState<"online" | "offline" | "checking">("checking");
   const searchRef = useRef<HTMLInputElement | null>(null);
+  const footerRef = useRef<HTMLButtonElement | null>(null);
+  const userMenuRef = useRef<HTMLDivElement | null>(null);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
@@ -98,6 +100,39 @@ export function ChatSidebar() {
     };
   }, [filtered]);
 
+  function computeUserMenuPosition() {
+    const footer = footerRef.current;
+    if (!footer) return;
+    const rect = footer.getBoundingClientRect();
+    setUserMenuPosition({
+      left: rect.left + 12,
+      right: Math.max(window.innerWidth - rect.right + 12, 12),
+      bottom: Math.max(window.innerHeight - rect.top + 8, 8),
+    });
+  }
+
+  function closeUserMenu() {
+    setUserMenuClosing(true);
+    window.setTimeout(() => {
+      setUserMenuOpen(false);
+      setUserMenuClosing(false);
+    }, 100);
+  }
+
+  function openUserMenu() {
+    computeUserMenuPosition();
+    setUserMenuClosing(false);
+    setUserMenuOpen(true);
+  }
+
+  function toggleUserMenu() {
+    if (userMenuOpen) {
+      closeUserMenu();
+      return;
+    }
+    openUserMenu();
+  }
+
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
@@ -106,12 +141,37 @@ export function ChatSidebar() {
       }
       if (event.key === "Escape") {
         setMenuChatId(null);
-        setUserMenuOpen(false);
+        if (userMenuOpen) closeUserMenu();
       }
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [userMenuOpen]);
+
+  useEffect(() => {
+    if (!userMenuOpen) return;
+
+    function handleOutsideClick(event: MouseEvent) {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (userMenuRef.current?.contains(target)) return;
+      if (footerRef.current?.contains(target)) return;
+      closeUserMenu();
+    }
+
+    function handleReposition() {
+      computeUserMenuPosition();
+    }
+
+    document.addEventListener("mousedown", handleOutsideClick);
+    window.addEventListener("resize", handleReposition);
+    window.addEventListener("scroll", handleReposition, true);
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideClick);
+      window.removeEventListener("resize", handleReposition);
+      window.removeEventListener("scroll", handleReposition, true);
+    };
+  }, [userMenuOpen]);
 
   useEffect(() => {
     let active = true;
@@ -126,6 +186,12 @@ export function ChatSidebar() {
       window.clearInterval(timer);
     };
   }, []);
+
+  function toggleTheme() {
+    const next = themePref === "dark" ? "light" : "dark";
+    setThemePref(next);
+    setTheme(next);
+  }
 
   function downloadChat(chatId: string, format: "json" | "txt") {
     const content = exportChat(chatId, format);
@@ -142,12 +208,6 @@ export function ChatSidebar() {
   function onRename(chatId: string) {
     const title = window.prompt("Nouveau nom de conversation");
     if (title !== null) renameChat(chatId, title.trim());
-  }
-
-  function toggleTheme() {
-    const next = themePref === "dark" ? "light" : "dark";
-    setThemePref(next);
-    setTheme(next);
   }
 
   async function onStartConversation() {
@@ -175,6 +235,11 @@ export function ChatSidebar() {
     { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   ] as const;
 
+  function closeMenuAfterSelection(action: () => void) {
+    action();
+    window.setTimeout(() => closeUserMenu(), 80);
+  }
+
   return (
     <aside className="glass flex h-screen w-80 shrink-0 flex-col border-y-0 border-l-0 p-4">
       <div className="mb-4 rounded-xl border border-border/70 bg-card/[0.46] p-3">
@@ -190,9 +255,9 @@ export function ChatSidebar() {
             <span
               className={cn(
                 "font-medium",
-                backendStatus === "online" && "text-emerald-500",
-                backendStatus === "offline" && "text-rose-500",
-                backendStatus === "checking" && "text-amber-500",
+                backendStatus === "online" && "text-[hsl(var(--success))]",
+                backendStatus === "offline" && "text-[hsl(var(--danger))]",
+                backendStatus === "checking" && "text-[hsl(var(--warning))]",
               )}
             >
               {backendStatus}
@@ -204,7 +269,7 @@ export function ChatSidebar() {
       <button
         aria-label="Nouveau chat"
         onClick={() => void onStartConversation()}
-        className="mb-3 flex h-10 items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white shadow-sm transition duration-200 hover:-translate-y-0.5 hover:bg-accent/90 active:translate-y-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/55"
+        className="mb-3 flex h-10 items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-slate-950 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:bg-accent/90 active:translate-y-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/55"
       >
         <MessageSquarePlus size={16} /> Nouvelle conversation
       </button>
@@ -220,7 +285,7 @@ export function ChatSidebar() {
         />
       </div>
       <section className="mb-3 rounded-lg border border-border/70 bg-card/[0.45] p-2">
-        <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-fg/[0.45]">Navigation</p>
+        <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-fg/[0.72]">Navigation</p>
         <div className="space-y-1">
           {navItems.map((item) => {
             const active = pathname === item.href || (item.href === "/chat" && pathname?.startsWith("/chat"));
@@ -230,9 +295,9 @@ export function ChatSidebar() {
                 href={item.href}
                 className={cn(
                   "flex h-[42px] items-center gap-2 rounded-xl border px-3 text-sm transition",
-                  "text-[#94a3b8]",
+                  "text-fg/65",
                   active
-                    ? "border-cyan-300/20 bg-cyan-400/[0.10] text-cyan-300"
+                    ? "nav-active"
                     : "border-transparent hover:border-border/70 hover:bg-card/[0.72]",
                 )}
               >
@@ -247,7 +312,7 @@ export function ChatSidebar() {
         {Object.entries(grouped).map(([label, items]) =>
           items.length === 0 ? null : (
             <section key={label} aria-label={label}>
-              <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-fg/[0.45]">{label}</p>
+              <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-fg/[0.72]">{label}</p>
               <div className="space-y-1.5">
                 {items.map((chat) => {
                   const summary = summarizeConversation(chat);
@@ -258,79 +323,46 @@ export function ChatSidebar() {
                     animate={{ opacity: 1, y: 0 }}
                     whileHover={{ y: -1 }}
                     transition={{ duration: 0.16, ease: "easeOut" }}
-                    className={cn(
-                      "rounded-lg border px-3 py-2.5 transition duration-200",
-                      chat.id === activeChatId
-                        ? "border-accent/[0.55] bg-accent/10 shadow-sm ring-1 ring-accent/25"
-                        : "border-border/70 bg-card/[0.42] hover:border-accent/30 hover:bg-card/[0.72] hover:shadow-sm",
-                    )}
+                    className="rounded-lg"
                   >
-                    <button
-                      className="w-full text-left focus-visible:outline-none"
-                      onClick={() => router.push(`/chat/${chat.id}`)}
+                    <ConversationCard
                       title={chat.title}
-                      aria-current={chat.id === activeChatId ? "page" : undefined}
-                    >
-                      <p className="line-clamp-1 text-sm font-medium text-fg/90">{chat.title}</p>
-                      <p className="mt-1 line-clamp-1 text-xs leading-5 text-fg/[0.62]">
-                        {summary.preview.toLowerCase() === "nouvelle conversation" ? "Conversation générale" : summary.preview}
-                      </p>
-                      <div className="mt-1.5 flex items-center gap-1.5">
-                        <span
-                          className={cn(
-                            "rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
-                            summary.sourceCount > 0
-                              ? "border-accent/25 bg-accent/10 text-accent"
-                              : "border-slate-400/25 bg-transparent text-slate-400",
-                          )}
-                        >
-                          {summary.sourceCount > 0 ? `${summary.sourceCount} source${summary.sourceCount > 1 ? "s" : ""}` : "Sans source"}
-                        </span>
-                        <span className="rounded-md border border-border/70 bg-card/70 px-1.5 py-0.5 text-[11px] text-fg/[0.62]">
-                          {summary.meta}
-                        </span>
-                      </div>
-                    </button>
-                    <div className="mt-2 flex h-7 items-center justify-between">
-                      <div className="flex items-center gap-1">
-                      <button aria-label="Favori" title="Favori" onClick={() => toggleFavorite(chat.id)} className="rounded-md p-1 text-fg/[0.58] transition duration-200 hover:-translate-y-0.5 hover:bg-accent/10 hover:text-fg active:translate-y-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/45">
-                        <Heart size={14} className={chat.favorite ? "fill-current" : ""} />
-                      </button>
-                      <button
-                        aria-label="Supprimer"
-                        title="Supprimer"
-                        onClick={() => {
-                          if (window.confirm("Supprimer cette conversation ?")) {
-                            void onRemoveConversation(chat.id);
-                          }
-                        }}
-                        className="rounded-md p-1 text-fg/[0.58] transition duration-200 hover:-translate-y-0.5 hover:bg-rose-500/10 hover:text-rose-500 active:translate-y-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/45"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                      </div>
-                      <button
-                        aria-label="Menu actions chat"
-                        title="Menu actions"
-                        onClick={() => setMenuChatId((v) => (v === chat.id ? null : chat.id))}
-                        className="rounded-md p-1 text-fg/[0.58] transition duration-200 hover:-translate-y-0.5 hover:bg-accent/10 hover:text-fg active:translate-y-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/45"
-                      >
-                        <Ellipsis size={14} />
-                      </button>
-                    </div>
+                      updatedAt={chat.updatedAt}
+                      sourceCount={summary.sourceCount}
+                      isFavorited={chat.favorite}
+                      active={chat.id === activeChatId}
+                      onClick={() => router.push(`/chat/${chat.id}`)}
+                      onToggleFavorite={() => toggleFavorite(chat.id)}
+                      onDelete={() => {
+                        if (window.confirm("Supprimer cette conversation ?")) {
+                          void onRemoveConversation(chat.id);
+                        }
+                      }}
+                      onOpenMenu={() => setMenuChatId((current) => (current === chat.id ? null : chat.id))}
+                    />
                     <AnimatePresence>
                       {menuChatId === chat.id ? (
                         <motion.div
                           initial={{ opacity: 0, y: -4 }}
                           animate={{ opacity: 1, y: 0 }}
                           exit={{ opacity: 0, y: -4 }}
-                          className="mt-2 grid grid-cols-2 gap-1 text-xs"
+                          className="mt-1.5 grid grid-cols-2 gap-1 text-xs"
                         >
                           <button className="rounded-lg border border-border/80 bg-card/60 px-2 py-1" onClick={() => onRename(chat.id)}>
                             Rename
                           </button>
                           <button className="rounded-lg border border-border/80 bg-card/60 px-2 py-1" onClick={() => toggleFavorite(chat.id)}>
                             {chat.favorite ? "Unfavorite" : "Favorite"}
+                          </button>
+                          <button
+                            className="rounded-lg border border-border/80 bg-card/60 px-2 py-1 text-rose-300 hover:bg-rose-500/10 hover:text-rose-200"
+                            onClick={() => {
+                              if (window.confirm("Supprimer cette conversation ?")) {
+                                void onRemoveConversation(chat.id);
+                              }
+                            }}
+                          >
+                            Supprimer
                           </button>
                           <button className="rounded-lg border border-border/80 bg-card/60 px-2 py-1" onClick={() => downloadChat(chat.id, "json")}>
                             Export JSON
@@ -349,65 +381,67 @@ export function ChatSidebar() {
           ),
         )}
       </div>
-      <div className="relative mt-3">
-        <div className="flex items-center justify-between rounded-lg border border-border/80 bg-card/[0.55] px-3 py-2 text-xs">
-          <p className="truncate text-fg/75">{user?.email || "Utilisateur connecté"}</p>
-          <button
-            aria-label="Menu utilisateur"
-            title="Menu utilisateur"
-            onClick={() => setUserMenuOpen((v) => !v)}
-            className="rounded-md border border-border/70 bg-card/70 px-2 py-1 text-fg/75 transition hover:bg-card"
-          >
-            <Settings size={12} />
-          </button>
-        </div>
-        <AnimatePresence>
-          {userMenuOpen ? (
-            <motion.div
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 6 }}
-              className="absolute bottom-12 right-0 z-20 w-44 rounded-lg border border-border/75 bg-card p-1.5 shadow-xl"
+      <SidebarFooter ref={footerRef} user={user} onClick={toggleUserMenu} />
+      {userMenuOpen && userMenuPosition && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              ref={userMenuRef}
+              className={cn(
+                "menu-panel z-[70] min-w-[200px] rounded-xl border border-white/10 bg-[#1E2433] p-[6px] shadow-[0_8px_32px_rgba(0,0,0,0.4),0_2px_8px_rgba(0,0,0,0.2)]",
+                userMenuClosing && "menu-panel-out",
+              )}
+              style={{
+                position: "fixed",
+                left: userMenuPosition.left,
+                right: userMenuPosition.right,
+                bottom: userMenuPosition.bottom,
+              }}
             >
-              <Link href="/settings" className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-fg/80 hover:bg-fg/[0.04]">
-                <Settings size={12} />
-                Settings
-              </Link>
               <button
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-fg/80 hover:bg-fg/[0.04]"
-                onClick={toggleTheme}
+                className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] text-white/75 transition hover:bg-white/[0.07] hover:text-white"
+                onClick={() => closeMenuAfterSelection(() => router.push("/settings"))}
               >
-                <SunMoon size={12} />
+                <Settings size={16} className="text-white/45" />
+                Settings
+              </button>
+              <button
+                className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] text-white/75 transition hover:bg-white/[0.07] hover:text-white"
+                onClick={() => closeMenuAfterSelection(toggleTheme)}
+              >
+                <SunMoon size={16} className="text-white/45" />
                 Theme
               </button>
               <button
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-fg/80 hover:bg-fg/[0.04]"
-                onClick={() => {
-                  const content = exportChat(activeChatId || "", "json");
-                  if (!content) return;
-                  const blob = new Blob([content], { type: "application/json" });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement("a");
-                  a.href = url;
-                  a.download = "clinical-rag-conversations.json";
-                  a.click();
-                  URL.revokeObjectURL(url);
-                }}
+                className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] text-white/75 transition hover:bg-white/[0.07] hover:text-white"
+                onClick={() =>
+                  closeMenuAfterSelection(() => {
+                    const content = exportChat(activeChatId || "", "json");
+                    if (!content) return;
+                    const blob = new Blob([content], { type: "application/json" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = "clinical-rag-conversations.json";
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  })
+                }
               >
-                <Download size={12} />
+                <Download size={16} className="text-white/45" />
                 Export
               </button>
+              <div className="my-1 h-px bg-white/[0.07]" />
               <button
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-rose-400 hover:bg-rose-500/10"
-                onClick={() => void logout()}
+                className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] text-[#E07070] transition hover:bg-[rgba(224,112,112,0.10)]"
+                onClick={() => closeMenuAfterSelection(() => void logout())}
               >
-                <LogOut size={12} />
+                <LogOut size={16} className="text-[#E07070]" />
                 Logout
               </button>
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
-      </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </aside>
   );
 }

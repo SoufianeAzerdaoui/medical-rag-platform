@@ -135,15 +135,15 @@ export function ChatShell({ routeConversationId = null }: ChatShellProps) {
             Sources
           </button>
         </div>
-        <div className="flex-1 overflow-auto">
+        <div className="flex-1 overflow-auto" tabIndex={0} aria-label="Zone de conversation défilable">
           {!backendOnline ? (
-            <div className="mx-6 mt-4 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-100">
+            <div className="status-warning mx-6 mt-4 rounded-xl px-4 py-3 text-sm">
               <p className="font-medium">Le service RAG est temporairement indisponible.</p>
               <p className="mt-1 text-xs">Vérifiez l’API backend ou la base vectorielle.</p>
             </div>
           ) : null}
           {conversationError ? (
-            <div className="mx-6 mt-4 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-700 dark:text-rose-100">
+            <div className="status-danger mx-6 mt-4 rounded-xl px-4 py-3 text-sm">
               {conversationError}
             </div>
           ) : null}

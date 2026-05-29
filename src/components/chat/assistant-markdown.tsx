@@ -35,12 +35,12 @@ function StatusBadge({ text }: { text: string }) {
 
   const cls =
     tone === "high"
-      ? "border-amber-500/40 bg-amber-500/15 text-amber-200"
+      ? "status-warning"
       : tone === "low"
-        ? "border-sky-500/40 bg-sky-500/15 text-sky-200"
+        ? "status-low"
         : tone === "normal"
-          ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-200"
-          : "border-slate-500/40 bg-slate-500/15 text-slate-200";
+          ? "status-success"
+          : "status-neutral";
 
   return (
     <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${cls}`}>
@@ -51,12 +51,12 @@ function StatusBadge({ text }: { text: string }) {
 
 const markdownComponents = {
   h3: ({ children }: { children?: ReactNode }) => (
-    <h3 className="mt-4 mb-2 text-base font-semibold text-slate-100">{children}</h3>
+    <h3 className="mb-2 mt-4 text-base font-semibold text-fg">{children}</h3>
   ),
   p: ({ children }: { children?: ReactNode }) => <p className="my-2 whitespace-pre-wrap leading-6">{children}</p>,
   ul: ({ children }: { children?: ReactNode }) => <ul className="my-3 list-disc space-y-1.5 pl-5">{children}</ul>,
   li: ({ children }: { children?: ReactNode }) => <li className="leading-6 [&>ul]:mt-1.5">{children}</li>,
-  strong: ({ children }: { children?: ReactNode }) => <strong className="font-semibold text-slate-100">{children}</strong>,
+  strong: ({ children }: { children?: ReactNode }) => <strong className="font-semibold text-fg">{children}</strong>,
   a: ({ href, children }: { href?: string; children?: ReactNode }) => (
     <a
       href={href}
@@ -69,24 +69,24 @@ const markdownComponents = {
   ),
   code: ({ inline, children }: { inline?: boolean; children?: ReactNode }) => {
     if (inline) {
-      return <code className="rounded bg-slate-800/70 px-1.5 py-0.5 text-xs text-slate-100">{children}</code>;
+      return <code className="rounded border border-border/70 bg-fg/[0.06] px-1.5 py-0.5 text-xs text-fg">{children}</code>;
     }
     return (
-      <code className="block overflow-x-auto rounded-lg border border-slate-700/70 bg-slate-950/70 p-3 text-xs text-slate-100">
+      <code className="block overflow-x-auto rounded-lg border border-border/70 bg-fg/[0.05] p-3 text-xs text-fg">
         {children}
       </code>
     );
   },
   table: ({ children }: { children?: ReactNode }) => (
-    <div className="my-4 overflow-x-auto rounded-xl border border-slate-700/70 bg-slate-950/40">
+    <div className="my-4 overflow-x-auto rounded-xl border border-border/75 bg-card/[0.55]">
       <table className="min-w-full border-collapse text-sm">{children}</table>
     </div>
   ),
-  thead: ({ children }: { children?: ReactNode }) => <thead className="bg-slate-800/80 text-slate-100">{children}</thead>,
-  tbody: ({ children }: { children?: ReactNode }) => <tbody className="divide-y divide-slate-800">{children}</tbody>,
-  tr: ({ children }: { children?: ReactNode }) => <tr className="transition-colors hover:bg-slate-800/40">{children}</tr>,
+  thead: ({ children }: { children?: ReactNode }) => <thead className="bg-fg/[0.07] text-fg">{children}</thead>,
+  tbody: ({ children }: { children?: ReactNode }) => <tbody className="divide-y divide-border/80">{children}</tbody>,
+  tr: ({ children }: { children?: ReactNode }) => <tr className="transition-colors hover:bg-fg/[0.04]">{children}</tr>,
   th: ({ children }: { children?: ReactNode }) => (
-    <th scope="col" className="whitespace-nowrap border-b border-slate-700 px-4 py-3 text-left font-semibold">
+    <th scope="col" className="whitespace-nowrap border-b border-border px-4 py-3 text-left font-semibold">
       {children}
     </th>
   ),
@@ -94,7 +94,7 @@ const markdownComponents = {
     const text = toPlainText(children).replace(/\s+/g, " ").trim();
     const tone = statusTone(text);
     return (
-      <td className="border-b border-slate-800 px-4 py-3 align-top text-slate-200">
+      <td className="border-b border-border/80 px-4 py-3 align-top text-fg/85">
         {tone ? <StatusBadge text={text} /> : children}
       </td>
     );

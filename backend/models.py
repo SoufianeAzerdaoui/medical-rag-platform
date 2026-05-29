@@ -133,6 +133,7 @@ class ActiveModelResponse(BaseModel):
     model: str
     context_window: int
     max_output_tokens: int
+    recommended_rag_budget: int | None = None
 
 
 class ConversationContextUsageResponse(BaseModel):

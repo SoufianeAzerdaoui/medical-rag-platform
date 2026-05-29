@@ -890,6 +890,104 @@ def process_chat(
 
     except HTTPException:
         raise
+    except (RuntimeError, FileNotFoundError) as exc:  # pragma: no cover
+        error_text = str(exc)
+        missing_or_empty_index = (
+            "No chunks found in SQLite chunks table" in error_text
+            or "SQLite DB missing" in error_text
+            or "Table 'chunks' not found" in error_text
+        )
+        if not missing_or_empty_index:
+            logger.exception(
+                "chat_generation_failed request_id=%s provider=%s intent=unknown query=%r error=%s\n%s",
+                request_id,
+                "ollama",
+                payload.message,
+                error_text,
+                traceback.format_exc(),
+            )
+            safe_answer = (
+                "Une erreur interne a empêché la génération complète de la réponse. "
+                "Les données indexées restent disponibles ; veuillez relancer la demande ou simplifier la formulation."
+            )
+            expose_error_detail = str(os.getenv("CHAT_DEBUG_ERRORS", "")).strip().lower() in {"1", "true", "yes", "on"}
+            if not expose_error_detail:
+                expose_error_detail = _advanced_debug_enabled()
+            debug_payload: dict[str, Any] = {
+                "debug_contract_version": "v2",
+                "intent": None,
+                "validation": {
+                    "status": "warning",
+                    "errors": ["controlled_error_fallback"],
+                    "warnings": [],
+                    "unsupported_claims": [],
+                },
+            }
+            if expose_error_detail:
+                debug_payload["controlled_error_detail"] = error_text
+                debug_payload["controlled_error_traceback"] = traceback.format_exc()
+            return ChatResponse(
+                conversation_id=conversation_id,
+                answer=safe_answer,
+                sources=[],
+                confidence=0.0,
+                document_ids=[],
+                response_time=0.0,
+                quality_report=None,
+                validation_status="warning",
+                generation_mode="controlled_error_fallback",
+                generation_writer="professional_fallback",
+                visualization=None,
+                chart_data=None,
+                patients=None,
+                inventory_view=None,
+                debug=debug_payload,
+            )
+
+        logger.warning(
+            "chat_generation_unavailable_index request_id=%s provider=%s intent=unknown query=%r error=%s",
+            request_id,
+            "ollama",
+            payload.message,
+            error_text,
+        )
+        safe_answer = (
+            "Aucun document indexé n’est actuellement disponible pour répondre de façon fiable. "
+            "Importez ou réindexez vos rapports, puis relancez la question."
+        )
+        expose_error_detail = str(os.getenv("CHAT_DEBUG_ERRORS", "")).strip().lower() in {"1", "true", "yes", "on"}
+        if not expose_error_detail:
+            expose_error_detail = _advanced_debug_enabled()
+        debug_payload: dict[str, Any] = {
+            "debug_contract_version": "v2",
+            "intent": None,
+            "validation": {
+                "status": "warning",
+                "errors": ["index_not_ready"],
+                "warnings": [],
+                "unsupported_claims": [],
+            },
+        }
+        if expose_error_detail:
+            debug_payload["controlled_error_detail"] = error_text
+            debug_payload["controlled_error_traceback"] = traceback.format_exc()
+        return ChatResponse(
+            conversation_id=conversation_id,
+            answer=safe_answer,
+            sources=[],
+            confidence=0.0,
+            document_ids=[],
+            response_time=0.0,
+            quality_report=None,
+            validation_status="warning",
+            generation_mode="controlled_error_no_index",
+            generation_writer="professional_fallback",
+            visualization=None,
+            chart_data=None,
+            patients=None,
+            inventory_view=None,
+            debug=debug_payload,
+        )
     except Exception as exc:  # pragma: no cover
         logger.exception(
             "chat_generation_failed request_id=%s provider=%s intent=unknown query=%r error=%s\n%s",

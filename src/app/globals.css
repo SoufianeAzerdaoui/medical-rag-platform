@@ -7,7 +7,28 @@
   --fg: 218 32% 13%;
   --card: 0 0% 100%;
   --border: 214 24% 88%;
-  --accent: 190 84% 36%;
+  --accent: 191 83% 32%;
+  --surface: 0 0% 100%;
+  --surface-muted: 212 38% 96%;
+  --surface-elevated: 0 0% 100%;
+  --border-strong: 214 24% 82%;
+  --text-main: 218 34% 14%;
+  --text-muted: 217 24% 35%;
+  --text-soft: 215 19% 49%;
+  --primary: 191 83% 29%;
+  --primary-soft: 191 83% 95%;
+  --primary-border: 191 70% 78%;
+  --success: 154 78% 24%;
+  --success-soft: 149 48% 93%;
+  --success-border: 151 45% 76%;
+  --warning: 31 90% 30%;
+  --warning-soft: 40 100% 94%;
+  --warning-border: 36 92% 78%;
+  --danger: 345 86% 34%;
+  --danger-soft: 342 88% 95%;
+  --danger-border: 343 76% 82%;
+  --neutral-soft: 210 40% 96%;
+  --neutral-border: 215 21% 76%;
 }
 
 .dark {
@@ -15,7 +36,28 @@
   --fg: 210 36% 96%;
   --card: 218 28% 12%;
   --border: 216 20% 24%;
-  --accent: 186 78% 44%;
+  --accent: 186 78% 39%;
+  --surface: 220 27% 12%;
+  --surface-muted: 220 23% 16%;
+  --surface-elevated: 220 25% 14%;
+  --border-strong: 216 18% 32%;
+  --text-main: 210 38% 96%;
+  --text-muted: 214 22% 72%;
+  --text-soft: 216 16% 62%;
+  --primary: 186 80% 58%;
+  --primary-soft: 188 72% 18%;
+  --primary-border: 188 66% 38%;
+  --success: 153 64% 64%;
+  --success-soft: 152 52% 17%;
+  --success-border: 153 46% 33%;
+  --warning: 39 94% 63%;
+  --warning-soft: 33 75% 18%;
+  --warning-border: 33 76% 34%;
+  --danger: 347 90% 70%;
+  --danger-soft: 347 66% 17%;
+  --danger-border: 346 69% 32%;
+  --neutral-soft: 220 23% 17%;
+  --neutral-border: 216 18% 36%;
 }
 
 * {
@@ -35,8 +77,8 @@ body::before {
   z-index: -1;
   pointer-events: none;
   background:
-    radial-gradient(circle at 16% 8%, hsl(var(--accent) / 0.16), transparent 28rem),
-    linear-gradient(135deg, hsl(166 45% 96% / 0.82), transparent 34%),
+    radial-gradient(circle at 16% 8%, hsl(var(--accent) / 0.12), transparent 28rem),
+    linear-gradient(135deg, hsl(191 50% 97% / 0.85), transparent 34%),
     hsl(var(--bg));
 }
 
@@ -57,4 +99,115 @@ body::before {
 
 .icon-button {
   @apply inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border/80 bg-card/70 text-fg/[0.72] transition hover:border-accent/40 hover:bg-accent/10 hover:text-fg disabled:cursor-not-allowed disabled:opacity-45;
+}
+
+.card {
+  background: hsl(var(--surface));
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+}
+
+.card-muted {
+  background: hsl(var(--surface-muted));
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+}
+
+.panel-surface {
+  background: hsl(var(--surface) / 0.9);
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+  box-shadow: 0 10px 30px hsl(220 30% 10% / 0.08);
+}
+
+.input-surface {
+  background: hsl(var(--surface) / 0.88);
+  border: 1px solid hsl(var(--border-strong));
+  border-radius: 12px;
+}
+
+.nav-active {
+  background: hsl(var(--primary-soft));
+  border: 1px solid hsl(var(--primary-border));
+  color: hsl(var(--text-main));
+}
+
+.source-card {
+  background: hsl(var(--surface) / 0.82);
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+}
+
+.clinical-badge {
+  border-radius: 999px;
+  border: 1px solid hsl(var(--neutral-border));
+  background: hsl(var(--neutral-soft));
+  color: hsl(var(--text-muted));
+}
+
+.status-success {
+  border: 1px solid hsl(var(--success-border));
+  background: hsl(var(--success-soft));
+  color: hsl(var(--success));
+}
+
+.status-warning {
+  border: 1px solid hsl(var(--warning-border));
+  background: hsl(var(--warning-soft));
+  color: hsl(var(--warning));
+}
+
+.status-danger {
+  border: 1px solid hsl(var(--danger-border));
+  background: hsl(var(--danger-soft));
+  color: hsl(var(--danger));
+}
+
+.status-neutral {
+  border: 1px solid hsl(var(--neutral-border));
+  background: hsl(var(--neutral-soft));
+  color: hsl(var(--text-main));
+}
+
+.status-low {
+  border: 1px solid hsl(210 78% 72% / 0.7);
+  background: hsl(208 86% 95%);
+  color: hsl(211 76% 34%);
+}
+
+.dark .status-low {
+  border-color: hsl(210 62% 42% / 0.8);
+  background: hsl(211 56% 18%);
+  color: hsl(206 78% 74%);
+}
+
+@keyframes menuIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes menuOut {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(4px) scale(0.985);
+  }
+}
+
+.menu-panel {
+  animation: menuIn 150ms ease forwards;
+  transform-origin: bottom center;
+}
+
+.menu-panel-out {
+  animation: menuOut 100ms ease forwards;
 }

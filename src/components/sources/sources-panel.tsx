@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { ShieldCheck, X } from "lucide-react";
+import { FileSearch, ShieldCheck, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { PdfPreviewPanel } from "@/components/sources/pdf-preview-panel";
 import { SourceSnippetCard } from "@/components/sources/source-snippet-card";
@@ -153,9 +153,9 @@ function computeSummary(messages: MessageItem[], sources: SourceReference[]): So
 }
 
 function confidenceClass(level: ConfidenceLevel): string {
-  if (level === "elevee") return "border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200";
-  if (level === "moyenne") return "border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-200";
-  return "border-rose-500/35 bg-rose-500/10 text-rose-700 dark:text-rose-200";
+  if (level === "elevee") return "status-success";
+  if (level === "moyenne") return "status-low";
+  return "status-warning";
 }
 
 function confidenceLabel(level: ConfidenceLevel): string {
@@ -167,12 +167,49 @@ function confidenceLabel(level: ConfidenceLevel): string {
 function SourcesBody({
   sources,
   summary,
+  hasMessages,
+  hasResponse,
+  isLoading,
   onPreview,
 }: {
   sources: SourceReference[];
   summary: SourceSummary;
+  hasMessages: boolean;
+  hasResponse: boolean;
+  isLoading: boolean;
   onPreview: (source: SourceReference) => void;
 }) {
+  if (!hasMessages) {
+    return (
+      <div className="flex h-full min-h-52 flex-col items-center justify-center rounded-lg border border-border/60 bg-card/[0.35] px-4 text-center">
+        <FileSearch size={40} className="opacity-30" />
+        <p className="mt-3 text-[13px] text-fg/55">Les sources apparaîtront ici après votre première question.</p>
+      </div>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <div className="space-y-3 rounded-lg border border-border/65 bg-card/[0.4] p-3">
+        <p className="text-[13px] text-fg/58">Recherche des sources…</p>
+        <div className="space-y-2">
+          <div className="h-3 w-5/6 animate-pulse rounded bg-fg/[0.08]" />
+          <div className="h-3 w-2/3 animate-pulse rounded bg-fg/[0.08]" />
+          <div className="h-3 w-3/4 animate-pulse rounded bg-fg/[0.08]" />
+        </div>
+      </div>
+    );
+  }
+
+  if (!hasResponse) {
+    return (
+      <div className="flex h-full min-h-52 flex-col items-center justify-center rounded-lg border border-border/60 bg-card/[0.35] px-4 text-center">
+        <FileSearch size={40} className="opacity-30" />
+        <p className="mt-3 text-[13px] text-fg/55">Les sources apparaîtront après la première réponse de l&apos;assistant.</p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-3 overflow-auto">
       <div className="grid grid-cols-1 gap-2">
@@ -182,16 +219,17 @@ function SourcesBody({
         <div className="rounded-lg border border-border/70 bg-card/[0.62] px-3 py-2 text-xs text-fg/78">
           Sources ignorées : <span className="font-semibold text-fg">{summary.ignoredCount}</span>
         </div>
-        <div className={`rounded-lg border px-3 py-2 text-xs font-medium ${confidenceClass(summary.confidence)}`}>
-          Confiance documentaire : {confidenceLabel(summary.confidence)}
-        </div>
+        {summary.usedCount > 0 ? (
+          <div className={`rounded-lg border px-3 py-2 text-xs font-medium ${confidenceClass(summary.confidence)}`}>
+            Confiance documentaire : {confidenceLabel(summary.confidence)}
+          </div>
+        ) : null}
       </div>
 
       {sources.length === 0 ? (
-        <div className="rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-3 text-xs text-amber-800 dark:text-amber-100">
-          <p className="font-medium">Aucune source trouvée</p>
-          <p className="mt-1">La réponse ne doit pas être utilisée sans document justificatif.</p>
-        </div>
+        <p className="rounded-lg border border-border/65 bg-card/[0.45] px-3 py-3 text-xs text-fg/60">
+          Aucun document pertinent trouvé pour cette question.
+        </p>
       ) : (
         <div className="space-y-2">
           {sources.map((source, index) => (
@@ -216,6 +254,9 @@ export function SourcesPanel({ mobileOpen, onClose }: { mobileOpen: boolean; onC
     if (!chat) return [];
     return chat.messages.flatMap((m) => m.sources || []);
   }, [chat]);
+  const hasMessages = Boolean(chat?.messages?.some((m) => m.role === "user" && String(m.content || "").trim().length > 0));
+  const hasResponse = Boolean(chat?.messages?.some((m) => m.role === "assistant" && m.status === "done"));
+  const isLoading = Boolean(chat?.messages?.some((m) => m.role === "assistant" && m.status === "loading"));
   const normalizedSources = useMemo(() => uniqueSources(sources.map(normalizeSource)), [sources]);
   const summary = useMemo(
     () => computeSummary(chat?.messages || [], normalizedSources),
@@ -241,7 +282,14 @@ export function SourcesPanel({ mobileOpen, onClose }: { mobileOpen: boolean; onC
             <p className="mt-1 text-xs leading-5 text-fg/60">Documents et passages utilisés par la réponse.</p>
           </div>
         </div>
-        <SourcesBody sources={normalizedSources} summary={summary} onPreview={setPreviewSource} />
+        <SourcesBody
+          sources={normalizedSources}
+          summary={summary}
+          hasMessages={hasMessages}
+          hasResponse={hasResponse}
+          isLoading={isLoading}
+          onPreview={setPreviewSource}
+        />
       </aside>
       <AnimatePresence>
         {previewSource ? (
@@ -290,7 +338,14 @@ export function SourcesPanel({ mobileOpen, onClose }: { mobileOpen: boolean; onC
                   <X size={14} />
                 </button>
               </div>
-              <SourcesBody sources={normalizedSources} summary={summary} onPreview={setPreviewSource} />
+              <SourcesBody
+                sources={normalizedSources}
+                summary={summary}
+                hasMessages={hasMessages}
+                hasResponse={hasResponse}
+                isLoading={isLoading}
+                onPreview={setPreviewSource}
+              />
             </motion.aside>
           </motion.div>
         ) : null}

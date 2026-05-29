@@ -1,0 +1,87 @@
+.conv-card {
+  min-height: 56px;
+}
+
+.conv-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 150ms ease;
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 20;
+}
+
+.conv-card-has-source .conv-actions {
+  bottom: 28px;
+}
+
+.conv-card:hover .conv-actions,
+.conv-card:focus-within .conv-actions {
+  opacity: 1;
+}
+
+.conv-actions-has-fav {
+  opacity: 1;
+}
+
+.conv-actions-has-fav .conv-action-extra {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+}
+
+.conv-card:hover .conv-actions-has-fav .conv-action-extra,
+.conv-card:focus-within .conv-actions-has-fav .conv-action-extra {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.conv-actions-touch {
+  opacity: 0.78;
+}
+
+.conv-action-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 0;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 150ms ease;
+}
+
+.conv-action-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.conv-action-btn:focus-visible {
+  outline: 2px solid hsl(var(--accent) / 0.6);
+  outline-offset: 1px;
+}
+
+.conv-action-icon {
+  width: 14px;
+  height: 14px;
+  color: rgba(255, 255, 255, 0.5);
+  transition: color 150ms ease;
+}
+
+.conv-action-btn:hover .conv-action-icon {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.conv-action-icon-favorited {
+  color: #06b6d4;
+  fill: #06b6d4;
+}
+
+.conv-action-favorite-persistent .conv-action-icon {
+  color: #06b6d4;
+  fill: #06b6d4;
+}

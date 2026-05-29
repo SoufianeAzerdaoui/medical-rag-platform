@@ -27,11 +27,11 @@ export function AssistantLoadingMessage() {
       <div className="mb-3 text-xs font-medium uppercase tracking-wide text-fg/60">Assistant</div>
       <div className="flex items-center gap-3">
         <div className="flex gap-1" aria-hidden>
-          <span className="h-2 w-2 animate-bounce rounded-full bg-slate-300" />
-          <span className="h-2 w-2 animate-bounce rounded-full bg-slate-300 [animation-delay:120ms]" />
-          <span className="h-2 w-2 animate-bounce rounded-full bg-slate-300 [animation-delay:240ms]" />
+          <span className="h-2 w-2 animate-bounce rounded-full bg-accent/70" />
+          <span className="h-2 w-2 animate-bounce rounded-full bg-accent/70 [animation-delay:120ms]" />
+          <span className="h-2 w-2 animate-bounce rounded-full bg-accent/70 [animation-delay:240ms]" />
         </div>
-        <span className="text-sm text-slate-300">{loadingSteps[stepIndex]}</span>
+        <span className="text-sm text-fg/78">{loadingSteps[stepIndex]}</span>
       </div>
       <ol className="mt-3 space-y-1">
         {loadingSteps.map((step, index) => (
@@ -41,8 +41,8 @@ export function AssistantLoadingMessage() {
         ))}
       </ol>
       <div className="mt-4 space-y-2">
-        <div className="h-3 w-3/4 animate-pulse rounded bg-slate-800" />
-        <div className="h-3 w-2/3 animate-pulse rounded bg-slate-800" />
+        <div className="h-3 w-3/4 animate-pulse rounded bg-fg/[0.10]" />
+        <div className="h-3 w-2/3 animate-pulse rounded bg-fg/[0.10]" />
       </div>
     </div>
   );
