@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo } from "react";
 import { useTheme } from "next-themes";
 import { WorkspaceShell } from "@/components/layout/workspace-shell";
@@ -44,6 +45,15 @@ export default function SettingsPage() {
       <main className="mx-auto max-w-4xl space-y-4 p-6">
       <section className="card p-4">
         <p className="text-sm">API Base URL: {apiUrl}</p>
+      </section>
+      <section className="card p-4">
+        <p className="mb-2 text-sm">Administration Ops</p>
+        <Link
+          href="/settings/security-retention"
+          className="inline-flex items-center gap-2 rounded-lg border border-accent/40 bg-accent/12 px-3 py-2 text-sm font-medium text-accent transition hover:bg-accent/18 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        >
+          Ouvrir Security & Retention
+        </Link>
       </section>
       <section className="card p-4">
         <p className="mb-2 text-sm">Language</p>
