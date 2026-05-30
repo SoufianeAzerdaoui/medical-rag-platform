@@ -7,28 +7,63 @@ import { ApiError, getMonitoringSummaryApi, healthcheck, listDocumentsApi, type 
 import { useAuthStore } from "@/store/auth-store";
 
 type BackendState = "online" | "offline" | "checking";
+type MonitoringAccessState = "ok" | "forbidden" | "unavailable";
 
 export default function DashboardPage() {
   const token = useAuthStore((s) => s.accessToken);
   const [backendStatus, setBackendStatus] = useState<BackendState>("checking");
   const [summary, setSummary] = useState<MonitoringSummaryResponse | null>(null);
   const [documentsCount, setDocumentsCount] = useState<number>(0);
+  const [monitoringAccess, setMonitoringAccess] = useState<MonitoringAccessState>("ok");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
 
   async function refreshDashboard(silent = false) {
     if (!silent) setLoading(true);
     setError(null);
+    setNotice(null);
     try {
-      const [health, monitoring, docs] = await Promise.all([
+      const [healthResult, docsResult, monitoringResult] = await Promise.allSettled([
         healthcheck(),
-        getMonitoringSummaryApi(token),
         listDocumentsApi(token),
+        getMonitoringSummaryApi(token),
       ]);
-      setBackendStatus(health === "online" ? "online" : "offline");
-      setSummary(monitoring);
-      setDocumentsCount(docs.length);
+
+      if (healthResult.status === "fulfilled") {
+        setBackendStatus(healthResult.value === "online" ? "online" : "offline");
+      } else {
+        setBackendStatus("offline");
+      }
+
+      if (docsResult.status === "fulfilled") {
+        setDocumentsCount(docsResult.value.length);
+      } else {
+        setDocumentsCount(0);
+        setNotice("Liste documents indisponible momentanément.");
+      }
+
+      if (monitoringResult.status === "fulfilled") {
+        setSummary(monitoringResult.value);
+        setMonitoringAccess("ok");
+      } else {
+        const reason = monitoringResult.reason;
+        if (reason instanceof ApiError && (reason.status === 401 || reason.status === 403)) {
+          setSummary(null);
+          setMonitoringAccess("forbidden");
+          setNotice("Accès monitoring réservé aux rôles ops/admin. Vue dashboard partielle affichée.");
+        } else {
+          setSummary(null);
+          setMonitoringAccess("unavailable");
+          setNotice("Monitoring indisponible. Vue minimale affichée.");
+        }
+      }
+
+      if (healthResult.status !== "fulfilled" && docsResult.status !== "fulfilled") {
+        setError("Impossible de charger les métriques dashboard.");
+      }
+
       setLastRefresh(new Date().toLocaleString("fr-FR"));
     } catch (error) {
       const detail = error instanceof ApiError ? error.detail : "";
@@ -104,6 +139,12 @@ export default function DashboardPage() {
           </section>
         ) : null}
 
+        {notice ? (
+          <section className="rounded-lg border border-amber-500/35 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+            {notice}
+          </section>
+        ) : null}
+
         <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {cards.map((card) => (
             <KpiCard key={card.label} icon={card.icon} label={card.label} value={card.value} tone={card.tone} />
@@ -120,7 +161,17 @@ export default function DashboardPage() {
             </li>
             <li className="flex items-center justify-between rounded-md border border-border/65 bg-card/[0.46] px-3 py-2">
               <span className="text-fg/82">Monitoring summary</span>
-              <span className={summary ? "text-emerald-400" : "text-fg/65"}>{summary ? "OK" : "N/A"}</span>
+              <span
+                className={
+                  monitoringAccess === "ok"
+                    ? "text-emerald-400"
+                    : monitoringAccess === "forbidden"
+                      ? "text-amber-300"
+                      : "text-fg/65"
+                }
+              >
+                {monitoringAccess === "ok" ? "OK" : monitoringAccess === "forbidden" ? "Restreint" : "N/A"}
+              </span>
             </li>
             <li className="flex items-center justify-between rounded-md border border-border/65 bg-card/[0.46] px-3 py-2">
               <span className="text-fg/82">Grafana readiness</span>
