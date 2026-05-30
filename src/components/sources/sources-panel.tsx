@@ -5,17 +5,20 @@ import { FileSearch, ShieldCheck, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { PdfPreviewPanel } from "@/components/sources/pdf-preview-panel";
 import { SourceSnippetCard } from "@/components/sources/source-snippet-card";
+import {
+  getMessageDocumentaryMetrics,
+  getPreferredAssistantMessageForSources,
+  type DocumentaryConfidenceLevel,
+} from "@/lib/documentary-metrics";
 import { buildBackendPdfUrl, buildViewerPreviewUrl } from "@/lib/pdf-preview";
 import { useChatStore } from "@/store/chat-store";
-import type { ChatSource, MessageItem } from "@/types/chat";
+import type { ChatSource } from "@/types/chat";
 import type { SourceReference } from "@/types/source-reference";
-
-type ConfidenceLevel = "elevee" | "moyenne" | "faible";
 
 type SourceSummary = {
   usedCount: number;
   ignoredCount: number;
-  confidence: ConfidenceLevel;
+  confidence: DocumentaryConfidenceLevel;
 };
 
 const DOC_PAGE_RE = /doc_id=([^,\]\s]+)(?:\s*,\s*page=(\d+))?(?:\s*,\s*row=(\d+))?/i;
@@ -25,14 +28,6 @@ function toNumber(value: unknown): number | null {
   if (typeof value === "string") {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-function pickDiagnosticNumber(diagnostics: Record<string, unknown>, keys: string[]): number | null {
-  for (const key of keys) {
-    const value = toNumber(diagnostics[key]);
-    if (value !== null) return value;
   }
   return null;
 }
@@ -98,67 +93,13 @@ function uniqueSources(sources: SourceReference[]): SourceReference[] {
   return Array.from(map.values());
 }
 
-function computeSummary(messages: MessageItem[], sources: SourceReference[]): SourceSummary {
-  const assistantDone = messages.filter((message) => message.role === "assistant" && message.status === "done");
-  const usedCount = sources.length;
-
-  let ignoredTotal = 0;
-  let hasIgnoredSignal = false;
-  const sourceQualityScores: number[] = [];
-  for (const message of assistantDone) {
-    const diagnostics = (message.diagnostics || {}) as Record<string, unknown>;
-    const usedFromDiagnostics =
-      pickDiagnosticNumber(diagnostics, ["displayed_evidences_count", "included_rows_count", "used_sources_count"]) ??
-      (Array.isArray(message.sources) ? message.sources.length : 0);
-    const candidateCount = pickDiagnosticNumber(diagnostics, [
-      "candidate_evidences_count",
-      "candidate_rows_count",
-      "retrieved_rows_count",
-      "retrieved_evidences_count",
-      "raw_evidences_count",
-      "ranked_rows_count",
-      "total_rows_count",
-      "total_evidences_count",
-      "considered_rows_count",
-    ]);
-    if (candidateCount !== null) {
-      ignoredTotal += Math.max(0, candidateCount - usedFromDiagnostics);
-      hasIgnoredSignal = true;
-    }
-
-    const sourceUx = toNumber((diagnostics.quality_report as Record<string, unknown> | undefined)?.source_ux_score);
-    if (sourceUx !== null) {
-      sourceQualityScores.push(sourceUx <= 1 ? sourceUx * 100 : sourceUx);
-    }
-  }
-
-  const relevanceValues = sources
-    .map((source) => source.score)
-    .filter((value): value is number => typeof value === "number" && Number.isFinite(value))
-    .map((value) => (value <= 1 ? value * 100 : value));
-  const avgRelevance = relevanceValues.length > 0
-    ? relevanceValues.reduce((sum, value) => sum + value, 0) / relevanceValues.length
-    : null;
-  const avgQuality = sourceQualityScores.length > 0
-    ? sourceQualityScores.reduce((sum, value) => sum + value, 0) / sourceQualityScores.length
-    : null;
-  const confidenceScore = avgRelevance ?? avgQuality ?? (usedCount >= 3 ? 72 : usedCount >= 1 ? 58 : 40);
-  const confidence: ConfidenceLevel = confidenceScore >= 78 ? "elevee" : confidenceScore >= 58 ? "moyenne" : "faible";
-
-  return {
-    usedCount,
-    ignoredCount: hasIgnoredSignal ? ignoredTotal : 0,
-    confidence,
-  };
-}
-
-function confidenceClass(level: ConfidenceLevel): string {
-  if (level === "elevee") return "status-success";
+function confidenceClass(level: DocumentaryConfidenceLevel): string {
+  if (level === "elevee") return "doc-confidence-high";
   if (level === "moyenne") return "status-low";
-  return "status-warning";
+  return "doc-confidence-low";
 }
 
-function confidenceLabel(level: ConfidenceLevel): string {
+function confidenceLabel(level: DocumentaryConfidenceLevel): string {
   if (level === "elevee") return "élevée";
   if (level === "moyenne") return "moyenne";
   return "faible";
@@ -250,18 +191,29 @@ export function SourcesPanel({ mobileOpen, onClose }: { mobileOpen: boolean; onC
   const activeChatId = useChatStore((s) => s.activeChatId);
   const chat = chats.find((c) => c.id === activeChatId);
 
-  const sources = useMemo<ChatSource[]>(() => {
-    if (!chat) return [];
-    return chat.messages.flatMap((m) => m.sources || []);
-  }, [chat]);
+  const latestAssistantMessage = useMemo(
+    () => getPreferredAssistantMessageForSources(chat?.messages || []),
+    [chat?.messages],
+  );
+  const sources = useMemo<ChatSource[]>(
+    () => (latestAssistantMessage?.sources || []),
+    [latestAssistantMessage?.sources],
+  );
   const hasMessages = Boolean(chat?.messages?.some((m) => m.role === "user" && String(m.content || "").trim().length > 0));
-  const hasResponse = Boolean(chat?.messages?.some((m) => m.role === "assistant" && m.status === "done"));
+  const hasResponse = Boolean(latestAssistantMessage);
   const isLoading = Boolean(chat?.messages?.some((m) => m.role === "assistant" && m.status === "loading"));
   const normalizedSources = useMemo(() => uniqueSources(sources.map(normalizeSource)), [sources]);
-  const summary = useMemo(
-    () => computeSummary(chat?.messages || [], normalizedSources),
-    [chat?.messages, normalizedSources],
-  );
+  const summary = useMemo<SourceSummary>(() => {
+    if (!latestAssistantMessage) {
+      return { usedCount: 0, ignoredCount: 0, confidence: "faible" };
+    }
+    const metrics = getMessageDocumentaryMetrics(latestAssistantMessage);
+    return {
+      usedCount: metrics.sourceCount,
+      ignoredCount: metrics.ignoredCount,
+      confidence: metrics.confidence,
+    };
+  }, [latestAssistantMessage]);
   const [previewSource, setPreviewSource] = useState<SourceReference | null>(null);
   const activePreview = useMemo(() => {
     if (!previewSource) return null;

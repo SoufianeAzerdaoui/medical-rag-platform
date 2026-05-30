@@ -181,6 +181,18 @@ body::before {
   color: hsl(206 78% 74%);
 }
 
+.doc-confidence-low {
+  border: 1px solid #6b3a00;
+  background: #2a1a00;
+  color: #d4882a;
+}
+
+.doc-confidence-high {
+  border: 1px solid #1a5c30;
+  background: #0a1f10;
+  color: #4caf7d;
+}
+
 @keyframes menuIn {
   from {
     opacity: 0;

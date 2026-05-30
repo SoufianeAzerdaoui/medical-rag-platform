@@ -233,6 +233,21 @@ function variationLabel(value: number | null): string {
   return `${rounded >= 0 ? "+" : ""}${rounded}%`;
 }
 
+function dedupeBulletLines(content: string): string {
+  const seen = new Set<string>();
+  const lines = content.split("\n");
+  const filtered = lines.filter((line) => {
+    const match = line.match(/^\s*[-*]\s+(.+)/);
+    if (!match?.[1]) return true;
+    const key = normalizeKey(match[1]);
+    if (!key) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return filtered.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function MedicalResultCard({ result }: { result: MedicalResult }) {
   return (
     <article className="rounded-xl border border-border/70 bg-card/80 p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-accent/30">
@@ -264,6 +279,7 @@ export function MedicalAnswerBlocks({ content, sources = [] }: { content: string
   const evolutionFromText = evolutionFromTables.length === 0 ? parseEvolutionFromText(content) : [];
   const evolutionItems = [...evolutionFromTables, ...evolutionFromText];
   const contentWithoutTables = results.length > 0 ? removeTables(content, tables) : content;
+  const sanitizedSummaryContent = dedupeBulletLines(contentWithoutTables);
   const abnormalResults = results.filter((result) => result.tone === "high" || result.tone === "low" || result.tone === "critical");
   const missingResults = results.filter((result) => result.tone === "unknown");
   const sourceItems = sources.map(sourceSummary).filter((item): item is SourceSummary => Boolean(item)).slice(0, 5);
@@ -276,7 +292,7 @@ export function MedicalAnswerBlocks({ content, sources = [] }: { content: string
           <h3 className="text-sm font-semibold">Résumé prudent</h3>
         </div>
         {contentWithoutTables ? (
-          <AssistantMarkdown content={contentWithoutTables} />
+          <AssistantMarkdown content={sanitizedSummaryContent} />
         ) : (
           <p className="text-sm leading-6 text-fg/78">Résumé basé uniquement sur les éléments disponibles dans les documents fournis.</p>
         )}

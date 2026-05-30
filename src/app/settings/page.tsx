@@ -112,7 +112,7 @@ export default function SettingsPage() {
           </button>
         </div>
       </section>
-      <p className="text-xs text-fg/70">Cette réponse ne remplace pas l'avis médical.</p>
+      <p className="text-xs text-fg/70">Cette réponse ne remplace pas l&apos;avis médical.</p>
       </main>
     </WorkspaceShell>
   );
