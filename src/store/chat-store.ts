@@ -24,6 +24,10 @@ type Theme = "light" | "dark" | "system";
 const ACCESS_TOKEN_KEY = "clinical-access-token";
 const inFlightMessageLoads = new Map<string, Promise<void>>();
 
+function getActiveChatTargetId(state: Pick<ChatState, "activeChatId" | "activeConversationId">): string | null {
+  return state.activeChatId || state.activeConversationId || null;
+}
+
 interface ChatState {
   chats: ChatItem[];
   conversations: ChatItem[];
@@ -277,10 +281,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   clearMessages: () => {
-    const { activeChatId, chats } = get();
-    if (!activeChatId) return;
+    const { chats } = get();
+    const activeTargetId = getActiveChatTargetId(get());
+    if (!activeTargetId) return;
     const updated = chats.map((chat) =>
-      chat.id === activeChatId
+      chat.id === activeTargetId
         ? { ...chat, messages: [], updatedAt: now(), documentIds: [], summary: "" }
         : chat,
     );
@@ -326,18 +331,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setSearch: (value) => set({ search: value }),
 
   addUserMessage: (content, mode) => {
-    const { activeChatId, chats } = get();
-    if (!activeChatId) return null;
+    const { chats } = get();
+    const activeTargetId = getActiveChatTargetId(get());
+    if (!activeTargetId) return null;
     const msg: MessageItem = {
       id: uid("msg"),
-      chatId: activeChatId,
+      chatId: activeTargetId,
       role: "user",
       content,
       createdAt: now(),
       status: "done",
     };
     const updated: ChatItem[] = chats.map((chat) =>
-      chat.id === activeChatId
+      chat.id === activeTargetId
         ? {
             ...chat,
             ...(() => resolveAutoTitleUpdate({
@@ -355,7 +361,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
         : chat,
     );
-    const active = updated.find((chat) => chat.id === activeChatId) || null;
+    const active = updated.find((chat) => chat.id === activeTargetId) || null;
     set({ chats: updated, conversations: updated, messages: active?.messages || [] });
     return msg;
   },
@@ -380,9 +386,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   addAssistantLoadingMessage: (chatId) => {
     const { chats } = get();
+    const activeTargetId = getActiveChatTargetId(get()) || chatId;
     const msg: MessageItem = {
       id: uid("msg"),
-      chatId,
+      chatId: activeTargetId,
       role: "assistant",
       content: "L’assistant prépare une réponse.",
       createdAt: now(),
@@ -390,9 +397,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       sources: [],
     };
     const updated = chats.map((chat) =>
-      chat.id === chatId ? { ...chat, messages: [...chat.messages, msg], updatedAt: now() } : chat,
+      chat.id === activeTargetId ? { ...chat, messages: [...chat.messages, msg], updatedAt: now() } : chat,
     );
-    const active = updated.find((chat) => chat.id === chatId) || null;
+    const active = updated.find((chat) => chat.id === activeTargetId) || null;
     set({ chats: updated, conversations: updated, messages: active?.messages || get().messages });
     return msg;
   },
