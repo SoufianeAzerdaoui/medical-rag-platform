@@ -77,7 +77,7 @@ export function AuthPanel() {
 
         <section className="p-7">
           <h2 className="text-base font-semibold text-fg">
-            {mode === "login" ? "Connexion professionnelle" : "Création de compte"}
+            {mode === "login" ? "Connexion " : "Création de compte"}
           </h2>
           <p className="mt-1 text-sm text-fg/72">
             {mode === "login" ? "Connectez-vous pour accéder à la plateforme clinique." : "Créez votre accès à la plateforme clinique."}
