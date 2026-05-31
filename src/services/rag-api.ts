@@ -5,6 +5,7 @@ const API_URL = process.env.NEXT_PUBLIC_RAG_API_URL;
 export interface AuthUser {
   id: string;
   email: string;
+  role?: string;
   created_at: string;
 }
 
@@ -43,7 +44,126 @@ export interface DocsDiscoveryRecord {
   absolute_path: string;
   size_bytes: number;
   modified_at: string;
+  file_hash: string;
+  text_hash?: string | null;
   already_indexed: boolean;
+  is_duplicate: boolean;
+  duplicate_with: string[];
+  duplicate_reason?: string | null;
+  blocked: boolean;
+  registry_status?: string | null;
+  first_seen_at?: string | null;
+  last_seen_at?: string | null;
+  last_ingested_at?: string | null;
+  last_error?: string | null;
+  duplicate_entries: Array<{
+    filename: string;
+    absolute_path: string;
+    doc_id: string;
+    is_indexed: boolean;
+    status: string;
+    first_seen_at?: string | null;
+    last_seen_at?: string | null;
+    last_ingested_at?: string | null;
+    last_error?: string | null;
+  }>;
+  duplicate_override: boolean;
+  override_reason?: string | null;
+  override_by?: string | null;
+  override_at?: string | null;
+}
+
+export interface DuplicateOverrideResponse {
+  success: boolean;
+  filename: string;
+  enabled: boolean;
+  reason?: string | null;
+  updated_by?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ResyncDocsRegistryResponse {
+  success: boolean;
+  discovered_count: number;
+  indexed_count: number;
+  duplicate_count: number;
+}
+
+export interface MonitoringSummaryResponse {
+  avg_pipeline_seconds: number;
+  pipeline_success_total: number;
+  pipeline_failure_total: number;
+  indexing_errors_total: number;
+  queue_depth: number;
+  generated_at: string;
+}
+
+export interface SecurityStatusResponse {
+  server_time: string;
+  clamav: {
+    required: boolean;
+    command: string;
+    available: boolean;
+    version?: string;
+    healthy: boolean;
+  };
+  sentry: {
+    configured: boolean;
+    dsn_masked: boolean;
+  };
+  jwt: {
+    algorithm: string;
+    expire_minutes: number;
+    rotation_previous_count: number;
+  };
+  encryption: {
+    enabled: boolean;
+    required: boolean;
+    key_configured: boolean;
+  };
+  rate_limits: {
+    window_seconds: number;
+    auth_per_window: number;
+    chat_per_window: number;
+    upload_per_window: number;
+    login_max_failures: number;
+    login_block_seconds: number;
+  };
+  retention: {
+    jobs_days: number;
+    audit_days: number;
+    docs_days: number;
+    audio_days: number;
+    logs_days: number;
+    auth_attempts_days: number;
+  };
+}
+
+export interface RetentionRunResponse {
+  success: boolean;
+  dry_run: boolean;
+  hard_delete_docs: boolean;
+  jobs_deleted: number;
+  audit_deleted: number;
+  auth_attempts_deleted: number;
+  docs_registry_deleted: number;
+  docs_files_deleted: number;
+  audio_files_deleted: number;
+  log_files_deleted: number;
+  audit_delete_blocked_immutable?: boolean;
+}
+
+export interface DocumentTimelineEvent {
+  at: string;
+  type: string;
+  title: string;
+  detail?: string;
+  actor?: string;
+}
+
+export interface DocumentTimelineResponse {
+  filename: string;
+  events: DocumentTimelineEvent[];
 }
 
 export interface UploadIngestedItem {
@@ -58,6 +178,27 @@ export interface UploadResponse {
   ingested_count: number;
   ingested: UploadIngestedItem[];
   skipped: Array<{ filename: string; reason: string }>;
+}
+
+const INGESTION_TIMEOUT_MS = 20 * 60 * 1000;
+
+export interface IngestionJobStartResponse {
+  job_id: string;
+  status: "queued" | "running" | "success" | "error";
+  created_at: string;
+  message?: string | null;
+}
+
+export interface IngestionJobStatusResponse {
+  job_id: string;
+  status: "queued" | "running" | "success" | "error";
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  message?: string | null;
+  error?: string | null;
+  progress_percent: number;
+  result?: UploadResponse | null;
 }
 
 export interface ActiveModelInfo {
@@ -284,6 +425,57 @@ export async function discoverDocsApi(token?: string | null): Promise<DocsDiscov
   return request<DocsDiscoveryRecord[]>("/documents/discover", { token: token || null });
 }
 
+export async function resyncDocsRegistryApi(token?: string | null): Promise<ResyncDocsRegistryResponse> {
+  return request<ResyncDocsRegistryResponse>("/documents/resync-registry", {
+    method: "POST",
+    token: token || null,
+  });
+}
+
+export async function getDocumentTimelineApi(
+  filename: string,
+  token?: string | null,
+): Promise<DocumentTimelineResponse> {
+  return request<DocumentTimelineResponse>(`/documents/timeline?filename=${encodeURIComponent(filename)}`, {
+    token: token || null,
+  });
+}
+
+export async function downloadIngestionReportApi(
+  format: "csv" | "pdf",
+  token?: string | null,
+): Promise<Blob> {
+  if (!API_URL) throw new Error("API URL unavailable");
+  const headers = new Headers();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(`${API_URL}/documents/ingestion-report?format=${format}`, {
+    method: "GET",
+    headers,
+  });
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const payload = (await res.json()) as { detail?: unknown };
+      detail = formatApiDetail(payload.detail);
+    } catch {
+      detail = "";
+    }
+    throw new ApiError(res.status, detail || "Export ingestion report échoué.");
+  }
+  return res.blob();
+}
+
+export async function setDuplicateOverrideApi(
+  payload: { filename: string; enabled: boolean; reason?: string | null },
+  token?: string | null,
+): Promise<DuplicateOverrideResponse> {
+  return request<DuplicateOverrideResponse>("/documents/duplicates/override", {
+    method: "POST",
+    token: token || null,
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function reindexDocumentApi(docId: string, token?: string | null): Promise<{ success: boolean }> {
   return request<{ success: boolean }>(`/documents/${encodeURIComponent(docId)}/reindex`, {
     method: "POST",
@@ -307,6 +499,28 @@ export async function getConversationContextUsageApi(
   token?: string | null,
 ): Promise<ConversationContextUsageInfo> {
   return request<ConversationContextUsageInfo>(`/api/conversations/${encodeURIComponent(conversationId)}/context-usage`, {
+    token: token || null,
+  });
+}
+
+export async function getMonitoringSummaryApi(token?: string | null): Promise<MonitoringSummaryResponse> {
+  return request<MonitoringSummaryResponse>("/monitoring/summary", { token: token || null });
+}
+
+export async function getSecurityStatusApi(token?: string | null): Promise<SecurityStatusResponse> {
+  return request<SecurityStatusResponse>("/admin/security-status", { token: token || null });
+}
+
+export async function runRetentionApi(
+  payload: { dryRun: boolean; hardDeleteDocs: boolean },
+  token?: string | null,
+): Promise<RetentionRunResponse> {
+  const params = new URLSearchParams({
+    dry_run: payload.dryRun ? "true" : "false",
+    hard_delete_docs: payload.hardDeleteDocs ? "true" : "false",
+  });
+  return request<RetentionRunResponse>(`/admin/retention/run?${params.toString()}`, {
+    method: "POST",
     token: token || null,
   });
 }
@@ -349,29 +563,16 @@ export async function transcribeAudioDetailed(blob: Blob, token?: string): Promi
 }
 
 export async function uploadDocumentsApi(files: File[], token?: string | null): Promise<UploadResponse> {
-  if (!API_URL) throw new Error("API URL unavailable");
   const formData = new FormData();
   for (const file of files) {
     formData.append("files", file);
   }
-  const headers = new Headers();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch(`${API_URL}/upload`, {
+  return request<UploadResponse>("/upload", {
     method: "POST",
-    headers,
+    token: token || null,
     body: formData,
+    timeoutMs: INGESTION_TIMEOUT_MS,
   });
-  if (!res.ok) {
-    let detail = "";
-    try {
-      const payload = (await res.json()) as { detail?: unknown };
-      detail = formatApiDetail(payload.detail);
-    } catch {
-      detail = "";
-    }
-    throw new ApiError(res.status, detail);
-  }
-  return (await res.json()) as UploadResponse;
 }
 
 export async function uploadFromDocsApi(filenames: string[], token?: string | null): Promise<UploadResponse> {
@@ -379,6 +580,27 @@ export async function uploadFromDocsApi(filenames: string[], token?: string | nu
     method: "POST",
     token: token || null,
     body: JSON.stringify({ filenames }),
+    timeoutMs: INGESTION_TIMEOUT_MS,
+  });
+}
+
+export async function startDocsIngestionJobApi(
+  filenames: string[],
+  token?: string | null,
+): Promise<IngestionJobStartResponse> {
+  return request<IngestionJobStartResponse>("/upload/from-docs/jobs", {
+    method: "POST",
+    token: token || null,
+    body: JSON.stringify({ filenames }),
+  });
+}
+
+export async function getIngestionJobStatusApi(
+  jobId: string,
+  token?: string | null,
+): Promise<IngestionJobStatusResponse> {
+  return request<IngestionJobStatusResponse>(`/upload/jobs/${encodeURIComponent(jobId)}`, {
+    token: token || null,
   });
 }
 

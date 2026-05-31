@@ -36,6 +36,7 @@ class AuthLoginRequest(BaseModel):
 class UserResponse(BaseModel):
     id: str
     email: str
+    role: str = "user"
     created_at: str
 
 
@@ -134,11 +135,68 @@ class DocsDiscoveryItem(BaseModel):
     absolute_path: str
     size_bytes: int
     modified_at: str
+    file_hash: str
+    text_hash: str | None = None
     already_indexed: bool
+    is_duplicate: bool = False
+    duplicate_with: list[str] = Field(default_factory=list)
+    duplicate_reason: str | None = None
+    blocked: bool = False
+    registry_status: str | None = None
+    first_seen_at: str | None = None
+    last_seen_at: str | None = None
+    last_ingested_at: str | None = None
+    last_error: str | None = None
+    duplicate_entries: list[dict[str, Any]] = Field(default_factory=list)
+    duplicate_override: bool = False
+    override_reason: str | None = None
+    override_by: str | None = None
+    override_at: str | None = None
 
 
 class DocsIngestRequest(BaseModel):
     filenames: list[str] = Field(default_factory=list)
+
+
+class DuplicateOverrideRequest(BaseModel):
+    filename: str = Field(..., min_length=1)
+    enabled: bool = True
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class DuplicateOverrideResponse(BaseModel):
+    success: bool
+    filename: str
+    enabled: bool
+    reason: str | None = None
+    updated_by: str | None = None
+    updated_at: str | None = None
+
+
+class IngestionJobStartResponse(BaseModel):
+    job_id: str
+    status: Literal["queued", "running", "success", "error"]
+    created_at: str
+    message: str | None = None
+
+
+class IngestionJobStatusResponse(BaseModel):
+    job_id: str
+    status: Literal["queued", "running", "success", "error"]
+    created_at: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    message: str | None = None
+    error: str | None = None
+    progress_percent: int = 0
+    result: dict[str, Any] | None = None
+
+
+class ResyncDocsRegistryResponse(BaseModel):
+    success: bool
+    discovered_count: int
+    indexed_count: int
+    duplicate_count: int
 
 
 class ActiveModelResponse(BaseModel):

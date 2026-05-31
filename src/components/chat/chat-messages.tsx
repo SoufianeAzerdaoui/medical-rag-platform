@@ -15,6 +15,7 @@ import { PatientInventoryRenderer } from "@/components/chat/patient-inventory-re
 import { SingleAnalyteResultCard } from "@/components/chat/single-analyte-result-card";
 import { StructuredSummaryCard } from "@/components/chat/structured-summary-card";
 import { useChatActions } from "@/hooks/use-chat-actions";
+import { getMessageDocumentaryMetrics } from "@/lib/documentary-metrics";
 import { useChatStore } from "@/store/chat-store";
 import { useEffect, useRef, useState } from "react";
 
@@ -75,97 +76,16 @@ function isStaleLoadingMessage(createdAt?: string, thresholdMs = 90_000): boolea
   return Date.now() - ts > thresholdMs;
 }
 
-type EvidenceMeter = {
-  level: "Élevé" | "Moyen" | "Faible";
-  sourcesFound: number;
-  extractedValues: number;
-  missingElements: number;
-  diagnosisProposed: "Oui" | "Non";
-  fromBackendMetrics: boolean;
-};
-
-function computeEvidenceMeter(message: {
-  content?: string;
-  sources?: unknown[];
-  diagnostics?: Record<string, unknown>;
-}): EvidenceMeter {
-  const content = String(message.content || "");
-  const diagnostics = (message.diagnostics || {}) as Record<string, unknown>;
-  const sourcesFoundFallback = Array.isArray(message.sources) ? message.sources.length : 0;
-  const hasDisplayedEvidences =
-    diagnostics.displayed_evidences_count !== undefined ||
-    diagnostics.included_rows_count !== undefined ||
-    diagnostics.used_sources_count !== undefined;
-  const sourcesFoundFromDiagnostics = Number(
-    diagnostics.displayed_evidences_count ??
-    diagnostics.included_rows_count ??
-    diagnostics.used_sources_count ??
-    NaN,
-  );
-  const sourcesFound = Number.isFinite(sourcesFoundFromDiagnostics)
-    ? Math.max(0, Math.round(sourcesFoundFromDiagnostics))
-    : sourcesFoundFallback;
-
-  const tableRows = content
-    .split("\n")
-    .filter((line) => /^\s*\|.*\|\s*$/.test(line) && !/^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(line)).length;
-  const listedValues = (content.match(/\b(?:TSH|T3|T4|Anti-TG|Hb|CRP|ASAT|ALAT|Leucocytes|Plaquettes)\b/gi) || []).length;
-  const extractedValues = Math.max(
-    0,
-    Math.max(tableRows > 1 ? tableRows - 1 : 0, listedValues),
-  );
-
-  const hasMissingValues =
-    diagnostics.missing_values_count !== undefined ||
-    diagnostics.missing_elements_count !== undefined ||
-    diagnostics.unresolved_items_count !== undefined;
-  const missingFromDiagnostics = Number(
-    diagnostics.missing_values_count ??
-    diagnostics.missing_elements_count ??
-    diagnostics.unresolved_items_count ??
-    0,
-  );
-  const uncertainMentions = (content.match(/(non trouv|non disponible|à vérifier|a verifier|indétermin|indetermine)/gi) || []).length;
-  const missingElements = Math.max(0, Number.isFinite(missingFromDiagnostics) ? missingFromDiagnostics : uncertainMentions);
-
-  const diagnosisProposed = /(diagnostic\s*:|diagnostic proposé|diagnostic propose|diagnostic retenu)/i.test(content)
-    ? "Oui"
-    : "Non";
-
-  const hasSafetyScore =
-    diagnostics.safety_score !== undefined ||
-    (diagnostics.quality_report as Record<string, unknown> | undefined)?.safety_score !== undefined;
-  const safetyRaw = Number(
-    diagnostics.safety_score ??
-    (diagnostics.quality_report as Record<string, unknown> | undefined)?.safety_score ??
-    NaN,
-  );
-  const safetyScore = Number.isFinite(safetyRaw)
-    ? (safetyRaw <= 1 ? safetyRaw * 100 : safetyRaw)
-    : 70;
-
-  const score =
-    sourcesFound * 24 +
-    extractedValues * 7 -
-    missingElements * 12 -
-    (diagnosisProposed === "Oui" ? 8 : 0) +
-    safetyScore * 0.25;
-  const level: EvidenceMeter["level"] = score >= 65 ? "Élevé" : score >= 35 ? "Moyen" : "Faible";
-
-  return {
-    level,
-    sourcesFound,
-    extractedValues,
-    missingElements,
-    diagnosisProposed,
-    fromBackendMetrics: hasDisplayedEvidences && hasMissingValues && hasSafetyScore,
-  };
+function evidenceBadgeClass(level: "elevee" | "moyenne" | "faible"): string {
+  if (level === "elevee") return "doc-confidence-high";
+  if (level === "moyenne") return "status-low";
+  return "doc-confidence-low";
 }
 
-function evidenceBadgeClass(level: EvidenceMeter["level"]): string {
-  if (level === "Élevé") return "status-success";
-  if (level === "Moyen") return "status-warning";
-  return "status-danger";
+function evidenceBadgeLabel(level: "elevee" | "moyenne" | "faible"): string {
+  if (level === "elevee") return "Élevé";
+  if (level === "moyenne") return "Moyen";
+  return "Faible";
 }
 
 type AssistantRenderType = "medical_structured" | "conversational" | "general_markdown";
@@ -298,7 +218,7 @@ export function ChatMessages() {
         const isError = isAssistant && status === "error";
         const isDone = isAssistant && status === "done";
         const shouldRenderSourceLinks = isDone && (message.sources?.length || 0) > 0;
-        const evidenceMeter = isDone && isAssistant ? computeEvidenceMeter(message) : null;
+        const evidenceMeter = isDone && isAssistant ? getMessageDocumentaryMetrics(message) : null;
         const detailsHidden = Boolean(hiddenDetails[message.id]);
         const canRenderVisualization =
           isAssistant && isDone && isRenderableVisualization(message) && !message.content.includes("Le format demandé est ambigu");
@@ -523,42 +443,42 @@ export function ChatMessages() {
                 ) : (
                   <p className="whitespace-pre-wrap text-sm leading-6">{contentToRender}</p>
                 )}
-                {isDone && !shouldRenderSourceLinks && isAssistant ? (
+                {isDone && isAssistant && evidenceMeter && evidenceMeter.sourceCount === 0 ? (
                   <div className="status-neutral mt-4 rounded-xl px-4 py-3 text-sm">
                     <p className="font-medium">Aucune source trouvée</p>
                     <p className="mt-1 text-xs">La réponse ne doit pas être utilisée sans document justificatif.</p>
                   </div>
                 ) : null}
-                {isDone && isAssistant ? (
+                {isDone && isAssistant && evidenceMeter && evidenceMeter.sourceCount > 0 ? (
                   <div className="mt-4 rounded-xl border border-border/70 bg-fg/[0.025] p-3">
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-xs font-semibold uppercase tracking-wide text-fg/70">Niveau de support documentaire</p>
                       <div className="flex items-center gap-2">
-                        {evidenceMeter!.fromBackendMetrics ? (
+                        {evidenceMeter.fromBackendMetrics ? (
                           <span className="rounded-full border border-accent/35 bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
                             Basé sur métriques backend
                           </span>
                         ) : null}
-                        <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${evidenceBadgeClass(evidenceMeter!.level)}`}>
-                          {evidenceMeter!.level}
+                        <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${evidenceBadgeClass(evidenceMeter.confidence)}`}>
+                          {evidenceBadgeLabel(evidenceMeter.confidence)}
                         </span>
                       </div>
                     </div>
                     <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-fg/80 sm:grid-cols-4">
-                      <p>Sources trouvées : <span className="font-semibold text-fg">{evidenceMeter!.sourcesFound}</span></p>
-                      <p>Valeurs extraites : <span className="font-semibold text-fg">{evidenceMeter!.extractedValues}</span></p>
-                      <p>Éléments manquants : <span className="font-semibold text-fg">{evidenceMeter!.missingElements}</span></p>
-                      <p>Diagnostic proposé : <span className="font-semibold text-fg">{evidenceMeter!.diagnosisProposed}</span></p>
+                      <p>Sources trouvées : <span className="font-semibold text-fg">{evidenceMeter.sourceCount}</span></p>
+                      <p>Valeurs extraites : <span className="font-semibold text-fg">{evidenceMeter.extractedValues}</span></p>
+                      <p>Éléments manquants : <span className="font-semibold text-fg">{evidenceMeter.missingElements}</span></p>
+                      <p>Diagnostic proposé : <span className="font-semibold text-fg">{evidenceMeter.diagnosisProposed}</span></p>
                     </div>
                   </div>
                 ) : null}
-                {isDone && shouldRenderSourceLinks && !detailsHidden ? (
+                {isDone && shouldRenderSourceLinks && evidenceMeter && evidenceMeter.sourceCount > 0 && !detailsHidden ? (
                   useSingleAnalyteCard ? null : (
                     <div className="mt-4 rounded-xl border border-border/70 bg-fg/[0.025] p-3 shadow-sm">
                       <div className="mb-2 flex items-center justify-between gap-3">
                         <p className="text-xs font-semibold uppercase tracking-wide text-fg/70">Sources cliquables</p>
                         <span className="rounded-full border border-border bg-card px-2 py-0.5 text-[11px] text-fg/60">
-                          {message.sources?.length || 0}
+                          {evidenceMeter.sourceCount}
                         </span>
                       </div>
                       <SourceLinks

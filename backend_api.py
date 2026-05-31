@@ -2,18 +2,23 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sqlite3
+import subprocess
 import sys
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.responses import PlainTextResponse
+from fastapi.responses import Response
 
 from backend import config
-from backend.database import db_connect as _db_connect, init_schema as _init_auth_db
+from backend.database import db_connect as _db_connect, init_schema as _init_auth_db, now_iso
 from backend.models import (
     ActiveModelResponse,
     AuthLoginRequest,
@@ -29,18 +34,30 @@ from backend.models import (
     DocsDiscoveryItem,
     DocsIngestRequest,
     DocumentItem,
+    DuplicateOverrideRequest,
+    DuplicateOverrideResponse,
     FeatureFlagItemResponse,
     FeatureFlagUpdateRequest,
+    IngestionJobStartResponse,
+    IngestionJobStatusResponse,
     LogoutResponse,
     MessageItemResponse,
+    ResyncDocsRegistryResponse,
     UserResponse,
 )
 from backend.services import (
+    audit_service,
     auth_service,
     conversation_service,
     feature_flag_service,
     ingestion_service,
+    ingestion_jobs_service,
+    ingestion_report_service,
     message_service,
+    monitoring_service,
+    p0_readiness_service,
+    rate_limit_service,
+    retention_service,
     transcription_service,
 )
 from backend.services.chat_service import process_chat
@@ -69,10 +86,19 @@ from scripts.generation.source_resolver import DocPdfResolver, is_valid_doc_id
 app = FastAPI(title="Medical RAG Backend API", version="1.1.0")
 LOGGER = logging.getLogger("medical_rag.backend")
 
+if config.SENTRY_DSN:
+    try:  # pragma: no cover - optional runtime integration
+        import sentry_sdk  # type: ignore
+
+        sentry_sdk.init(dsn=config.SENTRY_DSN, traces_sample_rate=0.1)
+    except Exception:
+        LOGGER.warning("Sentry DSN fourni mais sentry_sdk indisponible.")
+
 _STATE_SERVICE = ConversationStateService()
 _CONVERSATION_STATE = _STATE_SERVICE.legacy_state
 _STATE_STORE = _STATE_SERVICE.memory_store
 _DELETED_DOC_IDS: set[str] = set()
+_INGESTION_JOBS: ingestion_jobs_service.IngestionJobService | None = None
 
 JWT_SECRET = config.JWT_SECRET
 FRONTEND_ORIGIN = config.FRONTEND_ORIGIN
@@ -172,6 +198,17 @@ def _extract_state_context_text(state: dict[str, Any]) -> str:
 def _chunks_count(sqlite_path: Path) -> int | None:
     if not sqlite_path.exists():
         return None
+    try:
+        conn = sqlite3.connect(str(sqlite_path))
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM chunks")
+            value = cur.fetchone()
+            return int(value[0]) if value else 0
+        finally:
+            conn.close()
+    except Exception:
+        return None
 
 
 def _indexed_doc_ids_from_sqlite(sqlite_path: Path) -> set[str]:
@@ -200,17 +237,6 @@ def _indexed_doc_ids_from_sqlite(sqlite_path: Path) -> set[str]:
     except Exception:
         return set()
     return out
-    try:
-        conn = sqlite3.connect(str(sqlite_path))
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT COUNT(*) FROM chunks")
-            value = cur.fetchone()
-            return int(value[0]) if value else 0
-        finally:
-            conn.close()
-    except Exception:
-        return None
 
 
 def _latest_assistant_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -316,17 +342,26 @@ def _to_user_response(user_row: dict[str, Any]) -> UserResponse:
     return UserResponse(
         id=str(user_row.get("id")),
         email=str(user_row.get("email")),
+        role=str(user_row.get("role") or "user"),
         created_at=str(user_row.get("created_at")),
     )
 
 
 _init_auth_db()
+_INGESTION_JOBS = ingestion_jobs_service.IngestionJobService()
 feature_flag_service.ensure_feature_flags_seeded()
 LOGGER.info(
     "startup_config feature_flag_admin_api_enabled=%s admin_emails_count=%s",
     bool(config.ENABLE_FEATURE_FLAG_ADMIN_API),
     len(tuple(config.ADMIN_EMAILS or ())),
 )
+if str(os.getenv("APP_ENV", "")).strip().lower() == "production" and bool(config.PROD_READINESS_ENFORCE):
+    startup_readiness = p0_readiness_service.run_p0_readiness_check()
+    if str(startup_readiness.get("overall_status") or "fail").lower() != "pass":
+        raise RuntimeError(
+            "P0 readiness check failed at startup. "
+            f"blocking_failures={int(startup_readiness.get('blocking_failures') or 0)}"
+        )
 
 
 def _require_feature_flag_admin(current_user: dict[str, Any]) -> None:
@@ -338,6 +373,132 @@ def _require_feature_flag_admin(current_user: dict[str, Any]) -> None:
     user_email = _normalize_email(str(current_user.get("email") or ""))
     if user_email not in admin_emails:
         raise HTTPException(status_code=403, detail="Forbidden")
+
+
+def _user_has_ops_permission(current_user: dict[str, Any]) -> bool:
+    role = str(current_user.get("role") or "user").strip().lower()
+    if role in {"admin", "ops", "data_manager", "medical_admin"}:
+        return True
+    user_email = _normalize_email(str(current_user.get("email") or ""))
+    admin_emails = set(config.ADMIN_EMAILS)
+    if user_email in admin_emails:
+        return True
+    app_env = str(os.getenv("APP_ENV", "")).strip().lower()
+    if not admin_emails and app_env in {"dev", "development", "local", "test"}:
+        return True
+    return False
+
+
+def _require_ops_permission(current_user: dict[str, Any]) -> None:
+    if not _user_has_ops_permission(current_user):
+        raise HTTPException(status_code=403, detail="Action réservée aux opérateurs autorisés.")
+
+
+def _ingestion_jobs() -> ingestion_jobs_service.IngestionJobService:
+    if _INGESTION_JOBS is None:
+        raise HTTPException(status_code=503, detail="Service ingestion indisponible.")
+    return _INGESTION_JOBS
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = str(request.headers.get("x-forwarded-for") or "").strip()
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    real_ip = str(request.headers.get("x-real-ip") or "").strip()
+    if real_ip:
+        return real_ip
+    if request.client and request.client.host:
+        return str(request.client.host)
+    return "unknown"
+
+
+def _enforce_rate_limit(*, request: Request, scope: str, key: str, limit: int) -> None:
+    result = rate_limit_service.enforce_limit(
+        scope=scope,
+        key=key,
+        limit=max(1, int(limit)),
+        window_seconds=max(1, int(config.RATE_LIMIT_WINDOW_SECONDS)),
+    )
+    if result.allowed:
+        return
+    raise HTTPException(
+        status_code=429,
+        detail=(
+            f"Trop de requêtes ({result.count}/{result.limit}) sur {result.window_seconds}s. "
+            f"Réessaie dans {result.retry_after_seconds}s."
+        ),
+    )
+
+
+def _clamav_status() -> dict[str, Any]:
+    cmd = str(config.ANTIVIRUS_CLAMSCAN_CMD or "clamscan").strip() or "clamscan"
+    binary = shutil.which(cmd)
+    available = bool(binary)
+    version = ""
+    if available:
+        try:
+            proc = subprocess.run(
+                [cmd, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=max(2, min(10, int(config.ANTIVIRUS_TIMEOUT_SECONDS))),
+            )
+            if proc.returncode == 0:
+                version = str((proc.stdout or "").strip() or (proc.stderr or "").strip())
+        except Exception:
+            version = ""
+    healthy = available and (not config.ANTIVIRUS_REQUIRED or bool(version or binary))
+    return {
+        "required": bool(config.ANTIVIRUS_REQUIRED),
+        "command": cmd,
+        "available": available,
+        "version": version,
+        "healthy": healthy,
+    }
+
+
+def _run_with_retry(fn: Any, *, retries: int = 2, delay_seconds: float = 0.12) -> Any:
+    attempts = max(1, int(retries) + 1)
+    last_exc: Exception | None = None
+    for idx in range(attempts):
+        try:
+            return fn()
+        except Exception as exc:  # pragma: no cover - defensive runtime guard
+            last_exc = exc
+            if idx >= attempts - 1:
+                break
+            time.sleep(max(0.0, float(delay_seconds)))
+    if last_exc:
+        raise last_exc
+    return None
+
+
+def _health_dependencies() -> dict[str, Any]:
+    app_db_ok = True
+    app_db_error: str | None = None
+    try:
+        def _probe_db() -> None:
+            conn = _db_connect()
+            try:
+                conn.execute("SELECT 1").fetchone()
+            finally:
+                conn.close()
+        _run_with_retry(_probe_db, retries=1)
+    except Exception as exc:
+        app_db_ok = False
+        app_db_error = str(exc)
+
+    clamav = _clamav_status()
+    jobs_service_ready = bool(_INGESTION_JOBS is not None)
+    return {
+        "app_db": {"ok": app_db_ok, "error": app_db_error},
+        "clamav": {
+            "ok": bool(clamav.get("healthy")),
+            "required": bool(clamav.get("required")),
+            "available": bool(clamav.get("available")),
+        },
+        "ingestion_jobs": {"ok": jobs_service_ready},
+    }
 
 
 @app.get("/health")
@@ -354,17 +515,109 @@ def health() -> dict[str, Any]:
         index_status = "empty"
     else:
         index_status = "ready"
+    deps = _health_dependencies()
+    deps_ok = (
+        bool(deps.get("app_db", {}).get("ok"))
+        and bool(deps.get("ingestion_jobs", {}).get("ok"))
+        and (bool(deps.get("clamav", {}).get("ok")) or not bool(deps.get("clamav", {}).get("required")))
+    )
+    status = "ok" if deps_ok else "degraded"
     return {
-        "status": "ok",
+        "status": status,
         "service": "medical-rag-backend",
         "index_ready": bool(index_status == "ready"),
         "index_status": index_status,
         "index_chunks_count": chunk_count,
+        "dependencies": deps,
     }
 
 
+@app.get("/metrics", response_class=PlainTextResponse)
+def metrics() -> PlainTextResponse:
+    body = monitoring_service.render_prometheus()
+    return PlainTextResponse(content=body, media_type="text/plain; version=0.0.4; charset=utf-8")
+
+
+@app.get("/monitoring/summary")
+def monitoring_summary(current_user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    _require_ops_permission(current_user)
+    return monitoring_service.compute_summary()
+
+
+@app.get("/admin/security-status")
+def security_status(current_user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    _require_ops_permission(current_user)
+    return {
+        "server_time": now_iso(),
+        "clamav": _clamav_status(),
+        "sentry": {
+            "configured": bool(config.SENTRY_DSN),
+            "dsn_masked": bool(config.SENTRY_DSN),
+        },
+        "jwt": {
+            "algorithm": str(config.JWT_ALGORITHM),
+            "expire_minutes": int(config.JWT_EXPIRE_MINUTES),
+            "rotation_previous_count": len(tuple(config.JWT_SECRET_PREVIOUS or ())),
+        },
+        "encryption": {
+            "enabled": bool(config.DATA_ENCRYPTION_ENABLED),
+            "required": bool(config.DATA_ENCRYPTION_REQUIRED),
+            "key_configured": bool(str(config.DATA_ENCRYPTION_KEY or "").strip()),
+        },
+        "rate_limits": {
+            "window_seconds": int(config.RATE_LIMIT_WINDOW_SECONDS),
+            "auth_per_window": int(config.RATE_LIMIT_AUTH_PER_WINDOW),
+            "chat_per_window": int(config.RATE_LIMIT_CHAT_PER_WINDOW),
+            "upload_per_window": int(config.RATE_LIMIT_UPLOAD_PER_WINDOW),
+            "login_max_failures": int(config.AUTH_LOGIN_MAX_FAILURES),
+            "login_block_seconds": int(config.AUTH_LOGIN_BLOCK_SECONDS),
+        },
+        "retention": {
+            "jobs_days": int(config.RETENTION_JOBS_DAYS),
+            "audit_days": int(config.RETENTION_AUDIT_DAYS),
+            "docs_days": int(config.RETENTION_DOCS_DAYS),
+            "audio_days": int(config.RETENTION_AUDIO_DAYS),
+            "logs_days": int(config.RETENTION_LOGS_DAYS),
+            "auth_attempts_days": int(config.RETENTION_AUTH_ATTEMPTS_DAYS),
+        },
+    }
+
+
+@app.get("/admin/go-live/p0-check")
+def go_live_p0_check(current_user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    _require_ops_permission(current_user)
+    return p0_readiness_service.run_p0_readiness_check()
+
+
+@app.post("/admin/retention/run")
+def run_retention(
+    hard_delete_docs: bool = Query(default=False),
+    dry_run: bool = Query(default=False),
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    _require_ops_permission(current_user)
+    result = retention_service.run_retention(hard_delete_docs=hard_delete_docs, dry_run=dry_run)
+    audit_service.log_event(
+        event_type="retention_run",
+        actor_user_id=str(current_user.get("id") or ""),
+        actor_email=str(current_user.get("email") or ""),
+        target_type="retention",
+        target_id="global",
+        status="success",
+        payload={"hard_delete_docs": hard_delete_docs, "dry_run": dry_run},
+        result=result,
+    )
+    return {"success": True, **result}
+
+
 @app.post("/auth/register", response_model=AuthResponse)
-def auth_register(payload: AuthRegisterRequest) -> AuthResponse:
+def auth_register(payload: AuthRegisterRequest, request: Request) -> AuthResponse:
+    _enforce_rate_limit(
+        request=request,
+        scope="auth_register_ip",
+        key=_client_ip(request),
+        limit=max(3, int(config.RATE_LIMIT_AUTH_PER_WINDOW)),
+    )
     user = auth_service.register_user(email=payload.email, password=payload.password)
     return AuthResponse(
         access_token=auth_service.create_access_token(str(user["id"])),
@@ -373,8 +626,15 @@ def auth_register(payload: AuthRegisterRequest) -> AuthResponse:
 
 
 @app.post("/auth/login", response_model=AuthResponse)
-def auth_login(payload: AuthLoginRequest) -> AuthResponse:
-    user = auth_service.login_user(email=payload.email, password=payload.password)
+def auth_login(payload: AuthLoginRequest, request: Request) -> AuthResponse:
+    ip = _client_ip(request)
+    _enforce_rate_limit(
+        request=request,
+        scope="auth_login_ip",
+        key=ip,
+        limit=max(3, int(config.RATE_LIMIT_AUTH_PER_WINDOW)),
+    )
+    user = auth_service.login_user(email=payload.email, password=payload.password, ip_address=ip)
     return AuthResponse(
         access_token=auth_service.create_access_token(str(user["id"])),
         user=_to_user_response(user),
@@ -422,7 +682,17 @@ def delete_conversation(conversation_id: str, current_user: dict[str, Any] = Dep
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(payload: ChatRequest, current_user: dict[str, Any] = Depends(get_current_user)) -> ChatResponse:
+def chat(
+    payload: ChatRequest,
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> ChatResponse:
+    _enforce_rate_limit(
+        request=request,
+        scope="chat_user",
+        key=str(current_user.get("id") or "anonymous"),
+        limit=max(20, int(config.RATE_LIMIT_CHAT_PER_WINDOW)),
+    )
     return process_chat(
         payload=payload,
         current_user=current_user,
@@ -576,8 +846,127 @@ def discover_documents(current_user: dict[str, Any] = Depends(get_current_user))
         "absolute_path": item.absolute_path,
         "size_bytes": item.size_bytes,
         "modified_at": item.modified_at,
+        "file_hash": item.file_hash,
+        "text_hash": item.text_hash,
         "already_indexed": item.already_indexed,
+        "is_duplicate": item.is_duplicate,
+        "duplicate_with": item.duplicate_with,
+        "duplicate_reason": item.duplicate_reason,
+        "blocked": item.blocked,
+        "registry_status": item.registry_status,
+        "first_seen_at": item.first_seen_at,
+        "last_seen_at": item.last_seen_at,
+        "last_ingested_at": item.last_ingested_at,
+        "last_error": item.last_error,
+        "duplicate_entries": item.duplicate_entries,
+        "duplicate_override": item.duplicate_override,
+        "override_reason": item.override_reason,
+        "override_by": item.override_by,
+        "override_at": item.override_at,
     }) for item in candidates]
+
+
+@app.get("/documents/timeline")
+def document_timeline(
+    filename: str = Query(..., min_length=1),
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    _ = current_user
+    safe_name = Path(str(filename)).name
+    if not safe_name.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Nom de fichier invalide.")
+    timeline = ingestion_report_service.build_document_timeline(safe_name)
+    return {"filename": safe_name, "events": timeline}
+
+
+@app.get("/documents/ingestion-report")
+def export_ingestion_report(
+    format: str = Query(default="csv", pattern="^(csv|pdf)$"),
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> Response:
+    _ = current_user
+    sqlite_path = Path("data/indexes/medical_rag.sqlite")
+    indexed_ids = _indexed_doc_ids_from_sqlite(sqlite_path)
+    rows = ingestion_report_service.build_report_rows(indexed_doc_ids=indexed_ids)
+    if format == "pdf":
+        content = ingestion_report_service.to_simple_pdf_bytes(rows)
+        filename = "ingestion-report.pdf"
+        media_type = "application/pdf"
+    else:
+        content = ingestion_report_service.to_csv_bytes(rows)
+        filename = "ingestion-report.csv"
+        media_type = "text/csv; charset=utf-8"
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/documents/resync-registry", response_model=ResyncDocsRegistryResponse)
+def resync_docs_registry(current_user: dict[str, Any] = Depends(get_current_user)) -> ResyncDocsRegistryResponse:
+    _require_ops_permission(current_user)
+    sqlite_path = Path("data/indexes/medical_rag.sqlite")
+    indexed_ids = _indexed_doc_ids_from_sqlite(sqlite_path)
+    result = ingestion_service.resync_docs_registry(indexed_doc_ids=indexed_ids)
+    audit_service.log_event(
+        event_type="docs_registry_resync",
+        actor_user_id=str(current_user.get("id") or ""),
+        actor_email=str(current_user.get("email") or ""),
+        target_type="docs_registry",
+        target_id="global",
+        status="success",
+        payload={"indexed_ids_count": len(indexed_ids)},
+        result=result,
+    )
+    return ResyncDocsRegistryResponse(success=True, **result)
+
+
+@app.post("/documents/duplicates/override", response_model=DuplicateOverrideResponse)
+def set_duplicate_override(
+    payload: DuplicateOverrideRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> DuplicateOverrideResponse:
+    _require_ops_permission(current_user)
+    if bool(payload.enabled) and not str(payload.reason or "").strip():
+        raise HTTPException(status_code=400, detail="Un motif est obligatoire pour autoriser un doublon.")
+    try:
+        changed = ingestion_service.set_duplicate_override(
+            filename=str(payload.filename),
+            enabled=bool(payload.enabled),
+            reason=str(payload.reason or "").strip() if payload.reason else None,
+            updated_by=str(current_user.get("email") or current_user.get("id") or ""),
+        )
+    except RuntimeError as exc:
+        audit_service.log_event(
+            event_type="docs_duplicate_override",
+            actor_user_id=str(current_user.get("id") or ""),
+            actor_email=str(current_user.get("email") or ""),
+            target_type="document",
+            target_id=str(payload.filename),
+            status="error",
+            payload={"enabled": bool(payload.enabled), "reason": payload.reason},
+            result={"error": str(exc)},
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit_service.log_event(
+        event_type="docs_duplicate_override",
+        actor_user_id=str(current_user.get("id") or ""),
+        actor_email=str(current_user.get("email") or ""),
+        target_type="document",
+        target_id=str(payload.filename),
+        status="success",
+        payload={"enabled": bool(payload.enabled), "reason": payload.reason},
+        result=changed,
+    )
+    return DuplicateOverrideResponse(
+        success=True,
+        filename=str(changed.get("filename") or ""),
+        enabled=bool(changed.get("enabled")),
+        reason=changed.get("reason"),
+        updated_by=changed.get("updated_by"),
+        updated_at=changed.get("updated_at"),
+    )
 
 
 @app.post("/documents/{doc_id}/reindex", response_model=LogoutResponse)
@@ -669,10 +1058,17 @@ def get_pdf(doc_id: str, page: int | None = Query(default=None, ge=1)) -> FileRe
 
 @app.post("/upload")
 async def upload(
+    request: Request,
     files: list[UploadFile] = File(...),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     _ = current_user
+    _enforce_rate_limit(
+        request=request,
+        scope="upload_user",
+        key=str(current_user.get("id") or _client_ip(request)),
+        limit=max(5, int(config.RATE_LIMIT_UPLOAD_PER_WINDOW)),
+    )
     if not files:
         raise HTTPException(status_code=400, detail="Aucun fichier fourni.")
 
@@ -715,20 +1111,58 @@ async def upload(
 
 @app.post("/upload/from-docs")
 def upload_from_docs(
+    request: Request,
     payload: DocsIngestRequest,
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    _ = current_user
+    _enforce_rate_limit(
+        request=request,
+        scope="upload_from_docs_user",
+        key=str(current_user.get("id") or _client_ip(request)),
+        limit=max(5, int(config.RATE_LIMIT_UPLOAD_PER_WINDOW)),
+    )
     filenames = [str(name or "").strip() for name in payload.filenames if str(name or "").strip()]
     if not filenames:
         raise HTTPException(status_code=400, detail="Aucun fichier sélectionné depuis docs/.")
+    sqlite_path = Path("data/indexes/medical_rag.sqlite")
+    indexed_ids = _indexed_doc_ids_from_sqlite(sqlite_path)
     try:
-        results = ingestion_service.ingest_docs_by_filenames(filenames)
+        results = ingestion_service.ingest_docs_by_filenames(filenames, indexed_doc_ids=indexed_ids)
     except RuntimeError as exc:
+        audit_service.log_event(
+            event_type="ingestion_sync_failed",
+            actor_user_id=str(current_user.get("id") or ""),
+            actor_email=str(current_user.get("email") or ""),
+            target_type="ingestion_sync",
+            target_id="docs",
+            status="error",
+            payload={"filenames": filenames},
+            result={"error": str(exc)},
+        )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
+        audit_service.log_event(
+            event_type="ingestion_sync_failed",
+            actor_user_id=str(current_user.get("id") or ""),
+            actor_email=str(current_user.get("email") or ""),
+            target_type="ingestion_sync",
+            target_id="docs",
+            status="error",
+            payload={"filenames": filenames},
+            result={"error": str(exc)},
+        )
         raise HTTPException(status_code=500, detail=f"Échec ingestion docs/: {exc}") from exc
     _refresh_resolver_cache()
+    audit_service.log_event(
+        event_type="ingestion_sync_completed",
+        actor_user_id=str(current_user.get("id") or ""),
+        actor_email=str(current_user.get("email") or ""),
+        target_type="ingestion_sync",
+        target_id="docs",
+        status="success",
+        payload={"filenames": filenames},
+        result={"ingested_count": len(results)},
+    )
     return {
         "success": True,
         "ingested_count": len(results),
@@ -745,13 +1179,88 @@ def upload_from_docs(
     }
 
 
+@app.post("/upload/from-docs/jobs", response_model=IngestionJobStartResponse)
+def start_upload_from_docs_job(
+    request: Request,
+    payload: DocsIngestRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> IngestionJobStartResponse:
+    _enforce_rate_limit(
+        request=request,
+        scope="upload_docs_job_user",
+        key=str(current_user.get("id") or _client_ip(request)),
+        limit=max(5, int(config.RATE_LIMIT_UPLOAD_PER_WINDOW)),
+    )
+    filenames = [str(name or "").strip() for name in payload.filenames if str(name or "").strip()]
+    if not filenames:
+        raise HTTPException(status_code=400, detail="Aucun fichier sélectionné depuis docs/.")
+    sqlite_path = Path("data/indexes/medical_rag.sqlite")
+    indexed_ids = _indexed_doc_ids_from_sqlite(sqlite_path)
+    try:
+        ingestion_service.validate_docs_selection(filenames, indexed_doc_ids=indexed_ids)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job = _ingestion_jobs().start_docs_ingestion_job(
+        owner_user_id=str(current_user.get("id") or ""),
+        filenames=filenames,
+    )
+    audit_service.log_event(
+        event_type="ingestion_job_created",
+        actor_user_id=str(current_user.get("id") or ""),
+        actor_email=str(current_user.get("email") or ""),
+        target_type="ingestion_job",
+        target_id=job.job_id,
+        status="success",
+        payload={"filenames": filenames},
+        result={"job_id": job.job_id},
+    )
+    return IngestionJobStartResponse(
+        job_id=job.job_id,
+        status=job.status,
+        created_at=job.created_at,
+        message=job.message,
+    )
+
+
+@app.get("/upload/jobs/{job_id}", response_model=IngestionJobStatusResponse)
+def get_upload_job_status(
+    job_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> IngestionJobStatusResponse:
+    job = _ingestion_jobs().get_job_for_user(
+        job_id=str(job_id),
+        owner_user_id=str(current_user.get("id") or ""),
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Job introuvable.")
+    if job.status == "success":
+        _refresh_resolver_cache()
+    return IngestionJobStatusResponse(
+        job_id=job.job_id,
+        status=job.status,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        finished_at=job.finished_at,
+        message=job.message,
+        error=job.error,
+        progress_percent=max(0, min(100, int(job.progress_percent))),
+        result=job.result,
+    )
+
+
 @app.post("/audio/transcribe")
 async def audio_transcribe(
+    request: Request,
     audio: UploadFile = File(...),
     debug: bool = Query(False),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    _ = current_user
+    _enforce_rate_limit(
+        request=request,
+        scope="audio_transcribe_user",
+        key=str(current_user.get("id") or _client_ip(request)),
+        limit=max(10, int(config.RATE_LIMIT_CHAT_PER_WINDOW)),
+    )
     raw = await audio.read()
     if len(raw) < 2_000:
         raise HTTPException(status_code=422, detail="Audio trop court ou silencieux.")

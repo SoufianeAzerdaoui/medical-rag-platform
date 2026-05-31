@@ -111,6 +111,43 @@ Rollback immediately if one of these conditions occurs:
    - `Dans les rapports 10, 16 et 24, donne-moi la valeur de TSH.`
    - `le patient a quoi ?`
 
+## P0 Go-Live gate (blocking)
+
+Before production go-live, run:
+
+```bash
+python scripts/ops/run_p0_readiness.py
+```
+
+Or from API (ops/admin token required):
+
+```bash
+GET /admin/go-live/p0-check
+```
+
+Expected:
+
+- `overall_status = "pass"`
+- `blocking_failures = 0`
+
+If `APP_ENV=production` and `PROD_READINESS_ENFORCE=true`, backend startup fails when P0 checks fail.
+
+## Backup / restore procedure
+
+Create backup:
+
+```bash
+bash scripts/ops/backup_app_state.sh
+```
+
+Restore backup:
+
+```bash
+bash scripts/ops/restore_app_state.sh backups/app_state/<timestamp>
+```
+
+Restore script requires explicit `YES` confirmation and overwrites local `data/` state.
+
 ## Stable release archive
 
 Before each production deployment:
