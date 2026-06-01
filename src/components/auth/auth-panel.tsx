@@ -1,8 +1,8 @@
 "use client";
 
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { Activity, FileText, ShieldCheck } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuthStore } from "@/store/auth-store";
 
 function sanitizeNextPath(nextPath: string | null): string {
@@ -15,7 +15,6 @@ function sanitizeNextPath(nextPath: string | null): string {
 
 export function AuthPanel() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const login = useAuthStore((s) => s.login);
   const register = useAuthStore((s) => s.register);
   const loading = useAuthStore((s) => s.loading);
@@ -26,11 +25,13 @@ export function AuthPanel() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [localError, setLocalError] = useState("");
+  const [nextPath, setNextPath] = useState("/chat");
 
-  const nextPath = useMemo(
-    () => sanitizeNextPath(searchParams.get("next")),
-    [searchParams],
-  );
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const next = new URLSearchParams(window.location.search).get("next");
+    setNextPath(sanitizeNextPath(next));
+  }, []);
 
   useEffect(() => {
     if (authStatus === "authenticated") {

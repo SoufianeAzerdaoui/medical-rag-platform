@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { ChatSidebar } from "@/components/sidebar/chat-sidebar";
 import { useAuthStore } from "@/store/auth-store";
@@ -23,7 +23,6 @@ type WorkspaceShellProps = {
 export function WorkspaceShell({ title, subtitle, breadcrumbs, actions = [], children }: WorkspaceShellProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const searchParams = useSearchParams();
   const initialize = useChatStore((s) => s.initialize);
   const initializeAuth = useAuthStore((s) => s.initializeAuth);
   const authStatus = useAuthStore((s) => s.authStatus);
@@ -35,10 +34,10 @@ export function WorkspaceShell({ title, subtitle, breadcrumbs, actions = [], chi
 
   useEffect(() => {
     if (authStatus !== "unauthenticated") return;
-    const query = searchParams.toString();
+    const query = typeof window !== "undefined" ? window.location.search.replace(/^\?/, "") : "";
     const nextPath = `${pathname}${query ? `?${query}` : ""}`;
     router.replace(`/auth?next=${encodeURIComponent(nextPath)}`);
-  }, [authStatus, pathname, router, searchParams]);
+  }, [authStatus, pathname, router]);
 
   if (authStatus === "loading") {
     return (
