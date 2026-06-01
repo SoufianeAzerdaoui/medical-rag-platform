@@ -1,0 +1,55 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup SSH key
+        shell: bash
+        env:
+          DO_SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_PRIVATE_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DO_SSH_PRIVATE_KEY" > ~/.ssh/do_deploy_key
+          chmod 600 ~/.ssh/do_deploy_key
+
+      - name: Trust server host key
+        shell: bash
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_PORT: ${{ secrets.DO_PORT }}
+        run: |
+          ssh-keyscan -p "${DO_PORT:-22}" -H "$DO_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy over SSH
+        shell: bash
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_PORT: ${{ secrets.DO_PORT }}
+          DO_USER: ${{ secrets.DO_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          ssh -i ~/.ssh/do_deploy_key -p "${DO_PORT:-22}" "${DO_USER}@${DO_HOST}" <<EOF
+          set -e
+          cd "${DEPLOY_PATH:-/home/deploy/apps/medical-rag-platform}"
+          git pull origin main
+          docker compose up -d --build
+          sudo systemctl reload caddy
+          docker ps
+          EOF
