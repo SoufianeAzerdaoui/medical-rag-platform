@@ -26,9 +26,10 @@ jobs:
           DO_SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_PRIVATE_KEY }}
         run: |
           install -m 700 -d ~/.ssh
-          printf '%s\n' "$DO_SSH_PRIVATE_KEY" > ~/.ssh/do_deploy_key
+          printf '%s\n' "$DO_SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/do_deploy_key
           chmod 600 ~/.ssh/do_deploy_key
-
+          ssh-keygen -y -f ~/.ssh/do_deploy_key > /dev/null
+          
       - name: Trust server host key
         shell: bash
         env:
