@@ -436,8 +436,12 @@ export default function UploadDocumentsPage() {
       setMessage(started.message || "Job lancé. Pipeline en cours...");
 
       const pollStartedAt = Date.now();
-      const maxPollMs = 30 * 60 * 1000;
+      const maxPollMs = Math.max(
+        30 * 60 * 1000,
+        selectedDocFilenames.length * 90 * 1000,
+      );
       let response: UploadResponse | null = null;
+      let pollingTimedOut = false;
       const startedAtMs = Number.isFinite(Date.parse(started.created_at)) ? Date.parse(started.created_at) : Date.now();
       while (!pollingCancelledRef.current) {
         const status = await getIngestionJobStatusApi(started.job_id, token);
@@ -466,12 +470,22 @@ export default function UploadDocumentsPage() {
           throw new ApiError(500, status.error || "Le job d’ingestion a échoué.");
         }
         if (Date.now() - pollStartedAt > maxPollMs) {
-          throw new ApiError(408, "Le job dépasse le délai attendu. Vérifie son état et relance si nécessaire.");
+          pollingTimedOut = true;
+          break;
         }
         await new Promise((resolve) => setTimeout(resolve, 2500));
       }
 
       if (pollingCancelledRef.current) return;
+      if (pollingTimedOut && !response) {
+        clearTimer();
+        setState("idle");
+        setPipelineError(null);
+        setMessage(
+          "Le job continue en arrière-plan. Utilise l'ID job pour vérifier l'état puis relance l'actualisation.",
+        );
+        return;
+      }
       if (!response) {
         throw new ApiError(500, "Job terminé sans résultat exploitable.");
       }
