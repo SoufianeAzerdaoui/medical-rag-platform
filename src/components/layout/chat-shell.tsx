@@ -1,8 +1,8 @@
 "use client";
 
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useEffect, useState } from "react";
-import { AuthPanel } from "@/components/auth/auth-panel";
 import { ChatMessages } from "@/components/chat/chat-messages";
 import { WorkspaceTopbar } from "@/components/layout/workspace-shell";
 import { MessageComposer } from "@/components/chat/message-composer";
@@ -17,6 +17,9 @@ interface ChatShellProps {
 }
 
 export function ChatShell({ routeConversationId = null }: ChatShellProps) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const initialize = useChatStore((s) => s.initialize);
   const selectConversation = useChatStore((s) => s.selectConversation);
   const setActiveChat = useChatStore((s) => s.setActiveChat);
@@ -39,6 +42,13 @@ export function ChatShell({ routeConversationId = null }: ChatShellProps) {
     void initialize();
     void initializeAuth();
   }, [initialize, initializeAuth]);
+
+  useEffect(() => {
+    if (authStatus !== "unauthenticated") return;
+    const query = searchParams.toString();
+    const nextPath = `${pathname}${query ? `?${query}` : ""}`;
+    router.replace(`/auth?next=${encodeURIComponent(nextPath)}`);
+  }, [authStatus, pathname, router, searchParams]);
 
   useEffect(() => {
     if (authStatus !== "authenticated") {
@@ -106,7 +116,11 @@ export function ChatShell({ routeConversationId = null }: ChatShellProps) {
   }
 
   if (authStatus === "unauthenticated") {
-    return <AuthPanel />;
+    return (
+      <div className="flex h-screen items-center justify-center px-6">
+        <div className="glass rounded-xl px-5 py-4 text-sm text-fg/70">Redirection vers l&apos;authentification...</div>
+      </div>
+    );
   }
 
   return (

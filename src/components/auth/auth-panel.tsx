@@ -1,19 +1,42 @@
 "use client";
 
+import { useRouter, useSearchParams } from "next/navigation";
 import { Activity, FileText, ShieldCheck } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuthStore } from "@/store/auth-store";
 
+function sanitizeNextPath(nextPath: string | null): string {
+  if (!nextPath) return "/chat";
+  if (!nextPath.startsWith("/")) return "/chat";
+  if (nextPath.startsWith("//")) return "/chat";
+  if (nextPath.startsWith("/auth")) return "/chat";
+  return nextPath;
+}
+
 export function AuthPanel() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const login = useAuthStore((s) => s.login);
   const register = useAuthStore((s) => s.register);
   const loading = useAuthStore((s) => s.loading);
   const error = useAuthStore((s) => s.error);
+  const authStatus = useAuthStore((s) => s.authStatus);
 
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [localError, setLocalError] = useState("");
+
+  const nextPath = useMemo(
+    () => sanitizeNextPath(searchParams.get("next")),
+    [searchParams],
+  );
+
+  useEffect(() => {
+    if (authStatus === "authenticated") {
+      router.replace(nextPath);
+    }
+  }, [authStatus, nextPath, router]);
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
