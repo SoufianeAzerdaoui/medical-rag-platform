@@ -98,7 +98,6 @@ services:
     profiles:
       - observability
     environment:
-      GF_PATHS_DATA: /var/lib/grafana-data
       GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3001}
       GF_SERVER_SERVE_FROM_SUB_PATH: "false"
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
@@ -113,7 +112,7 @@ services:
     volumes:
       - ./config/grafana:/var/lib/grafana/dashboards:ro
       - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
-      - medical-rag-grafana-data:/var/lib/grafana-data
+      - medical-rag-grafana-data:/var/lib/grafana
     depends_on:
       - loki
       - prometheus

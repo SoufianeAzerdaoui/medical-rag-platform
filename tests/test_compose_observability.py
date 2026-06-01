@@ -35,7 +35,7 @@ class TestComposeObservability(unittest.TestCase):
         volumes = list(grafana.get("volumes") or [])
         self.assertIn("./config/grafana:/var/lib/grafana/dashboards:ro", volumes)
         self.assertIn("./config/grafana/provisioning:/etc/grafana/provisioning:ro", volumes)
-        self.assertIn("medical-rag-grafana-data:/var/lib/grafana-data", volumes)
+        self.assertIn("medical-rag-grafana-data:/var/lib/grafana", volumes)
 
         environment = dict(grafana.get("environment") or {})
         self.assertEqual(environment.get("GF_USERS_ALLOW_SIGN_UP"), "false")
