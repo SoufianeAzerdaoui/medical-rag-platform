@@ -334,6 +334,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const { chats } = get();
     const activeTargetId = getActiveChatTargetId(get());
     if (!activeTargetId) return null;
+    const hasTargetChat = chats.some((chat) => chat.id === activeTargetId);
+    if (!hasTargetChat) return null;
     const msg: MessageItem = {
       id: uid("msg"),
       chatId: activeTargetId,
@@ -387,6 +389,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   addAssistantLoadingMessage: (chatId) => {
     const { chats } = get();
     const activeTargetId = getActiveChatTargetId(get()) || chatId;
+    const hasTargetChat = chats.some((chat) => chat.id === activeTargetId);
+    if (!hasTargetChat) return null;
     const msg: MessageItem = {
       id: uid("msg"),
       chatId: activeTargetId,
