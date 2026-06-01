@@ -4,10 +4,10 @@ http {
 local.file_match "medical_rag_backend" {
   path_targets = [
     {
-      __path__ = "/var/log/medical-rag/backend.log*"
-      app = "medical-rag-backend"
-      env = "production"
-      job = "medical-rag-backend"
+      __path__ = "/var/log/medical-rag/backend.log*",
+      app = "medical-rag-backend",
+      env = "production",
+      job = "medical-rag-backend",
       service = "medical-rag-backend"
     }
   ]
