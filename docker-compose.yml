@@ -13,7 +13,7 @@ services:
       APP_DB_PATH: ${APP_DB_PATH:-/app/data/app_state.sqlite3}
       LOGS_DIR: ${LOGS_DIR:-/app/logs}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - medical-rag-data:/app/data
       - medical-rag-logs:/app/logs
@@ -29,7 +29,7 @@ services:
       NODE_ENV: production
       NEXT_DIST_DIR: .next-build
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     restart: unless-stopped
     depends_on:
       - backend
