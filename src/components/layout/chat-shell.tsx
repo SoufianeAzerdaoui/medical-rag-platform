@@ -1,6 +1,6 @@
 "use client";
 
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ChatMessages } from "@/components/chat/chat-messages";
@@ -19,7 +19,6 @@ interface ChatShellProps {
 export function ChatShell({ routeConversationId = null }: ChatShellProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const searchParams = useSearchParams();
   const initialize = useChatStore((s) => s.initialize);
   const selectConversation = useChatStore((s) => s.selectConversation);
   const setActiveChat = useChatStore((s) => s.setActiveChat);
@@ -45,10 +44,10 @@ export function ChatShell({ routeConversationId = null }: ChatShellProps) {
 
   useEffect(() => {
     if (authStatus !== "unauthenticated") return;
-    const query = searchParams.toString();
+    const query = typeof window !== "undefined" ? window.location.search.replace(/^\?/, "") : "";
     const nextPath = `${pathname}${query ? `?${query}` : ""}`;
     router.replace(`/auth?next=${encodeURIComponent(nextPath)}`);
-  }, [authStatus, pathname, router, searchParams]);
+  }, [authStatus, pathname, router]);
 
   useEffect(() => {
     if (authStatus !== "authenticated") {
