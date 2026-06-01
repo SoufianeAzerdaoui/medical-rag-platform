@@ -1,0 +1,404 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: medical-rag-llm-observability
+    folder: Medical RAG
+    interval: 1m
+    rules:
+      - uid: medical-rag-contract-violation
+        title: Medical RAG Contract Violation Detected
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: loki
+            model:
+              editorMode: code
+              expr: sum_over_time({app="medical-rag-backend"} |= "chat_request_summary" | regexp `chat_request_summary (?P<json>\{.*\})` | line_format "{{.json}}" | json | unwrap contract_violation_count [15m])
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              queryType: range
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    type: last
+                  type: query
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: Writer evidence contract violations detected on Medical RAG requests.
+          description: contract_violation_count has been greater than 0 within the last 15 minutes for at least 5 minutes.
+        labels:
+          severity: critical
+          service: medical-rag-backend
+          signal: contract_violation
+
+      - uid: medical-rag-hard-gate-reason
+        title: Medical RAG Hard Gate Errors Detected
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: loki
+            model:
+              editorMode: code
+              expr: count_over_time({app="medical-rag-backend"} |= "chat_request_summary" | regexp `chat_request_summary (?P<json>\{.*\})` | line_format "{{.json}}" | json | validation_hard_gate_reason!="" [15m])
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              queryType: range
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    type: last
+                  type: query
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: Hard-gate validation errors detected on Medical RAG responses.
+          description: validation_hard_gate_reason has been non-empty over the last 15 minutes for at least 5 minutes.
+        labels:
+          severity: warning
+          service: medical-rag-backend
+          signal: validation_hard_gate
+
+      - uid: medical-rag-safety-signals
+        title: Medical RAG Safety Signals Detected
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: loki
+            model:
+              editorMode: code
+              expr: sum(count_over_time({app="medical-rag-backend"} |= "chat_request_summary" |= "\"hallucination\"" [15m])) + sum(count_over_time({app="medical-rag-backend"} |= "chat_request_summary" |= "\"diagnosis\"" [15m])) + sum(count_over_time({app="medical-rag-backend"} |= "chat_request_summary" |= "\"treatment\"" [15m])) + sum(count_over_time({app="medical-rag-backend"} |= "chat_request_summary" |= "\"pii\"" [15m]))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              queryType: range
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    type: last
+                  type: query
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: Safety-related failure signals were emitted by the chat pipeline.
+          description: One or more safety signals (hallucination, diagnosis, treatment, pii) were present in the last 15 minutes for at least 5 minutes.
+        labels:
+          severity: critical
+          service: medical-rag-backend
+          signal: safety_failure
+
+      - uid: medical-rag-fallback-after-llm
+        title: Medical RAG Fallback After LLM Elevated
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: loki
+            model:
+              editorMode: code
+              expr: avg_over_time({app="medical-rag-backend"} |= "chat_request_summary" | regexp `chat_request_summary (?P<json>\{.*\})` | line_format "{{.json}}" | json | unwrap fallback_after_llm_rate [15m])
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              queryType: range
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0.20
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    type: last
+                  type: query
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: Fallback-after-LLM rate is above the target window.
+          description: The 15 minute rolling fallback_after_llm_rate exceeded 20% for at least 5 minutes.
+        labels:
+          severity: warning
+          service: medical-rag-backend
+          signal: llm_fallback
+
+      - uid: medical-rag-llm-accept-rate
+        title: Medical RAG LLM Accept Rate Dropped
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: loki
+            model:
+              editorMode: code
+              expr: avg_over_time({app="medical-rag-backend"} |= "chat_request_summary" | regexp `chat_request_summary (?P<json>\{.*\})` | line_format "{{.json}}" | json | llm_route_class="llm_allowed" | unwrap llm_accept_rate [15m])
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              queryType: range
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0.70
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    type: last
+                  type: query
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: LLM accept rate is below the target for llm_allowed routes.
+          description: The 15 minute rolling llm_accept_rate for llm_allowed routes dropped below 70% for at least 5 minutes.
+        labels:
+          severity: warning
+          service: medical-rag-backend
+          signal: llm_accept_rate
+
+      - uid: medical-rag-response-time
+        title: Medical RAG Response Time Elevated
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: loki
+            model:
+              editorMode: code
+              expr: quantile_over_time(0.95, {app="medical-rag-backend"} |= "chat_request_summary" | regexp `chat_request_summary (?P<json>\{.*\})` | line_format "{{.json}}" | json | unwrap response_time_ms [15m])
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              queryType: range
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 3000
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    type: last
+                  type: query
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: LLM response latency breached the production target.
+          description: The 15 minute p95 response_time_ms exceeded 3000 ms for at least 5 minutes.
+        labels:
+          severity: warning
+          service: medical-rag-backend
+          signal: response_latency
+
+  - orgId: 1
+    name: medical-rag-runtime-health
+    folder: Medical RAG
+    interval: 1m
+    rules:
+      - uid: medical-rag-backend-scrape-down
+        title: Medical RAG Backend Metrics Scrape Down
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: up{job="medical-rag-backend"}
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              queryType: instant
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 1
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    type: last
+                  type: query
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        for: 2m
+        noDataState: Alerting
+        execErrState: Alerting
+        annotations:
+          summary: Prometheus is no longer scraping the backend metrics endpoint.
+          description: The medical-rag-backend Prometheus target returned a non-healthy up value for at least 2 minutes.
+        labels:
+          severity: critical
+          service: medical-rag-backend
+          signal: metrics_scrape
+
+      - uid: medical-rag-ingestion-queue-depth
+        title: Medical RAG Ingestion Queue Depth High
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: ingestion_queue_depth{job="medical-rag-backend"}
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              queryType: instant
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 25
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                  reducer:
+                    type: last
+                  type: query
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        for: 10m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: Ingestion queue depth stayed above the operational threshold.
+          description: The ingestion_queue_depth gauge remained above 25 for at least 10 minutes.
+        labels:
+          severity: warning
+          service: medical-rag-backend
+          signal: ingestion_queue_depth

@@ -23,6 +23,14 @@ Recommended KPIs:
 - `p95_response_time_ms`
 - `suite15_like_failure_signals` from `failure_signals` values `hallucination`, `diagnosis`, `treatment`, `pii`
 
+The production monitoring stack is provisioned from:
+
+- [config/grafana/medical_rag_llm_observability_dashboard.json](/home/onizuka/Bureau/PFE/medical-rag-platform/config/grafana/medical_rag_llm_observability_dashboard.json)
+- [config/grafana/provisioning/datasources/medical-rag-datasources.yml](/home/onizuka/Bureau/PFE/medical-rag-platform/config/grafana/provisioning/datasources/medical-rag-datasources.yml)
+- [config/grafana/provisioning/alerting/medical_rag_llm_alerts.yml](/home/onizuka/Bureau/PFE/medical-rag-platform/config/grafana/provisioning/alerting/medical_rag_llm_alerts.yml)
+- [config/observability/alloy.river](/home/onizuka/Bureau/PFE/medical-rag-platform/config/observability/alloy.river)
+- [config/observability/prometheus.yml](/home/onizuka/Bureau/PFE/medical-rag-platform/config/observability/prometheus.yml)
+
 Recommended alert thresholds:
 
 - `validation_fail_rate > 1%` over `15m`

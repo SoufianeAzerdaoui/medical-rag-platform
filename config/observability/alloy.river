@@ -1,0 +1,27 @@
+http {
+}
+
+local.file_match "medical_rag_backend" {
+  path_targets = [
+    {
+      __path__ = "/var/log/medical-rag/backend.log*"
+      app = "medical-rag-backend"
+      env = "production"
+      job = "medical-rag-backend"
+      service = "medical-rag-backend"
+    }
+  ]
+  sync_period = "10s"
+}
+
+loki.source.file "medical_rag_backend" {
+  targets       = local.file_match.medical_rag_backend.targets
+  forward_to    = [loki.write.medical_rag.receiver]
+  tail_from_end = true
+}
+
+loki.write "medical_rag" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

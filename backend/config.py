@@ -82,6 +82,10 @@ RETENTION_AUTH_ATTEMPTS_DAYS = int(os.getenv("RETENTION_AUTH_ATTEMPTS_DAYS", "14
 
 AUDIO_STORAGE_DIR = Path(os.getenv("AUDIO_STORAGE_DIR", str(ROOT_DIR / "data" / "audio"))).resolve()
 LOGS_DIR = Path(os.getenv("LOGS_DIR", str(ROOT_DIR / "logs"))).resolve()
+LOG_LEVEL = str(os.getenv("MEDICAL_RAG_LOG_LEVEL", "INFO")).strip().upper() or "INFO"
+LOG_FILE_NAME = str(os.getenv("MEDICAL_RAG_LOG_FILE", "backend.log")).strip() or "backend.log"
+LOG_MAX_BYTES = int(os.getenv("MEDICAL_RAG_LOG_MAX_BYTES", str(20 * 1024 * 1024)))
+LOG_BACKUP_COUNT = int(os.getenv("MEDICAL_RAG_LOG_BACKUP_COUNT", "10"))
 
 # Alerting
 SENTRY_DSN = str(os.getenv("SENTRY_DSN", "")).strip()

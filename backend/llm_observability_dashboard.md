@@ -4,15 +4,33 @@ This project now emits structured `chat_request_summary` logs with LLM routing a
 
 ## Dashboard asset
 
-Import this Grafana dashboard:
+The dashboard is provisioned from:
 
 - [config/grafana/medical_rag_llm_observability_dashboard.json](/home/onizuka/Bureau/PFE/medical-rag-platform/config/grafana/medical_rag_llm_observability_dashboard.json)
+- [config/grafana/provisioning/dashboards/medical-rag-dashboards.yml](/home/onizuka/Bureau/PFE/medical-rag-platform/config/grafana/provisioning/dashboards/medical-rag-dashboards.yml)
+- [config/grafana/provisioning/datasources/medical-rag-datasources.yml](/home/onizuka/Bureau/PFE/medical-rag-platform/config/grafana/provisioning/datasources/medical-rag-datasources.yml)
+- [config/grafana/provisioning/alerting/medical_rag_llm_alerts.yml](/home/onizuka/Bureau/PFE/medical-rag-platform/config/grafana/provisioning/alerting/medical_rag_llm_alerts.yml)
 
 ## Assumption
 
-The dashboard queries are written for `Grafana + Loki` and assume backend logs are labeled with:
+The dashboard queries are written for `Grafana + Loki + Prometheus` and assume:
 
 - `app="medical-rag-backend"`
+- Prometheus job `medical-rag-backend`
+
+The backend now writes structured application logs to `LOGS_DIR/backend.log` so a log shipper can forward them to Loki.
+
+Alloy config for local log shipping:
+
+- [config/observability/alloy.river](/home/onizuka/Bureau/PFE/medical-rag-platform/config/observability/alloy.river)
+
+Prometheus scrape config:
+
+- [config/observability/prometheus.yml](/home/onizuka/Bureau/PFE/medical-rag-platform/config/observability/prometheus.yml)
+
+If you run Loki locally, the provided single-node config is:
+
+- [config/observability/loki.yml](/home/onizuka/Bureau/PFE/medical-rag-platform/config/observability/loki.yml)
 
 If your Loki label differs, change the `app_label` dashboard variable after import.
 
@@ -46,9 +64,9 @@ Use these thresholds as a starting point:
 5. `validation_hard_gate_reason != ""` over `15m`
 6. Any `failure_signals` containing `hallucination`, `diagnosis`, `treatment`, or `pii`
 
-Provisionable Grafana rule asset:
+Provisionable Grafana alert rule asset:
 
-- [config/grafana/alerts/medical_rag_llm_alerts.yml](/home/onizuka/Bureau/PFE/medical-rag-platform/config/grafana/alerts/medical_rag_llm_alerts.yml)
+- [config/grafana/provisioning/alerting/medical_rag_llm_alerts.yml](/home/onizuka/Bureau/PFE/medical-rag-platform/config/grafana/provisioning/alerting/medical_rag_llm_alerts.yml)
 
 The provided rule triggers when the summed `contract_violation_count` over the last `15m` stays above `0` for `5m`.
 It also includes a rule that triggers when `validation_hard_gate_reason` is non-empty over the last `15m` for at least `5m`.

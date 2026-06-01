@@ -1,9 +1,15 @@
 {
+  "uid": "medical-rag-llm-observability",
   "title": "Medical RAG - LLM Observability",
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "editable": false,
   "tags": ["medical-rag", "llm", "observability"],
   "templating": {
     "list": [
@@ -11,6 +17,16 @@
         "name": "app_label",
         "type": "textbox",
         "label": "Loki App Label",
+        "query": "medical-rag-backend",
+        "current": {
+          "text": "medical-rag-backend",
+          "value": "medical-rag-backend"
+        }
+      },
+      {
+        "name": "prom_job",
+        "type": "textbox",
+        "label": "Prometheus Job",
         "query": "medical-rag-backend",
         "current": {
           "text": "medical-rag-backend",
@@ -25,6 +41,7 @@
       "type": "timeseries",
       "title": "LLM Attempt Rate",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "loki", "uid": "loki" },
       "targets": [
         {
           "expr": "avg_over_time({app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | unwrap llm_attempt_rate [5m])",
@@ -37,6 +54,7 @@
       "type": "timeseries",
       "title": "LLM Accept Rate",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "loki", "uid": "loki" },
       "targets": [
         {
           "expr": "avg_over_time({app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | unwrap llm_accept_rate [5m])",
@@ -49,6 +67,7 @@
       "type": "timeseries",
       "title": "Fallback After LLM Rate",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "loki", "uid": "loki" },
       "targets": [
         {
           "expr": "avg_over_time({app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | unwrap fallback_after_llm_rate [5m])",
@@ -61,6 +80,7 @@
       "type": "timeseries",
       "title": "p95 Response Time (ms)",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "loki", "uid": "loki" },
       "targets": [
         {
           "expr": "quantile_over_time(0.95, {app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | unwrap response_time_ms [5m])",
@@ -73,6 +93,7 @@
       "type": "barchart",
       "title": "Requests by LLM Route Class",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "loki", "uid": "loki" },
       "targets": [
         {
           "expr": "sum by (llm_route_class) (count_over_time({app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json [15m]))",
@@ -85,6 +106,7 @@
       "type": "timeseries",
       "title": "Contract Violation Count",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "loki", "uid": "loki" },
       "targets": [
         {
           "expr": "sum_over_time({app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | unwrap contract_violation_count [5m])",
@@ -97,6 +119,7 @@
       "type": "barchart",
       "title": "Fallback Kind Volume",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "datasource": { "type": "loki", "uid": "loki" },
       "targets": [
         {
           "expr": "sum by (fallback_kind) (count_over_time({app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | fallback_kind!=\"\" [15m]))",
@@ -109,6 +132,7 @@
       "type": "logs",
       "title": "Latest LLM Fallbacks",
       "gridPos": { "h": 10, "w": 12, "x": 12, "y": 24 },
+      "datasource": { "type": "loki", "uid": "loki" },
       "targets": [
         {
           "expr": "{app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | fallback_after_llm_rate=1",
@@ -127,6 +151,7 @@
       "type": "logs",
       "title": "Safety / Hallucination Signals",
       "gridPos": { "h": 10, "w": 12, "x": 0, "y": 32 },
+      "datasource": { "type": "loki", "uid": "loki" },
       "targets": [
         {
           "expr": "{app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | failure_signals!=\"[]\"",
@@ -145,6 +170,7 @@
       "type": "logs",
       "title": "Latest Contract Violations",
       "gridPos": { "h": 10, "w": 12, "x": 12, "y": 34 },
+      "datasource": { "type": "loki", "uid": "loki" },
       "targets": [
         {
           "expr": "{app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | contract_violation_count > 0",
@@ -163,6 +189,7 @@
       "type": "barchart",
       "title": "Hard Gate Reasons (15m)",
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 44 },
+      "datasource": { "type": "loki", "uid": "loki" },
       "targets": [
         {
           "expr": "sum by (validation_hard_gate_reason) (count_over_time({app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | validation_hard_gate_reason!=\"\" [15m]))",
@@ -175,9 +202,85 @@
       "type": "timeseries",
       "title": "Top Hard Gate Reason Trends (5m rolling)",
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 52 },
+      "datasource": { "type": "loki", "uid": "loki" },
       "targets": [
         {
           "expr": "topk(8, sum by (validation_hard_gate_reason) (count_over_time({app=\"$app_label\"} |= \"chat_request_summary\" | regexp `chat_request_summary (?P<json>\\{.*\\})` | line_format \"{{.json}}\" | json | validation_hard_gate_reason!=\"\" [5m])))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Backend Metrics Up",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 60 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "up{job=\"$prom_job\"}",
+          "legendFormat": "up",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Ingestion Queue Depth",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 60 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "ingestion_queue_depth{job=\"$prom_job\"}",
+          "legendFormat": "queue depth",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Ingestion Pipeline Success vs Failure",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 60 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "increase(ingestion_pipeline_success_total{job=\"$prom_job\"}[5m])",
+          "legendFormat": "success",
+          "refId": "A"
+        },
+        {
+          "expr": "increase(ingestion_pipeline_failure_total{job=\"$prom_job\"}[5m])",
+          "legendFormat": "failure",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Ingestion Pipeline Average Duration (s)",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 66 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "rate(ingestion_pipeline_duration_seconds_sum{job=\"$prom_job\"}[5m]) / rate(ingestion_pipeline_duration_seconds_count{job=\"$prom_job\"}[5m])",
+          "legendFormat": "avg duration",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Ingestion Indexing Errors (15m)",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 66 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "increase(ingestion_indexing_errors_total{job=\"$prom_job\"}[15m])",
+          "legendFormat": "indexing errors",
           "refId": "A"
         }
       ]
