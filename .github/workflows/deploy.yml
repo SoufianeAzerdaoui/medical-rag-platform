@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$DO_SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/do_deploy_key
           chmod 600 ~/.ssh/do_deploy_key
           ssh-keygen -y -f ~/.ssh/do_deploy_key > /dev/null
-          
+
       - name: Trust server host key
         shell: bash
         env:
@@ -46,7 +46,12 @@ jobs:
           DO_USER: ${{ secrets.DO_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
-          ssh -i ~/.ssh/do_deploy_key -p "${DO_PORT:-22}" "${DO_USER}@${DO_HOST}" <<EOF
+          ssh \
+            -i ~/.ssh/do_deploy_key \
+            -p "${DO_PORT:-22}" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            "${DO_USER}@${DO_HOST}" <<EOF
           set -e
           cd "${DEPLOY_PATH:-/home/deploy/apps/medical-rag-platform}"
           git pull origin main
