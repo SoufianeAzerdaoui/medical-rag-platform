@@ -49,6 +49,14 @@ MODEL_REGISTRY: dict[str, ModelInfo] = {
         recommended_rag_budget=5_000,
         tokenizer=None,
     ),
+    "gemini-2.5-flash": ModelInfo(
+        model="gemini-2.5-flash",
+        provider="gemini",
+        context_window=1_048_576,
+        max_output_tokens=65_536,
+        recommended_rag_budget=24_000,
+        tokenizer=None,
+    ),
 }
 
 
@@ -106,6 +114,15 @@ def active_model_info() -> ModelInfo:
             max_output_tokens=resolved_max_output,
             recommended_rag_budget=info.recommended_rag_budget,
             tokenizer=info.tokenizer,
+        )
+    if provider.lower() == "gemini" or model.startswith("gemini-"):
+        return ModelInfo(
+            model=model or "gemini-2.5-flash",
+            provider=provider or "gemini",
+            context_window=1_048_576,
+            max_output_tokens=65_536,
+            recommended_rag_budget=24_000,
+            tokenizer=None,
         )
     return ModelInfo(
         model=model or "unknown",

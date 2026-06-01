@@ -1,7 +1,7 @@
 "use client";
 
-import { ChevronDown, Loader2, Send, Upload } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { ChevronDown, CircleCheckBig, Loader2, Send, Upload } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useChatActions } from "@/hooks/use-chat-actions";
 import { VoiceRecorder } from "@/components/audio/voice-recorder";
 import { useAuthStore } from "@/store/auth-store";
@@ -11,6 +11,8 @@ import { ModelBadge } from "@/components/chat/model-badge";
 import type { ChatMode } from "@/types/chat";
 
 type PromptMode = "general" | "summary" | "anomalies" | "comparison" | "sources_only" | "simple_explanation";
+type LlmProvider = "ollama" | "gemini";
+type LlmChoiceId = "local-llama" | "gemini-cloud";
 
 type PromptModeConfig = {
   label: string;
@@ -19,6 +21,18 @@ type PromptModeConfig = {
   placeholder: string;
   preface?: string;
 };
+
+type LlmChoice = {
+  id: LlmChoiceId;
+  label: string;
+  provider: LlmProvider;
+  model: string;
+  hint: string;
+  contextWindow: number;
+  maxOutputTokens: number;
+};
+
+const LLM_CHOICE_STORAGE_KEY = "medical-rag-selected-llm-choice";
 
 const modes: PromptModeConfig[] = [
   {
@@ -62,25 +76,86 @@ const modes: PromptModeConfig[] = [
   },
 ];
 
+const llmChoices: LlmChoice[] = [
+  {
+    id: "local-llama",
+    label: "Llama local",
+    provider: "ollama",
+    model: "llama3.2:latest",
+    hint: "Modèle local Ollama",
+    contextWindow: 8_192,
+    maxOutputTokens: 1_024,
+  },
+  {
+    id: "gemini-cloud",
+    label: "Gemini cloud",
+    provider: "gemini",
+    model: "gemini-2.5-flash",
+    hint: "Google AI Studio",
+    contextWindow: 1_048_576,
+    maxOutputTokens: 65_536,
+  },
+];
+
 function modeConfig(mode: PromptMode): PromptModeConfig {
   return modes.find((m) => m.value === mode) || modes[0];
 }
 
 export function MessageComposer() {
-  const [value, setValue] = useState("");
-  const [mode, setMode] = useState<PromptMode>("general");
+  const [selectedModelId, setSelectedModelId] = useState<LlmChoiceId>("local-llama");
   const [activeModel, setActiveModel] = useState<ActiveModelInfo | null>(null);
   const [contextUsage, setContextUsage] = useState<ConversationContextUsageInfo | null>(null);
+  const modelSelectionInitialized = useRef(false);
   const { sendMessage, sending } = useChatActions();
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const accessToken = useAuthStore((s) => s.accessToken);
   const chats = useChatStore((s) => s.chats);
   const activeConversationId = useChatStore((s) => s.activeConversationId);
+  const composerDraft = useChatStore((s) => s.composerDraft);
+  const composerPromptMode = useChatStore((s) => s.composerPromptMode);
+  const setComposerDraft = useChatStore((s) => s.setComposerDraft);
+  const setComposerPromptMode = useChatStore((s) => s.setComposerPromptMode);
+  const clearComposerDraft = useChatStore((s) => s.clearComposerDraft);
   const activeChat = useMemo(
     () => chats.find((chat) => chat.conversationId === activeConversationId || chat.id === activeConversationId) || null,
     [activeConversationId, chats],
   );
+  const selectedModel = useMemo(
+    () => llmChoices.find((choice) => choice.id === selectedModelId) || llmChoices[0],
+    [selectedModelId],
+  );
   const messageCount = activeChat?.messages.length ?? 0;
+  const badgeContextWindow = selectedModel.contextWindow || contextUsage?.context_window || activeModel?.context_window;
+  const badgeUsedTokens = contextUsage?.used_tokens;
+  const badgeUsagePercent =
+    badgeContextWindow && badgeUsedTokens !== undefined && badgeUsedTokens !== null
+      ? Math.min(100, Math.round((badgeUsedTokens / badgeContextWindow) * 10000) / 100)
+      : contextUsage?.usage_percent;
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const storedChoice = window.localStorage.getItem(LLM_CHOICE_STORAGE_KEY) as LlmChoiceId | null;
+    if (storedChoice && llmChoices.some((choice) => choice.id === storedChoice)) {
+      setSelectedModelId(storedChoice);
+      modelSelectionInitialized.current = true;
+      return;
+    }
+    if (activeModel) {
+      const matchedChoice = llmChoices.find(
+        (choice) => choice.provider === activeModel.provider && choice.model === activeModel.model,
+      );
+      if (matchedChoice) {
+        setSelectedModelId(matchedChoice.id);
+      }
+    }
+    modelSelectionInitialized.current = true;
+  }, [activeModel]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!modelSelectionInitialized.current) return;
+    window.localStorage.setItem(LLM_CHOICE_STORAGE_KEY, selectedModelId);
+  }, [selectedModelId]);
 
   useEffect(() => {
     if (!isAuthenticated || !accessToken) {
@@ -123,73 +198,123 @@ export function MessageComposer() {
   }, [accessToken, activeConversationId, isAuthenticated, messageCount, sending]);
 
   async function onSend() {
-    const trimmed = value.trim();
+    const trimmed = composerDraft.trim();
     if (!trimmed || sending || !isAuthenticated) return;
-    const config = modeConfig(mode);
+    const config = modeConfig(composerPromptMode);
     const content = config.preface ? `${config.preface}\n\n${trimmed}` : trimmed;
-    setValue("");
     try {
-      await sendMessage({ content, mode: config.backendMode });
+      await sendMessage({
+        content,
+        mode: config.backendMode,
+        llmProviderOverride: selectedModel.provider,
+        llmModelOverride: selectedModel.model,
+      });
+      clearComposerDraft();
     } catch {
       // Error state is rendered in chat messages.
     }
   }
 
   return (
-    <div className="border-t border-border/70 bg-bg/70 px-4 py-4 backdrop-blur-xl">
-      <div className="glass mx-auto flex max-w-5xl flex-nowrap items-center gap-2 rounded-2xl p-2.5">
-        <div className="relative hidden shrink-0 sm:block">
-          <select
-            aria-label="Mode"
-            value={mode}
-            onChange={(e) => setMode(e.target.value as PromptMode)}
-            disabled={sending}
-            className="h-10 appearance-none rounded-lg border border-border/80 bg-card/85 py-1 pl-3 pr-8 text-xs font-medium text-fg/[0.82] outline-none transition focus:border-accent/50 focus-visible:ring-2 focus-visible:ring-accent/35"
-          >
-            {modes.map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-          <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-fg/[0.45]" size={14} />
+    <div className="message-composer-shell border-t border-border/70 bg-bg/70 px-3 py-3 backdrop-blur-xl sm:px-4 sm:py-4">
+      <div className="glass mx-auto flex max-w-5xl flex-col gap-3 rounded-2xl p-2.5 sm:p-3">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+          <div className="grid grid-cols-2 gap-1 rounded-xl border border-border/80 bg-card/80 p-1 shadow-[0_10px_30px_hsl(220_30%_10%_/_0.12)] backdrop-blur-md sm:inline-flex sm:grid-cols-none">
+            {llmChoices.map((choice) => {
+              const active = selectedModelId === choice.id;
+              return (
+                <button
+                  key={choice.id}
+                  type="button"
+                  disabled={sending}
+                  aria-pressed={active}
+                  onClick={() => setSelectedModelId(choice.id)}
+                  className={[
+                    "group relative inline-flex h-10 min-w-0 w-full items-center justify-between gap-2 rounded-lg px-3 text-left text-xs font-medium transition-all duration-150 sm:min-w-[132px] sm:w-auto",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/45",
+                    active
+                      ? "bg-accent text-slate-950 shadow-[0_8px_20px_hsl(180_100%_50%_/_0.18)]"
+                      : "text-fg/72 hover:bg-fg/[0.04] hover:text-fg/90",
+                    sending ? "cursor-not-allowed opacity-60" : "cursor-pointer",
+                  ].join(" ")}
+                >
+                  <span className="flex min-w-0 flex-col leading-tight">
+                    <span className="flex items-center gap-1.5">
+                      {active ? <CircleCheckBig size={12} /> : null}
+                      <span className="truncate">{choice.label}</span>
+                    </span>
+                    <span className={active ? "truncate text-slate-950/70" : "truncate text-fg/45"}>{choice.hint}</span>
+                  </span>
+                  <span
+                    className={[
+                      "h-2 w-2 shrink-0 rounded-full transition-colors",
+                      active ? "bg-slate-950/70" : choice.provider === "gemini" ? "bg-cyan-400/80" : "bg-emerald-400/80",
+                    ].join(" ")}
+                    aria-hidden="true"
+                  />
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex flex-1 flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="relative w-full sm:w-auto">
+              <select
+                aria-label="Mode"
+                value={composerPromptMode}
+                onChange={(e) => setComposerPromptMode(e.target.value as PromptMode)}
+                disabled={sending}
+                className="h-10 w-full appearance-none rounded-lg border border-border/80 bg-card/85 py-1 pl-3 pr-8 text-xs font-medium text-fg/[0.82] outline-none transition focus:border-accent/50 focus-visible:ring-2 focus-visible:ring-accent/35 sm:w-auto"
+              >
+                {modes.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-fg/[0.45]" size={14} />
+            </div>
+            <div className="hidden md:block">
+              <ModelBadge
+                modelName={selectedModel.label}
+                contextWindow={badgeContextWindow}
+                usedTokens={badgeUsedTokens}
+                usagePercent={badgeUsagePercent}
+              />
+            </div>
+          </div>
         </div>
-        <ModelBadge
-          modelName={contextUsage?.model || activeModel?.model}
-          contextWindow={contextUsage?.context_window || activeModel?.context_window}
-          usedTokens={contextUsage?.used_tokens}
-          usagePercent={contextUsage?.usage_percent}
-          status={contextUsage?.status}
-        />
-        <span className="hidden h-6 w-px shrink-0 bg-border/70 sm:block" aria-hidden="true" />
-        <textarea
-          aria-label="Message"
-          disabled={sending || !isAuthenticated}
-          className="max-h-40 min-h-10 flex-1 resize-y rounded-xl bg-transparent px-3 py-2 text-sm leading-6 outline-none placeholder:text-fg/[0.42] focus-visible:ring-2 focus-visible:ring-accent/30"
-          placeholder={isAuthenticated ? modeConfig(mode).placeholder : "Connectez-vous pour discuter"}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              void onSend();
-            }
-          }}
-        />
-        <button aria-label="Upload document" disabled={sending || !isAuthenticated} className="icon-button">
-          <Upload size={16} />
-        </button>
-        <div className={sending || !isAuthenticated ? "pointer-events-none opacity-50" : ""}>
-          <VoiceRecorder onTranscript={(t) => setValue((prev) => `${prev} ${t}`.trim())} />
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+          <textarea
+            aria-label="Message"
+            disabled={sending || !isAuthenticated}
+            className="min-h-24 max-h-40 flex-1 resize-none rounded-xl bg-transparent px-3 py-2 text-sm leading-6 outline-none placeholder:text-fg/[0.42] focus-visible:ring-2 focus-visible:ring-accent/30 sm:min-h-12 sm:resize-y"
+            placeholder={isAuthenticated ? modeConfig(composerPromptMode).placeholder : "Connectez-vous pour discuter"}
+            value={composerDraft}
+            onChange={(e) => setComposerDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void onSend();
+              }
+            }}
+          />
+          <div className="flex items-center justify-end gap-2 self-end sm:self-auto">
+            <button aria-label="Upload document" disabled={sending || !isAuthenticated} className="icon-button">
+              <Upload size={16} />
+            </button>
+            <div className={sending || !isAuthenticated ? "pointer-events-none opacity-50" : ""}>
+              <VoiceRecorder onTranscript={(t) => setComposerDraft(`${composerDraft} ${t}`.trim())} />
+            </div>
+            <button
+              aria-label="Envoyer"
+              disabled={sending || composerDraft.trim().length === 0 || !isAuthenticated}
+              onClick={() => void onSend()}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-accent text-slate-950 shadow-sm transition hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/55 disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+            </button>
+          </div>
         </div>
-        <button
-          aria-label="Envoyer"
-          disabled={sending || value.trim().length === 0 || !isAuthenticated}
-          onClick={() => void onSend()}
-          className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-accent text-slate-950 shadow-sm transition hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/55 disabled:cursor-not-allowed disabled:opacity-45"
-        >
-          {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
-        </button>
       </div>
     </div>
   );

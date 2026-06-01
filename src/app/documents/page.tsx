@@ -462,8 +462,8 @@ export default function DocumentsPage() {
         { href: "/chat", label: "Nouvelle conversation" },
       ]}
     >
-      <main className="mx-auto max-w-7xl space-y-5 px-5 py-6 sm:px-6">
-        <section className="rounded-xl border border-border/70 bg-card/[0.55] p-4">
+      <main className="mx-auto max-w-7xl space-y-4 px-4 py-4 sm:space-y-5 sm:px-6 sm:py-6">
+        <section className="rounded-xl border border-border/70 bg-card/[0.55] p-3 sm:p-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
               <h2 className="text-sm font-semibold text-fg">Ingestion des nouveaux rapports</h2>
@@ -481,7 +481,7 @@ export default function DocumentsPage() {
           </div>
         </section>
 
-        <section className="grid grid-cols-2 gap-2 rounded-xl border border-border/70 bg-card/[0.55] p-3 md:grid-cols-5">
+        <section className="grid grid-cols-2 gap-2 rounded-xl border border-border/70 bg-card/[0.55] p-3 sm:grid-cols-3 lg:grid-cols-5">
           <div className="rounded-lg border border-border/70 bg-card/[0.7] px-3 py-2">
             <p className="text-[11px] uppercase tracking-wide text-fg/55">Total</p>
             <p className="mt-1 text-base font-semibold">{stats.total}</p>
@@ -504,7 +504,7 @@ export default function DocumentsPage() {
           </div>
         </section>
 
-        <section className="rounded-xl border border-border/70 bg-card/[0.55] p-4">
+        <section className="rounded-xl border border-border/70 bg-card/[0.55] p-3 sm:p-4">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
             <div className="relative w-full max-w-lg">
               <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg/45" />
@@ -515,40 +515,42 @@ export default function DocumentsPage() {
                 onChange={(event) => setQuery(event.target.value)}
               />
             </div>
-            <div className="flex w-full flex-wrap items-center justify-end gap-2">
+            <div className="flex w-full flex-col gap-2 xl:w-auto xl:flex-row xl:flex-wrap xl:items-center xl:justify-end">
               <select
                 value={sortBy}
                 onChange={(event) => setSortBy(event.target.value as SortOption)}
-                className="h-9 rounded-md border border-border/75 bg-card/[0.65] px-2 text-xs text-fg/85 outline-none"
+                className="h-9 w-full rounded-md border border-border/75 bg-card/[0.65] px-2 text-xs text-fg/85 outline-none xl:w-auto"
               >
                 <option value="recent">Tri: plus récent</option>
                 <option value="status_priority">Tri: statut prioritaire</option>
                 <option value="name_asc">Tri: nom A→Z</option>
                 <option value="name_desc">Tri: nom Z→A</option>
               </select>
-              {CATEGORY_OPTIONS.map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  onClick={() => setCategory(option)}
-                  className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${
-                    category === option
-                      ? "border-accent/45 bg-accent/12 text-accent"
-                      : "border-border/75 bg-card/[0.65] text-fg/75 hover:border-accent/25 hover:bg-card"
-                  }`}
-                >
-                  {option}
-                </button>
-              ))}
+              <div className="flex w-full gap-2 overflow-x-auto pb-1 xl:w-auto xl:flex-wrap xl:overflow-visible xl:pb-0">
+                {CATEGORY_OPTIONS.map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => setCategory(option)}
+                    className={`shrink-0 rounded-md border px-3 py-1.5 text-xs font-medium transition ${
+                      category === option
+                        ? "border-accent/45 bg-accent/12 text-accent"
+                        : "border-border/75 bg-card/[0.65] text-fg/75 hover:border-accent/25 hover:bg-card"
+                    }`}
+                  >
+                    {option}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
-          <div className="mt-3 flex flex-wrap gap-2">
+          <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
             {STATUS_FILTERS.map((filter) => (
               <button
                 key={filter.key}
                 type="button"
                 onClick={() => setStatusFilter(filter.key)}
-                className={`rounded-full border px-3 py-1 text-xs transition ${
+                className={`shrink-0 rounded-full border px-3 py-1 text-xs transition ${
                   statusFilter === filter.key
                     ? "border-accent/45 bg-accent/12 text-accent"
                     : "border-border/70 bg-card/[0.55] text-fg/75 hover:border-accent/25"
@@ -587,13 +589,13 @@ export default function DocumentsPage() {
         ) : null}
 
         {compareIds.length === 2 ? (
-          <section className="flex items-center justify-between rounded-lg border border-accent/35 bg-accent/10 px-4 py-3">
+          <section className="flex flex-col gap-3 rounded-lg border border-accent/35 bg-accent/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm text-fg/85">Comparaison prête : {compareIds[0]} vs {compareIds[1]}</p>
             <button
               type="button"
               onClick={() => void compareWithAssistant()}
               disabled={sending}
-              className="rounded-md border border-accent/35 bg-accent/15 px-3 py-1.5 text-xs font-medium text-accent transition hover:bg-accent/20 disabled:opacity-60"
+              className="w-full rounded-md border border-accent/35 bg-accent/15 px-3 py-1.5 text-xs font-medium text-accent transition hover:bg-accent/20 disabled:opacity-60 sm:w-auto"
             >
               {sending ? "Envoi…" : "Lancer la comparaison"}
             </button>
@@ -605,7 +607,7 @@ export default function DocumentsPage() {
             const busyAction = busyActions[doc.id];
             const docIsBusy = Boolean(busyAction);
             return (
-              <article key={doc.id} className="rounded-lg border border-border/70 bg-card/[0.55] p-4">
+              <article key={doc.id} className="rounded-lg border border-border/70 bg-card/[0.55] p-3 sm:p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <h2 className="line-clamp-1 text-sm font-semibold text-fg">{doc.name}</h2>
@@ -629,11 +631,11 @@ export default function DocumentsPage() {
                   {doc.statusDetail ? <p className="sm:col-span-2 text-fg/58">{doc.statusDetail}</p> : null}
                 </div>
 
-                <div className="mt-3 flex flex-wrap gap-2">
+                <div className="mt-3 grid grid-cols-1 gap-2 sm:flex sm:flex-wrap">
                   <button
                     type="button"
                     onClick={() => void openDocPreview(doc)}
-                    className="inline-flex items-center gap-1 rounded-md border border-border/75 bg-card/[0.7] px-2.5 py-1.5 text-xs font-medium text-fg/80 hover:bg-card"
+                    className="inline-flex w-full items-center justify-center gap-1 rounded-md border border-border/75 bg-card/[0.7] px-2.5 py-1.5 text-xs font-medium text-fg/80 hover:bg-card sm:w-auto"
                   >
                     <Eye size={12} /> Voir
                   </button>
@@ -641,7 +643,7 @@ export default function DocumentsPage() {
                     type="button"
                     onClick={() => void reindexDoc(doc.id)}
                     disabled={docIsBusy}
-                    className="inline-flex items-center gap-1 rounded-md border border-border/75 bg-card/[0.7] px-2.5 py-1.5 text-xs font-medium text-fg/80 hover:bg-card disabled:cursor-not-allowed disabled:opacity-60"
+                    className="inline-flex w-full items-center justify-center gap-1 rounded-md border border-border/75 bg-card/[0.7] px-2.5 py-1.5 text-xs font-medium text-fg/80 hover:bg-card disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
                   >
                     <RefreshCw size={12} className={busyAction === "reindex" ? "animate-spin" : ""} />
                     {busyAction === "reindex" ? "Réindexation…" : "Réindexer"}
@@ -650,7 +652,7 @@ export default function DocumentsPage() {
                     type="button"
                     onClick={() => void deleteDoc(doc.id)}
                     disabled={docIsBusy}
-                    className="inline-flex items-center gap-1 rounded-md border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-xs font-medium text-rose-400 hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="inline-flex w-full items-center justify-center gap-1 rounded-md border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-xs font-medium text-rose-400 hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
                   >
                     <Trash2 size={12} />
                     {busyAction === "delete" ? "Suppression…" : "Supprimer"}
@@ -658,7 +660,7 @@ export default function DocumentsPage() {
                   <button
                     type="button"
                     onClick={() => toggleCompare(doc.id)}
-                    className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium transition ${
+                    className={`inline-flex w-full items-center justify-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium transition sm:w-auto ${
                       compareIds.includes(doc.id)
                         ? "border-accent/45 bg-accent/12 text-accent"
                         : "border-border/75 bg-card/[0.7] text-fg/80 hover:bg-card"
@@ -670,7 +672,7 @@ export default function DocumentsPage() {
                     type="button"
                     onClick={() => void askAssistant(doc)}
                     disabled={sending || docIsBusy}
-                    className="inline-flex items-center gap-1 rounded-md border border-accent/35 bg-accent/10 px-2.5 py-1.5 text-xs font-medium text-accent hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="inline-flex w-full items-center justify-center gap-1 rounded-md border border-accent/35 bg-accent/10 px-2.5 py-1.5 text-xs font-medium text-accent hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
                   >
                     <MessageSquare size={12} />
                     {busyAction === "ask" ? "Envoi…" : "Demander à l’assistant"}

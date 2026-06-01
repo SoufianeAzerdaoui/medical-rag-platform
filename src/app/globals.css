@@ -223,3 +223,99 @@ body::before {
 .menu-panel-out {
   animation: menuOut 100ms ease forwards;
 }
+
+@media (max-height: 760px) {
+  .workspace-mobile-header {
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+  }
+
+  .workspace-mobile-header .mt-3 {
+    margin-top: 0.5rem;
+  }
+
+  .workspace-mobile-header .rounded-lg {
+    padding-top: 0.35rem;
+    padding-bottom: 0.35rem;
+  }
+
+  .welcome-screen {
+    gap: 0.9rem;
+    padding-top: 0.8rem;
+    padding-bottom: 0.8rem;
+  }
+
+  .welcome-screen h2 {
+    font-size: 1.6rem;
+    line-height: 1.15;
+  }
+
+  .message-composer-shell {
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+  }
+
+  .message-composer-shell > div {
+    gap: 0.5rem;
+  }
+
+  .message-composer-shell textarea {
+    min-height: 4.25rem;
+  }
+
+  .chat-sidebar-shell {
+    padding: 0.5rem;
+  }
+
+  .chat-sidebar-shell .sidebar-brand {
+    margin-bottom: 0.5rem;
+    padding: 0.65rem;
+  }
+
+  .chat-sidebar-shell .sidebar-new-chat,
+  .chat-sidebar-shell .sidebar-search,
+  .chat-sidebar-shell .sidebar-nav {
+    margin-bottom: 0.5rem;
+  }
+
+  .chat-sidebar-shell .sidebar-nav {
+    padding: 0.35rem;
+  }
+
+  .chat-sidebar-shell .sidebar-conversation-list {
+    gap: 0.5rem;
+  }
+
+  .chat-sidebar-shell .sidebar-conversation-list > section > p {
+    margin-bottom: 0.35rem;
+    font-size: 10px;
+  }
+
+  .chat-sidebar-shell .sidebar-conversation-list .conv-card {
+    min-height: 48px;
+  }
+}
+
+@media (max-height: 700px) {
+  .welcome-screen {
+    gap: 0.75rem;
+    padding-top: 0.6rem;
+    padding-bottom: 0.6rem;
+  }
+
+  .welcome-screen .mb-4 {
+    margin-bottom: 0.5rem;
+  }
+
+  .chat-sidebar-shell .sidebar-brand {
+    padding: 0.55rem;
+  }
+
+  .chat-sidebar-shell .sidebar-footer {
+    margin-top: 0.25rem;
+  }
+
+  .message-composer-shell textarea {
+    min-height: 3.75rem;
+  }
+}

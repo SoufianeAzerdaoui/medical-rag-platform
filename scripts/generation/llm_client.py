@@ -36,10 +36,13 @@ class LLMClient:
         timeout: int = DEFAULT_LLM_TIMEOUT,
         keep_alive: str = "10m",
     ) -> str:
+        provider_norm = str(self.provider or "").strip().lower()
         keep_alive = str(os.getenv("MEDICAL_RAG_OLLAMA_KEEP_ALIVE", keep_alive)).strip() or "10m"
         self.last_call_debug = {
-            "provider": self.provider,
+            "provider": provider_norm,
+            "llm_provider": provider_norm,
             "model": model,
+            "llm_model": model,
             "temperature": float(temperature),
             "num_ctx": int(num_ctx),
             "num_predict": int(max_tokens),
@@ -50,7 +53,7 @@ class LLMClient:
             "prompt_preview_last_500": str(prompt or "")[-500:] if prompt else "",
             "llm_timeout_ms": int(timeout) * 1000,
         }
-        if self.provider == "ollama":
+        if provider_norm == "ollama":
             return self._generate_ollama(
                 prompt=prompt,
                 model=model,
@@ -60,8 +63,16 @@ class LLMClient:
                 timeout=timeout,
                 keep_alive=keep_alive,
             )
-        elif self.provider == "lmstudio":
+        elif provider_norm == "lmstudio":
             return self._generate_lmstudio(
+                prompt=prompt,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+            )
+        elif provider_norm == "gemini":
+            return self._generate_gemini(
                 prompt=prompt,
                 model=model,
                 temperature=temperature,
@@ -70,6 +81,155 @@ class LLMClient:
             )
         else:
             raise LLMClientError(f"Unsupported provider: {self.provider}")
+
+    def _generate_gemini(
+        self,
+        *,
+        prompt: str,
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        timeout: int,
+    ) -> str:
+        t0 = time.perf_counter()
+        api_key = str(os.getenv("GEMINI_API_KEY", "")).strip() or str(os.getenv("GOOGLE_API_KEY", "")).strip()
+        if not api_key:
+            raise LLMClientError("Gemini API key missing. Set GEMINI_API_KEY.")
+
+        base_url = str(os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta")).strip().rstrip("/")
+        model_name = str(model or "").strip()
+        if not model_name:
+            raise LLMClientError("Gemini model is missing.")
+        if not model_name.startswith("models/"):
+            model_name = f"models/{model_name}"
+
+        payload: dict[str, Any] = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": prompt}],
+                }
+            ],
+            "generationConfig": {
+                "temperature": float(temperature),
+                "maxOutputTokens": int(max_tokens),
+            },
+        }
+
+        url = f"{base_url}/{model_name}:generateContent"
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = request.Request(
+            url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": api_key,
+            },
+            method="POST",
+        )
+
+        if isinstance(self.last_call_debug, dict):
+            self.last_call_debug.update(
+                {
+                    "gemini_endpoint": url,
+                    "gemini_model": model,
+                    "gemini_temperature": float(temperature),
+                    "gemini_max_output_tokens": int(max_tokens),
+                    "messages_count": 1,
+                    "conversation_history_included": False,
+                    "system_prompt_chars": 0,
+                    "user_prompt_chars": len(str(prompt or "")),
+                }
+            )
+
+        try:
+            with request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+                status = getattr(resp, "status", 200)
+        except error.HTTPError as exc:
+            if isinstance(self.last_call_debug, dict):
+                self.last_call_debug.update(
+                    {
+                        "llm_elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 3),
+                        "llm_raw_error_type": "HTTPError",
+                        "llm_raw_error_message": str(exc),
+                    }
+                )
+            msg = self._gemini_http_error_message(exc)
+            raise LLMClientError(msg) from exc
+        except error.URLError as exc:
+            if isinstance(self.last_call_debug, dict):
+                self.last_call_debug.update(
+                    {
+                        "llm_elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 3),
+                        "llm_raw_error_type": "URLError",
+                        "llm_raw_error_message": str(exc.reason),
+                    }
+                )
+            raise LLMClientError(f"Gemini request failed: {exc.reason}") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            if isinstance(self.last_call_debug, dict):
+                self.last_call_debug.update(
+                    {
+                        "llm_elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 3),
+                        "llm_raw_error_type": "TimeoutError",
+                        "llm_raw_error_message": str(exc),
+                    }
+                )
+            raise LLMClientError("Gemini timeout. Increase timeout or reduce max_tokens.") from exc
+
+        if status >= 400:
+            raise LLMClientError(f"Gemini HTTP error: status={status}")
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise LLMClientError("Invalid JSON response from Gemini.") from exc
+
+        if isinstance(data, dict) and data.get("error"):
+            err = data.get("error")
+            if isinstance(err, dict):
+                msg = str(err.get("message") or "").strip()
+            else:
+                msg = str(err or "").strip()
+            if msg:
+                raise LLMClientError(f"Gemini error: {msg}")
+            raise LLMClientError("Gemini returned an error response.")
+
+        response_text = self._extract_gemini_text(data)
+        if not response_text:
+            raise LLMClientError("Gemini response is empty.")
+
+        if isinstance(self.last_call_debug, dict):
+            self.last_call_debug.update(
+                {
+                    "llm_elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 3),
+                    "llm_raw_error_type": None,
+                    "llm_raw_error_message": None,
+                }
+            )
+
+        return response_text
+
+    @staticmethod
+    def _extract_gemini_text(data: dict[str, Any]) -> str:
+        candidates = data.get("candidates") or []
+        chunks: list[str] = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            content = candidate.get("content") or {}
+            if not isinstance(content, dict):
+                continue
+            for part in content.get("parts") or []:
+                if not isinstance(part, dict):
+                    continue
+                text = str(part.get("text") or "").strip()
+                if text:
+                    chunks.append(text)
+            if chunks:
+                break
+        return "\n".join(chunks).strip()
 
     def _generate_lmstudio(
         self,
@@ -164,6 +324,8 @@ class LLMClient:
         if isinstance(self.last_call_debug, dict):
             self.last_call_debug.update(
                 {
+                    "llm_provider": "ollama",
+                    "llm_model": model,
                     "ollama_endpoint": endpoint,
                     "ollama_api_kind": api_kind,
                     "ollama_model": model,
@@ -285,6 +447,22 @@ class LLMClient:
             )
 
         return response_text
+
+    @staticmethod
+    def _gemini_http_error_message(exc: error.HTTPError) -> str:
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+            parsed = json.loads(body)
+            err = parsed.get("error") or {}
+            if isinstance(err, dict):
+                message = str(err.get("message") or "").strip()
+                if message:
+                    return f"Gemini error: {message}"
+        except Exception:
+            pass
+        if exc.code in {429, 500, 503, 504}:
+            return "Gemini service unavailable or rate-limited."
+        return f"Gemini HTTP error: {exc.code}"
 
     @staticmethod
     def _http_error_message(exc: error.HTTPError) -> str:

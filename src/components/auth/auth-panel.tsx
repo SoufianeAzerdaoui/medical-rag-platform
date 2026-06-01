@@ -61,7 +61,7 @@ export function AuthPanel() {
   const displayError = localError || error || "";
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-bg px-6 py-10">
+    <div className="relative flex min-h-dvh items-center justify-center overflow-hidden bg-bg px-4 py-6 sm:px-6 sm:py-10">
       <div className="pointer-events-none absolute inset-0 opacity-[0.22]">
         <div className="absolute left-[-8%] top-[14%] h-px w-[42%] rotate-12 bg-accent/35" />
         <div className="absolute left-[10%] top-[42%] h-px w-[35%] -rotate-6 bg-accent/25" />
@@ -74,7 +74,7 @@ export function AuthPanel() {
       </div>
 
       <div className="panel-surface grid w-full max-w-5xl grid-cols-1 overflow-hidden backdrop-blur-md lg:grid-cols-[1.1fr_0.9fr]">
-        <section className="relative border-b border-border/70 p-7 lg:border-b-0 lg:border-r">
+        <section className="relative border-b border-border/70 p-5 sm:p-7 lg:border-b-0 lg:border-r">
           <div className="inline-flex items-center gap-2 rounded-md border border-accent/35 bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent">
             <Activity size={13} />
             CHU Oujda
@@ -99,7 +99,7 @@ export function AuthPanel() {
           </div>
         </section>
 
-        <section className="p-7">
+        <section className="p-5 sm:p-7">
           <h2 className="text-base font-semibold text-fg">
             {mode === "login" ? "Connexion " : "Création de compte"}
           </h2>

@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { PanelRightClose, PanelRightOpen } from "lucide-react";
+import { Menu, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ChatMessages } from "@/components/chat/chat-messages";
 import { WorkspaceTopbar } from "@/components/layout/workspace-shell";
@@ -28,6 +28,7 @@ export function ChatShell({ routeConversationId = null }: ChatShellProps) {
   const authStatus = useAuthStore((s) => s.authStatus);
   const chats = useChatStore((s) => s.chats);
   const activeChatId = useChatStore((s) => s.activeChatId);
+  const [sidebarOpenMobile, setSidebarOpenMobile] = useState(false);
   const [sourcesOpenMobile, setSourcesOpenMobile] = useState(false);
   const [conversationError, setConversationError] = useState<string | null>(null);
   const [backendOnline, setBackendOnline] = useState(true);
@@ -106,9 +107,14 @@ export function ChatShell({ routeConversationId = null }: ChatShellProps) {
     };
   }, []);
 
+  useEffect(() => {
+    setSidebarOpenMobile(false);
+    setSourcesOpenMobile(false);
+  }, [pathname]);
+
   if (authStatus === "loading") {
     return (
-      <div className="flex h-screen items-center justify-center px-6">
+      <div className="flex h-dvh items-center justify-center px-6">
         <div className="glass rounded-xl px-5 py-4 text-sm text-fg/70">Chargement de la session...</div>
       </div>
     );
@@ -116,16 +122,40 @@ export function ChatShell({ routeConversationId = null }: ChatShellProps) {
 
   if (authStatus === "unauthenticated") {
     return (
-      <div className="flex h-screen items-center justify-center px-6">
+      <div className="flex h-dvh items-center justify-center px-6">
         <div className="glass rounded-xl px-5 py-4 text-sm text-fg/70">Redirection vers l&apos;authentification...</div>
       </div>
     );
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-transparent">
-      <ChatSidebar />
+    <div className="flex h-dvh overflow-hidden bg-transparent">
+      <ChatSidebar mobileOpen={sidebarOpenMobile} onMobileClose={() => setSidebarOpenMobile(false)} />
       <main className="flex min-w-0 flex-1 flex-col">
+        <div className="workspace-mobile-header border-b border-border/70 bg-card/75 px-3 py-3 backdrop-blur-2xl sm:px-4 xl:hidden">
+          <div className="flex items-start gap-2.5">
+            <button
+              type="button"
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border/80 bg-card/[0.72] text-fg/78 shadow-sm transition hover:border-accent/30 hover:bg-accent/10 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 sm:h-10 sm:w-10"
+              onClick={() => setSidebarOpenMobile(true)}
+              aria-label="Ouvrir le menu latéral"
+            >
+              <Menu size={16} />
+            </button>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[10px] font-medium text-fg/60 sm:text-[11px]">{topbarBreadcrumbs.join(" / ")}</p>
+              <h1 className="truncate text-[13px] font-semibold text-fg sm:text-sm">{topbarTitle}</h1>
+              <p className="truncate text-[11px] text-fg/72 sm:text-xs">Espace conversationnel clinique</p>
+            </div>
+            <button
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border/80 bg-card/[0.72] text-fg/78 shadow-sm transition hover:border-accent/30 hover:bg-accent/10 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 sm:h-10 sm:w-10"
+              onClick={() => setSourcesOpenMobile((v) => !v)}
+              aria-label="Ouvrir panneau sources"
+            >
+              {sourcesOpenMobile ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
+            </button>
+          </div>
+        </div>
         <div className="hidden xl:block">
           <WorkspaceTopbar
             title={topbarTitle}
@@ -137,16 +167,6 @@ export function ChatShell({ routeConversationId = null }: ChatShellProps) {
               { href: "/chat", label: "Nouvelle conversation" },
             ]}
           />
-        </div>
-        <div className="border-b border-border/70 bg-card/70 px-4 py-2 backdrop-blur-xl xl:hidden">
-          <button
-            className="inline-flex items-center gap-2 rounded-lg border border-border/80 bg-card/70 px-3 py-1.5 text-xs font-medium shadow-sm"
-            onClick={() => setSourcesOpenMobile((v) => !v)}
-            aria-label="Ouvrir panneau sources"
-          >
-            {sourcesOpenMobile ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
-            Sources
-          </button>
         </div>
         <div className="flex-1 overflow-auto" tabIndex={0} aria-label="Zone de conversation défilable">
           {!backendOnline ? (

@@ -158,6 +158,8 @@ export function ChatMessages() {
   const chats = useChatStore((s) => s.chats);
   const activeChatId = useChatStore((s) => s.activeChatId);
   const qualityDebugEnabled = useChatStore((s) => s.qualityDebugEnabled);
+  const setComposerDraft = useChatStore((s) => s.setComposerDraft);
+  const setComposerPromptMode = useChatStore((s) => s.setComposerPromptMode);
   const chat = chats.find((c) => c.id === activeChatId);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const { sendMessage, sending } = useChatActions();
@@ -174,7 +176,8 @@ export function ChatMessages() {
       <WelcomeScreen
         sending={sending}
         onActionSelect={(action) => {
-          void sendMessage({ content: action.prompt, mode: action.mode });
+          setComposerDraft(action.prompt);
+          setComposerPromptMode(promptModeForAction(action.mode));
         }}
       />
     );
@@ -191,6 +194,11 @@ export function ChatMessages() {
 
   function chatModeForResend(): "general" | "document_analysis" | "comparison" | "summary" {
     return activeChat.mode || "general";
+  }
+
+  function promptModeForAction(actionMode: "general" | "summary" | "comparison" | "document_analysis") {
+    if (actionMode === "document_analysis") return "anomalies" as const;
+    return actionMode;
   }
 
   async function regenerateFromAssistantIndex(index: number) {
@@ -319,7 +327,7 @@ export function ChatMessages() {
             className={
               isAssistant
                 ? "premium-surface rounded-2xl p-5"
-                : "ml-auto max-w-[86%] rounded-2xl border border-accent/[0.18] bg-accent/10 p-4 shadow-sm"
+                : "group relative ml-auto max-w-[86%] rounded-2xl border border-accent/[0.18] bg-accent/10 p-4 pr-12 shadow-sm"
             }
           >
             {isLoading ? (
@@ -342,6 +350,21 @@ export function ChatMessages() {
                     {message.role === "user" ? "Vous" : "Assistant"}
                   </p>
                 </div>
+                {message.role === "user" && editingUserMessageId !== message.id ? (
+                  <button
+                    type="button"
+                    className="absolute right-3 top-3 inline-flex h-8 w-8 items-center justify-center rounded-full border border-accent/20 bg-bg/60 text-fg/55 opacity-0 shadow-sm transition hover:border-accent/35 hover:bg-accent/15 hover:text-accent focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 group-hover:opacity-100"
+                    aria-label="Modifier le message"
+                    title="Modifier le message"
+                    disabled={sending}
+                    onClick={() => {
+                      setEditingUserMessageId(message.id);
+                      setEditedUserMessage(String(message.content || ""));
+                    }}
+                  >
+                    <Pencil size={14} />
+                  </button>
+                ) : null}
                 {isError ? (
                   <div
                     role="status"
@@ -537,23 +560,6 @@ export function ChatMessages() {
                     </button>
                   </div>
                 )}
-                {isDone && message.role === "user" && editingUserMessageId !== message.id ? (
-                  <div className="mt-3 flex gap-2">
-                    <button
-                      type="button"
-                      className="icon-button"
-                      aria-label="Modifier puis renvoyer"
-                      title="Modifier puis renvoyer"
-                      disabled={sending}
-                      onClick={() => {
-                        setEditingUserMessageId(message.id);
-                        setEditedUserMessage(String(message.content || ""));
-                      }}
-                    >
-                      <Pencil size={14} />
-                    </button>
-                  </div>
-                ) : null}
               </>
             )}
           </motion.article>

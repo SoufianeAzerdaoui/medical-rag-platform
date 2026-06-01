@@ -20,6 +20,7 @@ import type {
 } from "@/types/chat";
 
 type Theme = "light" | "dark" | "system";
+type ComposerPromptMode = "general" | "summary" | "anomalies" | "comparison" | "sources_only" | "simple_explanation";
 
 const ACCESS_TOKEN_KEY = "clinical-access-token";
 const inFlightMessageLoads = new Map<string, Promise<void>>();
@@ -40,6 +41,8 @@ interface ChatState {
   activeChatId: string | null;
   activeConversationId: string | null;
   messages: MessageItem[];
+  composerDraft: string;
+  composerPromptMode: ComposerPromptMode;
   search: string;
   privacyMode: boolean;
   qualityDebugEnabled: boolean;
@@ -55,6 +58,9 @@ interface ChatState {
   clearMessages: () => void;
   newChat: () => string;
   setActiveChat: (id: string) => void;
+  setComposerDraft: (value: string) => void;
+  setComposerPromptMode: (mode: ComposerPromptMode) => void;
+  clearComposerDraft: () => void;
   setSearch: (value: string) => void;
   addUserMessage: (content: string, mode: ChatMode, chatId?: string | null) => MessageItem | null;
   addAssistantLoadingMessage: (chatId: string) => MessageItem | null;
@@ -131,6 +137,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   activeChatId: null,
   activeConversationId: null,
   messages: [],
+  composerDraft: "",
+  composerPromptMode: "general",
   search: "",
   privacyMode: false,
   qualityDebugEnabled: false,
@@ -142,17 +150,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const privacyMode = localStorage.getItem("clinical-privacy-mode") === "true";
     const qualityDebugEnabled = localStorage.getItem("clinical-quality-debug") === "true";
     const language = (localStorage.getItem("clinical-lang") as "fr" | "ar" | "en" | null) ?? "fr";
-    set({ theme, privacyMode, qualityDebugEnabled, language });
+    set({ theme, privacyMode, qualityDebugEnabled, language, composerDraft: "", composerPromptMode: "general" });
     const token = getStoredToken();
     if (!token) {
-      set({ chats: [], conversations: [], activeChatId: null, activeConversationId: null, messages: [] });
+      set({ chats: [], conversations: [], activeChatId: null, activeConversationId: null, messages: [], composerDraft: "", composerPromptMode: "general" });
     }
   },
 
   loadConversations: async (token) => {
     const accessToken = token || getStoredToken();
     if (!accessToken) {
-      set({ chats: [], conversations: [], activeChatId: null, activeConversationId: null, messages: [] });
+      set({ chats: [], conversations: [], activeChatId: null, activeConversationId: null, messages: [], composerDraft: "", composerPromptMode: "general" });
       return;
     }
     let rows;
@@ -161,7 +169,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch (error) {
       if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
         localStorage.removeItem(ACCESS_TOKEN_KEY);
-        set({ chats: [], conversations: [], activeChatId: null, activeConversationId: null, messages: [] });
+        set({ chats: [], conversations: [], activeChatId: null, activeConversationId: null, messages: [], composerDraft: "", composerPromptMode: "general" });
       }
       throw error;
     }
@@ -333,6 +341,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: chat?.messages || [],
     });
   },
+
+  setComposerDraft: (value) => set({ composerDraft: value }),
+
+  setComposerPromptMode: (mode) => set({ composerPromptMode: mode }),
+
+  clearComposerDraft: () => set({ composerDraft: "" }),
 
   setSearch: (value) => set({ search: value }),
 
@@ -517,12 +531,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   clearAllData: async () => {
-    set({ chats: [], conversations: [], activeChatId: null, activeConversationId: null, messages: [] });
+    set({ chats: [], conversations: [], activeChatId: null, activeConversationId: null, messages: [], composerDraft: "", composerPromptMode: "general" });
   },
 
   clearForLogout: () => {
     inFlightMessageLoads.clear();
-    set({ chats: [], conversations: [], activeChatId: null, activeConversationId: null, messages: [] });
+    set({ chats: [], conversations: [], activeChatId: null, activeConversationId: null, messages: [], composerDraft: "", composerPromptMode: "general" });
   },
 
   setTheme: (theme) => {

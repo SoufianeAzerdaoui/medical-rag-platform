@@ -251,6 +251,8 @@ interface ChatPayload {
   history: Array<{ role: string; content: string }>;
   document_id?: string;
   mode: ChatMode;
+  llm_provider_override?: string | null;
+  llm_model_override?: string | null;
 }
 
 interface RequestOptions extends RequestInit {

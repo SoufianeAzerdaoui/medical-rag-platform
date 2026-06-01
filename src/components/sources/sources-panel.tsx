@@ -224,7 +224,7 @@ export function SourcesPanel({ mobileOpen, onClose }: { mobileOpen: boolean; onC
 
   return (
     <>
-      <aside className="glass hidden h-screen w-80 shrink-0 flex-col border-y-0 border-r-0 p-4 xl:flex">
+      <aside className="glass hidden h-dvh w-80 shrink-0 flex-col border-y-0 border-r-0 p-4 xl:flex">
         <div className="mb-4 flex items-start gap-3">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent/10 text-accent">
             <ShieldCheck size={17} />
