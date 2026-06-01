@@ -24,8 +24,14 @@ type Theme = "light" | "dark" | "system";
 const ACCESS_TOKEN_KEY = "clinical-access-token";
 const inFlightMessageLoads = new Map<string, Promise<void>>();
 
-function getActiveChatTargetId(state: Pick<ChatState, "activeChatId" | "activeConversationId">): string | null {
-  return state.activeChatId || state.activeConversationId || null;
+function getActiveChatTargetId(
+  state: Pick<ChatState, "chats" | "activeChatId" | "activeConversationId">,
+): string | null {
+  const candidates = [state.activeConversationId, state.activeChatId].filter((value): value is string => Boolean(value));
+  for (const id of candidates) {
+    if (state.chats.some((chat) => chat.id === id)) return id;
+  }
+  return candidates[0] || null;
 }
 
 interface ChatState {
@@ -50,7 +56,7 @@ interface ChatState {
   newChat: () => string;
   setActiveChat: (id: string) => void;
   setSearch: (value: string) => void;
-  addUserMessage: (content: string, mode: ChatMode) => MessageItem | null;
+  addUserMessage: (content: string, mode: ChatMode, chatId?: string | null) => MessageItem | null;
   addAssistantLoadingMessage: (chatId: string) => MessageItem | null;
   resolveAssistantMessage: (
     chatId: string,
@@ -330,9 +336,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setSearch: (value) => set({ search: value }),
 
-  addUserMessage: (content, mode) => {
+  addUserMessage: (content, mode, chatId) => {
     const { chats } = get();
-    const activeTargetId = getActiveChatTargetId(get());
+    const explicitTarget = chatId || null;
+    const activeTargetId = explicitTarget && chats.some((chat) => chat.id === explicitTarget)
+      ? explicitTarget
+      : getActiveChatTargetId(get());
     if (!activeTargetId) return null;
     const hasTargetChat = chats.some((chat) => chat.id === activeTargetId);
     if (!hasTargetChat) return null;
@@ -388,7 +397,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   addAssistantLoadingMessage: (chatId) => {
     const { chats } = get();
-    const activeTargetId = getActiveChatTargetId(get()) || chatId;
+    const preferredTargetId = chats.some((chat) => chat.id === chatId) ? chatId : null;
+    const activeTargetId = preferredTargetId || getActiveChatTargetId(get());
+    if (!activeTargetId) return null;
     const hasTargetChat = chats.some((chat) => chat.id === activeTargetId);
     if (!hasTargetChat) return null;
     const msg: MessageItem = {

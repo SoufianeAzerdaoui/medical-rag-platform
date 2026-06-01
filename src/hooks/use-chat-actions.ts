@@ -53,7 +53,7 @@ export function useChatActions() {
         throw new Error(`Conversation ${chatId} absente du store frontend.`);
       }
 
-      const user = addUserMessage(content, mode);
+      const user = addUserMessage(content, mode, chatId);
       if (!user) {
         throw new Error(`Impossible d'ajouter le message utilisateur pour ${chatId}.`);
       }
