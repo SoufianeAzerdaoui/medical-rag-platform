@@ -19,6 +19,7 @@ from fastapi.responses import Response
 
 from backend import config
 from backend.database import db_connect as _db_connect, init_schema as _init_auth_db, now_iso
+from backend.logging_setup import configure_logging
 from backend.models import (
     ActiveModelResponse,
     AuthLoginRequest,
@@ -84,6 +85,7 @@ from scripts.generation.conversation_state_utils import update_conversation_stat
 from scripts.generation.source_resolver import DocPdfResolver, is_valid_doc_id
 
 app = FastAPI(title="Medical RAG Backend API", version="1.1.0")
+configure_logging()
 LOGGER = logging.getLogger("medical_rag.backend")
 
 if config.SENTRY_DSN:

@@ -17,6 +17,16 @@ services:
     volumes:
       - medical-rag-data:/app/data
       - medical-rag-logs:/app/logs
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - http://localhost:8000/health
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
     restart: unless-stopped
 
   frontend:
@@ -32,8 +42,88 @@ services:
       - "127.0.0.1:3000:3000"
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+
+  loki:
+    image: grafana/loki:3.7.2
+    profiles:
+      - observability
+    command:
+      - -config.file=/etc/loki/loki.yml
+    ports:
+      - "127.0.0.1:3100:3100"
+    volumes:
+      - ./config/observability/loki.yml:/etc/loki/loki.yml:ro
+      - medical-rag-loki-data:/loki
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.12.0
+    profiles:
+      - observability
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./config/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - medical-rag-prometheus-data:/prometheus
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:v1.16.1
+    profiles:
+      - observability
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    ports:
+      - "127.0.0.1:12345:12345"
+    volumes:
+      - ./config/observability/alloy.river:/etc/alloy/config.alloy:ro
+      - medical-rag-logs:/var/log/medical-rag:ro
+      - medical-rag-alloy-data:/var/lib/alloy/data
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.0.1-security-01
+    profiles:
+      - observability
+    environment:
+      GF_PATHS_DATA: /var/lib/grafana-data
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3001}
+      GF_SERVER_SERVE_FROM_SUB_PATH: "false"
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me-in-.env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_LOG_LEVEL: ${GRAFANA_LOG_LEVEL:-info}
+    ports:
+      - "127.0.0.1:3001:3000"
+    volumes:
+      - ./config/grafana:/var/lib/grafana/dashboards:ro
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - medical-rag-grafana-data:/var/lib/grafana-data
+    depends_on:
+      - loki
+      - prometheus
+      - alloy
+    restart: unless-stopped
 
 volumes:
   medical-rag-data:
   medical-rag-logs:
+  medical-rag-grafana-data:
+  medical-rag-loki-data:
+  medical-rag-prometheus-data:
+  medical-rag-alloy-data:

@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  - job_name: medical-rag-backend
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets:
+          - backend:8000
