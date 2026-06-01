@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect } from "react";
-import { AuthPanel } from "@/components/auth/auth-panel";
 import { ChatSidebar } from "@/components/sidebar/chat-sidebar";
 import { useAuthStore } from "@/store/auth-store";
 import { useChatStore } from "@/store/chat-store";
@@ -21,6 +21,9 @@ type WorkspaceShellProps = {
 };
 
 export function WorkspaceShell({ title, subtitle, breadcrumbs, actions = [], children }: WorkspaceShellProps) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const initialize = useChatStore((s) => s.initialize);
   const initializeAuth = useAuthStore((s) => s.initializeAuth);
   const authStatus = useAuthStore((s) => s.authStatus);
@@ -29,6 +32,13 @@ export function WorkspaceShell({ title, subtitle, breadcrumbs, actions = [], chi
     void initialize();
     void initializeAuth();
   }, [initialize, initializeAuth]);
+
+  useEffect(() => {
+    if (authStatus !== "unauthenticated") return;
+    const query = searchParams.toString();
+    const nextPath = `${pathname}${query ? `?${query}` : ""}`;
+    router.replace(`/auth?next=${encodeURIComponent(nextPath)}`);
+  }, [authStatus, pathname, router, searchParams]);
 
   if (authStatus === "loading") {
     return (
@@ -39,7 +49,11 @@ export function WorkspaceShell({ title, subtitle, breadcrumbs, actions = [], chi
   }
 
   if (authStatus === "unauthenticated") {
-    return <AuthPanel />;
+    return (
+      <div className="flex h-screen items-center justify-center px-6">
+        <div className="glass rounded-xl px-5 py-4 text-sm text-fg/70">Redirection vers l&apos;authentification...</div>
+      </div>
+    );
   }
 
   return (
