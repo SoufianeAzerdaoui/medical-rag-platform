@@ -23,6 +23,21 @@ class TestBackendConfigEnv(unittest.TestCase):
             self.assertIn("simo@test.ma", backend_config.ADMIN_EMAILS)
             self.assertIn("admin2@test.ma", backend_config.ADMIN_EMAILS)
 
+    def test_generation_model_settings_accept_legacy_env_names(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_PROVIDER": "gemini",
+                "GEMINI_MODEL": "gemini-2.5-flash",
+            },
+            clear=False,
+        ):
+            import scripts.generation.model_settings as model_settings
+
+            model_settings = importlib.reload(model_settings)
+            self.assertEqual(model_settings.DEFAULT_LLM_PROVIDER, "gemini")
+            self.assertEqual(model_settings.DEFAULT_LLM_MODEL, "gemini-2.5-flash")
+
 
 if __name__ == "__main__":
     unittest.main()

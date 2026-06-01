@@ -558,7 +558,7 @@ export default function UploadDocumentsPage() {
               <h2 className="mt-1 text-base font-semibold text-fg">Traitement sécurisé des nouveaux rapports PDF</h2>
               <p className="mt-1 text-xs text-fg/62">Extraction, chunking, anonymisation, indexation et disponibilité immédiate côté chat.</p>
             </div>
-            <div className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-card/[0.72] px-3 py-1.5 text-xs">
+          <div className="inline-flex w-full items-center justify-between gap-2 rounded-full border border-border/70 bg-card/[0.72] px-3 py-1.5 text-xs sm:w-auto">
               <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${stateBadgeClass(state)}`}>{stateLabel(state)}</span>
               <span className="text-fg/70">{progressPercent}%</span>
               {running ? <Loader2 size={12} className="animate-spin text-accent" /> : null}
@@ -594,7 +594,7 @@ export default function UploadDocumentsPage() {
 
         <section className="grid grid-cols-1 gap-4 xl:grid-cols-[1.45fr,1fr]">
           <article className={`${surfaceCardClass} hover:border-accent/20`}>
-            <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <div className="flex items-center gap-2">
                   <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-accent/30 bg-accent/12">
@@ -604,12 +604,12 @@ export default function UploadDocumentsPage() {
                 </div>
                 <p className="mt-1 text-xs text-fg/65">Détection des nouveaux rapports serveur avec validation avant lancement du pipeline complet.</p>
               </div>
-              <div className="flex flex-wrap items-center justify-end gap-2">
+              <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
                 <button
                   type="button"
                   onClick={() => void exportIngestionReport("csv")}
                   disabled={docsScanLoading || running || reportExportLoading !== null}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-border/75 bg-card/[0.66] px-3 py-1.5 text-xs font-medium text-fg/82 transition-all duration-200 hover:border-accent/30 hover:bg-card active:scale-[0.985] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:opacity-55"
+                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-border/75 bg-card/[0.66] px-3 py-1.5 text-xs font-medium text-fg/82 transition-all duration-200 hover:border-accent/30 hover:bg-card active:scale-[0.985] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:opacity-55 sm:w-auto"
                 >
                   {reportExportLoading === "csv" ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
                   Export CSV
@@ -618,7 +618,7 @@ export default function UploadDocumentsPage() {
                   type="button"
                   onClick={() => void exportIngestionReport("pdf")}
                   disabled={docsScanLoading || running || reportExportLoading !== null}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-border/75 bg-card/[0.66] px-3 py-1.5 text-xs font-medium text-fg/82 transition-all duration-200 hover:border-accent/30 hover:bg-card active:scale-[0.985] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:opacity-55"
+                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-border/75 bg-card/[0.66] px-3 py-1.5 text-xs font-medium text-fg/82 transition-all duration-200 hover:border-accent/30 hover:bg-card active:scale-[0.985] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:opacity-55 sm:w-auto"
                 >
                   {reportExportLoading === "pdf" ? <Loader2 size={13} className="animate-spin" /> : <FileText size={13} />}
                   Export PDF
@@ -627,7 +627,7 @@ export default function UploadDocumentsPage() {
                   type="button"
                   onClick={() => void refreshDocsScan()}
                   disabled={docsScanLoading || running}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-border/75 bg-card/[0.66] px-3 py-1.5 text-xs font-medium text-fg/82 transition-all duration-200 hover:border-accent/30 hover:bg-card active:scale-[0.985] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:opacity-55"
+                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-border/75 bg-card/[0.66] px-3 py-1.5 text-xs font-medium text-fg/82 transition-all duration-200 hover:border-accent/30 hover:bg-card active:scale-[0.985] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:opacity-55 sm:w-auto"
                 >
                   {docsScanLoading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
                   Actualiser docs/
@@ -635,7 +635,7 @@ export default function UploadDocumentsPage() {
               </div>
             </div>
 
-            <div className="mb-3 flex flex-wrap items-center gap-2">
+            <div className="mb-3 flex items-center gap-2 overflow-x-auto pb-1">
               <span className="inline-flex items-center gap-1 text-[11px] uppercase tracking-[0.12em] text-fg/55">
                 <ListFilter size={12} />
                 Filtres
@@ -663,14 +663,14 @@ export default function UploadDocumentsPage() {
                   </button>
                 );
               })}
-              <span className="ml-auto text-xs text-fg/58">{filteredDocsScan.length} affiché(s)</span>
+              <span className="ml-auto shrink-0 text-xs text-fg/58">{filteredDocsScan.length} affiché(s)</span>
             </div>
 
             <div className="rounded-xl border border-border/65 bg-card/[0.42]">
               {filteredDocsScan.length === 0 ? (
                 <div className="px-3 py-3 text-xs text-fg/58">{docsScanLoading ? "Scan en cours..." : "Aucun PDF détecté dans docs/."}</div>
               ) : (
-                <div className="max-h-[22rem] overflow-auto">
+                <div className="max-h-[18rem] overflow-auto sm:max-h-[22rem]">
                   {filteredDocsScan.map((item) => {
                     const checked = selectedDocFilenames.includes(item.filename);
                     return (
@@ -756,7 +756,7 @@ export default function UploadDocumentsPage() {
             </div>
 
             <div className="mt-3 rounded-lg border border-border/65 bg-card/[0.45] px-3 py-2">
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
                 <span className="text-xs text-fg/65">Actions groupées</span>
                 <span className="rounded-full border border-border/70 bg-card/[0.7] px-2 py-0.5 text-[11px] text-fg/72">
                   {selectedDuplicateCount} doublon(s) sélectionné(s)
@@ -765,7 +765,7 @@ export default function UploadDocumentsPage() {
                   type="button"
                   onClick={() => void applyBulkWhitelist(true)}
                   disabled={selectedDuplicateCount === 0 || bulkActionLoading || running}
-                  className="inline-flex items-center gap-1 rounded-lg border border-emerald-500/35 bg-emerald-500/12 px-2.5 py-1 text-[11px] text-emerald-500 transition hover:bg-emerald-500/18 disabled:opacity-55"
+                  className="inline-flex w-full items-center justify-center gap-1 rounded-lg border border-emerald-500/35 bg-emerald-500/12 px-2.5 py-1 text-[11px] text-emerald-500 transition hover:bg-emerald-500/18 disabled:opacity-55 sm:w-auto"
                 >
                   {bulkActionLoading ? <Loader2 size={11} className="animate-spin" /> : <ShieldCheck size={11} />}
                   Whitelist sélection
@@ -774,7 +774,7 @@ export default function UploadDocumentsPage() {
                   type="button"
                   onClick={() => void applyBulkWhitelist(false)}
                   disabled={selectedDuplicateCount === 0 || bulkActionLoading || running}
-                  className="inline-flex items-center gap-1 rounded-lg border border-rose-500/35 bg-rose-500/12 px-2.5 py-1 text-[11px] text-rose-500 transition hover:bg-rose-500/18 disabled:opacity-55"
+                  className="inline-flex w-full items-center justify-center gap-1 rounded-lg border border-rose-500/35 bg-rose-500/12 px-2.5 py-1 text-[11px] text-rose-500 transition hover:bg-rose-500/18 disabled:opacity-55 sm:w-auto"
                 >
                   {bulkActionLoading ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />}
                   Retirer whitelist
@@ -787,7 +787,7 @@ export default function UploadDocumentsPage() {
                 type="button"
                 onClick={selectOnlyNewDocs}
                 disabled={docsScan.length === 0 || running}
-                className={`${secondaryActionClass} w-full sm:w-auto`}
+                className={`${secondaryActionClass} w-full justify-center sm:w-auto`}
               >
                 Sélectionner nouveaux
               </button>
@@ -795,7 +795,7 @@ export default function UploadDocumentsPage() {
                 type="button"
                 onClick={selectAllDocs}
                 disabled={docsScan.length === 0 || running}
-                className={`${secondaryActionClass} w-full sm:w-auto`}
+                className={`${secondaryActionClass} w-full justify-center sm:w-auto`}
               >
                 Tout sélectionner
               </button>
@@ -943,7 +943,7 @@ export default function UploadDocumentsPage() {
             </ul>
             <div className="mt-3 rounded-lg border border-border/65 bg-card/[0.45] px-3 py-2.5 text-xs">
               <p className="mb-2 text-[11px] uppercase tracking-[0.12em] text-fg/55">Suivi job async</p>
-              <div className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-1.5">
+              <div className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-1.5 text-[11px] sm:text-xs">
                 <span className="text-fg/62">Job ID</span>
                 <span className="truncate font-mono text-[11px] text-fg/85">{activeJobId || "—"}</span>
                 <span className="text-fg/62">Démarré</span>
@@ -964,7 +964,7 @@ export default function UploadDocumentsPage() {
 
         {result ? (
           <section className={`${surfaceCardClass} hover:border-accent/20`}>
-            <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-sm font-semibold text-fg">Documents prêts pour interrogation</h2>
                 <p className="text-xs text-fg/65">
@@ -995,12 +995,12 @@ export default function UploadDocumentsPage() {
                         </div>
                         <p className="line-clamp-1 text-xs text-fg/62">{row.filename}</p>
                       </div>
-                      <div className="flex shrink-0 flex-wrap gap-2">
+                      <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:flex-wrap">
                         <button
                           type="button"
                           onClick={() => void summarizeDocument(label)}
                           disabled={sending}
-                          className={subtleActionClass}
+                          className={`${subtleActionClass} w-full justify-center sm:w-auto`}
                         >
                           <FileText size={12} /> Résumer
                         </button>
@@ -1008,7 +1008,7 @@ export default function UploadDocumentsPage() {
                           type="button"
                           onClick={() => void queryDocument(label)}
                           disabled={sending}
-                          className={subtleActionClass}
+                          className={`${subtleActionClass} w-full justify-center sm:w-auto`}
                         >
                           <Search size={12} /> Interroger
                         </button>
@@ -1037,8 +1037,8 @@ export default function UploadDocumentsPage() {
         ) : null}
       </main>
       {selectedDuplicateDoc ? (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/72 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-2xl rounded-2xl border border-border/80 bg-card/[0.96] p-4 shadow-[0_24px_70px_rgba(2,8,23,0.5)]">
+        <div className="fixed inset-0 z-[80] flex items-end justify-center bg-slate-950/72 p-3 backdrop-blur-sm sm:items-center sm:p-4">
+          <div className="flex max-h-[92dvh] w-full max-w-2xl flex-col overflow-auto rounded-2xl border border-border/80 bg-card/[0.96] p-4 shadow-[0_24px_70px_rgba(2,8,23,0.5)] sm:max-h-[88dvh]">
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
                 <p className="text-[11px] uppercase tracking-[0.13em] text-fg/55">Audit doublon</p>
@@ -1055,7 +1055,7 @@ export default function UploadDocumentsPage() {
               </button>
             </div>
 
-            <div className="grid grid-cols-1 gap-2 rounded-lg border border-border/70 bg-card/[0.6] p-3 text-xs sm:grid-cols-2">
+            <div className="grid max-h-[28dvh] grid-cols-1 gap-2 overflow-auto rounded-lg border border-border/70 bg-card/[0.6] p-3 text-xs sm:max-h-none sm:grid-cols-2 sm:overflow-visible">
               <div>
                 <p className="text-fg/55">Hash SHA-256</p>
                 <p className="mt-0.5 break-all font-mono text-[11px] text-fg/88">{selectedDuplicateDoc.file_hash || "—"}</p>
@@ -1129,7 +1129,7 @@ export default function UploadDocumentsPage() {
 
             <div className="mt-3">
               <p className="mb-2 text-xs font-medium text-fg/88">Timeline d’évènements document</p>
-              <div className="mb-3 max-h-40 overflow-auto rounded-lg border border-border/70">
+              <div className="mb-3 max-h-36 overflow-auto rounded-lg border border-border/70 sm:max-h-40">
                 {timelineLoading ? (
                   <div className="px-3 py-2 text-xs text-fg/60">Chargement timeline...</div>
                 ) : timelineEvents.length === 0 ? (
@@ -1148,7 +1148,7 @@ export default function UploadDocumentsPage() {
               </div>
 
               <p className="mb-2 text-xs font-medium text-fg/88">Historique des fichiers au même hash</p>
-              <div className="max-h-56 overflow-auto rounded-lg border border-border/70">
+              <div className="max-h-40 overflow-auto rounded-lg border border-border/70 sm:max-h-56">
                 {selectedDuplicateDoc.duplicate_entries.length === 0 ? (
                   <div className="px-3 py-2 text-xs text-fg/58">Aucun historique disponible.</div>
                 ) : (

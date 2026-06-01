@@ -3,9 +3,7 @@ name: CI
 on:
   push:
     branches:
-      - main
-      - deployment_sa
-      - dep_config
+      - "**"
   pull_request:
 
 concurrency:

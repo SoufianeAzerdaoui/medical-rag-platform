@@ -15,7 +15,19 @@ export function useChatActions() {
   const startNewConversation = useChatStore((s) => s.startNewConversation);
 
   const mutation = useMutation({
-    mutationFn: async ({ content, mode }: { content: string; mode: ChatMode }) => {
+    mutationFn: async (
+      {
+        content,
+        mode,
+        llmProviderOverride,
+        llmModelOverride,
+      }: {
+        content: string;
+        mode: ChatMode;
+        llmProviderOverride?: string | null;
+        llmModelOverride?: string | null;
+      },
+    ) => {
       const auth = useAuthStore.getState();
       const token = auth.accessToken;
       if (!token) {
@@ -70,6 +82,8 @@ export function useChatActions() {
           message: content,
           history: toHistory(chat?.messages || []),
           mode,
+          llm_provider_override: llmProviderOverride,
+          llm_model_override: llmModelOverride,
         }, token);
         const enriched = response as typeof response & {
           debug?: Record<string, unknown> | null;

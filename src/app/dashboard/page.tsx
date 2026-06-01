@@ -111,8 +111,8 @@ export default function DashboardPage() {
         { href: "/chat", label: "Nouvelle conversation" },
       ]}
     >
-      <main className="mx-auto max-w-7xl space-y-5 px-5 py-6 sm:px-6">
-        <section className="rounded-xl border border-border/70 bg-card/[0.55] p-4">
+      <main className="mx-auto max-w-7xl space-y-4 px-4 py-4 sm:space-y-5 sm:px-6 sm:py-6">
+        <section className="rounded-xl border border-border/70 bg-card/[0.55] p-3 sm:p-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 className="text-sm font-semibold">Vue minimaliste observabilité</h2>
@@ -125,7 +125,7 @@ export default function DashboardPage() {
               type="button"
               onClick={() => void refreshDashboard(false)}
               disabled={loading}
-              className="inline-flex items-center gap-1 rounded-md border border-border/75 bg-card/[0.7] px-3 py-1.5 text-xs font-medium text-fg/82 transition hover:bg-card disabled:opacity-60"
+              className="inline-flex w-full items-center justify-center gap-1 rounded-md border border-border/75 bg-card/[0.7] px-3 py-1.5 text-xs font-medium text-fg/82 transition hover:bg-card disabled:opacity-60 sm:w-auto"
             >
               <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
               {loading ? "Actualisation…" : "Actualiser"}
@@ -145,7 +145,7 @@ export default function DashboardPage() {
           </section>
         ) : null}
 
-        <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           {cards.map((card) => (
             <KpiCard key={card.label} icon={card.icon} label={card.label} value={card.value} tone={card.tone} />
           ))}
@@ -153,13 +153,13 @@ export default function DashboardPage() {
 
         <Panel title="État runtime">
           <ul className="space-y-2 text-sm">
-            <li className="flex items-center justify-between rounded-md border border-border/65 bg-card/[0.46] px-3 py-2">
+            <li className="flex flex-col gap-1 rounded-md border border-border/65 bg-card/[0.46] px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
               <span className="text-fg/82">API backend</span>
               <span className={backendStatus === "online" ? "text-emerald-400" : backendStatus === "offline" ? "text-rose-400" : "text-fg/65"}>
                 {backendStatus === "checking" ? "Checking" : backendStatus === "online" ? "OK" : "Issue"}
               </span>
             </li>
-            <li className="flex items-center justify-between rounded-md border border-border/65 bg-card/[0.46] px-3 py-2">
+            <li className="flex flex-col gap-1 rounded-md border border-border/65 bg-card/[0.46] px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
               <span className="text-fg/82">Monitoring summary</span>
               <span
                 className={
@@ -173,7 +173,7 @@ export default function DashboardPage() {
                 {monitoringAccess === "ok" ? "OK" : monitoringAccess === "forbidden" ? "Restreint" : "N/A"}
               </span>
             </li>
-            <li className="flex items-center justify-between rounded-md border border-border/65 bg-card/[0.46] px-3 py-2">
+            <li className="flex flex-col gap-1 rounded-md border border-border/65 bg-card/[0.46] px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
               <span className="text-fg/82">Grafana readiness</span>
               <span className="text-sky-300">Ready (metrics endpoint available)</span>
             </li>
@@ -196,12 +196,12 @@ function KpiCard({
   tone?: "good" | "bad" | "neutral";
 }) {
   return (
-    <article className="rounded-lg border border-border/70 bg-card/[0.55] px-4 py-3">
+    <article className="rounded-lg border border-border/70 bg-card/[0.55] px-3 py-3 sm:px-4">
       <div className="mb-2 flex items-center gap-2">
         <Icon size={14} className="text-accent" />
         <p className="text-xs font-medium uppercase tracking-[0.12em] text-fg/58">{label}</p>
       </div>
-      <p className={tone === "good" ? "text-2xl font-semibold text-emerald-400" : tone === "bad" ? "text-2xl font-semibold text-rose-400" : "text-2xl font-semibold text-fg"}>
+      <p className={tone === "good" ? "text-xl font-semibold text-emerald-400 sm:text-2xl" : tone === "bad" ? "text-xl font-semibold text-rose-400 sm:text-2xl" : "text-xl font-semibold text-fg sm:text-2xl"}>
         {value}
       </p>
     </article>
@@ -210,7 +210,7 @@ function KpiCard({
 
 function Panel({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="rounded-lg border border-border/70 bg-card/[0.55] p-4">
+    <section className="rounded-lg border border-border/70 bg-card/[0.55] p-3 sm:p-4">
       <div className="mb-3 flex items-center gap-2">
         <Activity size={15} className="text-accent" />
         <h2 className="text-sm font-semibold text-fg">{title}</h2>

@@ -17,6 +17,7 @@ class ChatRequest(BaseModel):
     history: list[ChatHistoryItem] = Field(default_factory=list)
     document_id: str | None = None
     mode: Literal["general", "document_analysis", "comparison", "summary"] = "general"
+    llm_provider_override: str | None = Field(default=None, min_length=1)
     llm_model_override: str | None = Field(default=None, min_length=1)
 
     def resolved_conversation_id(self) -> str:

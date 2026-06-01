@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { Activity, Download, FileText, LayoutDashboard, LogOut, MessageSquare, MessageSquarePlus, Search, Settings, SunMoon } from "lucide-react";
+import { Activity, Download, FileText, LayoutDashboard, LogOut, MessageSquare, MessageSquarePlus, Search, Settings, SunMoon, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -47,7 +47,12 @@ function summarizeConversation(chat: ChatItem): { sourceCount: number } {
   };
 }
 
-export function ChatSidebar() {
+type ChatSidebarProps = {
+  mobileOpen?: boolean;
+  onMobileClose?: () => void;
+};
+
+export function ChatSidebar({ mobileOpen = false, onMobileClose }: ChatSidebarProps) {
   const chats = useChatStore((s) => s.chats);
   const activeChatId = useChatStore((s) => s.activeChatId);
   const search = useChatStore((s) => s.search);
@@ -214,6 +219,7 @@ export function ChatSidebar() {
     const createdId = await startNewConversation(token);
     if (createdId) {
       router.push(`/chat/${createdId}`);
+      onMobileClose?.();
     }
   }
 
@@ -227,6 +233,7 @@ export function ChatSidebar() {
         router.push("/chat");
       }
     }
+    onMobileClose?.();
   }
 
   const navItems = [
@@ -241,8 +248,27 @@ export function ChatSidebar() {
   }
 
   return (
-    <aside className="glass flex h-screen w-80 shrink-0 flex-col border-y-0 border-l-0 p-4">
-      <div className="mb-4 rounded-xl border border-border/70 bg-card/[0.46] p-3">
+    <>
+      <AnimatePresence>
+        {mobileOpen ? (
+          <motion.button
+            type="button"
+            className="fixed inset-0 z-[55] bg-black/50 backdrop-blur-[2px] xl:hidden"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            aria-label="Fermer le menu latéral"
+            onClick={() => onMobileClose?.()}
+          />
+        ) : null}
+      </AnimatePresence>
+      <aside
+        className={cn(
+          "chat-sidebar-shell glass fixed inset-y-0 left-0 z-[60] flex h-dvh w-[92vw] max-w-[18.5rem] shrink-0 flex-col border-y-0 border-l-0 border-border/70 p-3 shadow-[0_24px_80px_rgba(0,0,0,0.42)] transition-[transform,opacity] duration-300 ease-out sm:p-4 xl:static xl:z-auto xl:flex xl:h-dvh xl:w-80 xl:max-w-none xl:translate-x-0 xl:opacity-100 xl:shadow-none",
+          mobileOpen ? "translate-x-0 opacity-100 pointer-events-auto" : "-translate-x-full opacity-0 pointer-events-none xl:pointer-events-auto",
+        )}
+      >
+      <div className="sidebar-brand mb-4 rounded-xl border border-border/70 bg-card/[0.46] p-3">
         <div className="flex items-start gap-3">
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent text-white shadow-sm">
           <Activity size={18} />
@@ -264,16 +290,24 @@ export function ChatSidebar() {
             </span>
           </p>
         </div>
+          <button
+            type="button"
+            className="ml-auto inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/80 bg-card/70 text-fg/75 transition hover:border-accent/30 hover:bg-accent/10 hover:text-fg xl:hidden"
+            aria-label="Fermer le menu latéral"
+            onClick={() => onMobileClose?.()}
+          >
+            <X size={16} />
+          </button>
         </div>
       </div>
       <button
         aria-label="Nouveau chat"
         onClick={() => void onStartConversation()}
-        className="mb-3 flex h-10 items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-slate-950 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:bg-accent/90 active:translate-y-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/55"
+        className="sidebar-new-chat mb-3 flex h-10 items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-slate-950 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:bg-accent/90 active:translate-y-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/55"
       >
         <MessageSquarePlus size={16} /> Nouvelle conversation
       </button>
-      <div className="mb-3 flex h-10 items-center gap-2 rounded-lg border border-border/80 bg-card/[0.72] px-3 py-2 shadow-sm">
+      <div className="sidebar-search mb-3 flex h-10 items-center gap-2 rounded-lg border border-border/80 bg-card/[0.72] px-3 py-2 shadow-sm">
         <Search size={14} className="text-fg/[0.48]" />
         <input
           ref={searchRef}
@@ -284,7 +318,7 @@ export function ChatSidebar() {
           onChange={(e) => setSearch(e.target.value)}
         />
       </div>
-      <section className="mb-3 rounded-lg border border-border/70 bg-card/[0.45] p-2">
+      <section className="sidebar-nav mb-3 rounded-lg border border-border/70 bg-card/[0.45] p-2">
         <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-fg/[0.72]">Navigation</p>
         <div className="space-y-1">
           {navItems.map((item) => {
@@ -300,6 +334,7 @@ export function ChatSidebar() {
                     ? "nav-active"
                     : "border-transparent hover:border-border/70 hover:bg-card/[0.72]",
                 )}
+                onClick={() => onMobileClose?.()}
               >
                 <item.icon size={15} />
                 <span className="font-medium">{item.label}</span>
@@ -308,7 +343,7 @@ export function ChatSidebar() {
           })}
         </div>
       </section>
-      <div className="flex-1 space-y-3 overflow-auto pr-0.5">
+      <div className="sidebar-conversation-list flex-1 space-y-3 overflow-auto pr-0.5">
         {Object.entries(grouped).map(([label, items]) =>
           items.length === 0 ? null : (
             <section key={label} aria-label={label}>
@@ -331,7 +366,10 @@ export function ChatSidebar() {
                       sourceCount={summary.sourceCount}
                       isFavorited={chat.favorite}
                       active={chat.id === activeChatId}
-                      onClick={() => router.push(`/chat/${chat.id}`)}
+                      onClick={() => {
+                        router.push(`/chat/${chat.id}`);
+                        onMobileClose?.();
+                      }}
                       onToggleFavorite={() => toggleFavorite(chat.id)}
                       onDelete={() => {
                         if (window.confirm("Supprimer cette conversation ?")) {
@@ -443,5 +481,6 @@ export function ChatSidebar() {
           )
         : null}
     </aside>
+    </>
   );
 }

@@ -70,3 +70,32 @@
   color: rgba(255, 255, 255, 0.4);
   flex-shrink: 0;
 }
+
+@media (max-width: 380px) {
+  .sidebar-footer {
+    width: calc(100% - 12px);
+    margin: 3px 6px 6px;
+    padding: 9px 10px;
+    gap: 8px;
+  }
+
+  .user-avatar {
+    width: 30px;
+    height: 30px;
+    font-size: 12px;
+  }
+
+  .user-name {
+    font-size: 12px;
+  }
+
+  .user-email {
+    max-width: 104px;
+    font-size: 10px;
+  }
+
+  .sidebar-footer-chevron {
+    width: 14px;
+    height: 14px;
+  }
+}

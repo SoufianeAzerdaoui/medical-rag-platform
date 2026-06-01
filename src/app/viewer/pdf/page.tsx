@@ -55,13 +55,13 @@ export default async function PdfViewerPage({
     : null;
 
   return (
-    <main className="h-screen p-3 md:p-4">
-      <div className="mb-3 flex items-center justify-between rounded-lg border border-border bg-card/40 px-3 py-2">
-        <div>
+    <main className="flex min-h-dvh flex-col gap-3 p-3 md:p-4">
+      <div className="flex flex-col gap-3 rounded-lg border border-border bg-card/40 px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-3 sm:py-2">
+        <div className="min-w-0">
           <div className="text-sm font-medium">{title}</div>
           {lineFocusText ? <div className="mt-0.5 text-xs font-medium text-accent">{lineFocusText}</div> : null}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           {lineFocusText ? (
             <span className="rounded-full border border-accent/30 bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent">
               {lineFocusText}
@@ -72,7 +72,7 @@ export default async function PdfViewerPage({
           </a>
         </div>
       </div>
-      <iframe title={title} src={pdfHref} className="h-[calc(100vh-4.5rem)] w-full rounded-lg border border-border bg-background" />
+      <iframe title={title} src={pdfHref} className="min-h-[70dvh] flex-1 w-full rounded-lg border border-border bg-background" />
     </main>
   );
 }

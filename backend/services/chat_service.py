@@ -48,6 +48,46 @@ def _advanced_debug_enabled() -> bool:
     return str(os.getenv("APP_ENV", "")).strip().lower() in {"dev", "development", "test", "local"}
 
 
+def _normalize_llm_provider(provider: str | None) -> str:
+    raw = str(provider or "").strip().lower()
+    if raw in {"google", "google_ai_studio", "google-ai-studio", "google ai studio"}:
+        return "gemini"
+    return raw
+
+
+def _infer_provider_from_model(model: str | None) -> str:
+    raw = str(model or "").strip().lower()
+    if raw.startswith("gemini"):
+        return "gemini"
+    if raw.startswith("gpt-"):
+        return "openai"
+    if raw.startswith("llama"):
+        return "ollama"
+    return str(DEFAULT_LLM_PROVIDER or "").strip().lower() or "ollama"
+
+
+def _resolve_llm_request(
+    *,
+    requested_provider_override: str | None,
+    requested_model_override: str | None,
+) -> tuple[str, str]:
+    provider_override = _normalize_llm_provider(requested_provider_override)
+    model_override = str(requested_model_override or "").strip()
+
+    provider = provider_override or str(DEFAULT_LLM_PROVIDER or "").strip().lower() or "ollama"
+    model = model_override or str(DEFAULT_LLM_MODEL or "").strip() or "llama3.2:latest"
+
+    if not provider_override and model_override:
+        provider = _infer_provider_from_model(model_override)
+
+    if provider == "gemini" and not model_override:
+        model = str(os.getenv("GEMINI_MODEL", "gemini-2.5-flash")).strip() or "gemini-2.5-flash"
+    elif provider == "ollama" and not model_override and not model.startswith("llama"):
+        model = "llama3.2:latest"
+
+    return provider, model
+
+
 def to_source_items(result: dict[str, Any]) -> list[SourceItem]:
     items: list[SourceItem] = []
 
@@ -563,14 +603,18 @@ def process_chat(
         )
 
         query = f"{payload.message} doc_id {payload.document_id}" if payload.document_id else payload.message
+        requested_provider_override = str(payload.llm_provider_override or "").strip() or None
         requested_model_override = str(payload.llm_model_override or "").strip() or None
-        allow_model_override = _debug_or_devtest_enabled()
-        model_for_request = requested_model_override if (allow_model_override and requested_model_override) else DEFAULT_LLM_MODEL
+        allow_model_override = _debug_or_devtest_enabled() or bool(requested_provider_override or requested_model_override)
+        provider_for_request, model_for_request = _resolve_llm_request(
+            requested_provider_override=requested_provider_override if allow_model_override else None,
+            requested_model_override=requested_model_override if allow_model_override else None,
+        )
         generation = run_generation(
             query=query,
             top_k=5,
             mode="hybrid",
-            provider=DEFAULT_LLM_PROVIDER,
+            provider=provider_for_request,
             model=model_for_request,
             temperature=DEFAULT_LLM_TEMPERATURE,
             num_ctx=DEFAULT_LLM_NUM_CTX,
@@ -684,10 +728,20 @@ def process_chat(
         generation_debug = generation.get("debug") if isinstance(generation.get("debug"), dict) else {}
         llm_provider = str(generation.get("provider") or "") or None
         llm_model_requested = str(generation.get("model") or "") or None
-        llm_model_effective = str(generation_debug.get("ollama_model") or "") or None
+        llm_provider_effective = str(
+            generation_debug.get("llm_provider")
+            or generation_debug.get("provider")
+            or ""
+        ) or None
+        llm_model_effective = str(
+            generation_debug.get("llm_model")
+            or generation_debug.get("ollama_model")
+            or generation_debug.get("gemini_model")
+            or ""
+        ) or None
         model_verified = None
-        if llm_model_requested or llm_model_effective:
-            model_verified = llm_model_requested == llm_model_effective
+        if llm_provider or llm_model_requested or llm_provider_effective or llm_model_effective:
+            model_verified = llm_provider == llm_provider_effective and llm_model_requested == llm_model_effective
         requested_analyte_labels = _extract_requested_analyte_labels(qu, generation, generation_debug)
         canonical_requested_analytes = _canonicalize_analytes(requested_analyte_labels)
         qu_debug = dict(qu) if qu else {}
@@ -733,9 +787,13 @@ def process_chat(
                     "llm_model_override_allowed": allow_model_override,
                     "llm_model_override_applied": bool(requested_model_override and allow_model_override),
                     "llm_model_override_rejected": bool(requested_model_override and not allow_model_override),
+                    "llm_provider_override_requested": requested_provider_override,
+                    "llm_provider_requested": llm_provider,
+                    "llm_provider_effective": llm_provider_effective,
                     "llm_model_requested": llm_model_requested,
                     "llm_model_effective": llm_model_effective,
                     "ollama_model": str((generation_debug.get("ollama_model") or "")) or None,
+                    "gemini_model": str((generation_debug.get("gemini_model") or "")) or None,
                     "model_verified": model_verified,
                     "llm_route_class": llm_observability["llm_route_class"],
                     "llm_prompt_policy_version": llm_observability["llm_prompt_policy_version"],
