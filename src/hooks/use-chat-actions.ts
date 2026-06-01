@@ -9,6 +9,7 @@ export function useChatActions() {
   const router = useRouter();
   const addUserMessage = useChatStore((s) => s.addUserMessage);
   const addAssistantLoadingMessage = useChatStore((s) => s.addAssistantLoadingMessage);
+  const addAssistantMessage = useChatStore((s) => s.addAssistantMessage);
   const resolveAssistantMessage = useChatStore((s) => s.resolveAssistantMessage);
   const failAssistantMessage = useChatStore((s) => s.failAssistantMessage);
   const startNewConversation = useChatStore((s) => s.startNewConversation);
@@ -21,23 +22,46 @@ export function useChatActions() {
         throw new Error("Authentification requise");
       }
 
-      let chatId = useChatStore.getState().activeConversationId;
+      const hasChatInStore = (id: string) => useChatStore.getState().chats.some((c) => c.id === id);
+
+      let chatId = useChatStore.getState().activeConversationId || useChatStore.getState().activeChatId;
       if (!chatId) {
         chatId = await startNewConversation(token);
         if (chatId) {
           router.push(`/chat/${chatId}`);
         }
       }
+      if (!chatId) {
+        throw new Error("Conversation introuvable pour l'envoi.");
+      }
+
+      if (!hasChatInStore(chatId)) {
+        try {
+          await useChatStore.getState().loadMessages(chatId, token);
+        } catch {
+          // Ignore and try a broader resync.
+        }
+      }
+      if (!hasChatInStore(chatId)) {
+        try {
+          await useChatStore.getState().loadConversations(token);
+        } catch {
+          // Ignore; we still surface a clear error below.
+        }
+      }
+      if (!hasChatInStore(chatId)) {
+        throw new Error(`Conversation ${chatId} absente du store frontend.`);
+      }
 
       const user = addUserMessage(content, mode);
-      if (!user || !chatId) {
-        throw new Error("Unable to add user message");
+      if (!user) {
+        throw new Error(`Impossible d'ajouter le message utilisateur pour ${chatId}.`);
       }
 
       const chat = useChatStore.getState().chats.find((c) => c.id === chatId);
       const loading = addAssistantLoadingMessage(chatId);
       if (!loading) {
-        throw new Error("Unable to create loading message");
+        throw new Error(`Impossible de créer le message loading pour ${chatId}.`);
       }
 
       try {
@@ -163,6 +187,26 @@ export function useChatActions() {
           "Une erreur interne a empêché la génération complète de la réponse. Les données indexées restent disponibles ; veuillez relancer la demande ou simplifier la formulation.",
         );
         throw error;
+      }
+    },
+    onError: (error) => {
+      const state = useChatStore.getState();
+      const chatId = state.activeConversationId || state.activeChatId;
+      if (chatId) {
+        addAssistantMessage(
+          chatId,
+          "Envoi impossible côté interface. Rechargez la page puis relancez la question.",
+          [],
+        );
+      }
+      if (typeof window !== "undefined") {
+        // Visible only in browser console for rapid production diagnostics.
+        console.error("chat_send_failed", {
+          error,
+          activeChatId: state.activeChatId,
+          activeConversationId: state.activeConversationId,
+          chatsCount: state.chats.length,
+        });
       }
     },
   });
