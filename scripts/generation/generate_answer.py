@@ -9347,14 +9347,53 @@ def _summary_directional_status_conflicts(
     answer: str,
     evidences: list[dict[str, Any]],
 ) -> list[str]:
+    def _split_summary_sentences(text: str) -> list[str]:
+        raw = str(text or "").strip()
+        if not raw:
+            return []
+        parts = re.split(r"(?:\n|;|[!?]+|(?<=[A-Za-zÀ-ÿ\)])\.(?=\s|$))+", raw)
+        return [part.strip() for part in parts if part and part.strip()]
+
+    def _sentence_mentions_analyte(sentence_norm: str, sentence_compact: str, ev: dict[str, Any]) -> bool:
+        raw_variants = [
+            str(ev.get("analyte") or ""),
+            str(ev.get("analyte_label") or ""),
+            str(ev.get("display_name") or ""),
+            str(ev.get("source_analyte") or ""),
+            str(ev.get("analyte_norm") or ""),
+        ]
+        canonical_key = _canonical_analyte_key(
+            str(ev.get("analyte_norm") or ev.get("analyte") or ev.get("display_name") or "")
+        )
+        if canonical_key:
+            raw_variants.append(canonical_key)
+            raw_variants.append(_canonical_display_name(canonical_key.replace(" ", "_")))
+
+        seen: set[str] = set()
+        for raw_variant in raw_variants:
+            cleaned = _clean_analyte_label(raw_variant).strip()
+            if not cleaned:
+                continue
+            variant_norm = norm_text(cleaned)
+            if not variant_norm or variant_norm in seen:
+                continue
+            seen.add(variant_norm)
+            if variant_norm in sentence_norm:
+                return True
+            variant_compact = re.sub(r"[^a-z0-9]+", "", variant_norm)
+            if len(variant_compact) >= 3 and variant_compact in sentence_compact:
+                return True
+        return False
+
     conflicts: list[str] = []
-    sentences = [s.strip() for s in re.split(r"[.\n;]+", str(answer or "")) if s.strip()]
+    sentences = _split_summary_sentences(str(answer or ""))
     if not sentences:
         return conflicts
     directional_tokens = ["au dessus", "au-dessus", "above", "superieur", "supérieur", "en dessous", "below", "inferieur", "inférieur"]
     evidence_rows = list(evidences or [])
     for s in sentences:
         sn = norm_text(s)
+        sn_compact = re.sub(r"[^a-z0-9]+", "", sn)
         has_direction = any(k in sn for k in directional_tokens)
         if not has_direction:
             continue
@@ -9364,8 +9403,7 @@ def _summary_directional_status_conflicts(
             analyte = _clean_analyte_label(str(ev.get("analyte") or ev.get("analyte_label") or ev.get("display_name") or "")).strip()
             if not analyte:
                 continue
-            analyte_norm = norm_text(analyte)
-            if analyte_norm and analyte_norm not in sn:
+            if not _sentence_mentions_analyte(sn, sn_compact, ev):
                 continue
 
             matched_evidence = True
@@ -9494,6 +9532,11 @@ def _summary_quality_gate_requires_deterministic_fallback(
         return False
 
     return not bool(quality_gate_result.get("pass"))
+
+
+def _summary_conflicts_only_soft_unmatched_directional(conflicts: list[str] | set[str] | tuple[str, ...] | None) -> bool:
+    normalized = {str(conflict or "").strip() for conflict in (conflicts or []) if str(conflict or "").strip()}
+    return bool(normalized) and normalized == {"directional_claim_unmatched_analyte"}
 
 
 def _relax_doc_scoped_biological_summary_validation(validation: dict[str, Any]) -> dict[str, Any]:
@@ -16347,6 +16390,12 @@ def run_generation(
                     "inférieur",
                 ]
             )
+        def _summary_candidate_soft_direction_ok(text: str) -> bool:
+            conflicts = _summary_directional_status_conflicts(
+                answer=str(text or ""),
+                evidences=list(displayed_evidences or []),
+            )
+            return _summary_conflicts_only_soft_unmatched_directional(conflicts)
         if route_norm_for_quality in {"doc_scoped_biological_summary", "reference_ranges_summary"}:
             final_answer = _normalize_summary_readability(final_answer)
             quality_gate_result = _evaluate_summary_quality_gate(
@@ -16366,7 +16415,10 @@ def run_generation(
                     and bool(llm_writer_final_accepted or llm_writer_used)
                     and allow_soft_llm_reaccept
                     and _summary_candidate_is_substantive(str(llm_candidate_answer or ""))
-                    and not _summary_candidate_has_direction(str(llm_candidate_answer or ""))
+                    and (
+                        not _summary_candidate_has_direction(str(llm_candidate_answer or ""))
+                        or _summary_candidate_soft_direction_ok(str(llm_candidate_answer or ""))
+                    )
                 ):
                     quality_gate_result = dict(quality_gate_result or {})
                     quality_gate_result["pass"] = True
@@ -17354,16 +17406,25 @@ def run_generation(
             or ("false_no_abnormal_summary" in set((validation or {}).get("errors") or []))
         )
 
+        llm_candidate_directional_conflicts = (
+            _summary_directional_status_conflicts(
+                answer=str(llm_candidate_answer or final_answer),
+                evidences=list(displayed_evidences or []),
+            )
+            if str(selected_route or "").strip().lower() == "doc_scoped_biological_summary" and bool(llm_candidate_answer)
+            else []
+        )
         if (
             str(selected_route or "").strip().lower() == "doc_scoped_biological_summary"
             and bool(llm_candidate_answer)
-            and not bool(quality_gate_requires_fallback)
             and allow_soft_llm_reaccept
             and _summary_candidate_is_substantive(str(llm_candidate_answer or ""))
-            and not _summary_candidate_has_direction(str(llm_candidate_answer or ""))
-            and not _summary_directional_status_conflicts(
-                answer=str(llm_candidate_answer or final_answer),
-                evidences=list(displayed_evidences or []),
+            and (
+                (
+                    not _summary_candidate_has_direction(str(llm_candidate_answer or ""))
+                    and not llm_candidate_directional_conflicts
+                )
+                or _summary_conflicts_only_soft_unmatched_directional(llm_candidate_directional_conflicts)
             )
         ):
             final_answer = str(llm_candidate_answer or final_answer).strip() or final_answer
@@ -17479,13 +17540,20 @@ def run_generation(
                 )
             )
         ) or None
+        final_writer_directional_conflicts = (
+            _summary_directional_status_conflicts(
+                answer=str(llm_candidate_answer or final_answer or ""),
+                evidences=list(displayed_evidences or []),
+            )
+            if str(selected_route or "").strip().lower() == "doc_scoped_biological_summary"
+            and str(final_answer_source or "").strip().lower() == "llm_writer"
+            else []
+        )
         if (
             str(selected_route or "").strip().lower() == "doc_scoped_biological_summary"
             and str(final_answer_source or "").strip().lower() == "llm_writer"
-            and _summary_directional_status_conflicts(
-                answer=str(final_answer or ""),
-                evidences=list(displayed_evidences or []),
-            )
+            and final_writer_directional_conflicts
+            and not _summary_conflicts_only_soft_unmatched_directional(final_writer_directional_conflicts)
         ):
             no_diag = str(getattr(query_understanding, "safety_intent", "") or "").strip().lower() == "no_diagnosis_constraint"
             final_answer = _build_doc_scoped_biological_summary_answer(
