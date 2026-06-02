@@ -251,6 +251,7 @@ interface ChatPayload {
   history: Array<{ role: string; content: string }>;
   document_id?: string;
   mode: ChatMode;
+  summary_style?: "short" | "editorial" | null;
   llm_provider_override?: string | null;
   llm_model_override?: string | null;
 }

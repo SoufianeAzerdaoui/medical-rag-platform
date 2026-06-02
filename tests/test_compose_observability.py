@@ -16,6 +16,13 @@ class TestComposeObservability(unittest.TestCase):
         cls.compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
         cls.services = dict(cls.compose.get("services") or {})
 
+    def test_ollama_service_is_present(self) -> None:
+        self.assertIn("ollama", self.services)
+        ollama = self.services["ollama"]
+        self.assertEqual(ollama.get("image"), "${OLLAMA_IMAGE:-ollama/ollama}")
+        self.assertIn("127.0.0.1:11434:11434", list(ollama.get("ports") or []))
+        self.assertIn("medical-rag-ollama-data:/root/.ollama", list(ollama.get("volumes") or []))
+
     def test_observability_services_are_profiled(self) -> None:
         expected = {"grafana", "loki", "prometheus", "alloy"}
         self.assertTrue(expected.issubset(self.services))
@@ -52,10 +59,15 @@ class TestComposeObservability(unittest.TestCase):
 
         backend_volumes = list(self.services["backend"].get("volumes") or [])
         alloy_volumes = list(self.services["alloy"].get("volumes") or [])
+        backend_environment = dict(backend.get("environment") or {})
         frontend_depends_on = dict(self.services["frontend"].get("depends_on") or {})
 
         self.assertIn("medical-rag-logs:/app/logs", backend_volumes)
         self.assertIn("medical-rag-logs:/var/log/medical-rag:ro", alloy_volumes)
+        self.assertEqual(backend_environment.get("MEDICAL_RAG_OLLAMA_URL"), "${MEDICAL_RAG_OLLAMA_URL:-http://ollama:11434}")
+        self.assertEqual(backend_environment.get("MEDICAL_RAG_OLLAMA_MODEL"), "${MEDICAL_RAG_OLLAMA_MODEL:-llama3.2:latest}")
+        self.assertEqual(backend_environment.get("MEDICAL_RAG_GEMINI_MODEL"), "${MEDICAL_RAG_GEMINI_MODEL:-gemini-2.5-flash}")
+        self.assertEqual(dict(backend.get("depends_on") or {}).get("ollama", {}).get("condition"), "service_healthy")
         self.assertEqual(frontend_depends_on.get("backend", {}).get("condition"), "service_healthy")
 
     def test_observability_ports_are_bound_locally(self) -> None:

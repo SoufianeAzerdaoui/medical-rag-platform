@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 
 const loadingSteps = [
   "Assistant en train d’analyser les documents...",
-  "Recherche dans report_16.pdf...",
+  "Recherche dans report .pdf...",
   "Extraction des valeurs...",
   "Génération de réponse prudente...",
 ];

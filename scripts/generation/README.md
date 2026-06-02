@@ -10,7 +10,7 @@ User question
 → Clinical-aware retrieval (`scripts/retrieval`)  
 → Evidence pack builder  
 → Prompt builder  
-→ LLM client (Ollama local)  
+→ LLM client (Ollama local ou Gemini selon la route)  
 → Answer validator  
 → Final answer + citations/provenance
 
@@ -26,7 +26,7 @@ User question
 ## Dépendance Ollama
 Prérequis :
 - service `ollama` actif
-- modèle `qwen3:4b` installé
+- modèle `qwen2.5:7b-instruct` installé
 
 Vérification rapide :
 
@@ -37,7 +37,7 @@ ollama list
 
 ## Modèle local
 - Provider: `ollama`
-- Modèle: `qwen3:4b`
+- Modèle: `qwen2.5:7b-instruct`
 - CPU-only compatible (plus lent)
 
 ## Pourquoi `think=false` est obligatoire
@@ -69,7 +69,7 @@ Payload utilisé :
 curl -s http://127.0.0.1:11434/api/generate \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "qwen3:4b",
+    "model": "qwen2.5:7b-instruct",
     "prompt": "Réponds en français: test.",
     "stream": false,
     "think": false,
@@ -87,7 +87,7 @@ curl -s http://127.0.0.1:11434/api/generate \
 python scripts/generation/generate_answer.py \
   --query "Quel est le résultat de la calcitonine ?" \
   --provider ollama \
-  --model qwen3:4b \
+  --model qwen2.5:7b-instruct \
   --top-k 5
 ```
 
@@ -97,7 +97,7 @@ JSON :
 python scripts/generation/generate_answer.py \
   --query "Quels résultats ont un résultat antérieur ?" \
   --provider ollama \
-  --model qwen3:4b \
+  --model qwen2.5:7b-instruct \
   --top-k 5 \
   --json
 ```
@@ -108,17 +108,32 @@ Afficher le contexte :
 python scripts/generation/generate_answer.py \
   --query "Quel parasite a été détecté ?" \
   --provider ollama \
-  --model qwen3:4b \
+  --model qwen2.5:7b-instruct \
   --top-k 5 \
   --show-context
 ```
+
+### Inspection locale type `run_q`
+
+Pour contrôler le routing, le provider effectif, le modèle et les timings runtime avant de passer au serveur :
+
+```bash
+python scripts/ops/run_q.py \
+  --query "Quel est le résultat de la calcitonine ?" \
+  --provider ollama \
+  --model qwen2.5:7b-instruct \
+  --show-context \
+  --raw-debug
+```
+
+Ajoute `--json` si tu veux le rapport complet en JSON.
 
 ## Validation génération
 
 ```bash
 python scripts/generation/validate_generation.py \
   --provider ollama \
-  --model qwen3:4b \
+  --model qwen2.5:7b-instruct \
   --report data/generation/generation_validation_report.json
 ```
 
@@ -144,7 +159,7 @@ python scripts/generation/validate_generation.py \
 
 ## Troubleshooting Ollama
 - Service down: `systemctl status ollama`
-- Modèle absent: `ollama pull qwen3:4b`
+- Modèle absent: `ollama pull qwen2.5:7b-instruct`
 - Réponse vide avec thinking: vérifier `think=false` top-level
 - Timeout: augmenter `timeout` côté client ou réduire `max_tokens`
 
@@ -174,7 +189,7 @@ Ou avec paramètres explicites :
 ```bash
 python scripts/generation/chat_cli.py \
   --provider ollama \
-  --model qwen3:4b \
+  --model qwen2.5:7b-instruct \
   --top-k 5
 ```
 

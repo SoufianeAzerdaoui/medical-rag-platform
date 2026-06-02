@@ -287,6 +287,60 @@ class TestChatApiContract(unittest.TestCase):
             else:
                 os.environ["CHAT_DEBUG_ERRORS"] = old_debug
 
+    def test_safe_ui_model_override_is_applied_in_prod(self) -> None:
+        captured: list[dict] = []
+
+        def _fake_run_generation(**kwargs):
+            captured.append(dict(kwargs))
+            return {
+                "answer": "ok",
+                "generation_time_seconds": 0.1,
+                "generation_mode": "hybrid_structured_llm_writer",
+                "provider": kwargs.get("provider"),
+                "model": kwargs.get("model"),
+                "validation": {"validation_status": "pass", "warnings": [], "errors": []},
+                "quality_report": {"final_status": "pass"},
+                "query_understanding": {"intent": "doc_scoped_summary", "requested_doc_ids": ["report_24"]},
+                "sources": [],
+                "displayed_evidences": [],
+                "debug": {
+                    "generation_writer": "llm_writer",
+                    "ollama_model": kwargs.get("model"),
+                    "llm_provider": kwargs.get("provider"),
+                },
+            }
+
+        old_app_env = os.environ.get("APP_ENV")
+        old_debug = os.environ.get("CHAT_DEBUG_ERRORS")
+        try:
+            os.environ["APP_ENV"] = "prod"
+            os.environ.pop("CHAT_DEBUG_ERRORS", None)
+            response = chat_service.process_chat(
+                payload=ChatRequest(
+                    conversation_id="conv_prod_ui",
+                    message="q",
+                    llm_provider_override="ollama",
+                    llm_model_override="llama3.2:latest",
+                ),
+                current_user={"id": "u1"},
+                state_service=_FakeStateService(),
+                run_generation=_fake_run_generation,
+                logger=logging.getLogger("test.chat.contract"),
+            )
+            self.assertEqual(captured[-1]["provider"], "ollama")
+            self.assertEqual(captured[-1]["model"], "llama3.2:latest")
+            self.assertEqual(response.provider, "ollama")
+            self.assertEqual(response.model, "llama3.2:latest")
+        finally:
+            if old_app_env is None:
+                os.environ.pop("APP_ENV", None)
+            else:
+                os.environ["APP_ENV"] = old_app_env
+            if old_debug is None:
+                os.environ.pop("CHAT_DEBUG_ERRORS", None)
+            else:
+                os.environ["CHAT_DEBUG_ERRORS"] = old_debug
+
     def test_debug_requested_analytes_are_canonical_with_labels_preserved(self) -> None:
         def _fake_run_generation(**_kwargs):
             return {

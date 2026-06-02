@@ -345,6 +345,22 @@ def _llm_runtime_metrics_for_debug(
     }
 
 
+def _normalize_llm_fallback_reason(raw_reason: str | None) -> str | None:
+    text = str(raw_reason or "").strip()
+    if not text:
+        return None
+    low = text.lower()
+    if "quota" in low or "rate limit" in low or "rate-limit" in low:
+        return "llm_provider_rate_limited"
+    if "timeout" in low:
+        return "llm_timeout"
+    if len(text) > 120:
+        return "llm_writer_error"
+    if "http" in low or "googleapis" in low or "gemini" in low:
+        return "llm_writer_error"
+    return text
+
+
 def _is_hybrid_structured_writer_intent(query_understanding: QueryUnderstanding) -> bool:
     intent = str(getattr(query_understanding, "intent", "") or "").strip().lower()
     technical_condition = str(getattr(query_understanding, "technical_condition", "") or "").strip().lower()
@@ -372,7 +388,6 @@ def _hybrid_writer_mode(query_understanding: QueryUnderstanding) -> str:
         return "fallback"
     deterministic_routes = {
         "doc_scoped_abnormal_results",
-        "doc_scoped_biological_summary",
         "doc_scoped_priority_anomalies",
         "global_analyte_abnormal_search",
         "doc_pair_comparison",
@@ -477,8 +492,8 @@ def _force_deterministic_mode_for_summary_anomalies(query_understanding: QueryUn
 
 
 def _should_enable_llm_summary_writer(query_understanding: QueryUnderstanding) -> bool:
-    """Opt-in gate for narrative rewrite on deterministic summary routes."""
-    if not _is_feature_enabled("LLM_SUMMARY_WRITER_ENABLED", default=False):
+    """Allow narrative rewrite on summary routes unless explicitly disabled."""
+    if not _is_feature_enabled("LLM_SUMMARY_WRITER_ENABLED", default=True):
         return False
     if not _llm_global_enabled():
         return False
@@ -507,8 +522,12 @@ def _doc_scoped_summary_render_profile(query_understanding: QueryUnderstanding) 
     original_q = str(getattr(query_understanding, "original_user_question", "") or "").strip()
     qn = norm_text(original_q)
     intent = str(getattr(query_understanding, "intent", "") or "").strip().lower()
+    if answer_style in {"short", "compact", "brief"}:
+        return "compact_biological_summary"
     if intent == "reference_ranges_summary":
         return "doctor_note_reference_ranges"
+    if answer_style in {"editorial", "narrative"}:
+        return "editorial_biological_summary"
     wants_doctor_note = False
     if answer_style == "doctor_note":
         wants_doctor_note = True
@@ -576,6 +595,39 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     return None
 
 
+def _generate_structured_llm_text(
+    *,
+    client: LLMClient,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    temperature: float,
+    num_ctx: int,
+    max_tokens: int,
+    timeout: int,
+    keep_alive: str = "10m",
+) -> str:
+    system_text = str(system_prompt or "").strip()
+    user_text = str(user_prompt or "").strip()
+    messages: list[dict[str, str]] = []
+    if system_text:
+        messages.append({"role": "system", "content": system_text})
+    if user_text:
+        messages.append({"role": "user", "content": user_text})
+    return client.generate(
+        prompt=user_text,
+        system_prompt=system_text or None,
+        user_prompt=user_text or None,
+        messages=messages or None,
+        model=model,
+        temperature=temperature,
+        num_ctx=num_ctx,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        keep_alive=keep_alive,
+    )
+
+
 def _normalize_llm_qu_intent(value: Any) -> str | None:
     intent = str(value or "").strip().lower()
     if not intent:
@@ -610,7 +662,7 @@ def _llm_assisted_query_understanding(
         return base_qu, debug
     debug["enabled"] = True
     client = llm_client or LLMClient(provider=provider)
-    prompt = (
+    system_prompt = (
         "Tu es un routeur de requêtes médicales. "
         "Retourne UNIQUEMENT un JSON valide sans texte autour.\n"
         "Ne déduis pas de valeurs biologiques. Tu fais seulement du query-understanding.\n"
@@ -625,12 +677,14 @@ def _llm_assisted_query_understanding(
         "\"request_all_reference_ranges\": boolean,"
         "\"output_format\": string|null,"
         "\"answer_style\": string|null"
-        "}\n"
-        f"Question: {query}\n"
+        "}"
     )
+    user_prompt = f"Question: {query}\n"
     try:
-        raw = client.generate(
-            prompt=prompt,
+        raw = _generate_structured_llm_text(
+            client=client,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
             model=model,
             temperature=0.0,
             num_ctx=max(2048, int(DEFAULT_LLM_NUM_CTX)),
@@ -1376,19 +1430,23 @@ def _rewrite_final_without_reasoning(
     timeout: int,
 ) -> tuple[str, str | None]:
     client = llm_client or LLMClient(provider=provider)
-    prompt = (
+    system_prompt = (
         "Tu es l'assistant spécialisé d'une plateforme d'analyse médicale.\n"
         "Réécris la réponse finale pour l'utilisateur de manière fluide et professionnelle.\n"
         "Supprime tout raisonnement interne, plan d'action ou mention technique de ton fonctionnement.\n"
         "Conserve uniquement les faits médicaux et la structure de la réponse.\n"
         "Sortie : texte final épuré uniquement.\n"
-        "/no_think\n\n"
+        "/no_think"
+    )
+    user_prompt = (
         f"Message utilisateur : {user_message.strip()}\n\n"
         f"Texte à purifier :\n{leaked_answer.strip()}\n"
     )
     try:
-        rewritten = client.generate(
-            prompt=prompt,
+        rewritten = _generate_structured_llm_text(
+            client=client,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
             model=model,
             temperature=0.0,
             num_ctx=2048,
@@ -2283,6 +2341,7 @@ def _build_no_transformable_context_response(
     qn: str,
     previous_context_intent: str | None,
 ) -> dict[str, Any]:
+    requested_summary_style = None
     last_intent = str(previous_context_intent or "").strip().lower()
     if last_intent in {"patient_inventory", "patient_inventory_count"}:
         answer = (
@@ -2350,6 +2409,7 @@ def _build_no_transformable_context_response(
         "max_display_results": int(max_display_results),
         "show_all_results": bool(show_all_results),
         "show_low_quality": bool(show_low_quality),
+        "summary_style_requested": requested_summary_style,
         "timeout": timeout,
         "generation_time_seconds": round(elapsed, 3),
         "answer": answer,
@@ -3054,7 +3114,7 @@ def generate_general_conversation_response(
         )
     elif intent_key == "help_question":
         intent_instruction = "Donne une aide concise avec une façon simple de poser une question médicale sur les rapports."
-    prompt = (
+    system_prompt = (
         "Tu es l’assistant d’une application Medical RAG.\n"
         "Réponds uniquement avec la réponse finale destinée à l’utilisateur.\n"
         "N’affiche aucun raisonnement interne.\n"
@@ -3070,13 +3130,15 @@ def generate_general_conversation_response(
         "Pas de Markdown.\n"
         "Pas de sources.\n"
         f"{intent_instruction}\n"
-        "/no_think\n\n"
-        f"Utilisateur: {user_message.strip()}\n"
+        "/no_think"
     )
+    user_prompt = f"Utilisateur: {user_message.strip()}\n"
     client = llm_client or LLMClient(provider=provider)
     try:
-        ans = client.generate(
-            prompt=prompt,
+        ans = _generate_structured_llm_text(
+            client=client,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
             model=model,
             temperature=0.2,
             num_ctx=2048,
@@ -3345,7 +3407,7 @@ def _try_llm_grounded_summary(
         "sources": sources,
         "requested_summary_points": requested_summary_points,
     }
-    prompt = (
+    system_prompt = (
         "Tu es un assistant de synthèse médicale.\n"
         "Tu dois résumer uniquement le CONTEXTE FOURNI.\n"
         "Tu ne dois pas ajouter de connaissance médicale externe.\n"
@@ -3355,14 +3417,15 @@ def _try_llm_grounded_summary(
         "Si le contexte ne contient pas assez d’informations distinctes, produis seulement les points fiables et indique la limite.\n"
         "Chaque point doit être court, non redondant, et fondé sur le contexte.\n"
         "Réponds en JSON strict uniquement avec ce schéma:\n"
-        '{"title":"...","points":["..."],"limitations":null}\n'
-        f"N={requested_summary_points}\n\n"
-        f"CONTEXTE:\n{json.dumps(payload, ensure_ascii=False)}"
+        '{"title":"...","points":["..."],"limitations":null}'
     )
+    user_prompt = f"N={requested_summary_points}\n\nCONTEXTE:\n{json.dumps(payload, ensure_ascii=False)}"
     client = llm_client or LLMClient(provider=provider)
     try:
-        raw = client.generate(
-            prompt=prompt,
+        raw = _generate_structured_llm_text(
+            client=client,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
             model=model,
             temperature=0.0,
             num_ctx=3072,
@@ -6444,10 +6507,15 @@ def _source_label(row: dict[str, Any]) -> str:
 
 def _status_code(row: dict[str, Any]) -> str:
     status = str(row.get("interpretation_status") or "").strip().lower()
-    ref = str(row.get("reference_range") or "").strip()
+    ref = str(
+        row.get("reference_range")
+        or row.get("reference")
+        or row.get("reference_short")
+        or ""
+    ).strip()
     if not ref:
         ref = str(_extract_reference_from_text(str(row.get("analyte") or "")) or "").strip()
-    val = str(row.get("value_raw") or "").strip()
+    val = str(row.get("value_raw") or row.get("current_value") or row.get("value") or "").strip()
     if status in {"above_reference", "below_reference", "within_reference"}:
         # Guardrail for complex profile references:
         # when explicit intervals are present and the value falls inside one of them,
@@ -6902,17 +6970,42 @@ def _build_doc_scoped_biological_summary_answer(
             warning_line = "Note descriptive uniquement, sans recommandation thérapeutique."
             conclusion_line = "Conclusion technique : synthèse descriptive limitée aux données disponibles."
 
-        lines: list[str] = [f"Note de synthèse médicale — {doc_scope}.", context_line]
-        if range_line:
-            lines.append(range_line)
-        lines.append(notable_line)
-        if extra_line:
-            lines.append(extra_line)
-        if normal_line:
-            lines.append(normal_line)
-        lines.append(warning_line)
-        lines.append(source_line)
-        lines.append(conclusion_line)
+        if render_profile_norm == "compact_biological_summary":
+            lead_line = f"Résumé biologique court — {doc_scope}."
+            compact_opening = context_line
+            compact_focus = notable_line if notable_line else "Aucun écart anormal exploitable retrouvé dans les données retenues."
+            compact_lines_source = [lead_line, compact_opening, compact_focus]
+            if normal_line:
+                compact_lines_source.append(normal_line)
+            compact_lines_source.extend([warning_line, source_line, conclusion_line])
+            lines = compact_lines_source
+        elif render_profile_norm == "editorial_biological_summary":
+            lead_line = f"Synthèse biologique éditoriale — {doc_scope}."
+            opening_line = context_line
+            if date_raw:
+                opening_line = f"Le bilan biologique du {date_raw} met en évidence plusieurs écarts documentés."
+            emphasis_line = notable_line
+            if range_line:
+                emphasis_line = range_line
+            narrative_lines = [lead_line, opening_line, emphasis_line]
+            if extra_line:
+                narrative_lines.append(extra_line)
+            if normal_line:
+                narrative_lines.append(normal_line)
+            narrative_lines.extend([warning_line, source_line, conclusion_line])
+            lines = narrative_lines
+        else:
+            lines = [f"Note de synthèse médicale — {doc_scope}.", context_line]
+            if range_line:
+                lines.append(range_line)
+            lines.append(notable_line)
+            if extra_line:
+                lines.append(extra_line)
+            if normal_line:
+                lines.append(normal_line)
+            lines.append(warning_line)
+            lines.append(source_line)
+            lines.append(conclusion_line)
 
         # Keep compact narrative output while always preserving conclusion and source.
         compact_lines = [ln for ln in lines if str(ln or "").strip()]
@@ -8496,11 +8589,20 @@ def _ensure_biological_summary_conclusion(answer: str, *, has_abnormal: bool = T
     text = str(answer or "").strip()
     if not text:
         return text
-    conclusion = (
-        "Conclusion technique : les résultats listés sont dans la référence parmi les éléments sélectionnés, sans conclusion diagnostique."
-        if (not has_abnormal and has_within)
-        else "Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic."
-    )
+    if has_abnormal and has_within:
+        conclusion = (
+            "Conclusion technique : le bilan associe des écarts biologiques documentés et des résultats dans la référence parmi les éléments sélectionnés, sans conclusion diagnostique."
+        )
+    elif has_abnormal:
+        conclusion = (
+            "Conclusion technique : un ou plusieurs écarts biologiques documentés sont mis en évidence, sans conclusion diagnostique."
+        )
+    elif has_within:
+        conclusion = (
+            "Conclusion technique : les résultats listés sont dans la référence parmi les éléments sélectionnés, sans conclusion diagnostique."
+        )
+    else:
+        conclusion = "Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic."
     # Force neutral normal-only conclusion and remove over-interpretative phrasing.
     if not has_abnormal and has_within:
         text = re.sub(
@@ -9228,27 +9330,41 @@ def _summary_directional_status_conflicts(
     sentences = [s.strip() for s in re.split(r"[.\n;]+", str(answer or "")) if s.strip()]
     if not sentences:
         return conflicts
-    for ev in list(evidences or []):
-        analyte = _clean_analyte_label(str(ev.get("analyte") or ev.get("analyte_label") or ev.get("display_name") or "")).strip()
-        if not analyte:
+    directional_tokens = ["au dessus", "au-dessus", "above", "superieur", "supérieur", "en dessous", "below", "inferieur", "inférieur"]
+    evidence_rows = list(evidences or [])
+    for s in sentences:
+        sn = norm_text(s)
+        has_direction = any(k in sn for k in directional_tokens)
+        if not has_direction:
             continue
-        analyte_norm = norm_text(analyte)
-        status = str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
-        for s in sentences:
-            sn = norm_text(s)
+
+        matched_evidence = False
+        for ev in evidence_rows:
+            analyte = _clean_analyte_label(str(ev.get("analyte") or ev.get("analyte_label") or ev.get("display_name") or "")).strip()
+            if not analyte:
+                continue
+            analyte_norm = norm_text(analyte)
             if analyte_norm and analyte_norm not in sn:
                 continue
+
+            matched_evidence = True
+            status = _status_code(ev)
             has_up = any(k in sn for k in ["au dessus", "au-dessus", "above", "superieur", "supérieur"])
             has_down = any(k in sn for k in ["en dessous", "below", "inferieur", "inférieur"])
-            if status in {"unknown", "needs_clinical_context", "not_interpretable", ""} and (has_up or has_down):
+
+            if status == "above_reference" and has_up:
+                continue
+            if status == "below_reference" and has_down:
+                continue
+
+            if status in {"missing_reference", "not_interpretable", "unknown", "not_numeric", "needs_clinical_context", "", "within_reference"}:
                 conflicts.append(f"directional_claim_on_ambiguous_status:{analyte}")
-                break
-            if status == "above_reference" and has_down:
-                conflicts.append(f"direction_mismatch_above:{analyte}")
-                break
-            if status == "below_reference" and has_up:
-                conflicts.append(f"direction_mismatch_below:{analyte}")
-                break
+            else:
+                conflicts.append(f"direction_mismatch:{analyte}")
+            break
+
+        if not matched_evidence:
+            conflicts.append("directional_claim_unmatched_analyte")
     return sorted(set(conflicts))
 
 
@@ -9268,8 +9384,7 @@ def _evaluate_summary_quality_gate(
         reasons.append("contradictory_anomaly_claim")
         score -= 0.45
     if ("anormaux : aucun" in n or "aucun fait anormal" in n) and any(
-        str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
-        in {"above_reference", "below_reference"}
+        _status_code(ev) in {"above_reference", "below_reference"}
         for ev in list(displayed_evidences or [])
     ):
         reasons.append("false_no_abnormal_claim")
@@ -9316,6 +9431,86 @@ def _evaluate_summary_quality_gate(
     }
 
 
+def _summary_quality_gate_requires_deterministic_fallback(
+    *,
+    selected_route: str,
+    quality_gate_result: dict[str, Any],
+) -> bool:
+    route = str(selected_route or "").strip().lower()
+    reasons = {str(r) for r in (quality_gate_result.get("reasons") or [])}
+    if not reasons:
+        return False
+
+    def _has_reason(prefix: str) -> bool:
+        return any(reason == prefix or reason.startswith(f"{prefix}:") for reason in reasons)
+
+    if route == "doc_scoped_biological_summary":
+        hard_reasons = {
+            "contradictory_anomaly_claim",
+            "false_no_abnormal_claim",
+        }
+        if reasons & hard_reasons:
+            return True
+        if _has_reason("directional_claim_on_ambiguous_status"):
+            return True
+        if any(r.startswith("direction_mismatch") for r in reasons):
+            return True
+        return False
+
+    if route == "reference_ranges_summary":
+        hard_reasons = {
+            "contradictory_anomaly_claim",
+            "false_no_abnormal_claim",
+            "missing_age_profile_coverage",
+            "missing_sex_profile_coverage",
+        }
+        if reasons & hard_reasons:
+            return True
+        if _has_reason("directional_claim_on_ambiguous_status"):
+            return True
+        if any(r.startswith("direction_mismatch") for r in reasons):
+            return True
+        return False
+
+    return not bool(quality_gate_result.get("pass"))
+
+
+def _relax_doc_scoped_biological_summary_validation(validation: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(validation, dict):
+        return validation
+    errors = [str(e) for e in (validation.get("errors") or [])]
+    warnings = [str(w) for w in (validation.get("warnings") or [])]
+    if not errors:
+        return validation
+
+    soft_errors = {
+        "summary_missing_abnormal_coverage",
+        "missing_conclusion",
+        "narrative_too_short",
+        "duplicated_age_band",
+        "readability_concatenated_tokens",
+    }
+    hard_errors = set(_HALLUCINATION_ERROR_KEYS) | {
+        "false_no_abnormal_summary",
+        "directional_claim_on_ambiguous_status",
+    }
+    if any(e in hard_errors or e.startswith("direction_mismatch") for e in errors):
+        return validation
+
+    relaxed_errors = [e for e in errors if e in soft_errors]
+    if not relaxed_errors:
+        return validation
+
+    remaining_errors = [e for e in errors if e not in soft_errors]
+    relaxed = dict(validation)
+    relaxed["errors"] = remaining_errors
+    relaxed_warnings = list(dict.fromkeys(warnings + [f"{e}_relaxed" for e in relaxed_errors]))
+    relaxed["warnings"] = relaxed_warnings
+    if not remaining_errors:
+        relaxed["validation_status"] = "warning"
+    return relaxed
+
+
 def _build_llm_evidence_pack(
     *,
     query_understanding: QueryUnderstanding,
@@ -9328,6 +9523,17 @@ def _build_llm_evidence_pack(
     policy = _level2_prompt_policy(route)
     if route == "doc_scoped_biological_summary":
         max_rows = int(policy.get("max_evidence_rows") or 6)
+        answer_style = str(getattr(query_understanding, "answer_style", "") or "").strip().lower()
+        requested_points = getattr(query_understanding, "requested_summary_points", None)
+        if answer_style in {"short", "compact", "brief"}:
+            max_rows = min(max_rows, 4)
+        elif answer_style in {"editorial", "narrative"}:
+            max_rows = min(max_rows, 7)
+        elif requested_points is not None:
+            try:
+                max_rows = min(max_rows, max(3, min(8, int(requested_points))))
+            except Exception:
+                pass
     elif route == "reference_ranges_summary":
         max_rows = int(policy.get("max_evidence_rows") or 14)
     else:
@@ -9437,6 +9643,8 @@ def _llm_summary_prompt_prefix(query_understanding: QueryUnderstanding, selected
             "Ne modifie aucune valeur, unité, référence ou statut. "
             "Ne mets jamais un résultat above_reference ou below_reference dans la section des résultats dans la référence. "
             "Si aucun résultat within_reference n’est fourni, écris: 'Aucun résultat strictement dans la référence parmi les éléments sélectionnés.' "
+            "La conclusion doit être spécifique: mentionne explicitement s'il existe un ou plusieurs écarts biologiques et s'il existe des résultats dans la référence. "
+            "Évite toute phrase plate du type « nécessite un contexte clinique » si les faits permettent de préciser le statut. "
             "Ne donne pas de diagnostic. Ne propose pas de traitement. "
             "Ne fais pas de tableau."
         )
@@ -9487,7 +9695,7 @@ def _apply_level2_intent_llm_limits(
             max(96, min(int(max_tokens), max(96, guarded_tokens_cap))),
         )
     if route in {"doc_scoped_biological_summary", "doc_scoped_priority_anomalies", "reference_ranges_summary"}:
-        summary_timeout_cap_s = int(os.getenv("MEDICAL_RAG_SUMMARY_TIMEOUT_CAP_S", "35"))
+        summary_timeout_cap_s = int(os.getenv("MEDICAL_RAG_SUMMARY_TIMEOUT_CAP_S", "120"))
         summary_tokens_cap = int(os.getenv("MEDICAL_RAG_SUMMARY_MAX_TOKENS", "220"))
         return (
             max(12, min(int(timeout_s), max(12, summary_timeout_cap_s))),
@@ -9507,7 +9715,7 @@ _LEVEL2_LLM_PROMPT_POLICY: dict[str, dict[str, Any]] = {
         "prompt_target_chars": 2500,
         "prompt_hard_limit_chars": 3500,
         "num_predict": 200,
-        "timeout_ms": 60000,
+        "timeout_ms": 120000,
         "max_evidence_rows": 6,
         "use_micro_prompt": True,
     },
@@ -9930,11 +10138,19 @@ def _compose_level2_micro_prompt_answer(
                     indent=2,
                 ),
                 encoding="utf-8",
-            )
+        )
         return out
     try:
-        answer = llm_client.generate(
-            prompt=prompt,
+        system_prompt = (
+            "Tu es un rédacteur médical technique.\n"
+            "Réponds uniquement avec les faits fournis.\n"
+            "Ne révèle aucun raisonnement interne.\n"
+            "Respecte strictement les sections, les valeurs, les unités et les sources fournies."
+        )
+        answer = _generate_structured_llm_text(
+            client=llm_client,
+            system_prompt=system_prompt,
+            user_prompt=prompt,
             model=model,
             temperature=0.0,
             num_ctx=max(1024, int(num_ctx)),
@@ -10087,13 +10303,29 @@ _STYLE_RETRY_KEYS = {
 }
 
 
-def _should_retry_with_validator(validation: dict[str, Any], generation_mode: str) -> bool:
+def _should_retry_with_validator(
+    validation: dict[str, Any],
+    generation_mode: str,
+    *,
+    selected_route: str | None = None,
+) -> bool:
     if generation_mode not in {"llm_professional_writer", "hybrid_structured_llm_writer"}:
         return False
     errors = {str(e) for e in (validation.get("errors") or [])}
     warnings = {str(w) for w in (validation.get("warnings") or [])}
     if errors & _HALLUCINATION_ERROR_KEYS:
         return False
+    route = str(selected_route or "").strip().lower()
+    if route == "doc_scoped_biological_summary":
+        soft_retry_keys = {
+            "missing_conclusion",
+            "narrative_too_short",
+            "duplicated_age_band",
+            "readability_concatenated_tokens",
+            "missing_query_criterion_in_intro",
+        }
+        if not (errors | warnings) & (set(_STYLE_RETRY_KEYS) - soft_retry_keys):
+            return False
     return bool((errors | warnings) & _STYLE_RETRY_KEYS)
 
 
@@ -11657,6 +11889,7 @@ def run_generation(
     max_display_results: int = 3,
     show_all_results: bool = False,
     show_low_quality: bool = False,
+    summary_style: str | None = None,
     previous_structured_evidence_pack: dict[str, Any] | None = None,
     previous_displayed_evidence_pack: dict[str, Any] | None = None,
     previous_displayed_context: dict[str, Any] | None = None,
@@ -11716,6 +11949,15 @@ def run_generation(
             model=model,
             timeout=timeout,
         )
+    requested_summary_style = str(summary_style or "").strip().lower() or None
+    if requested_summary_style in {"short", "editorial"}:
+        intent_norm = str(getattr(query_understanding, "intent", "") or "").strip().lower()
+        if intent_norm in {"doc_scoped_summary", "doc_scoped_biological_summary", "reference_ranges_summary"}:
+            query_understanding = replace(
+                query_understanding,
+                answer_style=requested_summary_style,
+                requested_summary_points=4 if requested_summary_style == "short" else 7,
+            )
     query_plan = understand_medical_query(
         q,
         llm_client=llm_client,
@@ -15468,6 +15710,17 @@ def run_generation(
                 answer=final_answer,
                 evidences=displayed_evidences,
             )
+        writer_profile_runtime = dict(composed.get("writer_profile") or {})
+        llm_provider_effective_runtime = str(
+            composed.get("llm_provider_effective")
+            or writer_profile_runtime.get("provider")
+            or ""
+        ) or None
+        llm_model_effective_runtime = str(
+            composed.get("llm_model_effective")
+            or writer_profile_runtime.get("model")
+            or ""
+        ) or None
         llm_prompt_preview = str(composed.get("llm_prompt_preview") or "")[:1200]
         llm_candidate_answer: str | None = None
         retry_used = False
@@ -15574,7 +15827,7 @@ def run_generation(
                 str(final_answer or "").strip().lower().startswith("information insuffisante"),
             )
         writer_error = str(composed.get("llm_error") or "") or None
-        fallback_reason_debug = writer_error
+        fallback_reason_debug = _normalize_llm_fallback_reason(writer_error)
         if llm_timeout_circuit_blocked and not fallback_reason_debug:
             fallback_reason_debug = "llm_timeout_circuit_open"
             fallback_stage = "llm_precheck"
@@ -16048,6 +16301,31 @@ def run_generation(
                     fallback_reason_debug = str(reference_ranges_postprocess_meta.get("fallback_reason") or "").strip()
 
         route_norm_for_quality = str(selected_route or "").strip().lower()
+        fallback_reason_norm = str(fallback_reason_debug or "").strip().lower()
+        allow_soft_llm_reaccept = fallback_reason_norm in {"", "llm_validation_failed", "llm_writer_quality_or_format_fallback", "quality_gate_failed"}
+        def _summary_candidate_is_substantive(text: str) -> bool:
+            raw = str(text or "").strip()
+            if len(raw) < 20:
+                return False
+            words = re.findall(r"[A-Za-zÀ-ÿ0-9]{2,}", raw)
+            return len(words) >= 4
+
+        def _summary_candidate_has_direction(text: str) -> bool:
+            ntext = norm_text(text or "")
+            return any(
+                token in ntext
+                for token in [
+                    "au dessus",
+                    "au-dessus",
+                    "above",
+                    "superieur",
+                    "supérieur",
+                    "en dessous",
+                    "below",
+                    "inferieur",
+                    "inférieur",
+                ]
+            )
         if route_norm_for_quality in {"doc_scoped_biological_summary", "reference_ranges_summary"}:
             final_answer = _normalize_summary_readability(final_answer)
             quality_gate_result = _evaluate_summary_quality_gate(
@@ -16055,29 +16333,63 @@ def run_generation(
                 selected_route=route_norm_for_quality,
                 displayed_evidences=list(displayed_evidences or []),
             )
+            quality_gate_requires_fallback = _summary_quality_gate_requires_deterministic_fallback(
+                selected_route=route_norm_for_quality,
+                quality_gate_result=quality_gate_result,
+            )
             if not bool(quality_gate_result.get("pass")):
                 no_diag = str(getattr(query_understanding, "safety_intent", "") or "").strip().lower() == "no_diagnosis_constraint"
-                if route_norm_for_quality == "reference_ranges_summary":
-                    final_answer = _build_reference_ranges_summary_answer(
-                        list(summary_all_evidences or displayed_evidences or []),
-                        max_lines=getattr(query_understanding, "requested_summary_points", None),
-                        no_diagnosis=no_diag,
-                    )
-                    generation_mode = "deterministic_reference_ranges_summary"
-                    fallback_renderer_used = "reference_ranges_deterministic_fallback"
+                if (
+                    route_norm_for_quality == "doc_scoped_biological_summary"
+                    and not quality_gate_requires_fallback
+                    and bool(llm_writer_final_accepted or llm_writer_used)
+                    and allow_soft_llm_reaccept
+                    and _summary_candidate_is_substantive(str(llm_candidate_answer or ""))
+                    and not _summary_candidate_has_direction(str(llm_candidate_answer or ""))
+                ):
+                    quality_gate_result = dict(quality_gate_result or {})
+                    quality_gate_result["pass"] = True
+                    quality_gate_result["accepted_with_warnings"] = True
+                    quality_gate_result["preserved_llm"] = True
+                    quality_gate_result["soft_warning_only"] = True
+                    generation_mode = "hybrid_structured_llm_writer"
+                    llm_writer_final_accepted = True
+                    fallback_reason_debug = None
+                    fallback_stage = None
+                    fallback_renderer_used = None
+                    if "missing_conclusion" in set(str(r) for r in (quality_gate_result.get("reasons") or [])):
+                        status_codes = {
+                            str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+                            for ev in displayed_evidences
+                        }
+                        final_answer = _ensure_biological_summary_conclusion(
+                            final_answer,
+                            has_abnormal=bool(status_codes.intersection({"above_reference", "below_reference"})),
+                            has_within=bool("within_reference" in status_codes),
+                        )
+                    final_answer = _normalize_summary_readability(final_answer)
                 else:
-                    final_answer = _build_doc_scoped_biological_summary_answer(
-                        list(summary_all_evidences or displayed_evidences or []),
-                        max_lines=getattr(query_understanding, "requested_summary_points", None),
-                        no_diagnosis=no_diag,
-                        render_profile=_doc_scoped_summary_render_profile(query_understanding),
-                    )
-                    generation_mode = "deterministic_doc_scoped_biological_summary"
-                    fallback_renderer_used = "deterministic_biological_summary_short"
-                fallback_stage = fallback_stage or "quality_gate"
-                fallback_reason_debug = fallback_reason_debug or "quality_gate_failed"
-                llm_writer_final_accepted = False
-                final_answer = _normalize_summary_readability(final_answer)
+                    if route_norm_for_quality == "reference_ranges_summary":
+                        final_answer = _build_reference_ranges_summary_answer(
+                            list(summary_all_evidences or displayed_evidences or []),
+                            max_lines=getattr(query_understanding, "requested_summary_points", None),
+                            no_diagnosis=no_diag,
+                        )
+                        generation_mode = "deterministic_reference_ranges_summary"
+                        fallback_renderer_used = "reference_ranges_deterministic_fallback"
+                    else:
+                        final_answer = _build_doc_scoped_biological_summary_answer(
+                            list(summary_all_evidences or displayed_evidences or []),
+                            max_lines=getattr(query_understanding, "requested_summary_points", None),
+                            no_diagnosis=no_diag,
+                            render_profile=_doc_scoped_summary_render_profile(query_understanding),
+                        )
+                        generation_mode = "deterministic_doc_scoped_biological_summary"
+                        fallback_renderer_used = "deterministic_biological_summary_short"
+                    fallback_stage = fallback_stage or "quality_gate"
+                    fallback_reason_debug = fallback_reason_debug or "quality_gate_failed"
+                    llm_writer_final_accepted = False
+                    final_answer = _normalize_summary_readability(final_answer)
 
         found_requested_analytes = []
         for analyte in exact_analytes:
@@ -16179,6 +16491,8 @@ def run_generation(
             requested_value=query_understanding.requested_value,
             comparison_operator=query_understanding.comparison_operator,
         )
+        if str(selected_route or "").strip().lower() == "doc_scoped_biological_summary":
+            validation = _relax_doc_scoped_biological_summary_validation(validation)
         stage_times_ms["validation_ms"] = round((time.perf_counter() - t_val0) * 1000.0, 3)
         if llm_candidate_validation_warnings:
             final_warning_set = {str(w) for w in (validation or {}).get("warnings") or []}
@@ -16280,7 +16594,7 @@ def run_generation(
         if (
             max_retry_attempts > 0
             and fallback_reason_debug not in {"llm_timeout", "llm_prompt_too_large_preemptive"}
-            and _should_retry_with_validator(validation, generation_mode)
+            and _should_retry_with_validator(validation, generation_mode, selected_route=selected_route)
         ):
             t_rep0 = time.perf_counter()
             retry_used = True
@@ -17019,6 +17333,32 @@ def run_generation(
             or ("false_no_abnormal_summary" in set((validation or {}).get("errors") or []))
         )
 
+        if (
+            str(selected_route or "").strip().lower() == "doc_scoped_biological_summary"
+            and bool(llm_candidate_answer)
+            and not bool(quality_gate_requires_fallback)
+            and allow_soft_llm_reaccept
+            and _summary_candidate_is_substantive(str(llm_candidate_answer or ""))
+            and not _summary_candidate_has_direction(str(llm_candidate_answer or ""))
+            and not _summary_directional_status_conflicts(
+                answer=str(llm_candidate_answer or final_answer),
+                evidences=list(displayed_evidences or []),
+            )
+        ):
+            final_answer = str(llm_candidate_answer or final_answer).strip() or final_answer
+            generation_mode = "hybrid_structured_llm_writer"
+            llm_writer_final_accepted = True
+            fallback_reason_debug = None
+            fallback_stage = None
+            fallback_renderer_used = None
+            writer_error = None
+            validation = _relax_doc_scoped_biological_summary_validation(validation)
+            quality_gate_result = dict(quality_gate_result or {})
+            quality_gate_result["pass"] = True
+            quality_gate_result["accepted_with_warnings"] = bool(quality_gate_result.get("reasons"))
+            quality_gate_result["preserved_llm"] = True
+            quality_gate_result["soft_warning_only"] = bool(quality_gate_result.get("reasons"))
+
         source_citations = _backfill_factual_sources(
             generation_mode=generation_mode,
             selected_route=selected_route,
@@ -17118,6 +17458,33 @@ def run_generation(
                 )
             )
         ) or None
+        if (
+            str(selected_route or "").strip().lower() == "doc_scoped_biological_summary"
+            and str(final_answer_source or "").strip().lower() == "llm_writer"
+            and _summary_directional_status_conflicts(
+                answer=str(final_answer or ""),
+                evidences=list(displayed_evidences or []),
+            )
+        ):
+            no_diag = str(getattr(query_understanding, "safety_intent", "") or "").strip().lower() == "no_diagnosis_constraint"
+            final_answer = _build_doc_scoped_biological_summary_answer(
+                list(summary_all_evidences or displayed_evidences or []),
+                max_lines=getattr(query_understanding, "requested_summary_points", None),
+                no_diagnosis=no_diag,
+                render_profile=_doc_scoped_summary_render_profile(query_understanding),
+            )
+            final_answer = _normalize_summary_readability(final_answer)
+            generation_mode = "deterministic_doc_scoped_biological_summary"
+            llm_writer_accepted_flag = False
+            final_answer_source = "deterministic_renderer"
+            renderer_used = "deterministic_biological_summary_short"
+            fallback_reason_debug = fallback_reason_debug or "directional_claim_on_ambiguous_status"
+            quality_gate_result = {
+                "score": 0.0,
+                "threshold": 0.85,
+                "pass": False,
+                "reasons": ["directional_claim_on_ambiguous_status"],
+            }
         return _inject_visualization_payload(
             {
             "request_id": request_id,
@@ -17323,6 +17690,15 @@ def run_generation(
                 "llm_repair_error_message": llm_repair_error_message,
                 "llm_postprocess_error_type": llm_postprocess_error_type,
                 "llm_postprocess_error_message": llm_postprocess_error_message,
+                "llm_quality_escalation_used": bool(composed.get("llm_quality_escalation_used")) if isinstance(composed, dict) else False,
+                "llm_quality_escalation_reason": (
+                    (str(composed.get("llm_quality_escalation_reason") or "") or None)
+                    if isinstance(composed, dict)
+                    else None
+                ),
+                "writer_profile": writer_profile_runtime,
+                "llm_provider_effective_runtime": llm_provider_effective_runtime,
+                "llm_model_effective_runtime": llm_model_effective_runtime,
                 "intents": intents,
                 "analyte_resolution_debug": structured_pack.get("analyte_resolution_debug"),
                 "route_candidates": list(planner_execution.get("route_candidates") or []),
@@ -17579,8 +17955,16 @@ def run_generation(
     else:
         client = llm_client or LLMClient(provider=provider)
         try:
-            llm_answer = client.generate(
-                prompt=prompt,
+            system_prompt = (
+                "Tu es un rédacteur médical technique.\n"
+                "Réponds uniquement avec les faits fournis.\n"
+                "Ne révèle aucun raisonnement interne.\n"
+                "Conserve strictement les valeurs, unités, références, statuts et sources."
+            )
+            llm_answer = _generate_structured_llm_text(
+                client=client,
+                system_prompt=system_prompt,
+                user_prompt=prompt,
                 model=model,
                 temperature=temperature,
                 num_ctx=num_ctx,
@@ -17766,6 +18150,7 @@ def run_generation(
             "response_strategy_reason": getattr(query_understanding, "response_strategy_reason", None),
             "output_format": query_understanding.output_format,
             "answer_style": query_understanding.answer_style,
+            "summary_style_requested": requested_summary_style,
             "requested_doc_ids": list(query_understanding.requested_doc_ids or []),
             "requested_analytes": list(query_understanding.requested_analytes or []),
             "requested_table_columns": list(query_understanding.requested_table_columns or []),

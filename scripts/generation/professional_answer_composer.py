@@ -4,14 +4,17 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass, replace
 from typing import Any, NotRequired, TypedDict
 
 from llm_client import LLMClient, LLMClientError
 from model_settings import (
+    DEFAULT_LLM_MAX_TOKENS,
     DEFAULT_LLM_MODEL,
     DEFAULT_LLM_NUM_CTX,
     DEFAULT_LLM_PROVIDER,
     DEFAULT_LLM_TEMPERATURE,
+    DEFAULT_LLM_TIMEOUT,
 )
 from query_understanding import QueryUnderstanding, analyte_display_name, norm_text
 from medical_entity_resolver import canonicalize_analyte, get_display_analyte_label
@@ -156,6 +159,299 @@ Règles de formulation visualisation :
 """
 
 
+@dataclass(frozen=True)
+class WriterRuntimeProfile:
+    profile_name: str
+    provider: str
+    model: str
+    timeout_s: int
+    max_tokens: int
+    num_ctx: int
+    temperature: float
+    family: str
+    auto_profile_enabled: bool
+
+
+def _writer_auto_profile_enabled() -> bool:
+    raw = str(os.getenv("MEDICAL_RAG_WRITER_AUTO_PROFILE", "1")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _has_gemini_credentials() -> bool:
+    return bool(
+        str(os.getenv("GEMINI_API_KEY", "")).strip()
+        or str(os.getenv("GOOGLE_API_KEY", "")).strip()
+    )
+
+
+def _normalize_provider_name(provider: str | None) -> str:
+    raw = str(provider or "").strip().lower()
+    if raw in {"google", "google_ai_studio", "google-ai-studio", "google ai studio"}:
+        return "gemini"
+    return raw
+
+
+def _default_model_for_provider(provider: str) -> str:
+    provider_norm = str(provider or "").strip().lower()
+    if provider_norm == "gemini":
+        return (
+            str(os.getenv("MEDICAL_RAG_GEMINI_MODEL", ""))
+            .strip()
+            or str(os.getenv("GEMINI_MODEL", "gemini-2.5-flash")).strip()
+            or "gemini-2.5-flash"
+        )
+    return (
+        str(os.getenv("MEDICAL_RAG_OLLAMA_MODEL", ""))
+        .strip()
+        or str(os.getenv("OLLAMA_MODEL", ""))
+        .strip()
+        or "qwen2.5:7b-instruct"
+    )
+
+
+def _writer_profile_family(query_understanding: QueryUnderstanding, evidence_pack: dict[str, Any]) -> str:
+    intent = str(getattr(query_understanding, "intent", "") or "").strip().lower()
+    presentation = getattr(query_understanding, "presentation_intent", None)
+    output_format = _safe_str(getattr(query_understanding, "output_format", ""), "auto").lower()
+    user_requested_visualization = bool(getattr(presentation, "user_requested_visualization", False))
+    if user_requested_visualization or output_format == "chart":
+        return "premium_narrative"
+    if intent in {
+        "single_analyte_lookup",
+        "doc_scoped_single_analyte_status",
+        "doc_scoped_abnormal_results",
+        "global_analyte_abnormal_search",
+        "global_toxicology_search",
+        "doc_scoped_toxicology_threshold_search",
+        "doc_scoped_toxicology_summary",
+        "doc_pair_comparison",
+        "multi_doc_comparison",
+        "reference_range_lookup",
+        "previous_result_comparison",
+        "doc_scoped_results",
+        "multi_doc_presence_diff",
+        "cohort_search",
+        "global_patient_lookup",
+    }:
+        return "strict_local"
+    if intent in {
+        "response_transform",
+        "open_grounded_medical_question",
+        "reference_ranges_summary",
+        "doc_scoped_summary",
+        "immunoanalysis_summary",
+        "toxicology_summary",
+    }:
+        return "premium_narrative"
+    if intent in {
+        "doc_scoped_medical_interpretation_guarded",
+    }:
+        return "strict_local"
+    if intent in {
+        "doc_scoped_biological_summary",
+        "doc_scoped_priority_anomalies",
+    }:
+        return "premium_narrative"
+    if len(list(evidence_pack.get("results") or evidence_pack.get("evidences") or [])) >= 3:
+        return "strict_local"
+    return "strict_local"
+
+
+def _resolve_writer_runtime_profile(
+    *,
+    query_understanding: QueryUnderstanding,
+    evidence_pack: dict[str, Any],
+    requested_provider: str,
+    requested_model: str,
+    prompt_tokens_estimate: int = 0,
+) -> WriterRuntimeProfile:
+    auto_profile_enabled = _writer_auto_profile_enabled()
+    family = _writer_profile_family(query_understanding, evidence_pack)
+    provider_requested = _normalize_provider_name(requested_provider)
+    model_requested = str(requested_model or "").strip()
+
+    if not auto_profile_enabled:
+        provider_effective = provider_requested or ("gemini" if _has_gemini_credentials() and model_requested.startswith("gemini") else "ollama")
+        model_effective = model_requested or _default_model_for_provider(provider_effective or "ollama")
+        timeout_s = max(10, min(int(DEFAULT_LLM_TIMEOUT), int(os.getenv("MEDICAL_RAG_WRITER_TIMEOUT", str(DEFAULT_LLM_TIMEOUT)))))
+        max_tokens = max(128, min(int(DEFAULT_LLM_MAX_TOKENS), int(os.getenv("MEDICAL_RAG_WRITER_MAX_TOKENS", str(DEFAULT_LLM_MAX_TOKENS)))))
+        num_ctx = max(2048, int(DEFAULT_LLM_NUM_CTX))
+        profile_name = "requested"
+        return WriterRuntimeProfile(
+            profile_name=profile_name,
+            provider=provider_effective or "ollama",
+            model=model_effective,
+            timeout_s=timeout_s,
+            max_tokens=max_tokens,
+            num_ctx=num_ctx,
+            temperature=max(0.0, float(DEFAULT_LLM_TEMPERATURE)),
+            family=family,
+            auto_profile_enabled=auto_profile_enabled,
+        )
+
+    if family == "strict_local":
+        provider_effective = "ollama"
+        model_effective = model_requested if model_requested and not model_requested.startswith("gemini") else _default_model_for_provider("ollama")
+        timeout_s = max(12, min(int(os.getenv("MEDICAL_RAG_WRITER_OLLAMA_TIMEOUT", "24")), int(DEFAULT_LLM_TIMEOUT)))
+        max_tokens = max(160, min(int(os.getenv("MEDICAL_RAG_WRITER_OLLAMA_MAX_TOKENS", "240")), 320))
+        num_ctx = max(4096, int(os.getenv("MEDICAL_RAG_WRITER_OLLAMA_NUM_CTX", str(max(4096, int(DEFAULT_LLM_NUM_CTX))))))
+        return WriterRuntimeProfile(
+            profile_name="ollama_strict_local",
+            provider=provider_effective,
+            model=model_effective,
+            timeout_s=timeout_s,
+            max_tokens=max_tokens,
+            num_ctx=num_ctx,
+            temperature=0.0,
+            family=family,
+            auto_profile_enabled=auto_profile_enabled,
+        )
+
+    if family == "premium_narrative":
+        summary_intent = str(
+            evidence_pack.get("intent") or getattr(query_understanding, "intent", "") or ""
+        ).strip().lower()
+        explicit_gemini_request = provider_requested == "gemini" or model_requested.startswith("gemini")
+        if summary_intent == "doc_scoped_biological_summary" and not explicit_gemini_request:
+            provider_effective = provider_requested or "ollama"
+            model_effective = model_requested if model_requested and not model_requested.startswith("gemini") else _default_model_for_provider("ollama")
+            timeout_s = max(14, min(int(os.getenv("MEDICAL_RAG_WRITER_OLLAMA_TIMEOUT", "24")), int(DEFAULT_LLM_TIMEOUT)))
+            max_tokens = max(180, min(int(os.getenv("MEDICAL_RAG_WRITER_OLLAMA_MAX_TOKENS", "260")), 360))
+            num_ctx = max(4096, int(os.getenv("MEDICAL_RAG_WRITER_OLLAMA_NUM_CTX", str(max(4096, int(DEFAULT_LLM_NUM_CTX))))))
+            if prompt_tokens_estimate > 6000:
+                max_tokens = max(max_tokens, 300)
+            return WriterRuntimeProfile(
+                profile_name="ollama_premium_narrative",
+                provider=provider_effective or "ollama",
+                model=model_effective,
+                timeout_s=timeout_s,
+                max_tokens=max_tokens,
+                num_ctx=num_ctx,
+                temperature=0.0,
+                family=family,
+                auto_profile_enabled=auto_profile_enabled,
+            )
+
+        if explicit_gemini_request or _has_gemini_credentials():
+            provider_effective = "gemini"
+            model_effective = model_requested if model_requested.startswith("gemini") else _default_model_for_provider("gemini")
+            timeout_s = max(16, min(int(os.getenv("MEDICAL_RAG_WRITER_GEMINI_TIMEOUT", "30")), int(DEFAULT_LLM_TIMEOUT)))
+            max_tokens = max(192, min(int(os.getenv("MEDICAL_RAG_WRITER_GEMINI_MAX_TOKENS", "360")), 512))
+            num_ctx = max(8192, int(os.getenv("MEDICAL_RAG_WRITER_GEMINI_NUM_CTX", "8192")))
+            if prompt_tokens_estimate > 6000:
+                max_tokens = max(max_tokens, 420)
+            return WriterRuntimeProfile(
+                profile_name="gemini_premium_narrative",
+                provider=provider_effective,
+                model=model_effective,
+                timeout_s=timeout_s,
+                max_tokens=max_tokens,
+                num_ctx=num_ctx,
+                temperature=0.0,
+                family=family,
+                auto_profile_enabled=auto_profile_enabled,
+            )
+
+        provider_effective = provider_requested or "ollama"
+        model_effective = model_requested if model_requested and not model_requested.startswith("gemini") else _default_model_for_provider("ollama")
+        timeout_s = max(14, min(int(os.getenv("MEDICAL_RAG_WRITER_OLLAMA_TIMEOUT", "24")), int(DEFAULT_LLM_TIMEOUT)))
+        max_tokens = max(180, min(int(os.getenv("MEDICAL_RAG_WRITER_OLLAMA_MAX_TOKENS", "260")), 360))
+        num_ctx = max(4096, int(os.getenv("MEDICAL_RAG_WRITER_OLLAMA_NUM_CTX", str(max(4096, int(DEFAULT_LLM_NUM_CTX))))))
+        if prompt_tokens_estimate > 6000:
+            max_tokens = max(max_tokens, 300)
+        return WriterRuntimeProfile(
+            profile_name="ollama_premium_narrative",
+            provider=provider_effective or "ollama",
+            model=model_effective,
+            timeout_s=timeout_s,
+            max_tokens=max_tokens,
+            num_ctx=num_ctx,
+            temperature=0.0,
+            family=family,
+            auto_profile_enabled=auto_profile_enabled,
+        )
+
+    provider_effective = "ollama"
+    model_effective = model_requested if model_requested and not model_requested.startswith("gemini") else _default_model_for_provider("ollama")
+    timeout_s = max(12, min(int(os.getenv("MEDICAL_RAG_WRITER_OLLAMA_TIMEOUT", "24")), int(DEFAULT_LLM_TIMEOUT)))
+    max_tokens = max(160, min(int(os.getenv("MEDICAL_RAG_WRITER_OLLAMA_MAX_TOKENS", "240")), 320))
+    num_ctx = max(4096, int(os.getenv("MEDICAL_RAG_WRITER_OLLAMA_NUM_CTX", str(max(4096, int(DEFAULT_LLM_NUM_CTX))))))
+    return WriterRuntimeProfile(
+        profile_name="ollama_fallback",
+        provider=provider_effective,
+        model=model_effective,
+        timeout_s=timeout_s,
+        max_tokens=max_tokens,
+        num_ctx=num_ctx,
+        temperature=0.0,
+        family=family,
+        auto_profile_enabled=auto_profile_enabled,
+    )
+
+
+def _build_writer_prompt_bundle(
+    *,
+    user_question: str,
+    query_understanding: QueryUnderstanding,
+    compact_pack: dict[str, Any],
+    route_specific_block: str = "",
+    retry_feedback: str | None = None,
+) -> dict[str, Any]:
+    system_sections = [
+        PROFESSIONAL_WRITER_SYSTEM_PROMPT.strip(),
+        PROFESSIONAL_WRITER_VISUALIZATION_RULES.strip(),
+        "RÈGLE STRICTE: reformule uniquement les facts de results_locked.",
+        "INTERDIT: ajouter/supprimer/modifier analyte, valeur, unité, référence, statut ou source.",
+        "INTERDIT: recalculer, diagnostiquer, proposer un traitement, utiliser un résultat antérieur comme valeur actuelle.",
+        "Si une donnée manque, écrire 'non présent' ou 'non disponible'.",
+    ]
+    if route_specific_block.strip():
+        system_sections.append(route_specific_block.strip())
+    system_sections.append("Sortie attendue: réponse finale uniquement.")
+    system_sections.append("/no_think")
+
+    user_sections = [
+        f"Question utilisateur:\n{user_question.strip()}",
+        "evidence_pack JSON:",
+        json.dumps(compact_pack, ensure_ascii=False),
+    ]
+    if retry_feedback:
+        user_sections.extend(
+            [
+                "Corrections obligatoires:",
+                "Corrige uniquement le style/format ci-dessous sans modifier aucune donnée factuelle.",
+                str(retry_feedback).strip(),
+            ]
+        )
+    system_prompt = "\n\n".join(section for section in system_sections if str(section or "").strip())
+    user_prompt = "\n\n".join(section for section in user_sections if str(section or "").strip())
+    prompt_preview = f"{system_prompt}\n\n{user_prompt}".strip()
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    return {
+        "system_prompt": system_prompt,
+        "user_prompt": user_prompt,
+        "prompt_preview": prompt_preview,
+        "messages": messages,
+    }
+
+
+def _llm_client_for_profile(
+    *,
+    llm_client: LLMClient | None,
+    profile: WriterRuntimeProfile,
+) -> LLMClient | Any:
+    if llm_client is None:
+        return LLMClient(provider=profile.provider)
+    if isinstance(llm_client, LLMClient):
+        current_provider = str(getattr(llm_client, "provider", "") or "").strip().lower()
+        if current_provider != profile.provider:
+            return LLMClient(provider=profile.provider, ollama_url=getattr(llm_client, "ollama_url", "http://127.0.0.1:11434/api/generate"))
+    return llm_client
+
+
 def _route_specific_writer_block(query_understanding: QueryUnderstanding) -> str:
     intent = str(getattr(query_understanding, "intent", "") or "").strip().lower()
     if intent == "response_transform":
@@ -194,6 +490,14 @@ def _route_specific_writer_block(query_understanding: QueryUnderstanding) -> str
             "- Tu ne remplaces jamais une référence textuelle complexe par une borne simplifiée.\n"
             "- Tu gardes la synthèse descriptive, sans extrapolation clinique.\n"
         )
+    if intent == "doc_scoped_biological_summary":
+        return (
+            "RÈGLES SPÉCIFIQUES summary biologique :\n"
+            "- Tu sépares explicitement les anomalies documentées des résultats dans la référence.\n"
+            "- Tu donnes une conclusion spécifique, pas une phrase générique.\n"
+            "- Tu restes clinique, lisible et fidèle aux faits.\n"
+            f"{_summary_style_block(query_understanding)}"
+        )
     if intent == "reference_ranges_summary":
         return (
             "RÈGLES SPÉCIFIQUES reference_ranges_summary :\n"
@@ -202,6 +506,7 @@ def _route_specific_writer_block(query_understanding: QueryUnderstanding) -> str
             "- Tu donnes des exemples factuels issus de results_locked quand disponibles.\n"
             "- Tu ne transformes jamais cette note en liste d'anomalies patient.\n"
             "- Tu termines par une conclusion descriptive, sans diagnostic ni traitement.\n"
+            f"{_summary_style_block(query_understanding)}"
         )
     if intent in {"doc_scoped_results", "previous_result_comparison"}:
         return (
@@ -223,6 +528,90 @@ def _route_specific_writer_block(query_understanding: QueryUnderstanding) -> str
 def _llm_quality_guard_disabled() -> bool:
     v = str(os.getenv("MEDICAL_RAG_DISABLE_LLM_QUALITY_GUARD", "false")).strip().lower()
     return v in {"1", "true", "yes", "on"}
+
+
+def _summary_render_mode(query_understanding: QueryUnderstanding) -> str:
+    intent = str(getattr(query_understanding, "intent", "") or "").strip().lower()
+    answer_style = str(getattr(query_understanding, "answer_style", "") or "").strip().lower()
+    qualitative_view = str(getattr(query_understanding, "qualitative_view_type", "") or "").strip().lower()
+    requested_points = getattr(query_understanding, "requested_summary_points", None)
+
+    if intent == "reference_ranges_summary":
+        return "editorial"
+    if answer_style in {"doctor_note", "editorial"}:
+        return "editorial"
+    if qualitative_view in {"interpretive_note", "medical_info_card"}:
+        return "editorial"
+    if answer_style in {"compact", "brief", "short"}:
+        return "short"
+    if requested_points is not None and int(requested_points or 0) <= 4:
+        return "short"
+    if intent in {"doc_scoped_biological_summary", "doc_scoped_summary", "immunoanalysis_summary", "toxicology_summary"}:
+        return "editorial"
+    return "short"
+
+
+def _summary_style_block(query_understanding: QueryUnderstanding) -> str:
+    mode = _summary_render_mode(query_understanding)
+    if mode == "editorial":
+        return (
+            "MODE DE RENDU: éditorial clinique.\n"
+            "- Rédige des phrases naturelles et professionnelles.\n"
+            "- Relie explicitement les anomalies, les résultats dans la référence et la conclusion.\n"
+            "- Évite les formulations génériques et les conclusions plates.\n"
+        )
+    return (
+        "MODE DE RENDU: court.\n"
+        "- Reste dense et lisible en 3 à 5 lignes.\n"
+        "- Va droit aux faits clés et à la conclusion technique.\n"
+    )
+
+
+def _summary_answer_looks_weak(answer: str, evidences: list[dict[str, Any]], query_understanding: QueryUnderstanding) -> bool:
+    text = norm_text(answer or "")
+    if not text:
+        return True
+    weak_markers = [
+        "necessite un contexte clinique",
+        "nécessite un contexte clinique",
+        "synthese descriptive limitee",
+        "synthèse descriptive limitée",
+        "reponse descriptive limitee",
+        "réponse descriptive limitée",
+        "les analytes mentionnes sont anormaux",
+        "les analytes mentionnés sont anormaux",
+        "lecture prudente",
+        "sans diagnostic",
+        "statut a verifier",
+        "statut à vérifier",
+    ]
+    if any(marker in text for marker in weak_markers):
+        return True
+    if len(text) < 120:
+        return True
+    route = str(getattr(query_understanding, "intent", "") or "").strip().lower()
+    if route == "doc_scoped_biological_summary":
+        abnormal_labels: list[str] = []
+        within_labels: list[str] = []
+        seen: set[str] = set()
+        for ev in list(evidences or []):
+            label = str(ev.get("analyte") or ev.get("analyte_label") or ev.get("display_name") or "").strip()
+            if not label:
+                continue
+            key = norm_text(label)
+            if key in seen:
+                continue
+            seen.add(key)
+            status = str(ev.get("technical_status_code") or ev.get("interpretation_status") or ev.get("status") or "").strip().lower()
+            if status in {"above_reference", "below_reference"}:
+                abnormal_labels.append(label)
+            elif status == "within_reference":
+                within_labels.append(label)
+        if abnormal_labels and not any(norm_text(label) in text for label in abnormal_labels[:4]):
+            return True
+        if within_labels and not any(norm_text(label) in text for label in within_labels[:4]):
+            return True
+    return False
 
 
 _COLD_CONCLUSIONS = {
@@ -1689,6 +2078,7 @@ def _llm_writer_preserves_facts(
     llm_answer: str,
     evidences: list[dict[str, Any]],
     source_citations: list[dict[str, Any]],
+    require_source_labels: bool = True,
 ) -> tuple[bool, str | None]:
     if not llm_answer.strip():
         return False, "empty_llm_answer"
@@ -1702,7 +2092,7 @@ def _llm_writer_preserves_facts(
         if val and val not in llm_numeric:
             return False, "llm_modified_values"
     # Source labels must be preserved only when sources are displayed.
-    if source_citations:
+    if require_source_labels and source_citations:
         for src in deduplicate_sources(source_citations):
             label = norm_text(_safe_str(src.get("label")))
             if label and label not in llm_norm:
@@ -2088,19 +2478,36 @@ def compose_visualization_answer(
         evidence_pack=evidence_pack,
         source_citations=[],
     )
-    
-    prompt = (
-        f"{PROFESSIONAL_WRITER_SYSTEM_PROMPT}\n\n{PROFESSIONAL_WRITER_VISUALIZATION_RULES}\n\n"
-        "TASK: Rédige une introduction factuelle, naturelle et concise pour présenter les données et la visualisation ci-dessous.\n"
-        "RECO: Si c'est un fallback, explique-le avec fluidité (ex: 'Compte tenu de la disparité des unités...').\n"
-        "IMPORTANT: Ta réponse doit être UNIQUEMENT le texte de l'introduction. Ne génère JAMAIS de tableau, de liste de sources ou de labels techniques Recharts concaténés ici.\n"
-        "/no_think\n\n"
-        "evidence_pack JSON:\n"
-        f"{json.dumps(compact_pack, ensure_ascii=False)}\n"
+    prompt_tokens_estimate = max(1, len(json.dumps(compact_pack, ensure_ascii=False)) // 4)
+    profile = _resolve_writer_runtime_profile(
+        query_understanding=query_understanding,
+        evidence_pack=evidence_pack,
+        requested_provider=provider,
+        requested_model=model,
+        prompt_tokens_estimate=prompt_tokens_estimate,
     )
-    
-    client = llm_client or LLMClient(provider=provider)
-    intro = client.generate(prompt=prompt, model=model).strip()
+    writer_client = _llm_client_for_profile(llm_client=llm_client, profile=profile)
+    prompt_bundle = _build_writer_prompt_bundle(
+        user_question=user_question,
+        query_understanding=query_understanding,
+        compact_pack=compact_pack,
+        route_specific_block=(
+            "TASK: Rédige une introduction factuelle, naturelle et concise pour présenter les données et la visualisation ci-dessous.\n"
+            "RECO: Si c'est un fallback, explique-le avec fluidité (ex: 'Compte tenu de la disparité des unités...').\n"
+            "IMPORTANT: Ta réponse doit être UNIQUEMENT le texte de l'introduction. Ne génère JAMAIS de tableau, de liste de sources ou de labels techniques Recharts concaténés ici."
+        ),
+    )
+    intro = writer_client.generate(
+        prompt=prompt_bundle["prompt_preview"],
+        system_prompt=prompt_bundle["system_prompt"],
+        user_prompt=prompt_bundle["user_prompt"],
+        messages=prompt_bundle["messages"],
+        model=profile.model,
+        temperature=profile.temperature,
+        num_ctx=profile.num_ctx,
+        max_tokens=profile.max_tokens,
+        timeout=profile.timeout_s,
+    ).strip()
     
     # Post-generation sanitizer for Recharts leakage
     # We remove patterns of uppercase joined words and percentage labels that often leak from Recharts DOM
@@ -2138,6 +2545,12 @@ def compose_visualization_answer(
         "conclusion": None,
         "answer": answer,
         "mode": "specialized_visualization_composer",
+        "writer_profile": {
+            "profile_name": profile.profile_name,
+            "provider": profile.provider,
+            "model": profile.model,
+            "family": profile.family,
+        },
     }
 
 
@@ -2301,59 +2714,138 @@ def compose_professional_answer(
         out["contract_violation"] = contract_errors
         return out
     route_specific_block = _route_specific_writer_block(query_understanding)
-
-    prompt = (
-        f"{PROFESSIONAL_WRITER_SYSTEM_PROMPT}\n\n{PROFESSIONAL_WRITER_VISUALIZATION_RULES}\n\n"
-        "RÈGLE STRICTE: reformule uniquement les facts de results_locked.\n"
-        "INTERDIT: ajouter/supprimer/modifier analyte, valeur, unité, référence, statut ou source.\n"
-        "INTERDIT: recalculer, diagnostiquer, proposer un traitement, utiliser un résultat antérieur comme valeur actuelle.\n"
-        "Si une donnée manque, écrire 'non présent' ou 'non disponible'.\n"
-        f"{route_specific_block}\n"
-        "Sortie attendue: réponse finale uniquement.\n"
-        "/no_think\n\n"
-        "Question utilisateur:\n"
-        f"{user_question.strip()}\n\n"
-        "evidence_pack JSON:\n"
-        f"{json.dumps(compact_pack, ensure_ascii=False)}\n"
+    prompt_tokens_estimate = max(1, len(json.dumps(compact_pack, ensure_ascii=False)) // 4)
+    profile = _resolve_writer_runtime_profile(
+        query_understanding=query_understanding,
+        evidence_pack=evidence_pack,
+        requested_provider=provider,
+        requested_model=model,
+        prompt_tokens_estimate=prompt_tokens_estimate,
     )
-    if retry_feedback:
-        prompt += (
-            "\nCorrections obligatoires:\n"
-            "Corrige uniquement le style/format ci-dessous sans modifier aucune donnée factuelle.\n"
-            f"{retry_feedback.strip()}\n"
-        )
+    writer_client = _llm_client_for_profile(llm_client=llm_client, profile=profile)
+    prompt_bundle = _build_writer_prompt_bundle(
+        user_question=user_question,
+        query_understanding=query_understanding,
+        compact_pack=compact_pack,
+        route_specific_block=route_specific_block,
+        retry_feedback=retry_feedback,
+    )
+    llm_quality_escalation_used = False
+    llm_quality_escalation_reason: str | None = None
 
-    client = llm_client or LLMClient(provider=provider)
+    def _augment_fallback_payload(base_payload: dict[str, Any], *, mode_override: str | None = None) -> dict[str, Any]:
+        out = dict(base_payload)
+        if mode_override:
+            out["mode"] = mode_override
+        out["writer_profile"] = {
+            "profile_name": profile.profile_name,
+            "provider": profile.provider,
+            "model": profile.model,
+            "family": profile.family,
+            "auto_profile_enabled": profile.auto_profile_enabled,
+        }
+        out["llm_quality_escalation_used"] = llm_quality_escalation_used
+        out["llm_quality_escalation_reason"] = llm_quality_escalation_reason
+        out["llm_provider_effective"] = profile.provider
+        out["llm_model_effective"] = profile.model
+        out["llm_timeout_s"] = profile.timeout_s
+        out["llm_max_tokens"] = profile.max_tokens
+        out["llm_num_ctx"] = profile.num_ctx
+        return out
+
     try:
-        llm_answer = client.generate(
-            prompt=prompt,
-            model=model,
-            temperature=0.0 if temperature is None else min(float(temperature), 0.2),
-            num_ctx=max(2048, int(num_ctx)),
-            max_tokens=max(180, min(int(max_tokens), 520)),
-            timeout=max(6, int(timeout)),
+        llm_answer = writer_client.generate(
+            prompt=prompt_bundle["prompt_preview"],
+            system_prompt=prompt_bundle["system_prompt"],
+            user_prompt=prompt_bundle["user_prompt"],
+            messages=prompt_bundle["messages"],
+            model=profile.model,
+            temperature=profile.temperature if temperature is None else min(float(temperature), 0.2),
+            num_ctx=profile.num_ctx,
+            max_tokens=profile.max_tokens,
+            timeout=profile.timeout_s,
             keep_alive=str(os.getenv("MEDICAL_RAG_OLLAMA_KEEP_ALIVE", "10m")).strip() or "10m",
         ).strip()
         if not llm_answer:
-            out = dict(fallback)
+            out = _augment_fallback_payload(fallback)
             out["llm_error"] = "empty_llm_answer"
-            out["llm_prompt_preview"] = prompt[:1200]
+            out["llm_prompt_preview"] = prompt_bundle["prompt_preview"][:1200]
             return out
+
+        llm_quality_escalation_used = False
+        llm_quality_escalation_reason: str | None = None
+        summary_intent = str(
+            getattr(query_understanding, "intent", "") or evidence_pack.get("intent") or ""
+        ).strip().lower()
+        summary_route = summary_intent in {
+            "doc_scoped_summary",
+            "doc_scoped_biological_summary",
+            "reference_ranges_summary",
+            "immunoanalysis_summary",
+            "toxicology_summary",
+        }
+        if (
+            summary_route
+            and profile.provider == "ollama"
+            and _has_gemini_credentials()
+            and _summary_answer_looks_weak(llm_answer, evidences, query_understanding)
+        ):
+            escalated_profile = replace(
+                profile,
+                profile_name=f"{profile.profile_name}_gemini_quality_escalation",
+                provider="gemini",
+                model=_default_model_for_provider("gemini"),
+                timeout_s=max(profile.timeout_s, int(os.getenv("MEDICAL_RAG_SUMMARY_GEMINI_TIMEOUT", str(profile.timeout_s)))),
+                max_tokens=max(profile.max_tokens, 220),
+                num_ctx=max(profile.num_ctx, 8192),
+                temperature=0.0,
+            )
+            escalated_client = _llm_client_for_profile(llm_client=llm_client, profile=escalated_profile)
+            escalated_prompt_bundle = _build_writer_prompt_bundle(
+                user_question=user_question,
+                query_understanding=query_understanding,
+                compact_pack=compact_pack,
+                route_specific_block=route_specific_block,
+                retry_feedback=(
+                    "Le premier jet est trop générique. Rédige une version éditoriale plus précise, "
+                    "qui mentionne explicitement les anomalies, les résultats dans la référence et une conclusion clinique spécifique."
+                ),
+            )
+            try:
+                escalated_answer = escalated_client.generate(
+                    prompt=escalated_prompt_bundle["prompt_preview"],
+                    system_prompt=escalated_prompt_bundle["system_prompt"],
+                    user_prompt=escalated_prompt_bundle["user_prompt"],
+                    messages=escalated_prompt_bundle["messages"],
+                    model=escalated_profile.model,
+                    temperature=escalated_profile.temperature if temperature is None else min(float(temperature), 0.2),
+                    num_ctx=escalated_profile.num_ctx,
+                    max_tokens=escalated_profile.max_tokens,
+                    timeout=escalated_profile.timeout_s,
+                    keep_alive=str(os.getenv("MEDICAL_RAG_OLLAMA_KEEP_ALIVE", "10m")).strip() or "10m",
+                ).strip()
+                if escalated_answer:
+                    llm_answer = escalated_answer
+                    profile = escalated_profile
+                    writer_client = escalated_client
+                    prompt_bundle = escalated_prompt_bundle
+                    llm_quality_escalation_used = True
+                    llm_quality_escalation_reason = "local_summary_too_weak"
+            except Exception as exc:
+                llm_quality_escalation_reason = f"local_summary_escalation_failed:{type(exc).__name__}"
 
         guard_disabled = _llm_quality_guard_disabled()
 
         if (not guard_disabled) and re.search(r"\brésultat\(s\)|\bcorrespondant\(s\)", llm_answer, flags=re.IGNORECASE):
-            out = dict(fallback)
-            out["mode"] = "llm_writer_quality_fallback"
+            out = _augment_fallback_payload(fallback, mode_override="llm_writer_quality_fallback")
             out["llm_error"] = "ugly_pluralization"
-            out["llm_prompt_preview"] = prompt[:1200]
+            out["llm_prompt_preview"] = prompt_bundle["prompt_preview"][:1200]
             out["llm_candidate_answer"] = llm_answer
             return out
         if (not guard_disabled) and re.search(r"\bchart\b", norm_text(llm_answer), flags=re.IGNORECASE):
-            out = dict(fallback)
-            out["mode"] = "llm_writer_quality_fallback"
+            out = _augment_fallback_payload(fallback, mode_override="llm_writer_quality_fallback")
             out["llm_error"] = "internal_chart_term_visible"
-            out["llm_prompt_preview"] = prompt[:1200]
+            out["llm_prompt_preview"] = prompt_bundle["prompt_preview"][:1200]
             out["llm_candidate_answer"] = llm_answer
             return out
 
@@ -2364,40 +2856,37 @@ def compose_professional_answer(
             fallback_reason = _safe_str(viz.get("fallback_reason")).lower()
             ans_norm = norm_text(llm_answer)
             if requested_label and norm_text(requested_label) not in ans_norm:
-                out = dict(fallback)
-                out["mode"] = "llm_writer_quality_fallback"
+                out = _augment_fallback_payload(fallback, mode_override="llm_writer_quality_fallback")
                 out["llm_error"] = "requested_visualization_not_respected"
-                out["llm_prompt_preview"] = prompt[:1200]
+                out["llm_prompt_preview"] = prompt_bundle["prompt_preview"][:1200]
                 out["llm_candidate_answer"] = llm_answer
                 return out
             if rendered_label and norm_text(rendered_label) not in ans_norm:
-                out = dict(fallback)
-                out["mode"] = "llm_writer_quality_fallback"
+                out = _augment_fallback_payload(fallback, mode_override="llm_writer_quality_fallback")
                 out["llm_error"] = "rendered_visualization_not_mentioned"
-                out["llm_prompt_preview"] = prompt[:1200]
+                out["llm_prompt_preview"] = prompt_bundle["prompt_preview"][:1200]
                 out["llm_candidate_answer"] = llm_answer
                 return out
             if fallback_reason:
                 key_terms = [tok for tok in re.findall(r"[a-zA-ZÀ-ÿ]{5,}", fallback_reason) if tok not in {"dans", "pour", "avec", "encore"}]
                 if key_terms and not any(norm_text(term) in ans_norm for term in key_terms[:4]):
-                    out = dict(fallback)
-                    out["mode"] = "llm_writer_quality_fallback"
-                out["llm_error"] = "fallback_reason_missing"
-                out["llm_prompt_preview"] = prompt[:1200]
-                out["llm_candidate_answer"] = llm_answer
-                return out
+                    out = _augment_fallback_payload(fallback, mode_override="llm_writer_quality_fallback")
+                    out["llm_error"] = "fallback_reason_missing"
+                    out["llm_prompt_preview"] = prompt_bundle["prompt_preview"][:1200]
+                    out["llm_candidate_answer"] = llm_answer
+                    return out
 
         if not guard_disabled:
             preserves_facts, fact_error = _llm_writer_preserves_facts(
                 llm_answer=llm_answer,
                 evidences=evidences,
                 source_citations=source_citations or [],
+                require_source_labels=not summary_route,
             )
             if not preserves_facts:
-                out = dict(fallback)
-                out["mode"] = "llm_writer_quality_fallback"
+                out = _augment_fallback_payload(fallback, mode_override="llm_writer_quality_fallback")
                 out["llm_error"] = fact_error or "llm_modified_facts"
-                out["llm_prompt_preview"] = prompt[:1200]
+                out["llm_prompt_preview"] = prompt_bundle["prompt_preview"][:1200]
                 out["llm_candidate_answer"] = llm_answer
                 return out
 
@@ -2424,14 +2913,27 @@ def compose_professional_answer(
             "answer": llm_answer,
             "mode": "hybrid_structured_llm_writer" if mode == "hybrid_structured_llm_writer" else "llm_professional_writer",
             "llm_error": "quality_guard_disabled_debug_mode" if guard_disabled else None,
-            "llm_prompt_preview": prompt[:1200],
+            "llm_prompt_preview": prompt_bundle["prompt_preview"][:1200],
             "llm_candidate_answer": llm_answer,
+            "writer_profile": {
+                "profile_name": profile.profile_name,
+                "provider": profile.provider,
+                "model": profile.model,
+                "family": profile.family,
+                "auto_profile_enabled": profile.auto_profile_enabled,
+            },
+            "llm_quality_escalation_used": llm_quality_escalation_used,
+            "llm_quality_escalation_reason": llm_quality_escalation_reason,
+            "llm_provider_effective": profile.provider,
+            "llm_model_effective": profile.model,
+            "llm_timeout_s": profile.timeout_s,
+            "llm_max_tokens": profile.max_tokens,
+            "llm_num_ctx": profile.num_ctx,
         }
     except LLMClientError as exc:
-        out = dict(fallback)
-        out["mode"] = "llm_writer_error_fallback"
+        out = _augment_fallback_payload(fallback, mode_override="llm_writer_error_fallback")
         out["llm_error"] = str(exc)
-        out["llm_prompt_preview"] = prompt[:1200]
+        out["llm_prompt_preview"] = prompt_bundle["prompt_preview"][:1200]
         return out
 
 

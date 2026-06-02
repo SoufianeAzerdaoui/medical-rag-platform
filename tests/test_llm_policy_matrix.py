@@ -32,13 +32,17 @@ class TestLlmPolicyMatrix(unittest.TestCase):
         def __init__(self) -> None:
             self.last_prompt = ""
 
-        def generate(self, prompt: str, **_kwargs: object) -> str:
-            self.last_prompt = prompt
-            if "Réponds en JSON strict uniquement" in prompt:
+        def generate(self, prompt: str, **kwargs: object) -> str:
+            system_prompt = str(kwargs.get("system_prompt") or "")
+            user_prompt = str(kwargs.get("user_prompt") or "")
+            combined = "\n\n".join(part for part in [system_prompt, user_prompt or prompt] if part)
+            self.last_prompt = combined
+            if "Réponds en JSON strict uniquement" in combined:
                 return '{"title":"Synthèse","points":["Point 1","Point 2","Point 3"],"limitations":null}'
             return "Faits techniques : test.\nLimites : test.\nConclusion technique : test."
 
     def test_llm_allowed_routes_are_explicit(self) -> None:
+        self.assertIn("doc_scoped_biological_summary", LLM_ALLOWED_ROUTES)
         self.assertIn("doc_scoped_medical_interpretation_guarded", LLM_ALLOWED_ROUTES)
         self.assertIn("open_grounded_medical_question", LLM_ALLOWED_ROUTES)
         self.assertIn("response_transform", LLM_ALLOWED_ROUTES)
@@ -59,11 +63,11 @@ class TestLlmPolicyMatrix(unittest.TestCase):
         self.assertEqual(str(policy.get("selected_policy") or ""), "safety_only")
         self.assertFalse(bool(policy.get("llm_writer_allowed")))
 
-    def test_deterministic_preferred_routes_are_not_llm_allowed_by_default(self) -> None:
-        self.assertIn("doc_scoped_biological_summary", DETERMINISTIC_PREFERRED_ROUTES)
+    def test_biological_summary_routes_are_llm_allowed_by_default(self) -> None:
+        self.assertNotIn("doc_scoped_biological_summary", DETERMINISTIC_PREFERRED_ROUTES)
         policy = get_intent_policy("doc_scoped_biological_summary")
-        self.assertEqual(str(policy.get("generation_strategy") or ""), "deterministic_preferred")
-        self.assertFalse(bool(policy.get("llm_writer_allowed")))
+        self.assertEqual(str(policy.get("generation_strategy") or ""), "llm_writer_expected")
+        self.assertTrue(bool(policy.get("llm_writer_allowed")))
 
     def test_unknown_route_defaults_to_non_llm(self) -> None:
         policy = get_intent_policy("unknown_route")
@@ -78,7 +82,7 @@ class TestLlmPolicyMatrix(unittest.TestCase):
         )
         self.assertEqual(
             get_llm_route_class("doc_scoped_biological_summary", get_intent_policy("doc_scoped_biological_summary")),
-            "deterministic_preferred",
+            "llm_allowed",
         )
         self.assertEqual(
             get_llm_route_class(

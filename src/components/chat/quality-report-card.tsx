@@ -62,9 +62,10 @@ export function QualityReportCard({ diagnostics }: Props) {
         {diagnostics?.validation_status ? <span>validation: {diagnostics.validation_status}</span> : null}
         {diagnostics?.generation_writer ? <span>writer: {diagnostics.generation_writer}</span> : null}
         {diagnostics?.generation_mode ? <span>mode: {diagnostics.generation_mode}</span> : null}
+        {diagnostics?.llm_provider_effective_runtime ? <span>provider: {diagnostics.llm_provider_effective_runtime}</span> : null}
+        {diagnostics?.llm_model_effective_runtime ? <span>model: {diagnostics.llm_model_effective_runtime}</span> : null}
         {typeof diagnostics?.response_time === "number" ? <span>latency: {diagnostics.response_time.toFixed(3)}s</span> : null}
       </div>
     </details>
   );
 }
-

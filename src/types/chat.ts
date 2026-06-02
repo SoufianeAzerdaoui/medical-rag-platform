@@ -90,7 +90,12 @@ export interface AssistantDiagnostics {
   validation_status?: "pass" | "warning" | "fail";
   generation_mode?: string;
   generation_writer?: "llm_writer" | "professional_fallback";
+  provider?: string | null;
+  model?: string | null;
   response_time?: number;
+  llm_provider_effective_runtime?: string | null;
+  llm_model_effective_runtime?: string | null;
+  summary_style_requested?: "short" | "editorial" | null;
   intent?: string | null;
   selected_route?: string | null;
   route_reason?: string | null;
@@ -102,6 +107,8 @@ export interface AssistantDiagnostics {
   llm_route_class?: string | null;
   llm_writer_attempted?: boolean | null;
   llm_writer_accepted?: boolean | null;
+  llm_quality_escalation_used?: boolean | null;
+  llm_quality_escalation_reason?: string | null;
   final_answer_source?: "llm_writer" | "deterministic_renderer" | null;
   renderer_used?: string | null;
   fallback_reason?: string | null;
@@ -127,6 +134,8 @@ export interface MessageItem {
   attachments?: string[];
   audio?: { mimeType: string; blobUrl: string };
 }
+
+export type SummaryStyle = "short" | "editorial";
 
 export interface ChatItem {
   id: string;
@@ -159,8 +168,14 @@ export interface RagResponse {
   validation_status?: "pass" | "warning" | "fail";
   generation_mode?: string;
   generation_writer?: "llm_writer" | "professional_fallback";
+  provider?: string | null;
+  model?: string | null;
+  llm_provider_effective_runtime?: string | null;
+  llm_model_effective_runtime?: string | null;
   llm_writer_attempted?: boolean | null;
   llm_writer_accepted?: boolean | null;
+  llm_quality_escalation_used?: boolean | null;
+  llm_quality_escalation_reason?: string | null;
   final_answer_source?: "llm_writer" | "deterministic_renderer" | null;
   renderer_used?: string | null;
   fallback_reason?: string | null;
