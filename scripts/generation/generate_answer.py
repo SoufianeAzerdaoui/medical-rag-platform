@@ -8996,6 +8996,7 @@ def _render_biological_summary_from_contract(
     rows = list(evidences or [])
     if not rows:
         return _missing_doc_answer()
+    raw_llm_answer = str(llm_answer or "").strip()
     abnormal_candidates, within_candidates, llm_conclusion = _extract_summary_contract_fields(llm_answer)
 
     def _status_of(ev: dict[str, Any]) -> str:
@@ -9020,6 +9021,26 @@ def _render_biological_summary_from_contract(
 
     abnormal_rows = [r for r in rows if _status_of(r) == "abnormal"]
     within_rows = [r for r in rows if _status_of(r) == "within"]
+
+    # Preserve a genuine LLM narrative when it stays within factual guardrails.
+    # The deterministic renderer should remain a safety fallback, not the default
+    # surface for otherwise-correct premium writing.
+    if not abnormal_candidates and not within_candidates and raw_llm_answer:
+        narrative = _normalize_summary_readability(raw_llm_answer)
+        sentence_count = len([s for s in re.split(r"[.!?]+", narrative) if s.strip()])
+        word_count = len(re.findall(r"[A-Za-zÀ-ÿ0-9]{2,}", narrative))
+        if (
+            sentence_count >= 2
+            and word_count >= 12
+            and not _is_table_markdown(narrative)
+            and not _contains_internal_reasoning_leak(narrative)
+            and not _summary_directional_status_conflicts(answer=narrative, evidences=rows)
+        ):
+            return _ensure_biological_summary_conclusion(
+                narrative,
+                has_abnormal=bool(abnormal_rows),
+                has_within=bool(within_rows),
+            )
 
     def _select(rows_in: list[dict[str, Any]], candidates: list[str]) -> list[dict[str, Any]]:
         if not rows_in:
