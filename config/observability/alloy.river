@@ -8,7 +8,7 @@ local.file_match "medical_rag_backend" {
       app = "medical-rag-backend",
       env = "production",
       job = "medical-rag-backend",
-      service = "medical-rag-backend"
+      service = "medical-rag-backend",
     }
   ]
   sync_period = "10s"
