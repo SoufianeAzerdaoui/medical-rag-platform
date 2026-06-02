@@ -2373,6 +2373,39 @@ class TestGenerationDocScope(unittest.TestCase):
             [str(r) for r in list(gate.get("reasons") or [])],
         )
 
+    def test_summary_quality_gate_matches_directional_claims_on_canonical_analyte_aliases(self) -> None:
+        ga = __import__("generate_answer")
+        candidate = (
+            "Anormaux : Bilirubine Directe = 6 mg/l (réf 0.00 - 5.00, au-dessus); "
+            "Créatinine = 23 mg/l (réf 4 - 9, au-dessus); "
+            "LDH = 250 UI/L (réf 125,00 - 243,00, au-dessus); "
+            "CKMB (CPKMB) = 40 UI/L (réf < 25, au-dessus); "
+            "APOLIPOPROTÉINE A1 (APO A1) = 2.3 g/L (réf 1,1 - 1,6, au-dessus); "
+            "et 4 autre(s) anomalie(s).\n"
+            "Résultats dans la référence uniquement : aucun résultat strictement dans la référence parmi les éléments sélectionnés.\n"
+            "Conclusion technique : Analytes anormaux incluent ACIDE URIQUE, AMMONIUM, Bilirubine Directe, Créatinine et GGT, sans diagnostic."
+        )
+        gate = ga._evaluate_summary_quality_gate(
+            answer=candidate,
+            selected_route="doc_scoped_biological_summary",
+            displayed_evidences=[
+                {"analyte": "Bilirubine Directe", "current_value": "6", "reference": "0.00 - 5.00", "interpretation_status": "needs_clinical_context"},
+                {"analyte": "Créatinine", "current_value": "23", "reference": "4 - 9", "interpretation_status": "needs_clinical_context"},
+                {"analyte": "LDH", "current_value": "250", "reference": "125,00 - 243,00", "interpretation_status": "needs_clinical_context"},
+                {"analyte": "CK-MB (CPKMB)", "current_value": "40", "reference": "0 - 25", "interpretation_status": "needs_clinical_context"},
+                {"analyte": "APOLIPOPROTÉINE A1 (APO A1)", "current_value": "2.3", "reference": "1,1 - 1,6", "interpretation_status": "needs_clinical_context"},
+            ],
+        )
+        self.assertTrue(bool(gate.get("pass")))
+        self.assertNotIn(
+            "directional_claim_unmatched_analyte",
+            [str(r) for r in list(gate.get("reasons") or [])],
+        )
+        self.assertNotIn(
+            "directional_claim_on_ambiguous_status:CK-MB (CPKMB)",
+            [str(r) for r in list(gate.get("reasons") or [])],
+        )
+
     def test_doc_scoped_biological_summary_keeps_llm_on_soft_quality_warnings(self) -> None:
         old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
         os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
@@ -2420,6 +2453,57 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertTrue(bool(quality_gate.get("accepted_with_warnings")))
         self.assertTrue(bool(quality_gate.get("soft_warning_only")))
         self.assertTrue(bool(result.get("llm_writer_accepted")))
+        self.assertEqual(str(result.get("generation_mode") or ""), "hybrid_structured_llm_writer")
+
+    def test_doc_scoped_biological_summary_keeps_llm_when_directional_aliases_match(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        candidate = (
+            "Anormaux : Bilirubine Directe = 6 mg/l (réf 0.00 - 5.00, au-dessus); "
+            "Créatinine = 23 mg/l (réf 4 - 9, au-dessus); "
+            "LDH = 250 UI/L (réf 125,00 - 243,00, au-dessus); "
+            "CKMB (CPKMB) = 40 UI/L (réf < 25, au-dessus); "
+            "APOLIPOPROTÉINE A1 (APO A1) = 2.3 g/L (réf 1,1 - 1,6, au-dessus); "
+            "et 4 autre(s) anomalie(s).\n"
+            "Résultats dans la référence uniquement : aucun résultat strictement dans la référence parmi les éléments sélectionnés.\n"
+            "Conclusion technique : Analytes anormaux incluent ACIDE URIQUE, AMMONIUM, Bilirubine Directe, Créatinine et GGT, sans diagnostic."
+        )
+
+        def _fake_micro(**kwargs: object) -> dict[str, object]:
+            return {
+                "mode": "hybrid_structured_llm_writer",
+                "answer": candidate,
+                "llm_candidate_answer": candidate,
+                "llm_error": None,
+                "use_micro_prompt": True,
+            }
+
+        original_validate = __import__("generate_answer").validate_answer
+
+        def _validate_pass_candidate(*args, **kwargs):
+            if str(kwargs.get("answer_text") or "").strip() == candidate.strip():
+                return {"validation_status": "pass", "errors": [], "warnings": []}
+            return original_validate(*args, **kwargs)
+
+        try:
+            with mock.patch("generate_answer._compose_level2_micro_prompt_answer", side_effect=_fake_micro), mock.patch(
+                "generate_answer.validate_answer", side_effect=_validate_pass_candidate
+            ):
+                result = run_generation(
+                    query="Fais une synthèse médico-biologique du report 12 en 6 lignes maximum, en séparant les anomalies et les résultats dans la référence uniquement. Ne donne pas de diagnostic.",
+                    mode="keyword",
+                    top_k=30,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        self.assertEqual(str(result.get("final_answer_source") or ""), "llm_writer")
+        self.assertTrue(bool(result.get("llm_writer_accepted")))
+        self.assertIsNone(result.get("fallback_reason"))
         self.assertEqual(str(result.get("generation_mode") or ""), "hybrid_structured_llm_writer")
 
     def test_summary_readability_normalizer_splits_concatenated_checkmarks(self) -> None:
