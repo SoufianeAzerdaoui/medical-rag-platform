@@ -1,0 +1,20 @@
+[Unit]
+Description=Medical RAG frontend
+After=network-online.target medical-rag-backend.service
+Wants=network-online.target medical-rag-backend.service
+Requires=medical-rag-backend.service
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/medical-rag-platform
+EnvironmentFile=/opt/medical-rag-platform/.env
+Environment=NODE_ENV=production
+Environment=NEXT_DIST_DIR=.next-build
+ExecStart=/usr/bin/env npm run start -- --hostname 0.0.0.0 --port 3000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

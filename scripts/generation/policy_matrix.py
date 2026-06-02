@@ -25,7 +25,6 @@ DETERMINISTIC_ONLY_ROUTES = {
 }
 
 DETERMINISTIC_PREFERRED_ROUTES = {
-    "doc_scoped_biological_summary",
     "doc_scoped_priority_anomalies",
 }
 
@@ -35,6 +34,7 @@ SAFETY_ONLY_ROUTES = {
 }
 
 LLM_ALLOWED_ROUTES = {
+    "doc_scoped_biological_summary",
     "doc_scoped_medical_interpretation_guarded",
     "open_grounded_medical_question",
     "response_transform",
@@ -45,10 +45,10 @@ LLM_WRITER_EXPECTED_ROUTES = set(LLM_ALLOWED_ROUTES)
 
 LEVEL2_HYBRID_INTENT_POLICY: dict[str, dict[str, Any]] = {
     "doc_scoped_biological_summary": {
-        "selected_policy": "deterministic_preferred",
-        "policy_level": "deterministic_preferred",
+        "selected_policy": "hybrid_controlled",
+        "policy_level": "hybrid_controlled",
         "facts_source": "evidence_rows_only",
-        "llm_allowed": False,
+        "llm_allowed": True,
         "timeout_s": 60,
         "max_tokens": 220,
         "validator_policy": "facts_safety_style",

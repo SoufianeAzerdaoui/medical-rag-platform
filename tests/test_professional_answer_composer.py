@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -35,8 +36,10 @@ class _FakeLLMClient:
     def __init__(self, response: str, raise_error: bool = False) -> None:
         self.response = response
         self.raise_error = raise_error
+        self.last_kwargs: dict[str, object] | None = None
 
-    def generate(self, **_: object) -> str:
+    def generate(self, **kwargs: object) -> str:
+        self.last_kwargs = dict(kwargs)
         if self.raise_error:
             raise LLMClientError("llm_unavailable")
         return self.response
@@ -1180,6 +1183,91 @@ class TestProfessionalAnswerComposer(unittest.TestCase):
         )
         self.assertEqual(str(out.get("mode") or ""), "llm_writer_quality_fallback")
 
+    def test_25b_summary_escalates_to_gemini_when_local_answer_is_weak(self) -> None:
+        import professional_answer_composer as pac
+
+        class _EscalatingClient:
+            def __init__(self, provider: str = "ollama", ollama_url: str | None = None) -> None:
+                self.provider = provider
+                self.ollama_url = ollama_url
+                self.calls: list[dict[str, object]] = []
+
+            def generate(self, **kwargs: object) -> str:
+                self.calls.append(dict(kwargs))
+                if self.provider == "ollama":
+                    return (
+                        "Les analytes mentionnés sont anormaux ou nécessitent un contexte clinique pour être interprétés correctement."
+                    )
+                return (
+                    "Anormaux : CRÉATININE = 23 mg/L (réf 7,2 - 12,5 mg/L, au-dessus).\n"
+                    "Résultats dans la référence uniquement : ALBUMINE = 42 g/L (réf 35 - 50 g/L, dans la référence).\n"
+                    "Conclusion technique : le bilan associe des écarts biologiques documentés et des résultats dans la référence parmi les éléments sélectionnés, sans conclusion diagnostique.\n"
+                    "Sources : report (12).pdf — page 1, ligne 13"
+                )
+
+        qu = parse_query_understanding("Fais une synthèse biologique du report 12.")
+        pack = {
+            "question": "Fais une synthèse biologique du report 12.",
+            "intent": "doc_scoped_biological_summary",
+            "requested_doc_ids": ["report_12"],
+            "requested_analytes": ["creatinine", "albumine"],
+            "output_format": "text",
+            "answer_style": "standard",
+            "requested_summary_points": 4,
+            "evidences": [
+                {
+                    "doc_id": "report_12",
+                    "analyte": "Créatinine",
+                    "analyte_norm": "creatinine",
+                    "current_value": "23",
+                    "unit": "mg/L",
+                    "reference": "7,2 - 12,5 mg/L",
+                    "technical_status_code": "above_reference",
+                    "technical_status": "au-dessus de la référence",
+                    "source_label": "report (12).pdf — page 1, ligne 13",
+                },
+                {
+                    "doc_id": "report_12",
+                    "analyte": "Albumine",
+                    "analyte_norm": "albumine",
+                    "current_value": "42",
+                    "unit": "g/L",
+                    "reference": "35 - 50 g/L",
+                    "technical_status_code": "within_reference",
+                    "technical_status": "dans la référence",
+                    "source_label": "report (12).pdf — page 1, ligne 14",
+                },
+            ],
+            "missing_items": [],
+        }
+        old_api_key = os.environ.get("GEMINI_API_KEY")
+        try:
+            os.environ["GEMINI_API_KEY"] = "test-key"
+            with mock.patch.object(pac, "LLMClient", _EscalatingClient):
+                out = compose_professional_answer(
+                    user_question=pack["question"],
+                    query_understanding=qu,
+                    evidence_pack=pack,
+                    mode="auto",
+                    source_citations=self._sources([13, 14]),
+                    provider="ollama",
+                    model="llama3.2:latest",
+                    temperature=0.0,
+                    max_tokens=260,
+                    timeout=25,
+                )
+        finally:
+            if old_api_key is None:
+                os.environ.pop("GEMINI_API_KEY", None)
+            else:
+                os.environ["GEMINI_API_KEY"] = old_api_key
+
+        self.assertTrue(bool(out.get("llm_quality_escalation_used")))
+        self.assertEqual(str((out.get("writer_profile") or {}).get("provider") or ""), "gemini")
+        self.assertIn("écarts biologiques documentés", str(out.get("answer") or ""))
+        self.assertIn("résultats dans la référence", str(out.get("answer") or "").lower())
+        self.assertNotIn("nécessitent un contexte clinique", str(out.get("answer") or "").lower())
+
     def test_26_multi_doc_comparison_increased_delta(self) -> None:
         qu = parse_query_understanding("Compare le glucose entre report 10 et report 12.")
         pack = {
@@ -1330,6 +1418,152 @@ class TestProfessionalAnswerComposer(unittest.TestCase):
         )
         self.assertEqual(str(composed.get("mode") or ""), "hybrid_structured_llm_writer")
         self.assertIn("23,00", str(composed.get("answer") or ""))
+
+    def test_30_response_transform_prefers_gemini_profile_when_available(self) -> None:
+        qu = parse_query_understanding("Convertis la réponse précédente en style professionnel.")
+        pack = self._cohort_pack(1)
+        pack["intent"] = "response_transform"
+        pack["output_format"] = "paragraph"
+        with mock.patch.dict(
+            os.environ,
+            {"GEMINI_API_KEY": "test-key", "MEDICAL_RAG_WRITER_AUTO_PROFILE": "1"},
+            clear=False,
+        ):
+            fake_client = _FakeLLMClient(
+                "TSHus : 55,00 mUI/L\n"
+                "Référence : 0,35 à 4,94 mUI/L\n"
+                "Source : report (16).pdf — page 1, ligne 1"
+            )
+            composed = compose_professional_answer(
+                user_question="Convertis la réponse précédente en style professionnel.",
+                query_understanding=qu,
+                evidence_pack=pack,
+                mode="auto",
+                source_citations=self._sources([1]),
+                llm_client=fake_client,
+            )
+        profile = dict(composed.get("writer_profile") or {})
+        self.assertEqual(profile.get("provider"), "gemini")
+        self.assertTrue(str(profile.get("model") or "").startswith("gemini"))
+        self.assertEqual(str(composed.get("mode") or ""), "llm_professional_writer")
+        self.assertIsNotNone(fake_client.last_kwargs)
+        self.assertIn("RÈGLE STRICTE: reformule uniquement les facts de results_locked.", str(fake_client.last_kwargs.get("system_prompt") or ""))
+        self.assertIn("Question utilisateur:", str(fake_client.last_kwargs.get("user_prompt") or ""))
+        self.assertEqual([m.get("role") for m in list(fake_client.last_kwargs.get("messages") or [])], ["system", "user"])
+
+    def test_31_guarded_route_stays_on_local_profile(self) -> None:
+        qu = parse_query_understanding("Le bilan thyroïdien du report 16 est-il cohérent ?")
+        pack = {
+            "question": "Le bilan thyroïdien du report 16 est-il cohérent ?",
+            "intent": "doc_scoped_medical_interpretation_guarded",
+            "requested_doc_ids": ["report_16"],
+            "requested_analytes": ["tshus"],
+            "output_format": "paragraph",
+            "answer_style": "standard",
+            "requested_table_columns": [],
+            "evidences": [
+                {
+                    "doc_id": "report_16",
+                    "patient_token": "PAT_000002",
+                    "filename": "report (16).pdf",
+                    "page": 1,
+                    "row": 1,
+                    "analyte": "TSHus",
+                    "analyte_norm": "tshus",
+                    "current_value": "55,00",
+                    "unit": "mUI/L",
+                    "reference": "0,35 à 4,94 mUI/l",
+                    "technical_status_code": "above_reference",
+                    "technical_status": "au-dessus de la référence",
+                    "source_label": "report (16).pdf — page 1, ligne 1",
+                    "source_url": "/api/documents/report_16/pdf?page=1",
+                    "viewer_url": "/viewer/pdf?doc_id=report_16&page=1",
+                }
+            ],
+            "missing_items": [],
+        }
+        with mock.patch.dict(
+            os.environ,
+            {"GEMINI_API_KEY": "test-key", "MEDICAL_RAG_WRITER_AUTO_PROFILE": "1"},
+            clear=False,
+        ):
+            fake_client = _FakeLLMClient(
+                "TSHus : 55,00 mUI/L\n"
+                "Référence : 0,35 à 4,94 mUI/L\n"
+                "Source : report (16).pdf — page 1, ligne 1"
+            )
+            composed = compose_professional_answer(
+                user_question=pack["question"],
+                query_understanding=qu,
+                evidence_pack=pack,
+                mode="auto",
+                source_citations=self._sources([1]),
+                llm_client=fake_client,
+            )
+        profile = dict(composed.get("writer_profile") or {})
+        self.assertEqual(profile.get("provider"), "ollama")
+        self.assertFalse(str(profile.get("model") or "").startswith("gemini"))
+        self.assertEqual(str(composed.get("mode") or ""), "llm_professional_writer")
+        self.assertIn("TSHus", str(composed.get("answer") or ""))
+        self.assertIsNotNone(fake_client.last_kwargs)
+        self.assertIn("Question utilisateur:", str(fake_client.last_kwargs.get("user_prompt") or ""))
+        self.assertFalse(str(fake_client.last_kwargs.get("model") or "").startswith("gemini"))
+
+    def test_32_exact_route_stays_local_even_with_gemini_credentials(self) -> None:
+        qu = parse_query_understanding("Dans report 16, donne les valeurs de TSHus.")
+        pack = {
+            "question": "Dans report 16, donne les valeurs de TSHus.",
+            "intent": "doc_scoped_results",
+            "requested_doc_ids": ["report_16"],
+            "requested_analytes": ["tshus"],
+            "output_format": "table",
+            "answer_style": "standard",
+            "requested_table_columns": [],
+            "evidences": [
+                {
+                    "doc_id": "report_16",
+                    "patient_token": "PAT_000002",
+                    "filename": "report (16).pdf",
+                    "page": 1,
+                    "row": 1,
+                    "analyte": "TSHus",
+                    "analyte_norm": "tshus",
+                    "current_value": "55,00",
+                    "unit": "mUI/L",
+                    "reference": "0,35 à 4,94 mUI/l",
+                    "technical_status_code": "above_reference",
+                    "technical_status": "au-dessus de la référence",
+                    "source_label": "report (16).pdf — page 1, ligne 1",
+                    "source_url": "/api/documents/report_16/pdf?page=1",
+                    "viewer_url": "/viewer/pdf?doc_id=report_16&page=1",
+                }
+            ],
+            "missing_items": [],
+        }
+        with mock.patch.dict(
+            os.environ,
+            {"GEMINI_API_KEY": "test-key", "MEDICAL_RAG_WRITER_AUTO_PROFILE": "1"},
+            clear=False,
+        ):
+            fake_client = _FakeLLMClient(
+                "TSHus : 55,00 mUI/L\n"
+                "Référence : 0,35 à 4,94 mUI/L\n"
+                "Source : report (16).pdf — page 1, ligne 1"
+            )
+            composed = compose_professional_answer(
+                user_question=pack["question"],
+                query_understanding=qu,
+                evidence_pack=pack,
+                mode="auto",
+                source_citations=self._sources([1]),
+                llm_client=fake_client,
+            )
+        profile = dict(composed.get("writer_profile") or {})
+        self.assertEqual(profile.get("provider"), "ollama")
+        self.assertFalse(str(profile.get("model") or "").startswith("gemini"))
+        self.assertIn("TSHus", str(composed.get("answer") or ""))
+        self.assertIsNotNone(fake_client.last_kwargs)
+        self.assertFalse(str(fake_client.last_kwargs.get("model") or "").startswith("gemini"))
 
 
 if __name__ == "__main__":

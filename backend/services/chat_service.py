@@ -48,6 +48,33 @@ def _advanced_debug_enabled() -> bool:
     return str(os.getenv("APP_ENV", "")).strip().lower() in {"dev", "development", "test", "local"}
 
 
+def _model_override_enabled() -> bool:
+    if _debug_or_devtest_enabled():
+        return True
+    return str(os.getenv("MEDICAL_RAG_ALLOW_MODEL_OVERRIDE", "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _safe_ui_override_requested(provider: str | None, model: str | None) -> bool:
+    normalized_provider = _normalize_llm_provider(provider)
+    normalized_model = str(model or "").strip().lower()
+    if normalized_provider == "gemini":
+        return normalized_model.startswith("gemini")
+    if normalized_provider == "ollama":
+        return normalized_model.startswith(
+            (
+                "llama",
+                "qwen",
+                "mistral",
+                "gemma",
+                "deepseek",
+                "medgemma",
+                "phi",
+                "granite",
+            )
+        )
+    return False
+
+
 def _normalize_llm_provider(provider: str | None) -> str:
     raw = str(provider or "").strip().lower()
     if raw in {"google", "google_ai_studio", "google-ai-studio", "google ai studio"}:
@@ -61,7 +88,18 @@ def _infer_provider_from_model(model: str | None) -> str:
         return "gemini"
     if raw.startswith("gpt-"):
         return "openai"
-    if raw.startswith("llama"):
+    if raw.startswith(
+        (
+            "llama",
+            "qwen",
+            "mistral",
+            "gemma",
+            "deepseek",
+            "medgemma",
+            "phi",
+            "granite",
+        )
+    ):
         return "ollama"
     return str(DEFAULT_LLM_PROVIDER or "").strip().lower() or "ollama"
 
@@ -75,15 +113,32 @@ def _resolve_llm_request(
     model_override = str(requested_model_override or "").strip()
 
     provider = provider_override or str(DEFAULT_LLM_PROVIDER or "").strip().lower() or "ollama"
-    model = model_override or str(DEFAULT_LLM_MODEL or "").strip() or "llama3.2:latest"
+    local_default_model = (
+        str(os.getenv("MEDICAL_RAG_OLLAMA_MODEL", "")).strip()
+        or str(os.getenv("OLLAMA_MODEL", "")).strip()
+        or str(DEFAULT_LLM_MODEL or "").strip()
+        or "qwen2.5:7b-instruct"
+    )
+    model = model_override or str(DEFAULT_LLM_MODEL or "").strip() or local_default_model
 
     if not provider_override and model_override:
         provider = _infer_provider_from_model(model_override)
 
     if provider == "gemini" and not model_override:
         model = str(os.getenv("GEMINI_MODEL", "gemini-2.5-flash")).strip() or "gemini-2.5-flash"
-    elif provider == "ollama" and not model_override and not model.startswith("llama"):
-        model = "llama3.2:latest"
+    elif provider == "ollama" and not model_override and not model.startswith(
+        (
+            "llama",
+            "qwen",
+            "mistral",
+            "gemma",
+            "deepseek",
+            "medgemma",
+            "phi",
+            "granite",
+        )
+    ):
+        model = local_default_model
 
     return provider, model
 
@@ -220,11 +275,32 @@ def _emit_request_summary_log(
     conversation_id: str,
     generation: dict[str, Any],
     generation_debug: dict[str, Any],
+    llm_provider_requested: str | None,
+    llm_provider_effective: str | None,
+    llm_model_requested: str | None,
+    llm_model_effective: str | None,
+    writer_profile_runtime: dict[str, Any] | None,
     validation_errors: list[str],
     validation_warnings: list[str],
 ) -> None:
     quality_report = generation.get("quality_report") if isinstance(generation.get("quality_report"), dict) else {}
     response_time_ms = round(float(generation.get("generation_time_seconds") or 0.0) * 1000.0, 3)
+    if not isinstance(writer_profile_runtime, dict):
+        writer_profile_runtime = {}
+    else:
+        writer_profile_runtime = dict(writer_profile_runtime)
+    llm_provider_effective_runtime = str(
+        generation.get("llm_provider_effective")
+        or writer_profile_runtime.get("provider")
+        or llm_provider_effective
+        or ""
+    ) or None
+    llm_model_effective_runtime = str(
+        generation.get("llm_model_effective")
+        or writer_profile_runtime.get("model")
+        or llm_model_effective
+        or ""
+    ) or None
     llm_observability = _llm_observability_snapshot(
         generation_debug,
         validation_errors=validation_errors,
@@ -239,6 +315,13 @@ def _emit_request_summary_log(
         "selected_route": str(generation_debug.get("selected_route") or "") or None,
         "generation_mode": str(generation.get("generation_mode") or "") or None,
         "generation_writer": str(generation_debug.get("generation_writer") or "") or None,
+        "llm_provider_requested": llm_provider_requested,
+        "llm_provider_effective": llm_provider_effective,
+        "llm_provider_effective_runtime": llm_provider_effective_runtime,
+        "llm_model_requested": llm_model_requested,
+        "llm_model_effective": llm_model_effective,
+        "llm_model_effective_runtime": llm_model_effective_runtime,
+        "writer_profile_runtime": writer_profile_runtime or None,
         "validation_status": str(((generation.get("validation") or {}).get("validation_status") or "")) or None,
         "quality_final_status": str(quality_report.get("final_status") or "") or None,
         "answerability_status": str(generation_debug.get("answerability_status") or "") or None,
@@ -605,11 +688,21 @@ def process_chat(
         query = f"{payload.message} doc_id {payload.document_id}" if payload.document_id else payload.message
         requested_provider_override = str(payload.llm_provider_override or "").strip() or None
         requested_model_override = str(payload.llm_model_override or "").strip() or None
-        allow_model_override = _debug_or_devtest_enabled() or bool(requested_provider_override or requested_model_override)
+        requested_summary_style = str(payload.summary_style or "").strip().lower() or None
+        allow_model_override = _model_override_enabled() or _safe_ui_override_requested(
+            requested_provider_override,
+            requested_model_override,
+        )
         provider_for_request, model_for_request = _resolve_llm_request(
             requested_provider_override=requested_provider_override if allow_model_override else None,
             requested_model_override=requested_model_override if allow_model_override else None,
         )
+        llm_provider = provider_for_request
+        llm_model_requested = model_for_request
+        llm_provider_effective = provider_for_request
+        llm_model_effective = model_for_request
+        llm_provider_effective_runtime = None
+        llm_model_effective_runtime = None
         generation = run_generation(
             query=query,
             top_k=5,
@@ -622,6 +715,7 @@ def process_chat(
             timeout=DEFAULT_LLM_TIMEOUT,
             index_dir="data/indexes",
             collection="medical_chunks",
+            summary_style=requested_summary_style,
             previous_structured_evidence_pack=transformable,
             previous_displayed_evidence_pack=(
                 state.get("last_displayed_evidence_pack")
@@ -726,22 +820,44 @@ def process_chat(
         displayed_evidences = _resolve_displayed_evidences(generation)
         stage_timings_ms = _stage_timings_from_generation(generation)
         generation_debug = generation.get("debug") if isinstance(generation.get("debug"), dict) else {}
-        llm_provider = str(generation.get("provider") or "") or None
-        llm_model_requested = str(generation.get("model") or "") or None
+        writer_profile_runtime_raw = generation.get("writer_profile")
+        if not isinstance(writer_profile_runtime_raw, dict):
+            writer_profile_runtime_raw = generation_debug.get("writer_profile")
+        writer_profile_runtime = dict(writer_profile_runtime_raw or {}) if isinstance(writer_profile_runtime_raw, dict) else {}
+        llm_provider = str(generation.get("provider") or llm_provider or "") or None
+        llm_model_requested = str(generation.get("model") or llm_model_requested or "") or None
         llm_provider_effective = str(
             generation_debug.get("llm_provider")
             or generation_debug.get("provider")
+            or llm_provider_effective
             or ""
         ) or None
         llm_model_effective = str(
             generation_debug.get("llm_model")
             or generation_debug.get("ollama_model")
             or generation_debug.get("gemini_model")
+            or llm_model_effective
+            or ""
+        ) or None
+        llm_provider_effective_runtime = str(
+            generation.get("llm_provider_effective")
+            or generation.get("llm_provider_effective_runtime")
+            or generation.get("provider_effective_runtime")
+            or writer_profile_runtime.get("provider")
+            or llm_provider_effective
+            or ""
+        ) or None
+        llm_model_effective_runtime = str(
+            generation.get("llm_model_effective")
+            or generation.get("llm_model_effective_runtime")
+            or generation.get("model_effective_runtime")
+            or writer_profile_runtime.get("model")
+            or llm_model_effective
             or ""
         ) or None
         model_verified = None
-        if llm_provider or llm_model_requested or llm_provider_effective or llm_model_effective:
-            model_verified = llm_provider == llm_provider_effective and llm_model_requested == llm_model_effective
+        if llm_provider or llm_model_requested or llm_provider_effective_runtime or llm_model_effective_runtime:
+            model_verified = llm_provider == llm_provider_effective_runtime and llm_model_requested == llm_model_effective_runtime
         requested_analyte_labels = _extract_requested_analyte_labels(qu, generation, generation_debug)
         canonical_requested_analytes = _canonicalize_analytes(requested_analyte_labels)
         qu_debug = dict(qu) if qu else {}
@@ -759,6 +875,7 @@ def process_chat(
             "intent": str(qu.get("intent") or "") or None,
             "safety_intent": str(qu.get("safety_intent") or "") or None,
             "technical_condition": str(qu.get("technical_condition") or "") or None,
+            "summary_style_requested": requested_summary_style,
             "validation": {
                 "status": str(validation.get("validation_status") or "") or None,
                 "errors": validation_errors,
@@ -787,11 +904,17 @@ def process_chat(
                     "llm_model_override_allowed": allow_model_override,
                     "llm_model_override_applied": bool(requested_model_override and allow_model_override),
                     "llm_model_override_rejected": bool(requested_model_override and not allow_model_override),
+                    "summary_style_requested": requested_summary_style,
                     "llm_provider_override_requested": requested_provider_override,
                     "llm_provider_requested": llm_provider,
                     "llm_provider_effective": llm_provider_effective,
+                    "llm_provider_effective_runtime": llm_provider_effective_runtime,
                     "llm_model_requested": llm_model_requested,
                     "llm_model_effective": llm_model_effective,
+                    "llm_model_effective_runtime": llm_model_effective_runtime,
+                    "llm_quality_escalation_used": bool(generation.get("llm_quality_escalation_used") or generation_debug.get("llm_quality_escalation_used")),
+                    "llm_quality_escalation_reason": str((generation.get("llm_quality_escalation_reason") or generation_debug.get("llm_quality_escalation_reason") or "")) or None,
+                    "writer_profile_runtime": writer_profile_runtime or None,
                     "ollama_model": str((generation_debug.get("ollama_model") or "")) or None,
                     "gemini_model": str((generation_debug.get("gemini_model") or "")) or None,
                     "model_verified": model_verified,
@@ -858,6 +981,11 @@ def process_chat(
             conversation_id=conversation_id,
             generation=generation,
             generation_debug=generation_debug,
+            llm_provider_requested=llm_provider,
+            llm_provider_effective=llm_provider_effective,
+            llm_model_requested=llm_model_requested,
+            llm_model_effective=llm_model_effective,
+            writer_profile_runtime=writer_profile_runtime,
             validation_errors=validation_errors,
             validation_warnings=validation_warnings,
         )
@@ -893,6 +1021,15 @@ def process_chat(
             "validation_status": str((generation.get("validation") or {}).get("validation_status") or "") or None,
             "generation_mode": str(generation.get("generation_mode") or "") or None,
             "generation_writer": str((generation_debug.get("generation_writer") or "")) or None,
+            "llm_provider_requested": llm_provider,
+            "llm_provider_effective": llm_provider_effective,
+            "llm_provider_effective_runtime": llm_provider_effective_runtime,
+            "llm_model_requested": llm_model_requested,
+            "llm_model_effective": llm_model_effective,
+            "llm_model_effective_runtime": llm_model_effective_runtime,
+            "llm_quality_escalation_used": bool(generation.get("llm_quality_escalation_used") or generation_debug.get("llm_quality_escalation_used")),
+            "llm_quality_escalation_reason": str((generation.get("llm_quality_escalation_reason") or generation_debug.get("llm_quality_escalation_reason") or "")) or None,
+            "writer_profile_runtime": writer_profile_runtime or None,
             "response_time": float(generation.get("generation_time_seconds") or 0.0),
             "intent": str(qu.get("intent") or "") or None,
             "selected_route": str((generation_debug.get("selected_route") or "")) or None,
@@ -932,6 +1069,12 @@ def process_chat(
             validation_status=str((generation.get("validation") or {}).get("validation_status") or "") or None,
             generation_mode=str(generation.get("generation_mode") or "") or None,
             generation_writer=str(((generation.get("debug") or {}).get("generation_writer") or "")) or None,
+            provider=llm_provider,
+            model=llm_model_requested,
+            llm_provider_effective_runtime=llm_provider_effective_runtime,
+            llm_model_effective_runtime=llm_model_effective_runtime,
+            llm_quality_escalation_used=bool(generation.get("llm_quality_escalation_used") or generation_debug.get("llm_quality_escalation_used")),
+            llm_quality_escalation_reason=str((generation.get("llm_quality_escalation_reason") or generation_debug.get("llm_quality_escalation_reason") or "")) or None,
             selected_route=selected_route_top,
             llm_writer_attempted=bool(llm_writer_attempted_top) if llm_writer_attempted_top is not None else None,
             llm_writer_accepted=bool(llm_writer_accepted_top) if llm_writer_accepted_top is not None else None,
@@ -995,6 +1138,12 @@ def process_chat(
                 validation_status="warning",
                 generation_mode="controlled_error_fallback",
                 generation_writer="professional_fallback",
+                provider=llm_provider,
+                model=llm_model_requested,
+                llm_provider_effective_runtime=llm_provider_effective_runtime,
+                llm_model_effective_runtime=llm_model_effective_runtime,
+                llm_quality_escalation_used=False,
+                llm_quality_escalation_reason=None,
                 visualization=None,
                 chart_data=None,
                 patients=None,
@@ -1075,20 +1224,26 @@ def process_chat(
         if expose_error_detail:
             debug_payload["controlled_error_detail"] = str(exc)
             debug_payload["controlled_error_traceback"] = traceback.format_exc()
-        return ChatResponse(
-            conversation_id=conversation_id,
-            answer=safe_answer,
-            sources=[],
-            confidence=0.0,
-            document_ids=[],
-            response_time=0.0,
-            quality_report=None,
-            validation_status="warning",
-            generation_mode="controlled_error_fallback",
+            return ChatResponse(
+                conversation_id=conversation_id,
+                answer=safe_answer,
+                sources=[],
+                confidence=0.0,
+                document_ids=[],
+                response_time=0.0,
+                quality_report=None,
+                validation_status="warning",
+                generation_mode="controlled_error_fallback",
             generation_writer="professional_fallback",
+            provider=llm_provider,
+            model=llm_model_requested,
+            llm_provider_effective_runtime=llm_provider_effective_runtime,
+            llm_model_effective_runtime=llm_model_effective_runtime,
+            llm_quality_escalation_used=False,
+            llm_quality_escalation_reason=None,
             visualization=None,
             chart_data=None,
             patients=None,
-            inventory_view=None,
-            debug=debug_payload,
+                inventory_view=None,
+                debug=debug_payload,
         )

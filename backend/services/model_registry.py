@@ -49,6 +49,22 @@ MODEL_REGISTRY: dict[str, ModelInfo] = {
         recommended_rag_budget=5_000,
         tokenizer=None,
     ),
+    "qwen2.5:7b-instruct": ModelInfo(
+        model="qwen2.5:7b-instruct",
+        provider="ollama",
+        context_window=32_768,
+        max_output_tokens=4_096,
+        recommended_rag_budget=10_000,
+        tokenizer=None,
+    ),
+    "qwen3:4b": ModelInfo(
+        model="qwen3:4b",
+        provider="ollama",
+        context_window=32_768,
+        max_output_tokens=4_096,
+        recommended_rag_budget=8_000,
+        tokenizer=None,
+    ),
     "gemini-2.5-flash": ModelInfo(
         model="gemini-2.5-flash",
         provider="gemini",

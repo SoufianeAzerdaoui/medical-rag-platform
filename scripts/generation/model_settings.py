@@ -15,7 +15,12 @@ DEFAULT_LLM_PROVIDER = _env_first("MEDICAL_RAG_LLM_PROVIDER", "LLM_PROVIDER", de
 if DEFAULT_LLM_PROVIDER == "gemini":
     DEFAULT_LLM_MODEL = _env_first("MEDICAL_RAG_LLM_MODEL", "GEMINI_MODEL", default="gemini-2.5-flash")
 else:
-    DEFAULT_LLM_MODEL = _env_first("MEDICAL_RAG_LLM_MODEL", default="llama3.2:latest")
+    DEFAULT_LLM_MODEL = _env_first(
+        "MEDICAL_RAG_LLM_MODEL",
+        "MEDICAL_RAG_OLLAMA_MODEL",
+        "OLLAMA_MODEL",
+        default="qwen2.5:7b-instruct",
+    )
 
 
 DEFAULT_LLM_TEMPERATURE = float(os.getenv("MEDICAL_RAG_LLM_TEMPERATURE", "0.0"))

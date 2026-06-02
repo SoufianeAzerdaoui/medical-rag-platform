@@ -10,6 +10,7 @@ import { MedicalAnswerBlocks } from "@/components/chat/medical-answer-blocks";
 import { VisualizationRenderer } from "@/components/chat/visualization-renderer";
 import { ConversationQualityPanel } from "@/components/chat/conversation-quality-panel";
 import { QualityReportCard } from "@/components/chat/quality-report-card";
+import { AssistantRuntimeBadge } from "@/components/chat/assistant-runtime-badge";
 import { SourceLinks, stripSourcesSection } from "@/components/sources/source-links";
 import { PatientInventoryRenderer } from "@/components/chat/patient-inventory-renderer";
 import { SingleAnalyteResultCard } from "@/components/chat/single-analyte-result-card";
@@ -344,11 +345,14 @@ export function ChatMessages() {
               </>
             ) : (
               <>
-                <div className="mb-3 flex items-center gap-2">
-                  <span className={isAssistant ? "h-2 w-2 rounded-full bg-accent" : "h-2 w-2 rounded-full bg-fg/[0.45]"} />
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg/[0.52]">
-                    {message.role === "user" ? "Vous" : "Assistant"}
-                  </p>
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <span className={isAssistant ? "h-2 w-2 rounded-full bg-accent" : "h-2 w-2 rounded-full bg-fg/[0.45]"} />
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg/[0.52]">
+                      {message.role === "user" ? "Vous" : "Assistant"}
+                    </p>
+                  </div>
+                  {isAssistant ? <AssistantRuntimeBadge diagnostics={message.diagnostics} enabled={qualityDebugEnabled} /> : null}
                 </div>
                 {message.role === "user" && editingUserMessageId !== message.id ? (
                   <button
@@ -423,10 +427,20 @@ export function ChatMessages() {
                       <AssistantMarkdown content={contentToRender} />
                     )}
                     {showProvenanceDebug ? (
-                      <p className="mt-3 text-xs text-fg/70">
-                        Provenance: {debugFinalAnswerSource || "n/a"}
-                        {debugRendererUsed ? ` · renderer=${debugRendererUsed}` : ""}
-                      </p>
+                      <div className="mt-3 space-y-1 text-xs text-fg/70">
+                        <p>
+                          Provenance: {debugFinalAnswerSource || "n/a"}
+                          {debugRendererUsed ? ` · renderer=${debugRendererUsed}` : ""}
+                        </p>
+                        {message.diagnostics?.llm_provider_effective_runtime || message.diagnostics?.llm_model_effective_runtime ? (
+                          <p>
+                            LLM runtime: {message.diagnostics?.llm_provider_effective_runtime || "n/a"}
+                            {message.diagnostics?.llm_model_effective_runtime
+                              ? ` / ${message.diagnostics.llm_model_effective_runtime}`
+                              : ""}
+                          </p>
+                        ) : null}
+                      </div>
                     ) : null}
                   </>
                 ) : editingUserMessageId === message.id ? (

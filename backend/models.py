@@ -17,6 +17,7 @@ class ChatRequest(BaseModel):
     history: list[ChatHistoryItem] = Field(default_factory=list)
     document_id: str | None = None
     mode: Literal["general", "document_analysis", "comparison", "summary"] = "general"
+    summary_style: Literal["short", "editorial"] | None = None
     llm_provider_override: str | None = Field(default=None, min_length=1)
     llm_model_override: str | None = Field(default=None, min_length=1)
 
@@ -111,6 +112,12 @@ class ChatResponse(BaseModel):
     validation_status: Literal["pass", "warning", "fail"] | None = None
     generation_mode: str | None = None
     generation_writer: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    llm_provider_effective_runtime: str | None = None
+    llm_model_effective_runtime: str | None = None
+    llm_quality_escalation_used: bool | None = None
+    llm_quality_escalation_reason: str | None = None
     selected_route: str | None = None
     llm_writer_attempted: bool | None = None
     llm_writer_accepted: bool | None = None

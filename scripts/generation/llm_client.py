@@ -4,7 +4,7 @@ import json
 import os
 import socket
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib import error, request
 from model_settings import (
@@ -20,24 +20,56 @@ class LLMClientError(RuntimeError):
     """Raised when generation fails in a controlled way."""
 
 
+def _normalize_ollama_url(raw_url: str | None) -> str:
+    raw = str(raw_url or "").strip()
+    if not raw:
+        return "http://127.0.0.1:11434/api/generate"
+    if raw.startswith("http://") or raw.startswith("https://"):
+        normalized = raw.rstrip("/")
+    else:
+        normalized = f"http://{raw}".rstrip("/")
+    if normalized.endswith("/api/generate") or normalized.endswith("/api/chat"):
+        return normalized
+    return normalized + "/api/generate"
+
+
+def _default_ollama_url() -> str:
+    return _normalize_ollama_url(
+        os.getenv("MEDICAL_RAG_OLLAMA_URL")
+        or os.getenv("OLLAMA_HOST")
+        or "http://127.0.0.1:11434/api/generate"
+    )
+
+
 @dataclass
 class LLMClient:
     provider: str = DEFAULT_LLM_PROVIDER
-    ollama_url: str = "http://127.0.0.1:11434/api/generate"
+    ollama_url: str = field(default_factory=_default_ollama_url)
     last_call_debug: dict[str, Any] | None = None
 
     def generate(
         self,
-        prompt: str,
+        prompt: str | None = None,
         model: str = DEFAULT_LLM_MODEL,
         temperature: float = DEFAULT_LLM_TEMPERATURE,
         num_ctx: int = DEFAULT_LLM_NUM_CTX,
         max_tokens: int = 800,
         timeout: int = DEFAULT_LLM_TIMEOUT,
         keep_alive: str = "10m",
+        system_prompt: str | None = None,
+        user_prompt: str | None = None,
+        messages: list[dict[str, Any]] | None = None,
     ) -> str:
         provider_norm = str(self.provider or "").strip().lower()
         keep_alive = str(os.getenv("MEDICAL_RAG_OLLAMA_KEEP_ALIVE", keep_alive)).strip() or "10m"
+        message_payload, preview_text = self._build_message_payload(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            messages=messages,
+        )
+        system_prompt_chars = sum(len(str(msg.get("content") or "")) for msg in message_payload if str(msg.get("role") or "").strip().lower() == "system")
+        user_prompt_chars = sum(len(str(msg.get("content") or "")) for msg in message_payload if str(msg.get("role") or "").strip().lower() != "system")
         self.last_call_debug = {
             "provider": provider_norm,
             "llm_provider": provider_norm,
@@ -48,9 +80,13 @@ class LLMClient:
             "num_predict": int(max_tokens),
             "keep_alive": keep_alive,
             "stream": False,
-            "prompt_chars": len(str(prompt or "")),
-            "prompt_preview_first_500": str(prompt or "")[:500],
-            "prompt_preview_last_500": str(prompt or "")[-500:] if prompt else "",
+            "prompt_chars": len(preview_text),
+            "prompt_preview_first_500": preview_text[:500],
+            "prompt_preview_last_500": preview_text[-500:] if preview_text else "",
+            "messages_count": len(message_payload),
+            "conversation_history_included": len(message_payload) > 1,
+            "system_prompt_chars": system_prompt_chars,
+            "user_prompt_chars": user_prompt_chars,
             "llm_timeout_ms": int(timeout) * 1000,
         }
         if provider_norm == "ollama":
@@ -62,6 +98,9 @@ class LLMClient:
                 max_tokens=max_tokens,
                 timeout=timeout,
                 keep_alive=keep_alive,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                messages=message_payload,
             )
         elif provider_norm == "lmstudio":
             return self._generate_lmstudio(
@@ -70,6 +109,9 @@ class LLMClient:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                messages=message_payload,
             )
         elif provider_norm == "gemini":
             return self._generate_gemini(
@@ -78,9 +120,42 @@ class LLMClient:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                messages=message_payload,
             )
         else:
             raise LLMClientError(f"Unsupported provider: {self.provider}")
+
+    @staticmethod
+    def _build_message_payload(
+        *,
+        prompt: str | None,
+        system_prompt: str | None,
+        user_prompt: str | None,
+        messages: list[dict[str, Any]] | None,
+    ) -> tuple[list[dict[str, str]], str]:
+        if messages:
+            normalized: list[dict[str, str]] = []
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                role = str(message.get("role") or "user").strip().lower() or "user"
+                content = str(message.get("content") or message.get("text") or "").strip()
+                if not content:
+                    continue
+                normalized.append({"role": role, "content": content})
+            preview = "\n\n".join(f"[{msg['role']}] {msg['content']}" for msg in normalized)
+            return normalized, preview
+
+        normalized = []
+        if system_prompt and str(system_prompt).strip():
+            normalized.append({"role": "system", "content": str(system_prompt).strip()})
+        user_text = str(user_prompt or prompt or "").strip()
+        if user_text:
+            normalized.append({"role": "user", "content": user_text})
+        preview = "\n\n".join(f"[{msg['role']}] {msg['content']}" for msg in normalized)
+        return normalized, preview
 
     def _generate_gemini(
         self,
@@ -90,6 +165,9 @@ class LLMClient:
         temperature: float,
         max_tokens: int,
         timeout: int,
+        system_prompt: str | None = None,
+        user_prompt: str | None = None,
+        messages: list[dict[str, str]] | None = None,
     ) -> str:
         t0 = time.perf_counter()
         api_key = str(os.getenv("GEMINI_API_KEY", "")).strip() or str(os.getenv("GOOGLE_API_KEY", "")).strip()
@@ -103,18 +181,47 @@ class LLMClient:
         if not model_name.startswith("models/"):
             model_name = f"models/{model_name}"
 
-        payload: dict[str, Any] = {
-            "contents": [
+        contents: list[dict[str, Any]] = []
+        system_instruction = str(system_prompt or "").strip()
+        normalized_messages = list(messages or [])
+        if not normalized_messages:
+            user_text = str(user_prompt or prompt or "").strip()
+            if user_text:
+                normalized_messages = [{"role": "user", "content": user_text}]
+        for message in normalized_messages:
+            role = str(message.get("role") or "user").strip().lower() or "user"
+            content = str(message.get("content") or "").strip()
+            if not content:
+                continue
+            if role == "system":
+                system_instruction = system_instruction or content
+                continue
+            contents.append(
+                {
+                    "role": "model" if role == "assistant" else "user",
+                    "parts": [{"text": content}],
+                }
+            )
+
+        if not contents:
+            contents = [
                 {
                     "role": "user",
-                    "parts": [{"text": prompt}],
+                    "parts": [{"text": str(user_prompt or prompt or "").strip()}],
                 }
-            ],
+            ]
+
+        payload: dict[str, Any] = {
+            "contents": contents,
             "generationConfig": {
                 "temperature": float(temperature),
                 "maxOutputTokens": int(max_tokens),
             },
         }
+        if system_instruction:
+            payload["systemInstruction"] = {
+                "parts": [{"text": system_instruction}],
+            }
 
         url = f"{base_url}/{model_name}:generateContent"
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -135,10 +242,10 @@ class LLMClient:
                     "gemini_model": model,
                     "gemini_temperature": float(temperature),
                     "gemini_max_output_tokens": int(max_tokens),
-                    "messages_count": 1,
-                    "conversation_history_included": False,
-                    "system_prompt_chars": 0,
-                    "user_prompt_chars": len(str(prompt or "")),
+                    "messages_count": len(contents) + (1 if system_instruction else 0),
+                    "conversation_history_included": len(contents) > 1,
+                    "system_prompt_chars": len(system_instruction),
+                    "user_prompt_chars": sum(len(str(item.get("parts", [{}])[0].get("text") or "")) for item in contents),
                 }
             )
 
@@ -239,18 +346,33 @@ class LLMClient:
         temperature: float,
         max_tokens: int,
         timeout: int,
+        system_prompt: str | None = None,
+        user_prompt: str | None = None,
+        messages: list[dict[str, str]] | None = None,
     ) -> str:
         # LM Studio is OpenAI compatible
         import os
         base_url = os.getenv("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1")
         # Ensure url ends with /chat/completions if it's the v1 base
         url = base_url.rstrip("/") + "/chat/completions"
-        
+        chat_messages: list[dict[str, str]] = []
+        normalized_messages = list(messages or [])
+        if not normalized_messages:
+            if system_prompt and str(system_prompt).strip():
+                normalized_messages.append({"role": "system", "content": str(system_prompt).strip()})
+            user_text = str(user_prompt or prompt or "").strip()
+            if user_text:
+                normalized_messages.append({"role": "user", "content": user_text})
+        for message in normalized_messages:
+            role = str(message.get("role") or "user").strip().lower() or "user"
+            content = str(message.get("content") or "").strip()
+            if not content:
+                continue
+            chat_messages.append({"role": role, "content": content})
+
         payload: dict[str, Any] = {
             "model": model,
-            "messages": [
-                {"role": "user", "content": prompt}
-            ],
+            "messages": chat_messages or [{"role": "user", "content": str(user_prompt or prompt or "").strip()}],
             "temperature": temperature,
             "max_tokens": max_tokens,
             "stream": False,
@@ -300,11 +422,15 @@ class LLMClient:
         max_tokens: int,
         timeout: int,
         keep_alive: str,
+        system_prompt: str | None = None,
+        user_prompt: str | None = None,
+        messages: list[dict[str, str]] | None = None,
     ) -> str:
         t0 = time.perf_counter()
         api_kind = "generate"
         endpoint = str(self.ollama_url or "").strip()
-        if endpoint.endswith("/api/chat"):
+        use_chat = bool(messages) or bool(str(system_prompt or "").strip()) or bool(str(user_prompt or "").strip()) or endpoint.endswith("/api/chat")
+        if use_chat:
             api_kind = "chat"
         payload: dict[str, Any] = {
             "model": model,
@@ -318,15 +444,36 @@ class LLMClient:
             },
         }
         if api_kind == "chat":
-            payload["messages"] = [{"role": "user", "content": prompt}]
+            chat_messages: list[dict[str, str]] = []
+            normalized_messages = list(messages or [])
+            if not normalized_messages:
+                if system_prompt and str(system_prompt).strip():
+                    normalized_messages.append({"role": "system", "content": str(system_prompt).strip()})
+                user_text = str(user_prompt or prompt or "").strip()
+                if user_text:
+                    normalized_messages.append({"role": "user", "content": user_text})
+            for message in normalized_messages:
+                role = str(message.get("role") or "user").strip().lower() or "user"
+                content = str(message.get("content") or "").strip()
+                if not content:
+                    continue
+                chat_messages.append({"role": role, "content": content})
+            payload["messages"] = chat_messages or [{"role": "user", "content": str(user_prompt or prompt or "").strip()}]
         else:
             payload["prompt"] = prompt
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        if endpoint.endswith("/api/chat"):
+            request_url = endpoint
+        elif endpoint.endswith("/api/generate"):
+            request_url = endpoint.rsplit("/generate", 1)[0] + "/chat"
+        else:
+            request_url = endpoint.rstrip("/") + "/api/chat"
         if isinstance(self.last_call_debug, dict):
             self.last_call_debug.update(
                 {
                     "llm_provider": "ollama",
                     "llm_model": model,
-                    "ollama_endpoint": endpoint,
+                    "ollama_endpoint": request_url,
                     "ollama_api_kind": api_kind,
                     "ollama_model": model,
                     "ollama_num_predict": int(max_tokens),
@@ -336,14 +483,12 @@ class LLMClient:
                     "stream": False,
                     "messages_count": len(payload.get("messages") or []),
                     "conversation_history_included": bool(len(payload.get("messages") or []) > 1),
-                    "system_prompt_chars": 0,
-                    "user_prompt_chars": len(str(prompt or "")),
+                    "system_prompt_chars": len(str(system_prompt or "").strip()),
+                    "user_prompt_chars": len(str(user_prompt or prompt or "").strip()),
                 }
             )
-
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = request.Request(
-            self.ollama_url,
+            request_url,
             data=body,
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -418,6 +563,10 @@ class LLMClient:
             raise LLMClientError(f"Ollama error: {err}")
 
         response_text = str(data.get("response") or "").strip()
+        if not response_text:
+            message = data.get("message") or {}
+            if isinstance(message, dict):
+                response_text = str(message.get("content") or "").strip()
         thinking_text = str(data.get("thinking") or "").strip()
 
         if not response_text and thinking_text:

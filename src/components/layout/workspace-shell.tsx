@@ -7,6 +7,7 @@ import { Menu } from "lucide-react";
 import { ChatSidebar } from "@/components/sidebar/chat-sidebar";
 import { useAuthStore } from "@/store/auth-store";
 import { useChatStore } from "@/store/chat-store";
+import type { ReactNode } from "react";
 
 type WorkspaceAction = {
   href: string;
@@ -18,10 +19,11 @@ type WorkspaceShellProps = {
   subtitle: string;
   breadcrumbs: string[];
   actions?: WorkspaceAction[];
+  status?: ReactNode;
   children: React.ReactNode;
 };
 
-export function WorkspaceShell({ title, subtitle, breadcrumbs, actions = [], children }: WorkspaceShellProps) {
+export function WorkspaceShell({ title, subtitle, breadcrumbs, actions = [], status = null, children }: WorkspaceShellProps) {
   const router = useRouter();
   const pathname = usePathname();
   const initialize = useChatStore((s) => s.initialize);
@@ -79,6 +81,7 @@ export function WorkspaceShell({ title, subtitle, breadcrumbs, actions = [], chi
               <p className="truncate text-[11px] font-medium text-fg/60">{breadcrumbs.join(" / ")}</p>
               <h1 className="truncate text-sm font-semibold text-fg">{title}</h1>
               <p className="truncate text-xs text-fg/72">{subtitle}</p>
+              {status ? <div className="mt-2">{status}</div> : null}
             </div>
           </div>
           {actions.length > 0 ? (
@@ -96,7 +99,7 @@ export function WorkspaceShell({ title, subtitle, breadcrumbs, actions = [], chi
           ) : null}
         </div>
         <div className="hidden xl:block">
-          <WorkspaceTopbar title={title} subtitle={subtitle} breadcrumbs={breadcrumbs} actions={actions} />
+          <WorkspaceTopbar title={title} subtitle={subtitle} breadcrumbs={breadcrumbs} actions={actions} status={status} />
         </div>
         <div className="flex-1 overflow-auto" tabIndex={0} aria-label="Zone de contenu défilable">{children}</div>
       </main>
@@ -109,11 +112,13 @@ export function WorkspaceTopbar({
   subtitle,
   breadcrumbs,
   actions = [],
+  status = null,
 }: {
   title: string;
   subtitle: string;
   breadcrumbs: string[];
   actions?: WorkspaceAction[];
+  status?: ReactNode;
 }) {
   return (
     <header className="topbar h-[72px] border-b border-border/70 bg-card/75 px-5 backdrop-blur-2xl">
@@ -123,16 +128,19 @@ export function WorkspaceTopbar({
           <h1 className="line-clamp-1 text-base font-semibold text-fg">{title}</h1>
           <p className="line-clamp-1 text-xs text-fg/78">{subtitle}</p>
         </div>
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-          {actions.map((action) => (
-            <Link
-              key={`${action.href}-${action.label}`}
-              href={action.href}
-              className="rounded-lg border border-border/75 bg-card/[0.62] px-3 py-1.5 text-xs font-medium text-fg/78 transition hover:border-accent/35 hover:bg-card"
-            >
-              {action.label}
-            </Link>
-          ))}
+        <div className="flex min-w-0 shrink-0 flex-col items-end gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {status}
+            {actions.map((action) => (
+              <Link
+                key={`${action.href}-${action.label}`}
+                href={action.href}
+                className="rounded-lg border border-border/75 bg-card/[0.62] px-3 py-1.5 text-xs font-medium text-fg/78 transition hover:border-accent/35 hover:bg-card"
+              >
+                {action.label}
+              </Link>
+            ))}
+          </div>
         </div>
       </div>
     </header>

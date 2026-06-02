@@ -4,11 +4,12 @@ import { usePathname, useRouter } from "next/navigation";
 import { Menu, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ChatMessages } from "@/components/chat/chat-messages";
+import { ActiveModelPill } from "@/components/chat/active-model-pill";
 import { WorkspaceTopbar } from "@/components/layout/workspace-shell";
 import { MessageComposer } from "@/components/chat/message-composer";
 import { ChatSidebar } from "@/components/sidebar/chat-sidebar";
 import { SourcesPanel } from "@/components/sources/sources-panel";
-import { ApiError, healthcheck } from "@/services/rag-api";
+import { ApiError, getActiveModelApi, healthcheck, type ActiveModelInfo } from "@/services/rag-api";
 import { useAuthStore } from "@/store/auth-store";
 import { useChatStore } from "@/store/chat-store";
 
@@ -32,6 +33,7 @@ export function ChatShell({ routeConversationId = null }: ChatShellProps) {
   const [sourcesOpenMobile, setSourcesOpenMobile] = useState(false);
   const [conversationError, setConversationError] = useState<string | null>(null);
   const [backendOnline, setBackendOnline] = useState(true);
+  const [activeModel, setActiveModel] = useState<ActiveModelInfo | null>(null);
   const activeChat = chats.find((chat) => chat.id === activeChatId) || null;
   const topbarTitle = activeChat?.title && activeChat.title.trim() ? activeChat.title : "Workspace Chat";
   const topbarBreadcrumbs = activeChat?.title && !/^nouvelle conversation$/i.test(activeChat.title.trim())
@@ -108,6 +110,24 @@ export function ChatShell({ routeConversationId = null }: ChatShellProps) {
   }, []);
 
   useEffect(() => {
+    if (authStatus !== "authenticated" || !accessToken) {
+      setActiveModel(null);
+      return;
+    }
+    let cancelled = false;
+    void getActiveModelApi(accessToken)
+      .then((payload) => {
+        if (!cancelled) setActiveModel(payload);
+      })
+      .catch(() => {
+        if (!cancelled) setActiveModel(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, authStatus]);
+
+  useEffect(() => {
     setSidebarOpenMobile(false);
     setSourcesOpenMobile(false);
   }, [pathname]);
@@ -146,6 +166,9 @@ export function ChatShell({ routeConversationId = null }: ChatShellProps) {
               <p className="truncate text-[10px] font-medium text-fg/60 sm:text-[11px]">{topbarBreadcrumbs.join(" / ")}</p>
               <h1 className="truncate text-[13px] font-semibold text-fg sm:text-sm">{topbarTitle}</h1>
               <p className="truncate text-[11px] text-fg/72 sm:text-xs">Espace conversationnel clinique</p>
+              <div className="mt-2">
+                <ActiveModelPill model={activeModel} />
+              </div>
             </div>
             <button
               className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border/80 bg-card/[0.72] text-fg/78 shadow-sm transition hover:border-accent/30 hover:bg-accent/10 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 sm:h-10 sm:w-10"
@@ -161,6 +184,7 @@ export function ChatShell({ routeConversationId = null }: ChatShellProps) {
             title={topbarTitle}
             subtitle="Espace conversationnel clinique"
             breadcrumbs={topbarBreadcrumbs}
+            status={<ActiveModelPill model={activeModel} />}
             actions={[
               { href: "/chat", label: "Retour au chat" },
               { href: "/documents/upload", label: "Importer document" },

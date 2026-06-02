@@ -8,11 +8,11 @@ import { useAuthStore } from "@/store/auth-store";
 import { useChatStore } from "@/store/chat-store";
 import { getActiveModelApi, getConversationContextUsageApi, type ActiveModelInfo, type ConversationContextUsageInfo } from "@/services/rag-api";
 import { ModelBadge } from "@/components/chat/model-badge";
-import type { ChatMode } from "@/types/chat";
+import type { ChatMode, SummaryStyle } from "@/types/chat";
 
 type PromptMode = "general" | "summary" | "anomalies" | "comparison" | "sources_only" | "simple_explanation";
 type LlmProvider = "ollama" | "gemini";
-type LlmChoiceId = "local-llama" | "gemini-cloud";
+type LlmChoiceId = "local-qwen" | "gemini-cloud";
 
 type PromptModeConfig = {
   label: string;
@@ -33,6 +33,7 @@ type LlmChoice = {
 };
 
 const LLM_CHOICE_STORAGE_KEY = "medical-rag-selected-llm-choice";
+const SUMMARY_STYLE_STORAGE_KEY = "medical-rag-summary-style";
 
 const modes: PromptModeConfig[] = [
   {
@@ -78,13 +79,13 @@ const modes: PromptModeConfig[] = [
 
 const llmChoices: LlmChoice[] = [
   {
-    id: "local-llama",
-    label: "Llama local",
+    id: "local-qwen",
+    label: "Qwen local",
     provider: "ollama",
-    model: "llama3.2:latest",
+    model: "qwen2.5:7b-instruct",
     hint: "Modèle local Ollama",
-    contextWindow: 8_192,
-    maxOutputTokens: 1_024,
+    contextWindow: 32_768,
+    maxOutputTokens: 4_096,
   },
   {
     id: "gemini-cloud",
@@ -102,10 +103,12 @@ function modeConfig(mode: PromptMode): PromptModeConfig {
 }
 
 export function MessageComposer() {
-  const [selectedModelId, setSelectedModelId] = useState<LlmChoiceId>("local-llama");
+  const [selectedModelId, setSelectedModelId] = useState<LlmChoiceId>("local-qwen");
+  const [summaryReportStyle, setSummaryReportStyle] = useState<SummaryStyle>("editorial");
   const [activeModel, setActiveModel] = useState<ActiveModelInfo | null>(null);
   const [contextUsage, setContextUsage] = useState<ConversationContextUsageInfo | null>(null);
   const modelSelectionInitialized = useRef(false);
+  const userSelectedModel = useRef(false);
   const { sendMessage, sending } = useChatActions();
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -140,6 +143,10 @@ export function MessageComposer() {
       modelSelectionInitialized.current = true;
       return;
     }
+    if (userSelectedModel.current) {
+      modelSelectionInitialized.current = true;
+      return;
+    }
     if (activeModel) {
       const matchedChoice = llmChoices.find(
         (choice) => choice.provider === activeModel.provider && choice.model === activeModel.model,
@@ -153,9 +160,22 @@ export function MessageComposer() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    const storedStyle = window.localStorage.getItem(SUMMARY_STYLE_STORAGE_KEY) as SummaryStyle | null;
+    if (storedStyle === "short" || storedStyle === "editorial") {
+      setSummaryReportStyle(storedStyle);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
     if (!modelSelectionInitialized.current) return;
     window.localStorage.setItem(LLM_CHOICE_STORAGE_KEY, selectedModelId);
   }, [selectedModelId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(SUMMARY_STYLE_STORAGE_KEY, summaryReportStyle);
+  }, [summaryReportStyle]);
 
   useEffect(() => {
     if (!isAuthenticated || !accessToken) {
@@ -206,6 +226,7 @@ export function MessageComposer() {
       await sendMessage({
         content,
         mode: config.backendMode,
+        summaryStyle: config.value === "summary" ? summaryReportStyle : null,
         llmProviderOverride: selectedModel.provider,
         llmModelOverride: selectedModel.model,
       });
@@ -228,7 +249,10 @@ export function MessageComposer() {
                   type="button"
                   disabled={sending}
                   aria-pressed={active}
-                  onClick={() => setSelectedModelId(choice.id)}
+                  onClick={() => {
+                    userSelectedModel.current = true;
+                    setSelectedModelId(choice.id);
+                  }}
                   className={[
                     "group relative inline-flex h-10 min-w-0 w-full items-center justify-between gap-2 rounded-lg px-3 text-left text-xs font-medium transition-all duration-150 sm:min-w-[132px] sm:w-auto",
                     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/45",
@@ -273,6 +297,38 @@ export function MessageComposer() {
               </select>
               <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-fg/[0.45]" size={14} />
             </div>
+            {composerPromptMode === "summary" ? (
+              <div className="inline-flex rounded-lg border border-border/70 bg-card/70 p-1 text-[11px] font-medium shadow-sm">
+                <button
+                  type="button"
+                  disabled={sending}
+                  aria-pressed={summaryReportStyle === "short"}
+                  onClick={() => setSummaryReportStyle("short")}
+                  className={[
+                    "rounded-md px-3 py-1.5 transition",
+                    summaryReportStyle === "short"
+                      ? "bg-accent text-slate-950"
+                      : "text-fg/70 hover:bg-fg/[0.04] hover:text-fg",
+                  ].join(" ")}
+                >
+                  Rapport court
+                </button>
+                <button
+                  type="button"
+                  disabled={sending}
+                  aria-pressed={summaryReportStyle === "editorial"}
+                  onClick={() => setSummaryReportStyle("editorial")}
+                  className={[
+                    "rounded-md px-3 py-1.5 transition",
+                    summaryReportStyle === "editorial"
+                      ? "bg-accent text-slate-950"
+                      : "text-fg/70 hover:bg-fg/[0.04] hover:text-fg",
+                  ].join(" ")}
+                >
+                  Rapport éditorial
+                </button>
+              </div>
+            ) : null}
             <div className="hidden md:block">
               <ModelBadge
                 modelName={selectedModel.label}

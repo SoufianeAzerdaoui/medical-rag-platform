@@ -106,6 +106,20 @@ function splitLineItems(value: string): string[] {
     .filter(Boolean);
 }
 
+function cleanFindingChip(value: string): string {
+  const cleaned = normalizeMedicalUnits(cleanSegment(value))
+    .replace(/\s*\.\s*$/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  const compact = cleaned
+    .replace(/\s*=\s*/g, " = ")
+    .replace(/\s*\(\s*/g, " (")
+    .replace(/\s*\)\s*/g, ") ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return compact;
+}
+
 function extractLine(text: string, keys: string[]): string {
   const lines = text
     .split("\n")
@@ -319,13 +333,76 @@ function firstSentence(value: string): string {
   return (m?.[1] || text).trim();
 }
 
+function compactPreviewItems(items: string[], maxVisible = 4): { visible: string[]; hiddenCount: number } {
+  const visible = items.slice(0, maxVisible);
+  return { visible, hiddenCount: Math.max(0, items.length - visible.length) };
+}
+
+function previewItems(items: string[], maxVisible: number, expanded: boolean): { visible: string[]; hiddenCount: number } {
+  const preview = compactPreviewItems(items, maxVisible);
+  return {
+    visible: expanded ? items : preview.visible,
+    hiddenCount: preview.hiddenCount,
+  };
+}
+
+function summarizeTechnicalFinding(anomalies: string[], normals: string[], sourceHint: string | null): string {
+  const abnormalCount = anomalies.length;
+  const normalCount = normals.length;
+  const abnormalPreview = anomalies.slice(0, 2).map(cleanFindingChip).join("; ");
+  const normalPreview = normals.slice(0, 2).map(cleanFindingChip).join("; ");
+  const abnormalLabel = abnormalCount === 1 ? "un écart biologique documenté" : `${abnormalCount} écarts biologiques documentés`;
+  const normalLabel = normalCount === 1 ? "un résultat dans la référence" : `${normalCount} résultats dans la référence`;
+  const contextualEnding = sourceHint ? ` sur ${sourceHint}` : "";
+  if (abnormalCount > 0 && normalCount > 0) {
+    return `Le bilan met en évidence ${abnormalLabel} et ${normalLabel}. Les écarts principaux concernent ${abnormalPreview}${abnormalCount > 2 ? " et d'autres paramètres." : "."} Plusieurs résultats restent dans la référence, notamment ${normalPreview}${normalCount > 2 ? " et d'autres paramètres." : "."}${contextualEnding}.`;
+  }
+  if (abnormalCount > 0) {
+    return `Le bilan met en évidence ${abnormalLabel}, principalement ${abnormalPreview}${abnormalCount > 2 ? " et d'autres paramètres." : "."} La lecture reste strictement descriptive et ne constitue pas un diagnostic${contextualEnding}.`;
+  }
+  if (normalCount > 0) {
+    return `Le rapport présente ${normalLabel}, sans anomalie mise en avant dans cette synthèse. Les éléments les plus visibles sont ${normalPreview}${normalCount > 2 ? " et d'autres paramètres." : "."}${contextualEnding}.`;
+  }
+  return sourceHint
+    ? `Synthèse descriptive fondée sur ${sourceHint}, sans diagnostic médical.`
+    : "Synthèse descriptive limitée aux données du rapport, sans diagnostic médical.";
+}
+
+function looksLikeWeakBoilerplate(value: string): boolean {
+  const text = value.toLowerCase();
+  return [
+    "réponse descriptive limitée aux données du rapport",
+    "reponse descriptive limitée aux données du rapport",
+    "réponse descriptive limitée aux données disponibles",
+    "reponse descriptive limitee aux donnees disponibles",
+    "nécessitent un contexte clinique",
+    "necessitent un contexte clinique",
+    "les analytes mentionnés sont anormaux",
+    "les analytes mentionnes sont anormaux",
+    "synthèse descriptive limitée",
+    "synthese descriptive limitee",
+    "réponse descriptive limitée",
+    "reponse descriptive limitee",
+    "lecture prudente",
+    "sans diagnostic",
+    "interpétés correctement",
+    "interpretes correctement",
+    "le bilan met en évidence des anomalies",
+    "le bilan met en evidence des anomalies",
+    "les analytes mentionnés sont anormaux ou nécessitent un contexte clinique",
+    "les analytes mentionnes sont anormaux ou necessitent un contexte clinique",
+  ].some((pattern) => text.includes(pattern));
+}
+
 export function StructuredSummaryCard({ content, sources = [], diagnostics }: Props) {
   const [showAllRanges, setShowAllRanges] = useState(false);
+  const [showAllAnomalies, setShowAllAnomalies] = useState(false);
+  const [showAllNormals, setShowAllNormals] = useState(false);
   const parsed = parseSummary(content, diagnostics);
   const sourceHint = firstSourceHint(sources);
   const sourceLink = firstSourceLink(sources);
   const parsedSource = parsed.source && !/^document fourni\.?$/i.test(parsed.source) ? parsed.source : "";
-  const synthesis = synthesisText(parsed.warning || parsed.conclusion);
+  const rawSynthesis = synthesisText(parsed.warning || parsed.conclusion);
   const isDoctorNote = parsed.kind === "doctor_note" || parsed.kind === "reference_ranges_note";
   const isReferenceRangesNote = parsed.kind === "reference_ranges_note";
   const docScope = Array.isArray(diagnostics?.requested_doc_ids) && diagnostics?.requested_doc_ids?.length
@@ -347,152 +424,182 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
   const rangeSentence = visibleRangeItems.length
     ? `Plages et statuts documentés : ${visibleRangeItems.join("; ")}.`
     : "";
+  const anomalyPreview = previewItems(parsed.anomalies, 4, showAllAnomalies);
+  const normalPreview = previewItems(parsed.normals, 4, showAllNormals);
+  const anomalyItems = anomalyPreview.visible;
+  const anomalyHiddenCount = anomalyPreview.hiddenCount;
+  const normalItems = normalPreview.visible;
+  const normalHiddenCount = normalPreview.hiddenCount;
+  const editorialSynthesis = summarizeTechnicalFinding(parsed.anomalies, parsed.normals, sourceHint || parsedSource || docScope);
+  const synthesis = (
+    !isDoctorNote &&
+    (looksLikeWeakBoilerplate(rawSynthesis) || rawSynthesis.length < 55)
+  )
+    ? editorialSynthesis
+    : rawSynthesis;
 
   return (
     <motion.section
       initial={{ opacity: 0, y: 4 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2 }}
-      className="space-y-2 rounded-2xl border border-border/80 bg-gradient-to-b from-fg/[0.04] to-fg/[0.02] p-4 shadow-sm"
+      className="space-y-3 rounded-2xl border border-border/70 bg-gradient-to-b from-fg/[0.035] to-fg/[0.015] p-4 shadow-[0_12px_40px_hsl(220_30%_8%_/_0.08)]"
     >
       <div className="flex flex-wrap items-center gap-2">
-        <span className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-xs font-medium text-fg/80 transition hover:-translate-y-px">
+        <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-card/80 px-2.5 py-1 text-xs font-medium text-fg/80">
           <FlaskConical size={12} />
           {isDoctorNote ? (isReferenceRangesNote ? "Note sur les valeurs physiologiques" : "Note médicale") : "Résumé technique"}
         </span>
-        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-200 transition hover:-translate-y-px">
-          <ShieldCheck size={12} />
-          Sans diagnostic
-        </span>
+        {diagnostics?.llm_quality_escalation_used ? (
+          <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-2.5 py-1 text-xs font-medium text-cyan-200">
+            <BadgeCheck size={12} />
+            Gemini éditorial
+          </span>
+        ) : null}
         <span className="inline-flex items-center gap-1 rounded-full border border-accent/30 bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent transition hover:-translate-y-px">
           <BadgeCheck size={12} />
           Source vérifiée
+        </span>
+        <span className="inline-flex items-center rounded-full border border-border/60 bg-bg/40 px-2.5 py-1 text-[11px] text-fg/68">
+          Périmètre: {docScope || "document fourni"}
+        </span>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 text-[11px] text-fg/65">
+        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/25 bg-emerald-500/8 px-2.5 py-0.5 text-emerald-200">
+          <ShieldCheck size={11} />
+          Lecture prudente, sans diagnostic
+        </span>
+        <span className="inline-flex items-center rounded-full border border-border/60 bg-card/60 px-2.5 py-0.5">
+          Synthèse structurée
         </span>
       </div>
 
       {isDoctorNote ? (
         <>
           {DOCTOR_NOTE_DEMO_COMPACT ? (
-            <section className="space-y-1 rounded-xl border border-border/50 bg-card/35 p-2.5">
-              <p className="text-sm text-fg/90">
-                <span className="font-medium">Document analysé:</span>{" "}
-                {docScope || "document fourni"}
-                {parsed.context ? <span> — {sanitizeForSentence(parsed.context)}.</span> : null}
-              </p>
-              <p className="text-sm text-fg/90">
-                <span className="font-medium">Note:</span>{" "}
+            <section className="space-y-2 rounded-2xl border border-border/50 bg-card/40 p-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Résumé narratif</p>
+              <p className="text-sm leading-6 text-fg/90">
                 {doctorNoteParagraph ? firstSentence(doctorNoteParagraph) : firstSentence(fallbackNarrative)}
                 {rangeSentence ? ` ${firstSentence(rangeSentence)}` : ""}
               </p>
-              <p className="text-sm text-fg/90">
-                <span className="font-medium">Avertissement:</span> {firstSentence(synthesis)}{" "}
-                <span className="font-medium">Source:</span>{" "}
-                {sourceLink ? (
-                  <a
-                    href={sourceLink.href}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-accent underline-offset-2 hover:underline"
-                  >
-                    {parsedSource || sourceLink.label}
-                  </a>
-                ) : (
-                  <span>{parsedSource || sourceHint || "voir les sources cliquables ci-dessous"}</span>
-                )}
-              </p>
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-fg/64">
+                <span className="rounded-full border border-border/60 bg-bg/45 px-2 py-0.5">
+                  {parsed.context ? sanitizeForSentence(parsed.context) : docScope || "document fourni"}
+                </span>
+                <span className="rounded-full border border-border/60 bg-bg/45 px-2 py-0.5">
+                  {firstSentence(synthesis)}
+                </span>
+              </div>
             </section>
           ) : (
             <>
-          <section className="space-y-1 rounded-xl border border-border/50 bg-card/35 p-2.5">
-            <p className="text-xs font-semibold uppercase tracking-wide text-fg/70">Document analysé</p>
-            <p className="text-sm text-fg/90">
-              {docScope || "document fourni"}
-              {parsed.context ? <span> — {parsed.context}</span> : null}
-            </p>
-          </section>
-
-          <section className="space-y-1 rounded-xl border border-border/50 bg-card/35 p-2.5">
-            <p className="text-xs font-semibold uppercase tracking-wide text-fg/70">Note</p>
-            {doctorNoteParagraph ? (
-              <div className="space-y-2">
+              <section className="space-y-2 rounded-2xl border border-border/50 bg-card/40 p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Note clinique</p>
                 <p className="text-sm leading-6 text-fg/90">
-                  {DOCTOR_NOTE_DEMO_COMPACT ? firstSentence(doctorNoteParagraph) : doctorNoteParagraph}
+                  {doctorNoteParagraph ? firstSentence(doctorNoteParagraph) : firstSentence(fallbackNarrative)}
                 </p>
                 {rangeSentence ? (
-                  <div className="space-y-1">
-                    <p className="text-sm leading-6 text-fg/90">{rangeSentence}</p>
+                  <div className="flex flex-wrap items-center gap-2 text-[11px] text-fg/62">
+                    <span className="rounded-full border border-border/60 bg-bg/45 px-2 py-0.5">
+                      {firstSentence(rangeSentence)}
+                    </span>
                     {hasMoreRanges ? (
                       <button
                         type="button"
                         onClick={() => setShowAllRanges((prev) => !prev)}
-                        className="text-xs font-medium text-accent underline-offset-2 hover:underline"
+                        className="rounded-full border border-accent/25 bg-accent/8 px-2 py-0.5 font-medium text-accent underline-offset-2 hover:underline"
                       >
-                        {showAllRanges ? "Voir moins" : "Voir plus"}
+                        {showAllRanges ? "Réduire" : "Afficher tout"}
                       </button>
                     ) : null}
                   </div>
                 ) : null}
+              </section>
+
+              <div className="grid gap-2 sm:grid-cols-2">
+                <section className="space-y-1 rounded-2xl border border-border/50 bg-card/35 p-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Avertissement</p>
+                  <p className="text-sm leading-6 text-fg/90">{DOCTOR_NOTE_DEMO_COMPACT ? firstSentence(synthesis) : synthesis}</p>
+                </section>
+                <section className="space-y-1 rounded-2xl border border-border/50 bg-card/35 p-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Source</p>
+                  {sourceLink ? (
+                    <a
+                      href={sourceLink.href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-sm text-accent underline-offset-2 hover:underline"
+                    >
+                      {parsedSource || sourceLink.label}
+                    </a>
+                  ) : (
+                    <p className="text-sm text-fg/90">{parsedSource || sourceHint || "voir les sources cliquables ci-dessous"}</p>
+                  )}
+                </section>
               </div>
-            ) : (
-              <p className="text-sm text-fg/90">{fallbackNarrative || "Synthèse médicale narrative disponible dans la réponse."}</p>
-            )}
-          </section>
-
-          <section className="space-y-1 rounded-xl border border-border/50 bg-card/35 p-2.5">
-            <p className="text-xs font-semibold uppercase tracking-wide text-fg/70">Avertissement</p>
-            <p className="text-sm leading-6 text-fg/90">
-              {DOCTOR_NOTE_DEMO_COMPACT ? firstSentence(synthesis) : synthesis}
-            </p>
-          </section>
-
-          <section className="space-y-1 rounded-xl border border-border/50 bg-card/35 p-2.5">
-            <p className="text-xs font-semibold uppercase tracking-wide text-fg/70">Source</p>
-            {sourceLink ? (
-              <a
-                href={sourceLink.href}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-sm text-accent underline-offset-2 hover:underline"
-              >
-                {parsedSource || sourceLink.label}
-              </a>
-            ) : (
-              <p className="text-sm text-fg/90">{parsedSource || sourceHint || "voir les sources cliquables ci-dessous"}</p>
-            )}
-          </section>
             </>
           )}
         </>
       ) : (
         <>
-          {docScope ? (
-            <p className="rounded-lg border border-border/60 bg-card/40 px-3 py-2 text-sm text-fg/90">
-              <span className="font-medium">Périmètre d’analyse:</span> {docScope}.
-            </p>
-          ) : null}
-
           <motion.section
             initial={{ opacity: 0, y: 3 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.05, duration: 0.18 }}
-            className="space-y-2 rounded-xl border border-border/50 bg-card/35 p-3"
+            className="space-y-2 rounded-2xl border border-border/50 bg-card/35 p-3 shadow-sm"
           >
-            <p className="text-xs font-semibold uppercase tracking-wide text-fg/70">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">
               Anomalies détectées <span className="text-fg/50">· {parsed.anomalies.length}</span>
             </p>
             {parsed.anomalies.length > 0 ? (
-              <div className="flex flex-wrap gap-2">
-                {parsed.anomalies.map((item) => {
-                  const tone = toneForItem(item);
-                  const prefix = statusPrefix(tone);
-                  return (
-                    <span key={`abn-${item}`} className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs transition hover:-translate-y-px ${badgeClass(tone)}`}>
-                      <AlertTriangle size={12} />
-                      <span className="font-semibold">{prefix}</span> {item}
-                      {tone === "unknown" ? <span className="font-medium">· à vérifier</span> : null}
-                    </span>
-                  );
-                })}
+              <div className="space-y-2">
+                <div className="flex flex-wrap gap-2">
+                  {anomalyItems.map((item, index) => {
+                    const tone = toneForItem(item);
+                    const prefix = statusPrefix(tone);
+                    const cleanItem = cleanFindingChip(item);
+                    return (
+                      <span
+                        key={`abn-${index}-${item}`}
+                        className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs ${badgeClass(tone)}`}
+                      >
+                        <AlertTriangle size={12} />
+                        <span className="font-semibold">{prefix}</span> {cleanItem}
+                        {tone === "unknown" ? <span className="font-medium">· à vérifier</span> : null}
+                      </span>
+                    );
+                  })}
+                  {anomalyHiddenCount > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowAllAnomalies((prev) => !prev)}
+                      aria-expanded={showAllAnomalies}
+                      className="relative z-10 inline-flex cursor-pointer items-center rounded-full border border-border/60 bg-bg/45 px-2.5 py-1 text-xs text-fg/70 transition hover:border-accent/30 hover:bg-accent/8 hover:text-fg"
+                    >
+                      {showAllAnomalies ? "Réduire" : `+${anomalyHiddenCount} autres`}
+                    </button>
+                  ) : null}
+                </div>
+                {showAllAnomalies && anomalyHiddenCount > 0 ? (
+                  <div className="flex flex-wrap gap-2 border-t border-border/40 pt-2">
+                    {parsed.anomalies.slice(4).map((item, index) => {
+                      const tone = toneForItem(item);
+                      const prefix = statusPrefix(tone);
+                      return (
+                        <span
+                          key={`abn-extra-${index}-${item}`}
+                          className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs ${badgeClass(tone)}`}
+                        >
+                          <AlertTriangle size={12} />
+                          <span className="font-semibold">{prefix}</span> {item}
+                          {tone === "unknown" ? <span className="font-medium">· à vérifier</span> : null}
+                        </span>
+                      );
+                    })}
+                  </div>
+                ) : null}
               </div>
             ) : (
               <p className="text-sm text-fg/80">Aucune anomalie signalée dans ce résumé.</p>
@@ -503,32 +610,74 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
             initial={{ opacity: 0, y: 3 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.08, duration: 0.18 }}
-            className="space-y-2 rounded-xl border border-border/50 bg-card/35 p-3"
+            className="space-y-2 rounded-2xl border border-border/50 bg-card/35 p-3 shadow-sm"
           >
-            <p className="text-xs font-semibold uppercase tracking-wide text-fg/70">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">
               Résultats dans la référence <span className="text-fg/50">· {parsed.normals.length}</span>
             </p>
             {parsed.normals.length > 0 ? (
-              <div className="flex flex-wrap gap-2">
-                {parsed.normals.map((item) => (
-                  <span key={`norm-${item}`} className="inline-flex items-center gap-1 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-100 transition hover:-translate-y-px">
-                    <span className="font-semibold">✓</span> {item}
-                  </span>
-                ))}
+              <div className="space-y-2">
+                <div className="flex flex-wrap gap-2">
+                  {normalItems.map((item, index) => {
+                    const cleanItem = cleanFindingChip(item);
+                    return (
+                      <span
+                        key={`norm-${index}-${item}`}
+                        className="inline-flex items-center gap-1 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-100"
+                      >
+                        <span className="font-semibold">✓</span> {cleanItem}
+                      </span>
+                    );
+                  })}
+                  {normalHiddenCount > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowAllNormals((prev) => !prev)}
+                      aria-expanded={showAllNormals}
+                      className="relative z-10 inline-flex cursor-pointer items-center rounded-full border border-border/60 bg-bg/45 px-2.5 py-1 text-xs text-fg/70 transition hover:border-accent/30 hover:bg-accent/8 hover:text-fg"
+                    >
+                      {showAllNormals ? "Réduire" : `+${normalHiddenCount} autres`}
+                    </button>
+                  ) : null}
+                </div>
+                {showAllNormals && normalHiddenCount > 0 ? (
+                  <div className="flex flex-wrap gap-2 border-t border-border/40 pt-2">
+                    {parsed.normals.slice(4).map((item, index) => (
+                      <span
+                        key={`norm-extra-${index}-${item}`}
+                        className="inline-flex items-center gap-1 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-100"
+                      >
+                        <span className="font-semibold">✓</span> {item}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ) : (
               <p className="text-sm text-fg/80">Aucun résultat dans la référence mentionné.</p>
             )}
           </motion.section>
 
-          <p className="rounded-lg border border-border/70 bg-card/60 px-3 py-2 text-sm leading-6 text-fg/90">
-            <span className="font-medium">Synthèse:</span> {synthesis}
-          </p>
-
-          <p className="text-xs text-fg/70">
-            <FileText size={12} className="mr-1 inline-block" />
-            Source principale: {parsedSource || sourceHint || "voir les sources cliquables ci-dessous"}.
-          </p>
+          <motion.section
+            initial={{ opacity: 0, y: 3 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.11, duration: 0.18 }}
+            className="space-y-2 rounded-2xl border border-border/50 bg-card/35 p-3 shadow-sm"
+          >
+            <p className="text-xs font-semibold uppercase tracking-wide text-fg/70">Synthèse</p>
+            <p className="rounded-xl border border-border/50 bg-bg/45 px-3 py-2.5 text-sm leading-6 text-fg/90">
+              {synthesis}
+            </p>
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-fg/60">
+              <span className="inline-flex items-center gap-1.5">
+                <FileText size={11} />
+                Source principale:
+              </span>
+              <span className="rounded-full border border-border/60 bg-card/60 px-2 py-0.5 text-fg/72">
+                {parsedSource || sourceHint || "voir les sources cliquables"}
+              </span>
+            </div>
+          </motion.section>
         </>
       )}
     </motion.section>
