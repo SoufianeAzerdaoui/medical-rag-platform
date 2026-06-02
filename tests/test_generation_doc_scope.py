@@ -1393,7 +1393,9 @@ class TestGenerationDocScope(unittest.TestCase):
                 "analyte_label": "CRP",
                 "display_name": "CRP",
                 "source_analyte": "CRP",
-                "technical_status_code": "above_reference",
+                "interpretation_status": "needs_clinical_context",
+                "current_value": "7",
+                "reference": "0 - 5 mg/l",
             },
             {
                 "doc_id": "report_24",
@@ -1403,7 +1405,9 @@ class TestGenerationDocScope(unittest.TestCase):
                 "analyte_label": "Phosphore",
                 "display_name": "Phosphore",
                 "source_analyte": "Phosphore",
-                "technical_status_code": "within_reference",
+                "interpretation_status": "needs_clinical_context",
+                "current_value": "30",
+                "reference": "23 - 47 mg/l",
             },
         ]
         llm_bad_json = (
@@ -1550,6 +1554,50 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertIn("crp", normalized)
         self.assertIn("réserve alcaline", normalized)
         self.assertIn("phosphore", normalized)
+
+    def test_biological_summary_contract_renderer_preserves_safe_llm_narrative(self) -> None:
+        ga = __import__("generate_answer")
+        evidences = [
+            {
+                "doc_id": "report_24",
+                "page": 1,
+                "row": 1,
+                "analyte": "CRP",
+                "analyte_label": "CRP",
+                "display_name": "CRP",
+                "source_analyte": "CRP",
+                "interpretation_status": "needs_clinical_context",
+                "current_value": "7",
+                "reference": "0 - 5 mg/l",
+            },
+            {
+                "doc_id": "report_24",
+                "page": 1,
+                "row": 2,
+                "analyte": "Phosphore",
+                "analyte_label": "Phosphore",
+                "display_name": "Phosphore",
+                "source_analyte": "Phosphore",
+                "interpretation_status": "needs_clinical_context",
+                "current_value": "30",
+                "reference": "23 - 47 mg/l",
+            },
+        ]
+        llm_narrative = (
+            "Le bilan met en avant une CRP au-dessus de la référence parmi les éléments sélectionnés.\n"
+            "Le phosphore reste dans la référence et apporte un point de stabilité descriptif.\n"
+            "La lecture reste prudente et strictement limitée aux données du rapport."
+        )
+        rendered = ga._render_biological_summary_from_contract(
+            llm_answer=llm_narrative,
+            evidences=evidences,
+            max_lines=5,
+            no_diagnosis=True,
+        )
+        self.assertIn("Le bilan met en avant une CRP", rendered)
+        self.assertIn("phosphore reste dans la référence", rendered)
+        self.assertIn("Conclusion technique", rendered)
+        self.assertNotIn("Anormaux :", rendered)
 
     def test_biological_summary_template_includes_value_and_reference(self) -> None:
         ga = __import__("generate_answer")
