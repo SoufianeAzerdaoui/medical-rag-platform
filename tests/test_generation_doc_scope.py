@@ -1783,6 +1783,14 @@ class TestGenerationDocScope(unittest.TestCase):
         )
         self.assertIsNone(conclusion)
 
+    def test_safe_llm_summary_conclusion_rejects_crude_list_style(self) -> None:
+        ga = __import__("generate_answer")
+        conclusion = ga._safe_llm_summary_conclusion(
+            "Analytes anormaux incluent ACIDE URIQUE, AMMONIUM et GGT, sans diagnostic.",
+            no_diagnosis=True,
+        )
+        self.assertIsNone(conclusion)
+
     def test_doc_scoped_summary_render_profile_detects_doctor_note(self) -> None:
         ga = __import__("generate_answer")
         qu_mod = __import__("query_understanding")
@@ -1798,6 +1806,91 @@ class TestGenerationDocScope(unittest.TestCase):
         )
         profile = ga._doc_scoped_summary_render_profile(qu)
         self.assertEqual(profile, "doctor_note_reference_ranges")
+
+    def test_detect_answer_style_short_and_editorial(self) -> None:
+        qu_mod = __import__("query_understanding")
+        self.assertEqual(
+            qu_mod.detect_answer_style(
+                "Fais une synthèse biologique courte du report 12. Limite-toi à 3 à 5 lignes."
+            ),
+            "short",
+        )
+        self.assertEqual(
+            qu_mod.detect_answer_style(
+                "Fais une synthèse biologique éditoriale du report 12 avec une phrase d'ouverture et un texte naturel et professionnel."
+            ),
+            "editorial",
+        )
+
+    def test_render_biological_summary_rewrites_crude_llm_conclusion_with_profiled_synthesis(self) -> None:
+        ga = __import__("generate_answer")
+        evidences = [
+            {
+                "doc_id": "report_12",
+                "page": 1,
+                "row": 1,
+                "analyte": "Bilirubine Directe",
+                "current_value": "6",
+                "unit": "mg/L",
+                "reference": "0.00 - 5.00",
+                "technical_status_code": "above_reference",
+                "status": "au-dessus de la référence",
+            },
+            {
+                "doc_id": "report_12",
+                "page": 1,
+                "row": 2,
+                "analyte": "Créatinine",
+                "current_value": "23",
+                "unit": "mg/L",
+                "reference": "4 - 9",
+                "technical_status_code": "above_reference",
+                "status": "au-dessus de la référence",
+            },
+            {
+                "doc_id": "report_12",
+                "page": 1,
+                "row": 3,
+                "analyte": "LDH",
+                "current_value": "250",
+                "unit": "UI/L",
+                "reference": "125,00 - 243,00",
+                "technical_status_code": "above_reference",
+                "status": "au-dessus de la référence",
+            },
+            {
+                "doc_id": "report_12",
+                "page": 2,
+                "row": 4,
+                "analyte": "Magnésium",
+                "current_value": "20",
+                "unit": "mg/L",
+                "reference": "15 - 22",
+                "technical_status_code": "within_reference",
+                "status": "dans la référence",
+            },
+        ]
+        llm_answer = (
+            "Anormaux : Bilirubine Directe = 6 mg/L (réf 0.00 - 5.00, au-dessus).\n"
+            "Résultats dans la référence uniquement : Magnésium = 20 mg/L.\n"
+            "Conclusion technique : Analytes anormaux incluent ACIDE URIQUE, AMMONIUM, Bilirubine Directe et GGT, sans diagnostic."
+        )
+        rendered = ga._render_biological_summary_from_contract(
+            llm_answer=llm_answer,
+            evidences=evidences,
+            max_lines=6,
+            no_diagnosis=True,
+            render_profile="compact_biological_summary",
+        )
+        low = rendered.lower()
+        self.assertIn("conclusion technique : le bilan", low)
+        self.assertIn("bilirubine directe", low)
+        self.assertIn("créatinine", low)
+        self.assertIn("magnésium", low)
+        self.assertNotIn("analytes anormaux incluent", low)
+        self.assertNotIn("acide urique", low)
+        self.assertNotIn("ammonium", low)
+        self.assertNotIn("ggt", low)
 
     def test_biological_summary_doctor_note_reference_ranges_includes_range_section(self) -> None:
         ga = __import__("generate_answer")

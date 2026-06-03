@@ -8969,7 +8969,17 @@ def _safe_llm_summary_conclusion(conclusion: str | None, *, no_diagnosis: bool) 
         "altere",
         "altéré",
     }
+    weak_markers = (
+        "analytes anormaux incluent",
+        "anormaux :",
+        "resultats dans la reference uniquement",
+        "résultats dans la référence uniquement",
+        "aucun resultat strictement dans la reference parmi les elements selectionnes",
+        "aucun résultat strictement dans la référence parmi les éléments sélectionnés",
+    )
     if any(tok in n for tok in forbidden):
+        return None
+    if any(marker in n for marker in weak_markers):
         return None
     if not txt.lower().startswith("conclusion technique"):
         txt = f"Conclusion technique : {txt}"
@@ -8982,6 +8992,159 @@ def _default_summary_conclusion(*, no_diagnosis: bool) -> str:
     if no_diagnosis:
         return "Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic médical."
     return "Conclusion technique : synthèse descriptive limitée aux données disponibles."
+
+
+def _summary_row_status_kind(ev: dict[str, Any]) -> str:
+    status = str(
+        ev.get("technical_status_code")
+        or ev.get("interpretation_status")
+        or ev.get("status")
+        or ""
+    ).strip().lower()
+    if status in {"above_reference", "below_reference"}:
+        return "abnormal"
+    if status == "within_reference":
+        return "within"
+    status_fr = norm_text(str(ev.get("status") or ""))
+    if "au dessus" in status_fr or "au-dessus" in status_fr or "en dessous" in status_fr:
+        return "abnormal"
+    if "dans la reference" in status_fr:
+        return "within"
+    return "unknown"
+
+
+def _summary_conclusion_labels(rows: list[dict[str, Any]], *, limit: int) -> list[str]:
+    labels: list[str] = []
+    seen: set[str] = set()
+    for ev in list(rows or []):
+        label_raw = str(
+            ev.get("analyte")
+            or ev.get("analyte_label")
+            or ev.get("display_name")
+            or ev.get("source_analyte")
+            or ""
+        ).strip()
+        label = _clean_analyte_label(label_raw) or label_raw
+        key = norm_text(label)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        labels.append(label)
+        if len(labels) >= limit:
+            break
+    return labels
+
+
+def _join_summary_labels(labels: list[str]) -> str:
+    items = [str(label or "").strip() for label in list(labels or []) if str(label or "").strip()]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} et {items[1]}"
+    return ", ".join(items[:-1]) + f" et {items[-1]}"
+
+
+def _profile_family(render_profile: str | None) -> str:
+    profile = str(render_profile or "").strip().lower()
+    if profile == "compact_biological_summary":
+        return "short"
+    if profile == "editorial_biological_summary":
+        return "editorial"
+    return "standard"
+
+
+def _llm_summary_requires_professional_rewrite(text: str | None) -> bool:
+    raw = str(text or "").strip()
+    if not raw:
+        return True
+    n = norm_text(raw)
+    weak_markers = (
+        "analytes anormaux incluent",
+        "anormaux :",
+        "resultats dans la reference uniquement",
+        "résultats dans la référence uniquement",
+        "aucun resultat strictement dans la reference parmi les elements selectionnes",
+        "aucun résultat strictement dans la référence parmi les éléments sélectionnés",
+    )
+    return any(marker in n for marker in weak_markers)
+
+
+def _production_summary_conclusion(
+    *,
+    rows: list[dict[str, Any]],
+    no_diagnosis: bool,
+    render_profile: str | None,
+) -> str:
+    abnormal_rows = [ev for ev in rows if _summary_row_status_kind(ev) == "abnormal"]
+    within_rows = [ev for ev in rows if _summary_row_status_kind(ev) == "within"]
+    abnormal_labels = _summary_conclusion_labels(abnormal_rows, limit=4)
+    within_labels = _summary_conclusion_labels(within_rows, limit=3)
+    extra_abnormal = max(0, len(_summary_conclusion_labels(abnormal_rows, limit=99)) - len(abnormal_labels))
+    focus = _join_summary_labels(abnormal_labels)
+    within_focus = _join_summary_labels(within_labels)
+    no_dx_suffix = ", sans diagnostic." if no_diagnosis else "."
+
+    profile_family = _profile_family(render_profile)
+    if profile_family == "editorial":
+        opening = (
+            f"Conclusion technique : Le profil biologique retenu est dominé par plusieurs écarts documentés, en particulier {focus}."
+            if focus
+            else "Conclusion technique : Les éléments retenus ne mettent pas en avant d’écart biologique dominant documenté."
+        )
+        anomaly_tail = (
+            f" D’autres anomalies restent présentes dans le même périmètre documentaire ({extra_abnormal} supplémentaire(s))."
+            if extra_abnormal > 0
+            else ""
+        )
+        within_line = (
+            f" Aucun résultat strictement dans la référence n’est mis en avant dans les éléments retenus."
+            if not within_focus
+            else f" Quelques paramètres restent toutefois dans la référence, notamment {within_focus}."
+        )
+        closing = (
+            " L’ensemble doit être lu comme une synthèse documentaire prudente"
+            + no_dx_suffix
+        )
+        return f"{opening}{anomaly_tail}{within_line}{closing}".strip()
+
+    if profile_family == "short":
+        opening = (
+            f"Conclusion technique : Le bilan met surtout en évidence des valeurs hors référence concernant {focus}."
+            if focus
+            else "Conclusion technique : Les éléments retenus ne mettent pas en évidence d’écart hors référence dominant."
+        )
+        anomaly_tail = (
+            f" {extra_abnormal} autre(s) anomalie(s) sont également documentée(s)."
+            if extra_abnormal > 0
+            else ""
+        )
+        within_line = (
+            " Aucun résultat strictement dans la référence n’est mis en avant dans la sélection affichée."
+            if not within_focus
+            else f" Des résultats dans la référence sont aussi observés, notamment {within_focus}."
+        )
+        closing = " Lecture descriptive et prudente" + no_dx_suffix
+        return f"{opening}{anomaly_tail}{within_line}{closing}".strip()
+
+    opening = (
+        f"Conclusion technique : Sur les éléments retenus, les principaux écarts biologiques concernent {focus}."
+        if focus
+        else "Conclusion technique : Sur les éléments retenus, aucun écart biologique dominant n’est objectivé."
+    )
+    anomaly_tail = (
+        f" {extra_abnormal} autre(s) anomalie(s) documentée(s) complètent ce profil."
+        if extra_abnormal > 0
+        else ""
+    )
+    within_line = (
+        " Aucun résultat strictement dans la référence n’est mis en avant dans les lignes sélectionnées."
+        if not within_focus
+        else f" Certains paramètres restent dans la référence, notamment {within_focus}."
+    )
+    closing = " Lecture strictement descriptive" + no_dx_suffix
+    return f"{opening}{anomaly_tail}{within_line}{closing}".strip()
 
 
 def _render_biological_summary_from_contract(
@@ -8998,29 +9161,8 @@ def _render_biological_summary_from_contract(
         return _missing_doc_answer()
     raw_llm_answer = str(llm_answer or "").strip()
     abnormal_candidates, within_candidates, llm_conclusion = _extract_summary_contract_fields(llm_answer)
-
-    def _status_of(ev: dict[str, Any]) -> str:
-        status = str(
-            ev.get("technical_status_code")
-            or ev.get("interpretation_status")
-            or ev.get("status")
-            or ""
-        ).strip().lower()
-        if status in {"above_reference", "below_reference"}:
-            return "abnormal"
-        if status == "within_reference":
-            return "within"
-        status_fr = norm_text(str(ev.get("status") or ""))
-        if "au dessus" in status_fr or "au-dessus" in status_fr:
-            return "abnormal"
-        if "en dessous" in status_fr:
-            return "abnormal"
-        if "dans la reference" in status_fr:
-            return "within"
-        return "unknown"
-
-    abnormal_rows = [r for r in rows if _status_of(r) == "abnormal"]
-    within_rows = [r for r in rows if _status_of(r) == "within"]
+    abnormal_rows = [r for r in rows if _summary_row_status_kind(r) == "abnormal"]
+    within_rows = [r for r in rows if _summary_row_status_kind(r) == "within"]
 
     # Preserve a genuine LLM narrative when it stays within factual guardrails.
     # The deterministic renderer should remain a safety fallback, not the default
@@ -9032,6 +9174,7 @@ def _render_biological_summary_from_contract(
         if (
             sentence_count >= 2
             and word_count >= 12
+            and not _llm_summary_requires_professional_rewrite(narrative)
             and not _is_table_markdown(narrative)
             and not _contains_internal_reasoning_leak(narrative)
             and not _summary_directional_status_conflicts(answer=narrative, evidences=rows)
@@ -9094,8 +9237,10 @@ def _render_biological_summary_from_contract(
         no_diagnosis=no_diagnosis,
         render_profile=render_profile,
     )
-    safe_conclusion = _safe_llm_summary_conclusion(llm_conclusion, no_diagnosis=no_diagnosis) or _default_summary_conclusion(
-        no_diagnosis=no_diagnosis
+    safe_conclusion = _safe_llm_summary_conclusion(llm_conclusion, no_diagnosis=no_diagnosis) or _production_summary_conclusion(
+        rows=dedup_rows or rows,
+        no_diagnosis=no_diagnosis,
+        render_profile=render_profile,
     )
     lines = [ln for ln in rendered.splitlines() if ln.strip()]
     swapped = False
