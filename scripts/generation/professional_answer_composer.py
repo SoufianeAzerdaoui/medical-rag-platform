@@ -584,6 +584,10 @@ def _summary_answer_looks_weak(answer: str, evidences: list[dict[str, Any]], que
         "sans diagnostic",
         "statut a verifier",
         "statut à vérifier",
+        "analytes anormaux incluent",
+        "anormaux :",
+        "resultats dans la reference uniquement",
+        "résultats dans la référence uniquement",
     ]
     if any(marker in text for marker in weak_markers):
         return True
@@ -610,6 +614,21 @@ def _summary_answer_looks_weak(answer: str, evidences: list[dict[str, Any]], que
         if abnormal_labels and not any(norm_text(label) in text for label in abnormal_labels[:4]):
             return True
         if within_labels and not any(norm_text(label) in text for label in within_labels[:4]):
+            return True
+        if "conclusion technique" in text and not any(
+            marker in text
+            for marker in (
+                "le bilan",
+                "ce bilan",
+                "le profil biologique",
+                "cette synthese",
+                "cette synthèse",
+                "sur les elements retenus",
+                "sur les éléments retenus",
+                "dans le perimetre retenu",
+                "dans le périmètre retenu",
+            )
+        ):
             return True
     return False
 

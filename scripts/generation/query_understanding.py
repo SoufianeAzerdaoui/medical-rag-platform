@@ -1691,6 +1691,38 @@ def detect_answer_style(query: str) -> str:
         ]
     ):
         return "doctor_note"
+    editorial_markers = [
+        "synthese editoriale",
+        "synthèse éditoriale",
+        "resume editorial",
+        "résumé éditorial",
+        "texte naturel et professionnel",
+        "style clinique",
+        "phrase d ouverture",
+        "phrase d'ouverture",
+        "redige un texte",
+        "rédige un texte",
+        "compte rendu clinique",
+        "redaction professionnelle",
+        "rédaction professionnelle",
+    ]
+    if any(marker in qn for marker in editorial_markers):
+        return "editorial"
+    short_markers = [
+        "synthese courte",
+        "synthèse courte",
+        "resume court",
+        "résumé court",
+        "version courte",
+        "limite toi a 3 a 5 lignes",
+        "limite-toi a 3 a 5 lignes",
+        "3 a 5 lignes",
+        "3-5 lignes",
+        "quelques lignes",
+        "reste dense",
+    ]
+    if any(marker in qn for marker in short_markers):
+        return "short"
     return "standard"
 
 
