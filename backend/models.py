@@ -124,6 +124,12 @@ class ChatResponse(BaseModel):
     final_answer_source: Literal["llm_writer", "llm_writer_repaired", "deterministic_renderer"] | None = None
     renderer_used: str | None = None
     fallback_reason: str | None = None
+    displayed_evidences_count: int | None = None
+    evidence_pack_count: int | None = None
+    lab_result_count: int | None = None
+    value_numeric_count: int | None = None
+    structured_values_count: int | None = None
+    sources_count: int | None = None
     visualization: dict[str, Any] | None = None
     chart_data: dict[str, Any] | None = None
     patients: list[dict[str, Any]] | None = None

@@ -870,12 +870,36 @@ def process_chat(
             validation_warnings=validation_warnings,
         )
         hard_gate_snapshot = _validation_hard_gate_snapshot(generation_debug, validation_errors)
+        evidence_pack_items = list(generation.get("evidence_pack") or [])
+        displayed_evidence_items = list(displayed_evidences or generation.get("displayed_evidences") or [])
+        value_numeric_count = sum(
+            1
+            for item in evidence_pack_items + displayed_evidence_items
+            if isinstance(item, dict) and item.get("value_numeric") is not None
+        )
+        structured_values_count = sum(
+            1
+            for item in evidence_pack_items
+            if isinstance(item, dict)
+            and str(item.get("chunk_type") or "").strip().lower() == "lab_result"
+            and (
+                item.get("value_numeric") is not None
+                or str(item.get("value_raw") or item.get("current_value") or "").strip()
+            )
+        )
+        source_count_total = len(list(sources or []))
         response_debug: dict[str, Any] = {
             "debug_contract_version": "v2",
             "intent": str(qu.get("intent") or "") or None,
             "safety_intent": str(qu.get("safety_intent") or "") or None,
             "technical_condition": str(qu.get("technical_condition") or "") or None,
             "summary_style_requested": requested_summary_style,
+            "displayed_evidences_count": int(generation_debug.get("displayed_evidences_count") or len(displayed_evidence_items) or 0),
+            "evidence_pack_count": int(generation_debug.get("evidence_rows_count") or len(evidence_pack_items) or 0),
+            "lab_result_count": int(generation_debug.get("evidence_rows_count") or len(evidence_pack_items) or 0),
+            "value_numeric_count": int(value_numeric_count),
+            "structured_values_count": int(structured_values_count),
+            "sources_count": int(source_count_total),
             "llm_candidate_answer": str(generation.get("llm_candidate_answer") or generation_debug.get("llm_candidate_answer") or "") or None,
             "llm_candidate_validation_status": str(generation.get("llm_candidate_validation_status") or generation_debug.get("llm_candidate_validation_status") or "") or None,
             "llm_candidate_validation_errors": list(generation.get("llm_candidate_validation_errors") or generation_debug.get("llm_candidate_validation_errors") or []),
@@ -1075,14 +1099,12 @@ def process_chat(
             "llm_skipped_reason": str(generation_debug.get("llm_skipped_reason") or "") or None,
             "generation_mode_before_fallback": str(generation_debug.get("generation_mode_before_fallback") or "") or None,
             "fallback_decision_path": generation_debug.get("fallback_decision_path"),
-            "displayed_evidences_count": int(generation_debug.get("displayed_evidences_count") or len(displayed_evidences) or 0),
-            "evidence_pack_count": int(generation_debug.get("evidence_rows_count") or len(generation.get("evidence_pack") or []) or 0),
-            "lab_result_count": int(generation_debug.get("evidence_rows_count") or len(generation.get("evidence_pack") or []) or 0),
-            "value_numeric_count": sum(
-                1
-                for item in list(generation.get("evidence_pack") or []) + list(generation.get("displayed_evidences") or [])
-                if isinstance(item, dict) and item.get("value_numeric") is not None
-            ),
+            "displayed_evidences_count": int(generation_debug.get("displayed_evidences_count") or len(displayed_evidence_items) or 0),
+            "evidence_pack_count": int(generation_debug.get("evidence_rows_count") or len(evidence_pack_items) or 0),
+            "lab_result_count": int(generation_debug.get("evidence_rows_count") or len(evidence_pack_items) or 0),
+            "value_numeric_count": int(value_numeric_count),
+            "structured_values_count": int(structured_values_count),
+            "sources_count": int(source_count_total),
         }
         message_service.save_message(
             conversation_id,
@@ -1116,6 +1138,12 @@ def process_chat(
             final_answer_source=final_answer_source_top if final_answer_source_top in {"llm_writer", "llm_writer_repaired", "deterministic_renderer"} else None,
             renderer_used=renderer_used_top,
             fallback_reason=fallback_reason_top,
+            displayed_evidences_count=int(generation.get("displayed_evidences_count") or generation_debug.get("displayed_evidences_count") or len(displayed_evidence_items) or 0),
+            evidence_pack_count=int(generation.get("evidence_pack_count") or generation_debug.get("evidence_pack_count") or generation_debug.get("evidence_rows_count") or len(evidence_pack_items) or 0),
+            lab_result_count=int(generation.get("lab_result_count") or generation_debug.get("lab_result_count") or generation_debug.get("evidence_rows_count") or len(evidence_pack_items) or 0),
+            value_numeric_count=int(generation.get("value_numeric_count") or generation_debug.get("value_numeric_count") or value_numeric_count),
+            structured_values_count=int(generation.get("structured_values_count") or generation_debug.get("structured_values_count") or structured_values_count),
+            sources_count=int(generation.get("sources_count") or generation_debug.get("sources_count") or source_count_total),
             visualization=(generation.get("visualization") if isinstance(generation.get("visualization"), dict) else None),
             chart_data=(generation.get("chart_data") if isinstance(generation.get("chart_data"), dict) else None),
             patients=generation.get("patients"),

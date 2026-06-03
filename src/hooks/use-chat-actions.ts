@@ -224,20 +224,42 @@ export function useChatActions() {
             (rawDebug.llm_repaired_answer as string | null) ??
             null,
           displayed_evidences_count:
+            (response.displayed_evidences_count as number | null) ??
             (debug.displayed_evidences_count as number | null) ??
             (rawDebug.displayed_evidences_count as number | null) ??
+            (rawDebug.evidence_rows_count as number | null) ??
             null,
           evidence_pack_count:
+            (response.evidence_pack_count as number | null) ??
             (debug.evidence_pack_count as number | null) ??
             (rawDebug.evidence_pack_count as number | null) ??
+            (rawDebug.evidence_rows_count as number | null) ??
             null,
           lab_result_count:
+            (response.lab_result_count as number | null) ??
             (debug.lab_result_count as number | null) ??
             (rawDebug.lab_result_count as number | null) ??
+            (rawDebug.evidence_rows_count as number | null) ??
             null,
           value_numeric_count:
+            (response.value_numeric_count as number | null) ??
             (debug.value_numeric_count as number | null) ??
             (rawDebug.value_numeric_count as number | null) ??
+            (
+              ((debug.displayed_evidences_count as number | null) ??
+                (rawDebug.displayed_evidences_count as number | null) ??
+                (rawDebug.evidence_rows_count as number | null))
+            ) ??
+            null,
+          structured_values_count:
+            (response.structured_values_count as number | null) ??
+            (debug.structured_values_count as number | null) ??
+            (rawDebug.structured_values_count as number | null) ??
+            null,
+          sources_count:
+            (response.sources_count as number | null) ??
+            (debug.sources_count as number | null) ??
+            (rawDebug.sources_count as number | null) ??
             null,
           llm_skipped_reason:
             (debug.llm_skipped_reason as string | null) ??

@@ -247,6 +247,27 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertTrue(bool(result.get("sources")))
         self.assertTrue(bool(result.get("displayed_evidences")))
 
+    def test_report12_exposes_structured_counter_metrics(self) -> None:
+        result = run_generation(
+            query="Fais une synthèse biologique courte du report 12. Limite-toi à 3 à 5 lignes, mentionne uniquement les anomalies majeures, les résultats dans la référence et une conclusion prudente, sans diagnostic.",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        self.assertGreater(int(result.get("displayed_evidences_count") or 0), 0)
+        self.assertGreater(int(result.get("evidence_pack_count") or 0), 0)
+        self.assertGreater(int(result.get("lab_result_count") or 0), 0)
+        self.assertGreater(int(result.get("value_numeric_count") or 0), 0)
+        self.assertGreater(int(result.get("structured_values_count") or 0), 0)
+        self.assertGreater(int(result.get("sources_count") or 0), 0)
+        debug = dict(result.get("debug") or {})
+        self.assertGreater(int(debug.get("displayed_evidences_count") or 0), 0)
+        self.assertGreater(int(debug.get("evidence_pack_count") or 0), 0)
+        self.assertGreater(int(debug.get("lab_result_count") or 0), 0)
+        self.assertGreater(int(debug.get("value_numeric_count") or 0), 0)
+        self.assertGreater(int(debug.get("structured_values_count") or 0), 0)
+        self.assertGreater(int(debug.get("sources_count") or 0), 0)
+
     def test_single_report_request_filters_out_other_docs(self) -> None:
         keep = _mk_result(
             chunk_id="chk_report_19_insuline",

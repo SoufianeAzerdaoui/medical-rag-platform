@@ -411,6 +411,37 @@ def _derive_llm_candidate_rejected_reason(
     return normalized_fallback or None
 
 
+def _evidence_counter_metrics(
+    *,
+    displayed_evidences: list[dict[str, Any]] | None = None,
+    evidence_pack: list[dict[str, Any]] | None = None,
+    sources: list[dict[str, Any]] | None = None,
+) -> dict[str, int]:
+    displayed = [item for item in list(displayed_evidences or []) if isinstance(item, dict)]
+    packed = [item for item in list(evidence_pack or []) if isinstance(item, dict)]
+
+    def _is_structured_value(item: dict[str, Any]) -> bool:
+        if item.get("value_numeric") is not None:
+            return True
+        return bool(str(item.get("value_raw") or item.get("current_value") or "").strip())
+
+    lab_result_count = sum(1 for item in packed if str(item.get("chunk_type") or "").strip().lower() == "lab_result")
+    value_numeric_count = sum(1 for item in packed if _is_structured_value(item))
+    structured_values_count = sum(
+        1
+        for item in packed
+        if str(item.get("chunk_type") or "").strip().lower() == "lab_result" and _is_structured_value(item)
+    )
+    return {
+        "displayed_evidences_count": len(displayed),
+        "evidence_pack_count": len(packed),
+        "lab_result_count": lab_result_count,
+        "value_numeric_count": value_numeric_count,
+        "structured_values_count": structured_values_count,
+        "sources_count": len(list(sources or [])),
+    }
+
+
 def _is_hybrid_structured_writer_intent(query_understanding: QueryUnderstanding) -> bool:
     intent = str(getattr(query_understanding, "intent", "") or "").strip().lower()
     technical_condition = str(getattr(query_understanding, "technical_condition", "") or "").strip().lower()
@@ -17776,6 +17807,11 @@ def run_generation(
         canonical_requested_analytes_debug = _canonical_requested_analytes_for_debug(
             list(exact_analytes or query_understanding.requested_analytes or [])
         )
+        evidence_metrics = _evidence_counter_metrics(
+            displayed_evidences=list(displayed_evidences or []),
+            evidence_pack=list(evidence_pack or []),
+            sources=list(source_citations or []),
+        )
         fallback_decision_path = _build_fallback_decision_path(
             planner_execution=planner_execution,
             answerability_assessment=answerability_assessment,
@@ -17933,6 +17969,12 @@ def run_generation(
             "llm_repair_attempted": llm_candidate_repair_used,
             "llm_repair_status": llm_repair_status,
             "llm_repaired_answer": llm_repaired_answer,
+            "displayed_evidences_count": evidence_metrics["displayed_evidences_count"],
+            "evidence_pack_count": evidence_metrics["evidence_pack_count"],
+            "lab_result_count": evidence_metrics["lab_result_count"],
+            "value_numeric_count": evidence_metrics["value_numeric_count"],
+            "structured_values_count": evidence_metrics["structured_values_count"],
+            "sources_count": evidence_metrics["sources_count"],
             "detected_analytes": exact_analytes,
             "query_understanding": _query_understanding_payload(query_understanding),
             "structured_evidence_pack": structured_pack,
@@ -18081,7 +18123,12 @@ def run_generation(
                 "llm_writer_allowed": llm_writer_allowed,
                 "llm_writer_used": llm_writer_used,
                 "evidence_rows_count": len(evidence_pack),
-                "displayed_evidences_count": len(displayed_evidences),
+                "displayed_evidences_count": evidence_metrics["displayed_evidences_count"],
+                "evidence_pack_count": evidence_metrics["evidence_pack_count"],
+                "lab_result_count": evidence_metrics["lab_result_count"],
+                "value_numeric_count": evidence_metrics["value_numeric_count"],
+                "structured_values_count": evidence_metrics["structured_values_count"],
+                "sources_count": evidence_metrics["sources_count"],
                 "hard_gate_triggered": hard_gate_triggered,
                 "hard_gate_errors": hard_gate_hits if 'hard_gate_hits' in locals() else [],
                 "hard_gate_policy": "global_non_negotiable",
