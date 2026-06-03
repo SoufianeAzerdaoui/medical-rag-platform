@@ -1892,6 +1892,53 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertNotIn("ammonium", low)
         self.assertNotIn("ggt", low)
 
+    def test_finalize_doc_scoped_biological_llm_answer_rewrites_contract_style_output(self) -> None:
+        ga = __import__("generate_answer")
+        qu_mod = __import__("query_understanding")
+        qu = qu_mod.parse_query_understanding(
+            "Fais une synthèse biologique courte du report 12. Limite-toi à 3 à 5 lignes, sans diagnostic."
+        )
+        evidences = [
+            {
+                "doc_id": "report_12",
+                "page": 1,
+                "row": 8,
+                "analyte": "Bilirubine Directe",
+                "current_value": "6",
+                "unit": "mg/L",
+                "reference": "0.00 - 5.00",
+                "technical_status_code": "above_reference",
+                "status": "au-dessus de la référence",
+            },
+            {
+                "doc_id": "report_12",
+                "page": 1,
+                "row": 13,
+                "analyte": "Créatinine",
+                "current_value": "23",
+                "unit": "mg/L",
+                "reference": "4 - 9",
+                "technical_status_code": "above_reference",
+                "status": "au-dessus de la référence",
+            },
+        ]
+        raw = (
+            "Anormaux : Bilirubine Directe = 6 mg/l (réf 0.00 - 5.00, au-dessus); "
+            "Créatinine = 23 mg/l (réf 4 - 9, au-dessus).\n"
+            "Résultats dans la référence uniquement : aucun résultat strictement dans la référence parmi les éléments sélectionnés.\n"
+            "Conclusion technique : Analytes anormaux et normaux identifiés, mais pas de conclusions diagnostiques ici, sans diagnostic."
+        )
+        rendered = ga._finalize_doc_scoped_biological_llm_answer(
+            llm_answer=raw,
+            displayed_evidences=evidences,
+            query_understanding=qu,
+        )
+        low = rendered.lower()
+        self.assertIn("conclusion technique : le bilan", low)
+        self.assertNotIn("anormaux :", low)
+        self.assertNotIn("résultats dans la référence uniquement", low)
+        self.assertNotIn("analytes anormaux et normaux identifiés", low)
+
     def test_biological_summary_doctor_note_reference_ranges_includes_range_section(self) -> None:
         ga = __import__("generate_answer")
         evidences = [

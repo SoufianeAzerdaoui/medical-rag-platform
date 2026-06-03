@@ -7029,7 +7029,13 @@ def _build_doc_scoped_biological_summary_answer(
             compact_lines = [title_ln, *body_candidates[:slots], *tail]
         return "\n\n".join(compact_lines).strip()
 
-    if render_profile_norm in {"doctor_note", "doctor_note_reference_ranges", "doctor_note_ranges"}:
+    if render_profile_norm in {
+        "doctor_note",
+        "doctor_note_reference_ranges",
+        "doctor_note_ranges",
+        "compact_biological_summary",
+        "editorial_biological_summary",
+    }:
         return _build_doctor_note()
 
     def _fmt_item(ev: dict[str, Any], *, with_status: bool = True, with_reference: bool = True) -> str:
@@ -9253,6 +9259,23 @@ def _render_biological_summary_from_contract(
         lines.append(safe_conclusion)
     rendered = "\n".join(lines).strip()
     return rendered
+
+
+def _finalize_doc_scoped_biological_llm_answer(
+    *,
+    llm_answer: str,
+    displayed_evidences: list[dict[str, Any]],
+    query_understanding: Any,
+) -> str:
+    no_diag = str(getattr(query_understanding, "safety_intent", "") or "").strip().lower() == "no_diagnosis_constraint"
+    rendered = _render_biological_summary_from_contract(
+        llm_answer=str(llm_answer or ""),
+        evidences=list(displayed_evidences or []),
+        max_lines=getattr(query_understanding, "requested_summary_points", None),
+        no_diagnosis=no_diag,
+        render_profile=_doc_scoped_summary_render_profile(query_understanding),
+    )
+    return _normalize_summary_readability(rendered)
 
 
 def _canonical_analyte_key(value: str) -> str:
@@ -17602,7 +17625,11 @@ def run_generation(
                 )
             )
         ):
-            final_answer = str(llm_candidate_answer or final_answer).strip() or final_answer
+            final_answer = _finalize_doc_scoped_biological_llm_answer(
+                llm_answer=str(llm_candidate_answer or final_answer).strip(),
+                displayed_evidences=list(displayed_evidences or []),
+                query_understanding=query_understanding,
+            )
             generation_mode = "hybrid_structured_llm_writer"
             llm_writer_final_accepted = True
             fallback_reason_debug = None
@@ -17615,6 +17642,17 @@ def run_generation(
             quality_gate_result["accepted_with_warnings"] = bool(quality_gate_result.get("reasons"))
             quality_gate_result["preserved_llm"] = True
             quality_gate_result["soft_warning_only"] = bool(quality_gate_result.get("reasons"))
+
+        if (
+            str(selected_route or "").strip().lower() == "doc_scoped_biological_summary"
+            and str(generation_mode or "").strip().lower() == "hybrid_structured_llm_writer"
+            and bool(final_answer)
+        ):
+            final_answer = _finalize_doc_scoped_biological_llm_answer(
+                llm_answer=str(final_answer or ""),
+                displayed_evidences=list(displayed_evidences or []),
+                query_understanding=query_understanding,
+            )
 
         source_citations = _backfill_factual_sources(
             generation_mode=generation_mode,
