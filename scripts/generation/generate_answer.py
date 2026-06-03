@@ -652,6 +652,91 @@ def _doc_scoped_summary_render_profile(query_understanding: QueryUnderstanding) 
     return "technical_summary"
 
 
+def _doc_scoped_biological_summary_llm_profile(query_understanding: QueryUnderstanding) -> dict[str, Any]:
+    render_profile = _doc_scoped_summary_render_profile(query_understanding)
+    requested_points = getattr(query_understanding, "requested_summary_points", None)
+    requested_lines = 0
+    try:
+        if requested_points is not None:
+            requested_lines = max(0, int(requested_points))
+    except Exception:
+        requested_lines = 0
+
+    profile: dict[str, Any] = {
+        "render_profile": render_profile,
+        "max_rows": 5,
+        "max_abnormal_rows": 4,
+        "max_within_rows": 1,
+        "max_ambiguous_rows": 1,
+        "timeout_ms": 90000,
+        "num_predict": 150,
+        "prompt_target_chars": 2200,
+        "prompt_hard_limit_chars": 3000,
+        "num_ctx_cap": 3072,
+    }
+    if render_profile == "compact_biological_summary":
+        profile.update(
+            {
+                "max_rows": 4,
+                "max_abnormal_rows": 3,
+                "max_within_rows": 1,
+                "max_ambiguous_rows": 0,
+                "timeout_ms": 70000,
+                "num_predict": 120,
+                "prompt_target_chars": 1700,
+                "prompt_hard_limit_chars": 2400,
+                "num_ctx_cap": 2048,
+            }
+        )
+    elif render_profile == "editorial_biological_summary":
+        profile.update(
+            {
+                "max_rows": 5,
+                "max_abnormal_rows": 4,
+                "max_within_rows": 1,
+                "max_ambiguous_rows": 0,
+                "timeout_ms": 85000,
+                "num_predict": 150,
+                "prompt_target_chars": 2100,
+                "prompt_hard_limit_chars": 2800,
+                "num_ctx_cap": 2560,
+            }
+        )
+    elif render_profile == "doctor_note":
+        profile.update(
+            {
+                "max_rows": 6,
+                "max_abnormal_rows": 4,
+                "max_within_rows": 2,
+                "max_ambiguous_rows": 1,
+                "timeout_ms": 95000,
+                "num_predict": 170,
+                "prompt_target_chars": 2400,
+                "prompt_hard_limit_chars": 3200,
+                "num_ctx_cap": 3072,
+            }
+        )
+
+    if requested_lines:
+        if requested_lines <= 4:
+            profile["max_rows"] = min(int(profile["max_rows"]), 4)
+            profile["max_abnormal_rows"] = min(int(profile["max_abnormal_rows"]), 3)
+            profile["num_predict"] = min(int(profile["num_predict"]), 120)
+            profile["timeout_ms"] = min(int(profile["timeout_ms"]), 70000)
+            profile["prompt_target_chars"] = min(int(profile["prompt_target_chars"]), 1700)
+            profile["prompt_hard_limit_chars"] = min(int(profile["prompt_hard_limit_chars"]), 2400)
+            profile["num_ctx_cap"] = min(int(profile["num_ctx_cap"]), 2048)
+        elif requested_lines >= 7:
+            profile["max_rows"] = min(max(int(profile["max_rows"]), 6), 6)
+            profile["max_abnormal_rows"] = min(max(int(profile["max_abnormal_rows"]), 4), 5)
+            profile["max_within_rows"] = min(max(int(profile["max_within_rows"]), 1), 2)
+            profile["num_predict"] = max(int(profile["num_predict"]), 170)
+            profile["timeout_ms"] = max(int(profile["timeout_ms"]), 95000)
+            profile["prompt_target_chars"] = max(int(profile["prompt_target_chars"]), 2400)
+            profile["prompt_hard_limit_chars"] = max(int(profile["prompt_hard_limit_chars"]), 3200)
+    return profile
+
+
 def _extract_json_object(text: str) -> dict[str, Any] | None:
     raw = str(text or "").strip()
     if not raw:
@@ -9849,19 +9934,13 @@ def _build_llm_evidence_pack(
     evidences = list(pack.get("evidences") or [])
     route = str(selected_route or "").strip().lower()
     policy = _level2_prompt_policy(route)
+    summary_llm_profile = (
+        _doc_scoped_biological_summary_llm_profile(query_understanding)
+        if route == "doc_scoped_biological_summary"
+        else {}
+    )
     if route == "doc_scoped_biological_summary":
-        max_rows = int(policy.get("max_evidence_rows") or 6)
-        answer_style = str(getattr(query_understanding, "answer_style", "") or "").strip().lower()
-        requested_points = getattr(query_understanding, "requested_summary_points", None)
-        if answer_style in {"short", "compact", "brief"}:
-            max_rows = min(max_rows, 4)
-        elif answer_style in {"editorial", "narrative"}:
-            max_rows = min(max_rows, 7)
-        elif requested_points is not None:
-            try:
-                max_rows = min(max_rows, max(3, min(8, int(requested_points))))
-            except Exception:
-                pass
+        max_rows = int(summary_llm_profile.get("max_rows") or policy.get("max_evidence_rows") or 6)
     elif route == "reference_ranges_summary":
         max_rows = int(policy.get("max_evidence_rows") or 14)
     else:
@@ -9873,9 +9952,9 @@ def _build_llm_evidence_pack(
         abnormal_rows = sorted([ev for ev in evidence_all if _summary_status_bucket(ev) == "abnormal"], key=_llm_row_priority)
         within_rows = sorted([ev for ev in evidence_all if _summary_status_bucket(ev) == "within"], key=_llm_row_priority)
         ambiguous_rows = sorted([ev for ev in evidence_all if _summary_status_bucket(ev) == "ambiguous"], key=_llm_row_priority)
-        max_abnormal_rows = min(6, max_rows)
-        max_within_rows = min(4, max_rows)
-        max_ambiguous_rows = min(2, max_rows)
+        max_abnormal_rows = min(int(summary_llm_profile.get("max_abnormal_rows") or 6), max_rows)
+        max_within_rows = min(int(summary_llm_profile.get("max_within_rows") or 4), max_rows)
+        max_ambiguous_rows = min(int(summary_llm_profile.get("max_ambiguous_rows") or 2), max_rows)
         # Keep at least one "within reference" row when available so the LLM can
         # produce balanced summaries instead of collapsing to only abnormalities.
         if within_rows and max_rows > 1:
@@ -9944,8 +10023,8 @@ def _build_llm_evidence_pack(
         "answer_style": pack.get("answer_style"),
         "technical_condition": pack.get("technical_condition"),
         "evidences": compact_evidences,
-        "sources": list(pack.get("sources") or []),
-        "visualization_facts": pack.get("visualization_facts"),
+        "sources": [] if route == "doc_scoped_biological_summary" else list(pack.get("sources") or []),
+        "visualization_facts": None if route == "doc_scoped_biological_summary" else pack.get("visualization_facts"),
         "missing_items": list(pack.get("missing_items") or []),
     }
     llm_pack["facts_contract"] = _build_route_facts_contract(
@@ -10154,11 +10233,16 @@ def _compose_level2_micro_prompt_answer(
     retry_feedback: str | None = None,
 ) -> dict[str, Any]:
     policy = _level2_prompt_policy(selected_route)
-    prompt_target_chars = int(policy.get("prompt_target_chars") or 3000)
-    prompt_hard_limit_chars = int(policy.get("prompt_hard_limit_chars") or 4500)
-    num_predict = int(policy.get("num_predict") or 180)
-    timeout_ms = int(policy.get("timeout_ms") or 90000)
-    max_rows = int(policy.get("max_evidence_rows") or 8)
+    dynamic_profile = (
+        _doc_scoped_biological_summary_llm_profile(query_understanding)
+        if str(selected_route or "").strip().lower() == "doc_scoped_biological_summary"
+        else {}
+    )
+    prompt_target_chars = int(dynamic_profile.get("prompt_target_chars") or policy.get("prompt_target_chars") or 3000)
+    prompt_hard_limit_chars = int(dynamic_profile.get("prompt_hard_limit_chars") or policy.get("prompt_hard_limit_chars") or 4500)
+    num_predict = int(dynamic_profile.get("num_predict") or policy.get("num_predict") or 180)
+    timeout_ms = int(dynamic_profile.get("timeout_ms") or policy.get("timeout_ms") or 90000)
+    max_rows = int(dynamic_profile.get("max_rows") or policy.get("max_evidence_rows") or 8)
 
     max_lines = int(getattr(query_understanding, "requested_summary_points", 6) or 6)
     llm_evidences = list(llm_pack.get("evidences") or [])[: max(1, int(max_rows))]
@@ -10192,6 +10276,11 @@ def _compose_level2_micro_prompt_answer(
         or max(0, len(llm_evidences) - len(compact_abnormal_lines) - len(compact_within_lines))
     )
     route = str(selected_route or "").strip().lower()
+    render_profile = (
+        str(dynamic_profile.get("render_profile") or _doc_scoped_summary_render_profile(query_understanding)).strip().lower()
+        if route == "doc_scoped_biological_summary"
+        else ""
+    )
     guardrail_block = _level2_prompt_guardrail_block(route)
     reference_ranges_facts = (
         dict(llm_pack.get("reference_ranges_summary_facts") or {})
@@ -10217,6 +10306,13 @@ def _compose_level2_micro_prompt_answer(
             out.append(f"{analyte} (réf {ref})")
         return "; ".join(out)
     if route == "doc_scoped_biological_summary":
+        output_length_instruction = (
+            "La conclusion doit être rédigée en 12 à 20 mots maximum."
+            if render_profile == "compact_biological_summary"
+            else "La conclusion doit être rédigée en une phrase clinique brève et prudente."
+        )
+        abnormal_count_hint = min(max_rows, 3 if render_profile == "compact_biological_summary" else 4)
+        within_count_hint = 1 if render_profile in {"compact_biological_summary", "editorial_biological_summary"} else 2
         prompt = (
             "Tu es un rédacteur médical technique.\n"
             "Réponds UNIQUEMENT en JSON strict valide, sans markdown, sans texte hors JSON.\n"
@@ -10235,7 +10331,10 @@ def _compose_level2_micro_prompt_answer(
             "- Ne donne pas de diagnostic.\n"
             "- Ne propose pas de traitement.\n"
             "- Si le statut d’un analyte est inconnu ou needs_clinical_context, n’écris jamais qu’il est au-dessus/en dessous de la référence.\n"
-            "- conclusion: 1 phrase technique brève et prudente.\n\n"
+            f"- \"anormaux\" contient au maximum {abnormal_count_hint} analytes saillants.\n"
+            f"- \"within_reference\" contient au maximum {within_count_hint} analyte(s) documenté(s) dans la référence.\n"
+            f"- {output_length_instruction}\n"
+            "- N'utilise jamais « nécessite un contexte clinique » si les faits contiennent déjà un statut explicite.\n\n"
             f"{guardrail_block}\n"
             "Facts contract (source de vérité):\n"
             f"{json.dumps(facts_contract, ensure_ascii=False)}\n\n"
@@ -10481,7 +10580,7 @@ def _compose_level2_micro_prompt_answer(
             user_prompt=prompt,
             model=model,
             temperature=0.0,
-            num_ctx=max(1024, int(num_ctx)),
+            num_ctx=max(1024, min(int(num_ctx), int(dynamic_profile.get("num_ctx_cap") or num_ctx))),
             max_tokens=max(64, int(num_predict)),
             timeout=max(8, int(timeout_ms / 1000)),
             keep_alive=str(os.getenv("MEDICAL_RAG_OLLAMA_KEEP_ALIVE", "10m")).strip() or "10m",

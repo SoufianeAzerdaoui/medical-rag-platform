@@ -490,13 +490,13 @@ export function ChatMessages() {
                   <div className="mt-4 rounded-xl border border-border/70 bg-fg/[0.025] p-3">
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-xs font-semibold uppercase tracking-wide text-fg/70">Niveau de support documentaire</p>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center justify-end gap-2">
                         {evidenceMeter.fromBackendMetrics ? (
-                          <span className="rounded-full border border-accent/35 bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
-                            Basé sur métriques backend
+                          <span className="whitespace-nowrap rounded-full border border-accent/35 bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
+                            Métriques backend
                           </span>
                         ) : null}
-                        <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${evidenceBadgeClass(evidenceMeter.confidence)}`}>
+                        <span className={`whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] font-semibold ${evidenceBadgeClass(evidenceMeter.confidence)}`}>
                           {evidenceBadgeLabel(evidenceMeter.confidence)}
                         </span>
                       </div>

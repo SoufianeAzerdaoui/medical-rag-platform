@@ -69,6 +69,32 @@ def _mk_result(*, chunk_id: str, doc_id: str, analyte: str, analyte_norm: str, v
 
 
 class TestGenerationDocScope(unittest.TestCase):
+    def test_doc_scoped_biological_summary_llm_profile_compact_is_stricter(self) -> None:
+        ga = __import__("generate_answer")
+        qu = ga.parse_query_understanding(
+            "Fais une synthèse biologique courte du report 12. Limite-toi à 3 à 5 lignes."
+        )
+        profile = ga._doc_scoped_biological_summary_llm_profile(qu)
+        self.assertEqual(str(profile.get("render_profile") or ""), "compact_biological_summary")
+        self.assertEqual(int(profile.get("max_rows") or 0), 4)
+        self.assertEqual(int(profile.get("max_abnormal_rows") or 0), 3)
+        self.assertEqual(int(profile.get("max_within_rows") or 0), 1)
+        self.assertEqual(int(profile.get("timeout_ms") or 0), 70000)
+        self.assertEqual(int(profile.get("num_predict") or 0), 120)
+        self.assertEqual(int(profile.get("num_ctx_cap") or 0), 2048)
+
+    def test_doc_scoped_biological_summary_llm_profile_editorial_keeps_balanced_budget(self) -> None:
+        ga = __import__("generate_answer")
+        qu = ga.parse_query_understanding(
+            "Fais une synthèse biologique éditoriale du report 12. Rédige un texte naturel et professionnel."
+        )
+        profile = ga._doc_scoped_biological_summary_llm_profile(qu)
+        self.assertEqual(str(profile.get("render_profile") or ""), "editorial_biological_summary")
+        self.assertEqual(int(profile.get("max_rows") or 0), 5)
+        self.assertEqual(int(profile.get("max_within_rows") or 0), 1)
+        self.assertEqual(int(profile.get("timeout_ms") or 0), 85000)
+        self.assertEqual(int(profile.get("num_predict") or 0), 150)
+
     def test_general_conversation_bonjour_fast_path_no_retrieval(self) -> None:
         result = run_generation(
             query="Bonjour.",
