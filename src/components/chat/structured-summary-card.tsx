@@ -79,6 +79,34 @@ function sanitizeForSentence(value: string): string {
   return normalizeMedicalUnits(cleanSegment(value)).replace(/[.;:,!\s]+$/g, "").trim();
 }
 
+function prettifyDocumentLabel(value: string): string {
+  const raw = sanitizeForSentence(value);
+  if (!raw) return "";
+  const reportMatch = raw.match(/^report[_\s-]*(\d+)(.*)$/i);
+  if (reportMatch) {
+    const suffix = String(reportMatch[2] || "").trim();
+    const base = `report (${reportMatch[1]}).pdf`;
+    if (!suffix) return base;
+    const cleanedSuffix = suffix
+      .replace(/^,?\s*/g, "")
+      .replace(/^pages?\s+/i, "pages ")
+      .replace(/^page\s+/i, "page ");
+    return `${base} — ${cleanedSuffix}`;
+  }
+  return raw.replace(/_/g, " ");
+}
+
+function isInternalSourceLabel(value: string): boolean {
+  return /^report[_\s-]*\d+(?:\b|[,.-])/i.test(String(value || "").trim());
+}
+
+function preferredSourceLabel(parsedSource: string, sourceHint: string | null, sourceLinkLabel: string | null): string {
+  const parsedPretty = prettifyDocumentLabel(parsedSource);
+  if (sourceHint && isInternalSourceLabel(parsedPretty)) return prettifyDocumentLabel(sourceHint);
+  if (sourceLinkLabel && isInternalSourceLabel(parsedPretty)) return prettifyDocumentLabel(sourceLinkLabel);
+  return parsedPretty || prettifyDocumentLabel(sourceHint || "") || prettifyDocumentLabel(sourceLinkLabel || "");
+}
+
 function ensureSentence(value: string): string {
   const base = sanitizeForSentence(value);
   return base ? `${base}.` : "";
@@ -413,6 +441,7 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
   const sourceHint = firstSourceHint(sources);
   const sourceLink = firstSourceLink(sources);
   const parsedSource = parsed.source && !/^document fourni\.?$/i.test(parsed.source) ? parsed.source : "";
+  const sourceDisplayLabel = preferredSourceLabel(parsedSource, sourceHint, sourceLink?.label || null);
   const rawSynthesis = synthesisText(parsed.warning || parsed.conclusion);
   const isDoctorNote =
     parsed.kind === "doctor_note" ||
@@ -422,7 +451,7 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
   const isNarrativeBiologicalSummary = parsed.kind === "narrative_biological_summary";
   const isLlmWriter = String(diagnostics?.final_answer_source || "").toLowerCase() === "llm_writer";
   const docScope = Array.isArray(diagnostics?.requested_doc_ids) && diagnostics?.requested_doc_ids?.length
-    ? diagnostics.requested_doc_ids.join(", ")
+    ? diagnostics.requested_doc_ids.map((item) => prettifyDocumentLabel(String(item || ""))).join(", ")
     : null;
   const doctorNoteParagraph = parsed.noteLines
     .map((line) => sanitizeForSentence(line))
@@ -561,10 +590,10 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
                       rel="noopener noreferrer"
                       className="text-sm text-accent underline-offset-2 hover:underline"
                     >
-                      {parsedSource || sourceLink.label}
+                      {sourceDisplayLabel || prettifyDocumentLabel(sourceLink.label)}
                     </a>
                   ) : (
-                    <p className="text-sm text-fg/90">{parsedSource || sourceHint || "voir les sources cliquables ci-dessous"}</p>
+                    <p className="text-sm text-fg/90">{sourceDisplayLabel || "voir les sources cliquables ci-dessous"}</p>
                   )}
                 </section>
               </div>
@@ -703,7 +732,7 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
                 Source principale:
               </span>
               <span className="rounded-full border border-border/60 bg-card/60 px-2 py-0.5 text-fg/72">
-                {parsedSource || sourceHint || "voir les sources cliquables"}
+                {sourceDisplayLabel || "voir les sources cliquables"}
               </span>
             </div>
           </motion.section>
