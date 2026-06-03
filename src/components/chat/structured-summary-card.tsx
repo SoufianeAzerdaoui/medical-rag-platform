@@ -170,24 +170,69 @@ function firstSentenceOnly(value: string): string {
   return sanitizeForSentence(m?.[1] || text);
 }
 
+function looksLikeNarrativeBiologicalSummary(content: string, diagnostics?: AssistantDiagnostics): boolean {
+  const text = normalizeMedicalUnits(cleanSegment(content)).toLowerCase();
+  if (!text) return false;
+  const finalSource = String(diagnostics?.final_answer_source || "").toLowerCase();
+  const narrativeMarkers = [
+    "bilan",
+    "écarts biologiques",
+    "ecarts biologiques",
+    "lecture prudente",
+    "sans diagnostic",
+    "conclusion prudente",
+    "résumé biologique",
+    "resume biologique",
+    "synthèse biologique",
+    "synthese biologique",
+    "le bilan montre",
+    "le rapport montre",
+    "met en évidence",
+    "met en evidence",
+  ];
+  const hasNarrativeMarkers = narrativeMarkers.some((marker) => text.includes(marker));
+  const hasTechnicalCues =
+    /(?:^|\n)\s*anormaux\s*:/i.test(content) ||
+    /(?:^|\n)\s*résultats dans la référence\s*:/i.test(content) ||
+    /(?:^|\n)\s*resultats dans la reference\s*:/i.test(content);
+  if (hasTechnicalCues) return false;
+  if (finalSource === "llm_writer" || finalSource === "llm_writer_repaired") {
+    return hasNarrativeMarkers || text.length > 80;
+  }
+  return hasNarrativeMarkers && text.length > 120;
+}
+
 function parseSummary(content: string, diagnostics?: AssistantDiagnostics): ParsedSummary {
   const lines = content
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
+  const narrativeFallback = looksLikeNarrativeBiologicalSummary(content, diagnostics);
+  const titleBase = String(
+    lines.find(
+      (line) =>
+        /^note de synth[eè]se m[eé]dicale/i.test(line) ||
+        /^note m[eé]dicale/i.test(line) ||
+        /^note sur les valeurs physiologiques/i.test(line) ||
+        /^r[ée]sum[ée] biologique court/i.test(line) ||
+        /^synth[eè]se biologique [ée]ditoriale/i.test(line),
+    ) || "",
+  );
   const titleLine = lines.find(
     (line) =>
       /^note de synth[eè]se m[eé]dicale/i.test(line) ||
       /^note m[eé]dicale/i.test(line) ||
       /^note sur les valeurs physiologiques/i.test(line) ||
       /^r[ée]sum[ée] biologique court/i.test(line) ||
-      /^synth[eè]se biologique [ée]ditoriale/i.test(line),
+      /^synth[eè]se biologique [ée]ditoriale/i.test(line) ||
+      narrativeFallback,
   );
-  if (titleLine) {
-    const isReferenceRangesNote = /^note sur les valeurs physiologiques/i.test(titleLine);
+  if (titleLine || narrativeFallback) {
+    const isReferenceRangesNote = /^note sur les valeurs physiologiques/i.test(titleBase);
     const isNarrativeBiologicalSummary =
-      /^r[ée]sum[ée] biologique court/i.test(titleLine) ||
-      /^synth[eè]se biologique [ée]ditoriale/i.test(titleLine);
+      /^r[ée]sum[ée] biologique court/i.test(titleBase) ||
+      /^synth[eè]se biologique [ée]ditoriale/i.test(titleBase) ||
+      narrativeFallback;
     const llmNarrativeReferenceNote =
       isReferenceRangesNote && String(diagnostics?.final_answer_source || "").toLowerCase() === "llm_writer";
     const noteLines: string[] = [];
@@ -282,7 +327,7 @@ function parseSummary(content: string, diagnostics?: AssistantDiagnostics): Pars
       kind: isReferenceRangesNote
         ? "reference_ranges_note"
         : (isNarrativeBiologicalSummary ? "narrative_biological_summary" : "doctor_note"),
-      title: normalizeMedicalUnits(cleanSegment(titleLine)),
+      title: normalizeMedicalUnits(cleanSegment(titleLine || (narrativeFallback ? "Résumé biologique court" : ""))),
       context: isReferenceRangesNote
         ? (sourcePagesHint || firstSentenceOnly(documentAnalyzedRaw))
         : normalizeMedicalUnits(cleanSegment(contextLine)),
