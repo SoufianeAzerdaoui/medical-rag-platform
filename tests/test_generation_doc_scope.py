@@ -160,6 +160,46 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertIn("conclusion technique", low)
         self.assertIn("sans diagnostic", low)
 
+    def test_report12_summary_uses_full_document_rows_and_flags_sparse_candidate(self) -> None:
+        ga = __import__("generate_answer")
+        qu = ga.parse_query_understanding(
+            "Fais une synthèse biologique courte du report 12. Limite-toi à 3 à 5 lignes, mentionne uniquement les anomalies majeures, les résultats dans la référence et une conclusion prudente, sans diagnostic."
+        )
+        rows = [
+            {"analyte": "Acide urique", "technical_status_code": "below_reference", "value_with_unit": "23 mg/L", "reference_short": "25 - 70"},
+            {"analyte": "Ammonium", "technical_status_code": "below_reference", "value_with_unit": "20 µg/dL", "reference_short": "35 - 80"},
+            {"analyte": "Bilirubine Directe", "technical_status_code": "above_reference", "value_with_unit": "6 mg/L", "reference_short": "0.00 - 5.00"},
+            {"analyte": "Créatinine", "technical_status_code": "above_reference", "value_with_unit": "23 mg/L", "reference_short": "4 - 9"},
+            {"analyte": "LDH", "technical_status_code": "above_reference", "value_with_unit": "250 UI/L", "reference_short": "125 - 243"},
+            {"analyte": "CK-MB", "technical_status_code": "above_reference", "value_with_unit": "40 UI/L", "reference_short": "< 25"},
+            {"analyte": "APOLIPOPROTÉINE A1", "technical_status_code": "above_reference", "value_with_unit": "2.3 g/L", "reference_short": "1.1 - 1.6"},
+            {"analyte": "ASAT", "technical_status_code": "within_reference", "value_with_unit": "31 UI/L", "reference_short": "10 - 40"},
+            {"analyte": "ALAT", "technical_status_code": "within_reference", "value_with_unit": "22 UI/L", "reference_short": "10 - 45"},
+        ]
+        rendered = ga._build_doc_scoped_biological_summary_answer(
+            rows,
+            max_lines=4,
+            no_diagnosis=True,
+            render_profile="compact_biological_summary",
+        )
+        low = rendered.lower()
+        self.assertIn("bilirubine directe", low)
+        self.assertIn("créatinine", low)
+        self.assertIn("ldh", low)
+        self.assertIn("ck-mb", low)
+        self.assertIn("apolipoprotéine a1", low)
+        self.assertTrue(ga._doc_scoped_biological_summary_needs_repair(
+            answer="AMMONIUM (écart documenté)",
+            evidences=rows,
+            query_understanding=qu,
+        ))
+        gate = ga._evaluate_summary_quality_gate(
+            answer="AMMONIUM (écart documenté)",
+            selected_route="doc_scoped_biological_summary",
+            displayed_evidences=rows,
+        )
+        self.assertIn("summary_too_poor_for_available_facts", gate.get("reasons") or [])
+
     def test_general_conversation_bonjour_fast_path_no_retrieval(self) -> None:
         result = run_generation(
             query="Bonjour.",

@@ -7021,7 +7021,7 @@ def _build_doc_scoped_biological_summary_answer(
     render_profile_norm = str(render_profile or "").strip().lower()
 
     def _build_doctor_note() -> str:
-        max_l_note = max(4, min(7, int(max_lines or 6)))
+        max_l_note = max(6 if render_profile_norm == "compact_biological_summary" else 7, min(8, int(max_lines or 6)))
         wants_reference_ranges = render_profile_norm in {"doctor_note_reference_ranges", "doctor_note_ranges"}
         doc_scope = ", ".join(doc_ids) if doc_ids else "document fourni"
 
@@ -9515,6 +9515,63 @@ def _finalize_doc_scoped_biological_llm_answer(
     return _normalize_summary_readability(rendered)
 
 
+def _doc_scoped_biological_summary_sparse_threshold(render_profile: str | None, abnormal_rows_count: int) -> int:
+    profile = str(render_profile or "").strip().lower()
+    if abnormal_rows_count <= 0:
+        return 0
+    if profile in {"compact_biological_summary", "editorial_biological_summary"}:
+        return min(4, abnormal_rows_count)
+    return min(3, abnormal_rows_count)
+
+
+def _doc_scoped_biological_summary_needs_repair(
+    *,
+    answer: str,
+    evidences: list[dict[str, Any]],
+    query_understanding: Any,
+) -> bool:
+    text = str(answer or "").strip()
+    if not text:
+        return True
+    render_profile = _doc_scoped_summary_render_profile(query_understanding)
+    abnormal_rows = [ev for ev in list(evidences or []) if _summary_row_status_kind(ev) == "abnormal"]
+    within_rows = [ev for ev in list(evidences or []) if _summary_row_status_kind(ev) == "within"]
+    threshold = _doc_scoped_biological_summary_sparse_threshold(render_profile, len(abnormal_rows))
+    if threshold and _summary_text_mentions_rows(text, abnormal_rows) < threshold:
+        return True
+    if within_rows and _summary_text_mentions_rows(text, within_rows) == 0:
+        return True
+    if _llm_summary_requires_professional_rewrite(text):
+        return True
+    if len([s for s in re.split(r"[.!?]+", text) if s.strip()]) < 2:
+        return True
+    return False
+
+
+def _repair_sparse_doc_scoped_biological_summary_answer(
+    *,
+    answer: str,
+    evidences: list[dict[str, Any]],
+    query_understanding: Any,
+) -> str:
+    rows = list(evidences or [])
+    if not rows:
+        return str(answer or "").strip()
+    render_profile = _doc_scoped_summary_render_profile(query_understanding)
+    no_diag = str(getattr(query_understanding, "safety_intent", "") or "").strip().lower() == "no_diagnosis_constraint"
+    max_lines = max(5, int(getattr(query_understanding, "requested_summary_points", None) or 5))
+    repaired = _build_doc_scoped_biological_summary_answer(
+        rows,
+        max_lines=max_lines,
+        no_diagnosis=no_diag,
+        render_profile=render_profile,
+    )
+    repaired = _normalize_summary_readability(repaired)
+    if not repaired:
+        return str(answer or "").strip()
+    return repaired
+
+
 def _canonical_analyte_key(value: str) -> str:
     # Compatibility shim: keep historical "space-separated key" output expected by
     # priority/template validators while delegating analyte normalization to the
@@ -9902,6 +9959,11 @@ def _evaluate_summary_quality_gate(
         if sentence_count < 2:
             reasons.append("narrative_too_short")
             score -= 0.1
+        if len(list(displayed_evidences or [])) >= 5:
+            mention_count = _summary_text_mentions_rows(text, list(displayed_evidences or []))
+            if mention_count < 3:
+                reasons.append("summary_too_poor_for_available_facts")
+                score -= 0.25
 
     score = max(0.0, min(1.0, score))
     threshold = 0.85
@@ -10810,6 +10872,7 @@ _STYLE_RETRY_KEYS = {
     "diagnostic_suggestion_too_strong",
     "false_no_abnormal_summary",
     "summary_missing_abnormal_coverage",
+    "summary_too_poor_for_available_facts",
 }
 
 
@@ -10860,6 +10923,12 @@ def _build_validator_retry_feedback(validation: dict[str, Any]) -> str:
         return (
             "Tu as affirme qu'il n'y a pas d'anomalie alors que des anomalies sont fournies. "
             "Supprime toute mention 'Aucun fait anormal' et liste les anomalies fournies dans la section 'Anormaux'."
+        )
+    if "summary_too_poor_for_available_facts" in errors:
+        return (
+            "La synthèse est trop pauvre par rapport aux faits disponibles. "
+            "Mentionne au moins 4 anomalies majeures si elles sont documentées, en incluant plusieurs analytes distincts, "
+            "et ajoute les résultats dans la référence lorsqu'ils sont présents."
         )
     if "missing_conclusion" in items:
         return (
@@ -15385,7 +15454,10 @@ def run_generation(
         llm_within_rows_count = 0
         false_no_abnormal_summary_detected = False
         if str(selected_route or "").strip().lower() in {"doc_scoped_biological_summary", "reference_ranges_summary"}:
-            summary_all_evidences = list(structured_pack.get("evidences") or [])
+            summary_rows = list(structured_pack.get("rows") or [])
+            summary_all_evidences = _rows_to_evidence(summary_rows) if summary_rows else list(structured_pack.get("evidences") or [])
+            if not summary_all_evidences:
+                summary_all_evidences = list(displayed_evidences or [])
             structured_pack["evidence_all_summary"] = list(summary_all_evidences)
             summary_all_abnormal_rows_count = sum(
                 1 for ev in summary_all_evidences if _summary_status_bucket(ev) == "abnormal"
@@ -18094,6 +18166,33 @@ def run_generation(
                 "pass": False,
                 "reasons": ["directional_claim_on_ambiguous_status"],
             }
+        if (
+            str(selected_route or "").strip().lower() == "doc_scoped_biological_summary"
+            and str(final_answer_source or "").strip().lower() in {"llm_writer", "llm_writer_repaired"}
+            and _doc_scoped_biological_summary_needs_repair(
+                answer=str(final_answer or llm_candidate_answer or ""),
+                evidences=list(summary_all_evidences or displayed_evidences or []),
+                query_understanding=query_understanding,
+            )
+        ):
+            repaired_answer = _repair_sparse_doc_scoped_biological_summary_answer(
+                answer=str(final_answer or llm_candidate_answer or ""),
+                evidences=list(summary_all_evidences or displayed_evidences or []),
+                query_understanding=query_understanding,
+            )
+            if repaired_answer and repaired_answer.strip() and repaired_answer.strip() != str(final_answer or "").strip():
+                final_answer = repaired_answer
+                llm_candidate_answer = repaired_answer
+                llm_repaired_answer = repaired_answer
+                llm_candidate_repair_used = True
+                llm_repair_status = "passed"
+                llm_repaired_validation_status = "passed"
+                llm_repaired_validation_errors = []
+                llm_repaired_validation_warnings = []
+                writer_error = None
+                fallback_reason_debug = None
+                fallback_stage = None
+                fallback_renderer_used = None
         if str(final_answer_source or "").strip().lower() in {"llm_writer", "llm_writer_repaired"}:
             _record_llm_timeout_success(llm_timeout_circuit_route, writer_model)
         if llm_candidate_repair_used and not llm_repair_status:
