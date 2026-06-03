@@ -164,9 +164,9 @@ export function useChatActions() {
             (rawDebug.summary_style_requested as "short" | "editorial" | null) ??
             null,
           final_answer_source:
-            (response.final_answer_source as "llm_writer" | "deterministic_renderer" | null) ??
-            (debug.final_answer_source as "llm_writer" | "deterministic_renderer" | null) ??
-            (rawDebug.final_answer_source as "llm_writer" | "deterministic_renderer" | null) ??
+            (response.final_answer_source as "llm_writer" | "llm_writer_repaired" | "deterministic_renderer" | null) ??
+            (debug.final_answer_source as "llm_writer" | "llm_writer_repaired" | "deterministic_renderer" | null) ??
+            (rawDebug.final_answer_source as "llm_writer" | "llm_writer_repaired" | "deterministic_renderer" | null) ??
             null,
           renderer_used:
             (response.renderer_used as string | null) ??
@@ -177,6 +177,67 @@ export function useChatActions() {
             (response.fallback_reason as string | null) ??
             (debug.fallback_reason as string | null) ??
             (rawDebug.fallback_reason as string | null) ??
+            null,
+          llm_candidate_answer:
+            (response.llm_candidate_answer as string | null) ??
+            (debug.llm_candidate_answer as string | null) ??
+            (rawDebug.llm_candidate_answer as string | null) ??
+            null,
+          llm_candidate_validation_status:
+            (response.llm_candidate_validation_status as string | null) ??
+            (debug.llm_candidate_validation_status as string | null) ??
+            (rawDebug.llm_candidate_validation_status as string | null) ??
+            null,
+          llm_candidate_validation_errors:
+            (response.llm_candidate_validation_errors as string[] | null) ??
+            (debug.llm_candidate_validation_errors as string[] | null) ??
+            (rawDebug.llm_candidate_validation_errors as string[] | null) ??
+            null,
+          llm_candidate_validation_warnings:
+            (response.llm_candidate_validation_warnings as string[] | null) ??
+            (debug.llm_candidate_validation_warnings as string[] | null) ??
+            (rawDebug.llm_candidate_validation_warnings as string[] | null) ??
+            null,
+          llm_candidate_rejected_reason:
+            (response.llm_candidate_rejected_reason as string | null) ??
+            (debug.llm_candidate_rejected_reason as string | null) ??
+            (rawDebug.llm_candidate_rejected_reason as string | null) ??
+            null,
+          llm_candidate_contract_errors:
+            (response.llm_candidate_contract_errors as string[] | null) ??
+            (debug.llm_candidate_contract_errors as string[] | null) ??
+            (rawDebug.llm_candidate_contract_errors as string[] | null) ??
+            null,
+          llm_repair_attempted:
+            (response.llm_repair_attempted as boolean | null) ??
+            (debug.llm_repair_attempted as boolean | null) ??
+            (rawDebug.llm_repair_attempted as boolean | null) ??
+            null,
+          llm_repair_status:
+            (response.llm_repair_status as string | null) ??
+            (debug.llm_repair_status as string | null) ??
+            (rawDebug.llm_repair_status as string | null) ??
+            null,
+          llm_repaired_answer:
+            (response.llm_repaired_answer as string | null) ??
+            (debug.llm_repaired_answer as string | null) ??
+            (rawDebug.llm_repaired_answer as string | null) ??
+            null,
+          displayed_evidences_count:
+            (debug.displayed_evidences_count as number | null) ??
+            (rawDebug.displayed_evidences_count as number | null) ??
+            null,
+          evidence_pack_count:
+            (debug.evidence_pack_count as number | null) ??
+            (rawDebug.evidence_pack_count as number | null) ??
+            null,
+          lab_result_count:
+            (debug.lab_result_count as number | null) ??
+            (rawDebug.lab_result_count as number | null) ??
+            null,
+          value_numeric_count:
+            (debug.value_numeric_count as number | null) ??
+            (rawDebug.value_numeric_count as number | null) ??
             null,
           llm_skipped_reason:
             (debug.llm_skipped_reason as string | null) ??
@@ -233,6 +294,16 @@ export function useChatActions() {
                 (rawDebug.summary_style_requested as string | null) ??
                 null,
               fallback_reason: response.fallback_reason ?? (debug.fallback_reason as string | null) ?? (rawDebug.fallback_reason as string | null) ?? null,
+              llm_candidate_rejected_reason:
+                (response.llm_candidate_rejected_reason as string | null) ??
+                (debug.llm_candidate_rejected_reason as string | null) ??
+                (rawDebug.llm_candidate_rejected_reason as string | null) ??
+                null,
+              llm_repair_status:
+                (response.llm_repair_status as string | null) ??
+                (debug.llm_repair_status as string | null) ??
+                (rawDebug.llm_repair_status as string | null) ??
+                null,
             },
           ]);
           console.groupEnd();

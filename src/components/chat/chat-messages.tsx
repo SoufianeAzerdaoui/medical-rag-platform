@@ -503,7 +503,7 @@ export function ChatMessages() {
                     </div>
                     <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-fg/80 sm:grid-cols-4">
                       <p>Sources trouvées : <span className="font-semibold text-fg">{evidenceMeter.sourceCount}</span></p>
-                      <p>Valeurs extraites : <span className="font-semibold text-fg">{evidenceMeter.extractedValues}</span></p>
+                      <p>{evidenceMeter.extractedValuesLabel} : <span className="font-semibold text-fg">{evidenceMeter.extractedValues}</span></p>
                       <p>Éléments manquants : <span className="font-semibold text-fg">{evidenceMeter.missingElements}</span></p>
                       <p>Diagnostic proposé : <span className="font-semibold text-fg">{evidenceMeter.diagnosisProposed}</span></p>
                     </div>

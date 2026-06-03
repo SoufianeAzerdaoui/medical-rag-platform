@@ -876,6 +876,15 @@ def process_chat(
             "safety_intent": str(qu.get("safety_intent") or "") or None,
             "technical_condition": str(qu.get("technical_condition") or "") or None,
             "summary_style_requested": requested_summary_style,
+            "llm_candidate_answer": str(generation.get("llm_candidate_answer") or generation_debug.get("llm_candidate_answer") or "") or None,
+            "llm_candidate_validation_status": str(generation.get("llm_candidate_validation_status") or generation_debug.get("llm_candidate_validation_status") or "") or None,
+            "llm_candidate_validation_errors": list(generation.get("llm_candidate_validation_errors") or generation_debug.get("llm_candidate_validation_errors") or []),
+            "llm_candidate_validation_warnings": list(generation.get("llm_candidate_validation_warnings") or generation_debug.get("llm_candidate_validation_warnings") or []),
+            "llm_candidate_rejected_reason": str(generation.get("llm_candidate_rejected_reason") or generation_debug.get("llm_candidate_rejected_reason") or "") or None,
+            "llm_candidate_contract_errors": list(generation.get("llm_candidate_contract_errors") or generation_debug.get("llm_candidate_contract_errors") or []),
+            "llm_repair_attempted": bool(generation.get("llm_repair_attempted") or generation_debug.get("llm_repair_attempted") or generation_debug.get("llm_candidate_repair_used")),
+            "llm_repair_status": str(generation.get("llm_repair_status") or generation_debug.get("llm_repair_status") or "") or None,
+            "llm_repaired_answer": str(generation.get("llm_repaired_answer") or generation_debug.get("llm_repaired_answer") or "") or None,
             "validation": {
                 "status": str(validation.get("validation_status") or "") or None,
                 "errors": validation_errors,
@@ -944,6 +953,15 @@ def process_chat(
                     "hard_gate_rejected": bool(generation_debug.get("hard_gate_triggered")),
                     "repair_attempted": llm_observability["repair_attempted"],
                     "repair_success": llm_observability["repair_success"],
+                    "llm_candidate_answer": str(generation.get("llm_candidate_answer") or generation_debug.get("llm_candidate_answer") or "") or None,
+                    "llm_candidate_validation_status": str(generation.get("llm_candidate_validation_status") or generation_debug.get("llm_candidate_validation_status") or "") or None,
+                    "llm_candidate_validation_errors": list(generation.get("llm_candidate_validation_errors") or generation_debug.get("llm_candidate_validation_errors") or []),
+                    "llm_candidate_validation_warnings": list(generation.get("llm_candidate_validation_warnings") or generation_debug.get("llm_candidate_validation_warnings") or []),
+                    "llm_candidate_rejected_reason": str(generation.get("llm_candidate_rejected_reason") or generation_debug.get("llm_candidate_rejected_reason") or "") or None,
+                    "llm_candidate_contract_errors": list(generation.get("llm_candidate_contract_errors") or generation_debug.get("llm_candidate_contract_errors") or []),
+                    "llm_repair_attempted": bool(generation.get("llm_repair_attempted") or generation_debug.get("llm_repair_attempted") or generation_debug.get("llm_candidate_repair_used")),
+                    "llm_repair_status": str(generation.get("llm_repair_status") or generation_debug.get("llm_repair_status") or "") or None,
+                    "llm_repaired_answer": str(generation.get("llm_repaired_answer") or generation_debug.get("llm_repaired_answer") or "") or None,
                     "stage_timings_ms": stage_timings_ms,
                     "raw_debug": {
                         **generation_debug,
@@ -1002,7 +1020,7 @@ def process_chat(
         if llm_writer_accepted_top is None:
             llm_writer_accepted_top = llm_observability.get("llm_accept")
         final_answer_source_top = str(generation.get("final_answer_source") or "").strip().lower()
-        if final_answer_source_top not in {"llm_writer", "deterministic_renderer"}:
+        if final_answer_source_top not in {"llm_writer", "llm_writer_repaired", "deterministic_renderer"}:
             final_answer_source_top = "llm_writer" if bool(llm_writer_accepted_top) else "deterministic_renderer"
         renderer_used_top = (
             str(generation.get("renderer_used") or "").strip()
@@ -1045,9 +1063,26 @@ def process_chat(
             "final_answer_source": final_answer_source_top,
             "renderer_used": renderer_used_top,
             "fallback_reason": fallback_reason_top,
+            "llm_candidate_answer": str(generation.get("llm_candidate_answer") or generation_debug.get("llm_candidate_answer") or "") or None,
+            "llm_candidate_validation_status": str(generation.get("llm_candidate_validation_status") or generation_debug.get("llm_candidate_validation_status") or "") or None,
+            "llm_candidate_validation_errors": list(generation.get("llm_candidate_validation_errors") or generation_debug.get("llm_candidate_validation_errors") or []),
+            "llm_candidate_validation_warnings": list(generation.get("llm_candidate_validation_warnings") or generation_debug.get("llm_candidate_validation_warnings") or []),
+            "llm_candidate_rejected_reason": str(generation.get("llm_candidate_rejected_reason") or generation_debug.get("llm_candidate_rejected_reason") or "") or None,
+            "llm_candidate_contract_errors": list(generation.get("llm_candidate_contract_errors") or generation_debug.get("llm_candidate_contract_errors") or []),
+            "llm_repair_attempted": bool(generation.get("llm_repair_attempted") or generation_debug.get("llm_repair_attempted") or generation_debug.get("llm_candidate_repair_used")),
+            "llm_repair_status": str(generation.get("llm_repair_status") or generation_debug.get("llm_repair_status") or "") or None,
+            "llm_repaired_answer": str(generation.get("llm_repaired_answer") or generation_debug.get("llm_repaired_answer") or "") or None,
             "llm_skipped_reason": str(generation_debug.get("llm_skipped_reason") or "") or None,
             "generation_mode_before_fallback": str(generation_debug.get("generation_mode_before_fallback") or "") or None,
             "fallback_decision_path": generation_debug.get("fallback_decision_path"),
+            "displayed_evidences_count": int(generation_debug.get("displayed_evidences_count") or len(displayed_evidences) or 0),
+            "evidence_pack_count": int(generation_debug.get("evidence_rows_count") or len(generation.get("evidence_pack") or []) or 0),
+            "lab_result_count": int(generation_debug.get("evidence_rows_count") or len(generation.get("evidence_pack") or []) or 0),
+            "value_numeric_count": sum(
+                1
+                for item in list(generation.get("evidence_pack") or []) + list(generation.get("displayed_evidences") or [])
+                if isinstance(item, dict) and item.get("value_numeric") is not None
+            ),
         }
         message_service.save_message(
             conversation_id,
@@ -1078,7 +1113,7 @@ def process_chat(
             selected_route=selected_route_top,
             llm_writer_attempted=bool(llm_writer_attempted_top) if llm_writer_attempted_top is not None else None,
             llm_writer_accepted=bool(llm_writer_accepted_top) if llm_writer_accepted_top is not None else None,
-            final_answer_source=final_answer_source_top if final_answer_source_top in {"llm_writer", "deterministic_renderer"} else None,
+            final_answer_source=final_answer_source_top if final_answer_source_top in {"llm_writer", "llm_writer_repaired", "deterministic_renderer"} else None,
             renderer_used=renderer_used_top,
             fallback_reason=fallback_reason_top,
             visualization=(generation.get("visualization") if isinstance(generation.get("visualization"), dict) else None),
