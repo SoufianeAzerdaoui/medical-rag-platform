@@ -713,7 +713,7 @@ def _doc_scoped_biological_summary_llm_profile(query_understanding: QueryUnderst
         "timeout_ms": 90000,
         "num_predict": 150,
         "prompt_target_chars": 2200,
-        "prompt_hard_limit_chars": 3000,
+        "prompt_hard_limit_chars": 3600,
         "num_ctx_cap": 3072,
     }
     if render_profile == "compact_biological_summary":
@@ -726,7 +726,7 @@ def _doc_scoped_biological_summary_llm_profile(query_understanding: QueryUnderst
                 "timeout_ms": 70000,
                 "num_predict": 120,
                 "prompt_target_chars": 1700,
-                "prompt_hard_limit_chars": 2400,
+                "prompt_hard_limit_chars": 3200,
                 "num_ctx_cap": 2048,
             }
         )
@@ -740,7 +740,7 @@ def _doc_scoped_biological_summary_llm_profile(query_understanding: QueryUnderst
                 "timeout_ms": 85000,
                 "num_predict": 150,
                 "prompt_target_chars": 2100,
-                "prompt_hard_limit_chars": 2800,
+                "prompt_hard_limit_chars": 3600,
                 "num_ctx_cap": 2560,
             }
         )
@@ -754,7 +754,7 @@ def _doc_scoped_biological_summary_llm_profile(query_understanding: QueryUnderst
                 "timeout_ms": 95000,
                 "num_predict": 170,
                 "prompt_target_chars": 2400,
-                "prompt_hard_limit_chars": 3200,
+                "prompt_hard_limit_chars": 4000,
                 "num_ctx_cap": 3072,
             }
         )
@@ -766,16 +766,16 @@ def _doc_scoped_biological_summary_llm_profile(query_understanding: QueryUnderst
             profile["num_predict"] = min(int(profile["num_predict"]), 120)
             profile["timeout_ms"] = min(int(profile["timeout_ms"]), 70000)
             profile["prompt_target_chars"] = min(int(profile["prompt_target_chars"]), 1700)
-            profile["prompt_hard_limit_chars"] = min(int(profile["prompt_hard_limit_chars"]), 2400)
+            profile["prompt_hard_limit_chars"] = min(int(profile["prompt_hard_limit_chars"]), 3200)
             profile["num_ctx_cap"] = min(int(profile["num_ctx_cap"]), 2048)
-    elif requested_lines >= 7:
-        profile["max_rows"] = min(max(int(profile["max_rows"]), 6), 6)
-        profile["max_abnormal_rows"] = min(max(int(profile["max_abnormal_rows"]), 4), 5)
-        profile["max_within_rows"] = min(max(int(profile["max_within_rows"]), 1), 2)
-        profile["num_predict"] = max(int(profile["num_predict"]), 170)
-        profile["timeout_ms"] = max(int(profile["timeout_ms"]), 95000)
-        profile["prompt_target_chars"] = max(int(profile["prompt_target_chars"]), 2400)
-        profile["prompt_hard_limit_chars"] = max(int(profile["prompt_hard_limit_chars"]), 3200)
+        elif requested_lines >= 7:
+            profile["max_rows"] = min(max(int(profile["max_rows"]), 6), 6)
+            profile["max_abnormal_rows"] = min(max(int(profile["max_abnormal_rows"]), 4), 5)
+            profile["max_within_rows"] = min(max(int(profile["max_within_rows"]), 1), 2)
+            profile["num_predict"] = max(int(profile["num_predict"]), 170)
+            profile["timeout_ms"] = max(int(profile["timeout_ms"]), 95000)
+            profile["prompt_target_chars"] = max(int(profile["prompt_target_chars"]), 2400)
+            profile["prompt_hard_limit_chars"] = max(int(profile["prompt_hard_limit_chars"]), 4000)
 
     try:
         timeout_override_s = int(os.getenv("MEDICAL_RAG_SUMMARY_WRITER_TIMEOUT_S", "0"))
@@ -10066,9 +10066,15 @@ def _build_llm_evidence_pack(
                 "status": status_display,
                 "technical_status_code": status_code or None,
                 "interpretation_status": status_code or None,
-                "priority_level": (str(ev.get("priority_level") or "").strip() or None),
-                "priority_reason": (str(ev.get("priority_reason") or "").strip() or None),
-                "source_label": str(ev.get("source") or "source non disponible").strip(),
+                **(
+                    {}
+                    if route == "doc_scoped_biological_summary"
+                    else {
+                        "priority_level": (str(ev.get("priority_level") or "").strip() or None),
+                        "priority_reason": (str(ev.get("priority_reason") or "").strip() or None),
+                        "source_label": str(ev.get("source") or "source non disponible").strip(),
+                    }
+                ),
             }
         )
     llm_pack = {
@@ -10372,29 +10378,18 @@ def _compose_level2_micro_prompt_answer(
         within_count_hint = 1 if render_profile in {"compact_biological_summary", "editorial_biological_summary"} else 2
         prompt = (
             "Tu es un rédacteur médical technique.\n"
-            "Réponds UNIQUEMENT en JSON strict valide, sans markdown, sans texte hors JSON.\n"
-            "Schéma de sortie obligatoire:\n"
-            "{\n"
-            "  \"anormaux\": [\"Analyte 1\", \"Analyte 2\"],\n"
-            "  \"within_reference\": [\"Analyte A\", \"Analyte B\"],\n"
-            "  \"conclusion\": \"Conclusion technique courte\"\n"
-            "}\n\n"
+            "Rédige une synthèse narrative courte en 3 à 5 lignes.\n"
+            "Format attendu: ouverture clinique, anomalies majeures, résultats dans la référence si présents, conclusion prudente.\n\n"
             "Règles critiques:\n"
             "- N'inclus jamais de bloc Sources.\n"
             "- N'invente aucune valeur, unité, référence, source ou analyte.\n"
-            "- \"anormaux\" doit contenir UNIQUEMENT des analytes issus des Faits anormaux.\n"
-            "- \"within_reference\" doit contenir UNIQUEMENT des analytes issus des Faits dans la référence.\n"
-            "- Ne mets JAMAIS un analyte anormal dans \"within_reference\".\n"
             "- Ne donne pas de diagnostic.\n"
             "- Ne propose pas de traitement.\n"
             "- Si le statut d’un analyte est inconnu ou needs_clinical_context, n’écris jamais qu’il est au-dessus/en dessous de la référence.\n"
-            f"- \"anormaux\" contient au maximum {abnormal_count_hint} analytes saillants.\n"
-            f"- \"within_reference\" contient au maximum {within_count_hint} analyte(s) documenté(s) dans la référence.\n"
+            f"- Mentionne au maximum {abnormal_count_hint} analytes saillants et au maximum {within_count_hint} analyte(s) dans la référence.\n"
             f"- {output_length_instruction}\n"
             "- N'utilise jamais « nécessite un contexte clinique » si les faits contiennent déjà un statut explicite.\n\n"
             f"{guardrail_block}\n"
-            "Facts contract (source de vérité):\n"
-            f"{json.dumps(facts_contract, ensure_ascii=False)}\n\n"
             "Faits anormaux:\n"
             f"{(chr(10).join(compact_abnormal_lines) if compact_abnormal_lines else '- Aucun fait anormal fourni.')}\n\n"
             "Faits dans la référence:\n"
