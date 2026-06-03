@@ -112,8 +112,8 @@ class TestGenerationDocScope(unittest.TestCase):
         )
         profile = ga._doc_scoped_biological_summary_llm_profile(qu)
         self.assertEqual(str(profile.get("render_profile") or ""), "compact_biological_summary")
-        self.assertEqual(int(profile.get("max_rows") or 0), 4)
-        self.assertEqual(int(profile.get("max_abnormal_rows") or 0), 3)
+        self.assertEqual(int(profile.get("max_rows") or 0), 5)
+        self.assertEqual(int(profile.get("max_abnormal_rows") or 0), 5)
         self.assertEqual(int(profile.get("max_within_rows") or 0), 1)
         self.assertEqual(int(profile.get("timeout_ms") or 0), 70000)
         self.assertEqual(int(profile.get("num_predict") or 0), 120)
@@ -127,9 +127,38 @@ class TestGenerationDocScope(unittest.TestCase):
         profile = ga._doc_scoped_biological_summary_llm_profile(qu)
         self.assertEqual(str(profile.get("render_profile") or ""), "editorial_biological_summary")
         self.assertEqual(int(profile.get("max_rows") or 0), 5)
+        self.assertEqual(int(profile.get("max_abnormal_rows") or 0), 5)
         self.assertEqual(int(profile.get("max_within_rows") or 0), 1)
         self.assertEqual(int(profile.get("timeout_ms") or 0), 85000)
         self.assertEqual(int(profile.get("num_predict") or 0), 150)
+
+    def test_doc_scoped_biological_summary_rewrites_too_sparse_llm_narrative(self) -> None:
+        ga = __import__("generate_answer")
+        evidences = [
+            {"analyte": "Acide urique", "technical_status_code": "below_reference", "value_with_unit": "23 mg/L", "reference_short": "25 - 70"},
+            {"analyte": "Ammonium", "technical_status_code": "below_reference", "value_with_unit": "20 µg/dL", "reference_short": "35 - 80"},
+            {"analyte": "Bilirubine Directe", "technical_status_code": "above_reference", "value_with_unit": "6 mg/L", "reference_short": "0.00 - 5.00"},
+            {"analyte": "Créatinine", "technical_status_code": "above_reference", "value_with_unit": "23 mg/L", "reference_short": "4 - 9"},
+            {"analyte": "LDH", "technical_status_code": "above_reference", "value_with_unit": "250 UI/L", "reference_short": "125 - 243"},
+            {"analyte": "CK-MB", "technical_status_code": "above_reference", "value_with_unit": "40 UI/L", "reference_short": "< 25"},
+        ]
+        weak_llm = (
+            "L'acide urique est bas à 23 mg/L, l'ammonium est bas à 20 µg/dl, et la bilirubine directe est élevé à 6 mg/L. "
+            "Conclusion: anomalies métaboliques notables nécessitent un suivi clinique."
+        )
+        rendered = ga._render_biological_summary_from_contract(
+            llm_answer=weak_llm,
+            evidences=evidences,
+            max_lines=4,
+            no_diagnosis=True,
+            render_profile="compact_biological_summary",
+        )
+        low = rendered.lower()
+        self.assertNotIn("élevé à 6 mg/l", low)
+        self.assertIn("créatinine", low)
+        self.assertIn("ldh", low)
+        self.assertIn("conclusion technique", low)
+        self.assertIn("sans diagnostic", low)
 
     def test_general_conversation_bonjour_fast_path_no_retrieval(self) -> None:
         result = run_generation(

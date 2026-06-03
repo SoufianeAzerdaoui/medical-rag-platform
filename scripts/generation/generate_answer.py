@@ -707,7 +707,7 @@ def _doc_scoped_biological_summary_llm_profile(query_understanding: QueryUnderst
     profile: dict[str, Any] = {
         "render_profile": render_profile,
         "max_rows": 5,
-        "max_abnormal_rows": 4,
+        "max_abnormal_rows": 5,
         "max_within_rows": 1,
         "max_ambiguous_rows": 1,
         "timeout_ms": 90000,
@@ -719,8 +719,8 @@ def _doc_scoped_biological_summary_llm_profile(query_understanding: QueryUnderst
     if render_profile == "compact_biological_summary":
         profile.update(
             {
-                "max_rows": 4,
-                "max_abnormal_rows": 3,
+                "max_rows": 5,
+                "max_abnormal_rows": 5,
                 "max_within_rows": 1,
                 "max_ambiguous_rows": 0,
                 "timeout_ms": 70000,
@@ -734,7 +734,7 @@ def _doc_scoped_biological_summary_llm_profile(query_understanding: QueryUnderst
         profile.update(
             {
                 "max_rows": 5,
-                "max_abnormal_rows": 4,
+                "max_abnormal_rows": 5,
                 "max_within_rows": 1,
                 "max_ambiguous_rows": 0,
                 "timeout_ms": 85000,
@@ -761,8 +761,8 @@ def _doc_scoped_biological_summary_llm_profile(query_understanding: QueryUnderst
 
     if requested_lines:
         if requested_lines <= 4:
-            profile["max_rows"] = min(int(profile["max_rows"]), 4)
-            profile["max_abnormal_rows"] = min(int(profile["max_abnormal_rows"]), 3)
+            profile["max_rows"] = min(int(profile["max_rows"]), 5)
+            profile["max_abnormal_rows"] = min(int(profile["max_abnormal_rows"]), 5)
             profile["num_predict"] = min(int(profile["num_predict"]), 120)
             profile["timeout_ms"] = min(int(profile["timeout_ms"]), 70000)
             profile["prompt_target_chars"] = min(int(profile["prompt_target_chars"]), 1700)
@@ -8820,15 +8820,15 @@ def _ensure_biological_summary_conclusion(answer: str, *, has_abnormal: bool = T
         return text
     if has_abnormal and has_within:
         conclusion = (
-            "Conclusion technique : le bilan associe des écarts biologiques documentés et des résultats dans la référence parmi les éléments sélectionnés, sans conclusion diagnostique."
+            "Conclusion technique : le profil combine plusieurs écarts biologiques documentés et quelques résultats dans la référence parmi les éléments sélectionnés, sans conclusion diagnostique."
         )
     elif has_abnormal:
         conclusion = (
-            "Conclusion technique : un ou plusieurs écarts biologiques documentés sont mis en évidence, sans conclusion diagnostique."
+            "Conclusion technique : le profil met en évidence plusieurs écarts biologiques documentés, à interpréter avec prudence, sans diagnostic."
         )
     elif has_within:
         conclusion = (
-            "Conclusion technique : les résultats listés sont dans la référence parmi les éléments sélectionnés, sans conclusion diagnostique."
+            "Conclusion technique : les résultats listés restent dans la référence parmi les éléments sélectionnés, sans diagnostic."
         )
     else:
         conclusion = "Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic."
@@ -9316,7 +9316,11 @@ def _production_summary_conclusion(
     no_dx_suffix = ", sans diagnostic." if no_diagnosis else "."
 
     profile_family = _profile_family(render_profile)
+    abnormal_limit = 5 if profile_family in {"short", "editorial"} else 4
+    within_limit = 3 if profile_family in {"short", "editorial"} else 3
     if profile_family == "editorial":
+        abnormal_labels = _summary_conclusion_labels(abnormal_rows, limit=abnormal_limit)
+        within_labels = _summary_conclusion_labels(within_rows, limit=within_limit)
         opening = (
             f"Conclusion technique : Le profil biologique retenu est dominé par plusieurs écarts documentés, en particulier {focus}."
             if focus
@@ -9339,6 +9343,11 @@ def _production_summary_conclusion(
         return f"{opening}{anomaly_tail}{within_line}{closing}".strip()
 
     if profile_family == "short":
+        abnormal_labels = _summary_conclusion_labels(abnormal_rows, limit=abnormal_limit)
+        within_labels = _summary_conclusion_labels(within_rows, limit=within_limit)
+        extra_abnormal = max(0, len(_summary_conclusion_labels(abnormal_rows, limit=99)) - len(abnormal_labels))
+        focus = _join_summary_labels(abnormal_labels)
+        within_focus = _join_summary_labels(within_labels)
         opening = (
             f"Conclusion technique : Le bilan met surtout en évidence des valeurs hors référence concernant {focus}."
             if focus
@@ -9400,9 +9409,14 @@ def _render_biological_summary_from_contract(
         narrative = _normalize_summary_readability(raw_llm_answer)
         sentence_count = len([s for s in re.split(r"[.!?]+", narrative) if s.strip()])
         word_count = len(re.findall(r"[A-Za-zÀ-ÿ0-9]{2,}", narrative))
+        abnormal_match_count = _summary_text_mentions_rows(narrative, abnormal_rows)
+        within_match_count = _summary_text_mentions_rows(narrative, within_rows)
+        abnormal_target = min(4, len(abnormal_rows)) if abnormal_rows else 0
         if (
             sentence_count >= 2
             and word_count >= 12
+            and (abnormal_target == 0 or abnormal_match_count >= abnormal_target)
+            and (not within_rows or within_match_count >= min(1, len(within_rows)))
             and not _llm_summary_requires_professional_rewrite(narrative)
             and not _is_table_markdown(narrative)
             and not _contains_internal_reasoning_leak(narrative)
@@ -9818,6 +9832,22 @@ def _summary_sentence_mentions_analyte(sentence_norm: str, sentence_compact: str
         if len(variant_compact) >= 3 and variant_compact in sentence_compact:
             return True
     return False
+
+
+def _summary_text_mentions_rows(text: str, rows: list[dict[str, Any]]) -> int:
+    sentence_norm = norm_text(text or "")
+    if not sentence_norm:
+        return 0
+    sentence_compact = re.sub(r"[^a-z0-9]+", "", sentence_norm)
+    matched: set[str] = set()
+    for ev in list(rows or []):
+        label = _clean_analyte_label(str(ev.get("analyte") or ev.get("analyte_label") or ev.get("display_name") or ""))
+        key = norm_text(label)
+        if not key or key in matched:
+            continue
+        if _summary_sentence_mentions_analyte(sentence_norm, sentence_compact, ev):
+            matched.add(key)
+    return len(matched)
 
 
 def _evaluate_summary_quality_gate(
@@ -10374,7 +10404,7 @@ def _compose_level2_micro_prompt_answer(
             if render_profile == "compact_biological_summary"
             else "La conclusion doit être rédigée en une phrase clinique brève et prudente."
         )
-        abnormal_count_hint = min(max_rows, 3 if render_profile == "compact_biological_summary" else 4)
+        abnormal_count_hint = min(max_rows, 5 if render_profile in {"compact_biological_summary", "editorial_biological_summary"} else 4)
         within_count_hint = 1 if render_profile in {"compact_biological_summary", "editorial_biological_summary"} else 2
         prompt = (
             "Tu es un rédacteur médical technique.\n"
@@ -10386,7 +10416,8 @@ def _compose_level2_micro_prompt_answer(
             "- Ne donne pas de diagnostic.\n"
             "- Ne propose pas de traitement.\n"
             "- Si le statut d’un analyte est inconnu ou needs_clinical_context, n’écris jamais qu’il est au-dessus/en dessous de la référence.\n"
-            f"- Mentionne au maximum {abnormal_count_hint} analytes saillants et au maximum {within_count_hint} analyte(s) dans la référence.\n"
+            f"- Mentionne idéalement 4 à 5 analytes saillants si le document en contient, sans dépasser {abnormal_count_hint} analytes saillants et au maximum {within_count_hint} analyte(s) dans la référence.\n"
+            "- Ne te limite pas à 2 ou 3 anomalies majeures si 4 ou 5 sont documentées.\n"
             f"- {output_length_instruction}\n"
             "- N'utilise jamais « nécessite un contexte clinique » si les faits contiennent déjà un statut explicite.\n\n"
             f"{guardrail_block}\n"
