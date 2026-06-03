@@ -7088,6 +7088,12 @@ def _build_doc_scoped_biological_summary_answer(
             notable_entries.append((analyte, _status_phrase(ev)))
 
         notable_main = notable_entries[:5]
+        has_below_notable = any("en dessous" in norm_text(status) for _, status in notable_entries)
+        if has_below_notable and not any("en dessous" in norm_text(status) for _, status in notable_main):
+            first_below = next((entry for entry in notable_entries if "en dessous" in norm_text(entry[1])), None)
+            if first_below:
+                preserved = [entry for entry in notable_main if entry != first_below]
+                notable_main = (preserved[:4] + [first_below])[:5]
         notable_extra = notable_entries[5:]
         if notable_main:
             notable_prefix = "Paramètres hors référence notables : " if wants_reference_ranges else "Points biologiques notables : "
@@ -10104,6 +10110,12 @@ def _build_llm_evidence_pack(
         max_abnormal_rows = min(int(summary_llm_profile.get("max_abnormal_rows") or 6), max_rows)
         max_within_rows = min(int(summary_llm_profile.get("max_within_rows") or 4), max_rows)
         max_ambiguous_rows = min(int(summary_llm_profile.get("max_ambiguous_rows") or 2), max_rows)
+        if len(abnormal_rows) >= 5:
+            # When a document contains many abnormal rows, keep room for a richer
+            # narrative by allowing one extra slot beyond the first five anomalies.
+            max_rows = max(max_rows, min(len(evidence_all), 6 if within_rows else 5))
+            max_abnormal_rows = min(5, len(abnormal_rows), max_rows)
+            max_within_rows = min(1 if within_rows else 0, max_rows)
         # Keep at least one "within reference" row when available so the LLM can
         # produce balanced summaries instead of collapsing to only abnormalities.
         if within_rows and max_rows > 1:
@@ -10928,7 +10940,8 @@ def _build_validator_retry_feedback(validation: dict[str, Any]) -> str:
         return (
             "La synthèse est trop pauvre par rapport aux faits disponibles. "
             "Mentionne au moins 4 anomalies majeures si elles sont documentées, en incluant plusieurs analytes distincts, "
-            "et ajoute les résultats dans la référence lorsqu'ils sont présents."
+            "ajoute au moins 3 résultats dans la référence lorsqu'ils sont présents, "
+            "garde une conclusion prudente sans diagnostic et cite la source."
         )
     if "missing_conclusion" in items:
         return (
@@ -16901,6 +16914,7 @@ def run_generation(
         route_norm_for_quality = str(selected_route or "").strip().lower()
         fallback_reason_norm = str(fallback_reason_debug or "").strip().lower()
         allow_soft_llm_reaccept = fallback_reason_norm in {"", "llm_validation_failed", "llm_writer_quality_or_format_fallback", "quality_gate_failed"}
+        force_sparse_summary_repair = False
         def _summary_candidate_is_substantive(text: str) -> bool:
             raw = str(text or "").strip()
             if len(raw) < 20:
@@ -16947,12 +16961,14 @@ def run_generation(
             )
             if not bool(quality_gate_result.get("pass")):
                 no_diag = str(getattr(query_understanding, "safety_intent", "") or "").strip().lower() == "no_diagnosis_constraint"
+                summary_too_poor = "summary_too_poor_for_available_facts" in set(str(r) for r in (quality_gate_result.get("reasons") or []))
                 if (
                     route_norm_for_quality == "doc_scoped_biological_summary"
                     and not quality_gate_requires_fallback
                     and bool(llm_writer_final_accepted or llm_writer_used)
                     and allow_soft_llm_reaccept
                     and _summary_candidate_is_substantive(str(llm_candidate_answer or ""))
+                    and not summary_too_poor
                     and (
                         not _summary_candidate_has_direction(str(llm_candidate_answer or ""))
                         or _summary_candidate_soft_direction_ok(str(llm_candidate_answer or ""))
@@ -16979,6 +16995,11 @@ def run_generation(
                             has_within=bool("within_reference" in status_codes),
                         )
                     final_answer = _normalize_summary_readability(final_answer)
+                elif route_norm_for_quality == "doc_scoped_biological_summary" and summary_too_poor and not quality_gate_requires_fallback:
+                    # Keep the candidate in the pipeline so the retry path can repair
+                    # it against the full document evidence instead of silently
+                    # accepting a sparse warning-only summary.
+                    force_sparse_summary_repair = True
                 else:
                     if route_norm_for_quality == "reference_ranges_summary":
                         final_answer = _build_reference_ranges_summary_answer(
@@ -17104,6 +17125,11 @@ def run_generation(
         )
         if str(selected_route or "").strip().lower() == "doc_scoped_biological_summary":
             validation = _relax_doc_scoped_biological_summary_validation(validation)
+        if force_sparse_summary_repair and route_norm_for_quality == "doc_scoped_biological_summary":
+            validation = dict(validation or {})
+            errors = list(dict.fromkeys(list(validation.get("errors") or []) + ["summary_too_poor_for_available_facts"]))
+            validation["validation_status"] = "fail"
+            validation["errors"] = errors
         stage_times_ms["validation_ms"] = round((time.perf_counter() - t_val0) * 1000.0, 3)
         if llm_candidate_validation_warnings:
             final_warning_set = {str(w) for w in (validation or {}).get("warnings") or []}
@@ -17977,6 +18003,9 @@ def run_generation(
             and bool(llm_candidate_answer)
             and allow_soft_llm_reaccept
             and str(llm_repair_status or "").strip().lower() != "failed_validation"
+            and "summary_too_poor_for_available_facts" not in {
+                str(err).strip() for err in (validation or {}).get("errors") or []
+            }
             and _summary_candidate_is_substantive(str(llm_candidate_answer or ""))
             and (
                 (

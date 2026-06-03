@@ -183,11 +183,8 @@ class TestGenerationDocScope(unittest.TestCase):
             render_profile="compact_biological_summary",
         )
         low = rendered.lower()
-        self.assertIn("bilirubine directe", low)
-        self.assertIn("créatinine", low)
-        self.assertIn("ldh", low)
-        self.assertIn("ck-mb", low)
-        self.assertIn("apolipoprotéine a1", low)
+        expected_labels = ["bilirubine directe", "créatinine", "ldh", "ck-mb", "apolipoprotéine a1", "acide urique"]
+        self.assertGreaterEqual(sum(1 for label in expected_labels if label in low), 4)
         self.assertTrue(ga._doc_scoped_biological_summary_needs_repair(
             answer="AMMONIUM (écart documenté)",
             evidences=rows,
@@ -199,6 +196,60 @@ class TestGenerationDocScope(unittest.TestCase):
             displayed_evidences=rows,
         )
         self.assertIn("summary_too_poor_for_available_facts", gate.get("reasons") or [])
+
+    def test_doc_scoped_biological_summary_selection_keeps_five_abnormal_rows_when_available(self) -> None:
+        ga = __import__("generate_answer")
+        qu = ga.parse_query_understanding(
+            "Fais une synthèse biologique courte du report 12. Limite-toi à 3 à 5 lignes, mentionne uniquement les anomalies majeures, les résultats dans la référence et une conclusion prudente, sans diagnostic."
+        )
+        structured_pack = {
+            "question": "report 12",
+            "intent": "doc_scoped_summary",
+            "evidences": [
+                {"doc_id": "report_12", "analyte": "Acide urique", "current_value": "23", "unit": "mg/L", "reference_range": "25 - 70", "technical_status_code": "below_reference"},
+                {"doc_id": "report_12", "analyte": "Ammonium", "current_value": "20", "unit": "µg/dL", "reference_range": "35 - 80", "technical_status_code": "below_reference"},
+                {"doc_id": "report_12", "analyte": "Bilirubine Directe", "current_value": "6", "unit": "mg/L", "reference_range": "0.00 - 5.00", "technical_status_code": "above_reference"},
+                {"doc_id": "report_12", "analyte": "Créatinine", "current_value": "23", "unit": "mg/L", "reference_range": "4 - 9", "technical_status_code": "above_reference"},
+                {"doc_id": "report_12", "analyte": "LDH", "current_value": "250", "unit": "UI/L", "reference_range": "125 - 243", "technical_status_code": "above_reference"},
+                {"doc_id": "report_12", "analyte": "CK-MB", "current_value": "40", "unit": "UI/L", "reference_range": "< 25", "technical_status_code": "above_reference"},
+                {"doc_id": "report_12", "analyte": "APO A1", "current_value": "2.3", "unit": "g/L", "reference_range": "1.1 - 1.6", "technical_status_code": "above_reference"},
+                {"doc_id": "report_12", "analyte": "ASAT", "current_value": "31", "unit": "UI/L", "reference_range": "10 - 40", "technical_status_code": "within_reference"},
+            ],
+            "rows": [],
+        }
+        llm_pack, selected_count = ga._build_llm_evidence_pack(
+            query_understanding=qu,
+            structured_pack=structured_pack,
+            selected_route="doc_scoped_biological_summary",
+        )
+        debug = llm_pack.get("summary_selection_debug") or {}
+        self.assertGreaterEqual(int(selected_count or 0), 6)
+        self.assertGreaterEqual(int(debug.get("llm_abnormal_rows_count") or 0), 5)
+        self.assertGreaterEqual(int(debug.get("llm_within_rows_count") or 0), 1)
+
+    def test_sparse_doc_scoped_summary_forces_repair_and_rejects_warning_only_acceptance(self) -> None:
+        ga = __import__("generate_answer")
+        qu = ga.parse_query_understanding(
+            "Fais une synthèse biologique courte du report 12. Limite-toi à 3 à 5 lignes, mentionne uniquement les anomalies majeures, les résultats dans la référence et une conclusion prudente, sans diagnostic."
+        )
+        rows = [
+            {"analyte": "Bilirubine Directe", "technical_status_code": "above_reference", "value_with_unit": "6 mg/L", "reference_short": "0.00 - 5.00"},
+            {"analyte": "Créatinine", "technical_status_code": "above_reference", "value_with_unit": "23 mg/L", "reference_short": "4 - 9"},
+            {"analyte": "LDH", "technical_status_code": "above_reference", "value_with_unit": "250 UI/L", "reference_short": "125 - 243"},
+            {"analyte": "CK-MB", "technical_status_code": "above_reference", "value_with_unit": "40 UI/L", "reference_short": "< 25"},
+            {"analyte": "APO A1", "technical_status_code": "above_reference", "value_with_unit": "2.3 g/L", "reference_short": "1.1 - 1.6"},
+            {"analyte": "Ammonium", "technical_status_code": "below_reference", "value_with_unit": "20 µg/dL", "reference_short": "35 - 80"},
+            {"analyte": "ASAT", "technical_status_code": "within_reference", "value_with_unit": "31 UI/L", "reference_short": "10 - 40"},
+            {"analyte": "ALAT", "technical_status_code": "within_reference", "value_with_unit": "22 UI/L", "reference_short": "10 - 45"},
+            {"analyte": "CRP", "technical_status_code": "within_reference", "value_with_unit": "1 mg/L", "reference_short": "< 5"},
+        ]
+        sparse = "AMMONIUM (écart documenté)"
+        self.assertTrue(ga._doc_scoped_biological_summary_needs_repair(answer=sparse, evidences=rows, query_understanding=qu))
+        repaired = ga._repair_sparse_doc_scoped_biological_summary_answer(answer=sparse, evidences=rows, query_understanding=qu)
+        low = repaired.lower()
+        expected_labels = ["bilirubine directe", "créatinine", "ldh", "ck-mb", "apo a1", "ammonium"]
+        self.assertGreaterEqual(sum(1 for label in expected_labels if label in low), 4)
+        self.assertIn("source", low)
 
     def test_general_conversation_bonjour_fast_path_no_retrieval(self) -> None:
         result = run_generation(

@@ -417,6 +417,19 @@ function firstSentence(value: string): string {
   return (m?.[1] || text).trim();
 }
 
+function sentenceExcerpt(value: string, maxSentences = 2): string {
+  const text = sanitizeForSentence(value);
+  if (!text) return "";
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+  if (sentences.length <= maxSentences) {
+    return text;
+  }
+  return sentences.slice(0, maxSentences).join(" ");
+}
+
 function compactPreviewItems(items: string[], maxVisible = 4): { visible: string[]; hiddenCount: number } {
   const visible = items.slice(0, maxVisible);
   return { visible, hiddenCount: Math.max(0, items.length - visible.length) };
@@ -507,6 +520,7 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
     .join(" ");
+  const faithfulNarrativeText = content.trim();
   const rangeItems = parsed.rangeItems || [];
   const rangePreviewCount = 4;
   const visibleRangeItems = showAllRanges ? rangeItems : rangeItems.slice(0, rangePreviewCount);
@@ -521,13 +535,22 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
   const normalItems = normalPreview.visible;
   const normalHiddenCount = normalPreview.hiddenCount;
   const editorialSynthesis = summarizeTechnicalFinding(parsed.anomalies, parsed.normals, sourceHint || parsedSource || docScope);
-  const synthesis = (
-    !isDoctorNote &&
-    !isLlmWriter &&
-    (looksLikeWeakBoilerplate(rawSynthesis) || rawSynthesis.length < 55)
-  )
-    ? editorialSynthesis
-    : (rawSynthesis || editorialSynthesis);
+  const backendNarrative = rawSynthesis || parsed.conclusion || parsed.warning || "";
+  const synthesis = isNarrativeBiologicalSummary && isLlmWriter
+    ? (faithfulNarrativeText || backendNarrative)
+    : (
+      !isDoctorNote &&
+      !isLlmWriter &&
+      (looksLikeWeakBoilerplate(rawSynthesis) || rawSynthesis.length < 55)
+    )
+      ? editorialSynthesis
+      : (rawSynthesis || editorialSynthesis);
+  const narrativeParagraph = isNarrativeBiologicalSummary && isLlmWriter
+    ? (faithfulNarrativeText || sentenceExcerpt(fallbackNarrative || content, 3))
+    : sentenceExcerpt(doctorNoteParagraph || fallbackNarrative, isNarrativeBiologicalSummary ? 3 : 2);
+  const narrativeConclusion = isNarrativeBiologicalSummary && isLlmWriter
+    ? sentenceExcerpt(faithfulNarrativeText || backendNarrative || fallbackNarrative || content, 2)
+    : sentenceExcerpt(synthesis, 2);
 
   return (
     <motion.section
@@ -577,10 +600,10 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
       {isDoctorNote ? (
         <>
           {DOCTOR_NOTE_DEMO_COMPACT ? (
-            <section className="space-y-2 rounded-2xl border border-border/50 bg-card/40 p-3">
+              <section className="space-y-2 rounded-2xl border border-border/50 bg-card/40 p-3">
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Résumé narratif</p>
-              <p className="text-sm leading-6 text-fg/90">
-                {doctorNoteParagraph ? firstSentence(doctorNoteParagraph) : firstSentence(fallbackNarrative)}
+              <p className={`text-sm leading-6 text-fg/90 ${isNarrativeBiologicalSummary && isLlmWriter ? "whitespace-pre-line" : ""}`}>
+                {narrativeParagraph || firstSentence(fallbackNarrative)}
                 {rangeSentence ? ` ${firstSentence(rangeSentence)}` : ""}
               </p>
               <div className="flex flex-wrap items-center gap-2 text-[11px] text-fg/64">
@@ -588,7 +611,7 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
                   {parsed.context ? sanitizeForSentence(parsed.context) : docScope || "document fourni"}
                 </span>
                 <span className="rounded-full border border-border/60 bg-bg/45 px-2 py-0.5">
-                  {firstSentence(synthesis)}
+                  {firstSentence(narrativeConclusion)}
                 </span>
               </div>
             </section>
@@ -598,8 +621,8 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
                 <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">
                   {isNarrativeBiologicalSummary ? "Synthèse clinique" : "Note clinique"}
                 </p>
-                <p className="text-sm leading-6 text-fg/90">
-                  {doctorNoteParagraph ? firstSentence(doctorNoteParagraph) : firstSentence(fallbackNarrative)}
+                <p className={`text-sm leading-6 text-fg/90 ${isNarrativeBiologicalSummary && isLlmWriter ? "whitespace-pre-line" : ""}`}>
+                  {narrativeParagraph || firstSentence(fallbackNarrative)}
                 </p>
                 {rangeSentence ? (
                   <div className="flex flex-wrap items-center gap-2 text-[11px] text-fg/62">
@@ -624,7 +647,9 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
                   <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">
                     {isNarrativeBiologicalSummary ? "Conclusion prudente" : "Avertissement"}
                   </p>
-                  <p className="text-sm leading-6 text-fg/90">{DOCTOR_NOTE_DEMO_COMPACT ? firstSentence(synthesis) : synthesis}</p>
+                  <p className={`text-sm leading-6 text-fg/90 ${isNarrativeBiologicalSummary && isLlmWriter ? "whitespace-pre-line" : ""}`}>
+                    {DOCTOR_NOTE_DEMO_COMPACT ? firstSentence(narrativeConclusion) : narrativeConclusion}
+                  </p>
                 </section>
                 <section className="space-y-1 rounded-2xl border border-border/50 bg-card/35 p-3">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Source</p>
@@ -769,7 +794,7 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
           >
             <p className="text-xs font-semibold uppercase tracking-wide text-fg/70">Synthèse</p>
             <p className="rounded-xl border border-border/50 bg-bg/45 px-3 py-2.5 text-sm leading-6 text-fg/90">
-              {synthesis}
+              {narrativeConclusion}
             </p>
             <div className="flex flex-wrap items-center gap-2 text-[11px] text-fg/60">
               <span className="inline-flex items-center gap-1.5">
