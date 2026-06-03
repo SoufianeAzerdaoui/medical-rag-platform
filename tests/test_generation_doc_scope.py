@@ -251,6 +251,15 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertGreaterEqual(sum(1 for label in expected_labels if label in low), 4)
         self.assertIn("source", low)
 
+    def test_doc_scoped_biological_summary_rewrite_rejects_generic_clinical_opening(self) -> None:
+        ga = __import__("generate_answer")
+        self.assertTrue(ga._llm_summary_requires_professional_rewrite(
+            "Ouverture clinique: Patient présente des anomalies sur plusieurs marqueurs enzymatiques et métaboliques. Conclusion: Requiert une évaluation clinique approfondie."
+        ))
+        self.assertFalse(ga._llm_summary_requires_professional_rewrite(
+            "Le bilan montre plusieurs écarts biologiques documentés, sans diagnostic."
+        ))
+
     def test_general_conversation_bonjour_fast_path_no_retrieval(self) -> None:
         result = run_generation(
             query="Bonjour.",

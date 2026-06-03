@@ -430,6 +430,21 @@ function sentenceExcerpt(value: string, maxSentences = 2): string {
   return sentences.slice(0, maxSentences).join(" ");
 }
 
+function extractExplicitConclusion(value: string): string {
+  const lines = String(value || "")
+    .split("\n")
+    .map((line) => sanitizeForSentence(line))
+    .filter(Boolean);
+  for (const line of lines) {
+    if (/^conclusion(?:\s+technique)?\s*:/i.test(line) || /^conclusion prudente\s*:/i.test(line)) {
+      const idx = line.indexOf(":");
+      const tail = idx >= 0 ? line.slice(idx + 1).trim() : line;
+      return tail ? ensureSentence(tail) : "";
+    }
+  }
+  return "";
+}
+
 function compactPreviewItems(items: string[], maxVisible = 4): { visible: string[]; hiddenCount: number } {
   const visible = items.slice(0, maxVisible);
   return { visible, hiddenCount: Math.max(0, items.length - visible.length) };
@@ -542,14 +557,17 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
       !isDoctorNote &&
       !isLlmWriter &&
       (looksLikeWeakBoilerplate(rawSynthesis) || rawSynthesis.length < 55)
-    )
+      )
       ? editorialSynthesis
       : (rawSynthesis || editorialSynthesis);
   const narrativeParagraph = isNarrativeBiologicalSummary && isLlmWriter
     ? (faithfulNarrativeText || sentenceExcerpt(fallbackNarrative || content, 3))
     : sentenceExcerpt(doctorNoteParagraph || fallbackNarrative, isNarrativeBiologicalSummary ? 3 : 2);
+  const explicitConclusion = isNarrativeBiologicalSummary && isLlmWriter
+    ? extractExplicitConclusion(faithfulNarrativeText || backendNarrative || fallbackNarrative || content)
+    : "";
   const narrativeConclusion = isNarrativeBiologicalSummary && isLlmWriter
-    ? sentenceExcerpt(faithfulNarrativeText || backendNarrative || fallbackNarrative || content, 2)
+    ? explicitConclusion
     : sentenceExcerpt(synthesis, 2);
 
   return (
@@ -647,9 +665,13 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
                   <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">
                     {isNarrativeBiologicalSummary ? "Conclusion prudente" : "Avertissement"}
                   </p>
-                  <p className={`text-sm leading-6 text-fg/90 ${isNarrativeBiologicalSummary && isLlmWriter ? "whitespace-pre-line" : ""}`}>
-                    {DOCTOR_NOTE_DEMO_COMPACT ? firstSentence(narrativeConclusion) : narrativeConclusion}
-                  </p>
+                  {narrativeConclusion ? (
+                    <p className={`text-sm leading-6 text-fg/90 ${isNarrativeBiologicalSummary && isLlmWriter ? "whitespace-pre-line" : ""}`}>
+                      {DOCTOR_NOTE_DEMO_COMPACT ? firstSentence(narrativeConclusion) : narrativeConclusion}
+                    </p>
+                  ) : (
+                    <p className="text-sm leading-6 text-fg/60">Conclusion non explicitement formulée dans la réponse backend.</p>
+                  )}
                 </section>
                 <section className="space-y-1 rounded-2xl border border-border/50 bg-card/35 p-3">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Source</p>
