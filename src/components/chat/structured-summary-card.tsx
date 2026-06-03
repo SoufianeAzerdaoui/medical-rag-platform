@@ -405,6 +405,7 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
   const rawSynthesis = synthesisText(parsed.warning || parsed.conclusion);
   const isDoctorNote = parsed.kind === "doctor_note" || parsed.kind === "reference_ranges_note";
   const isReferenceRangesNote = parsed.kind === "reference_ranges_note";
+  const isLlmWriter = String(diagnostics?.final_answer_source || "").toLowerCase() === "llm_writer";
   const docScope = Array.isArray(diagnostics?.requested_doc_ids) && diagnostics?.requested_doc_ids?.length
     ? diagnostics.requested_doc_ids.join(", ")
     : null;
@@ -433,10 +434,11 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
   const editorialSynthesis = summarizeTechnicalFinding(parsed.anomalies, parsed.normals, sourceHint || parsedSource || docScope);
   const synthesis = (
     !isDoctorNote &&
+    !isLlmWriter &&
     (looksLikeWeakBoilerplate(rawSynthesis) || rawSynthesis.length < 55)
   )
     ? editorialSynthesis
-    : rawSynthesis;
+    : (rawSynthesis || editorialSynthesis);
 
   return (
     <motion.section
