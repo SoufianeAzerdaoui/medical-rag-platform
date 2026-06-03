@@ -12,7 +12,7 @@ type Props = {
 };
 
 type ParsedSummary = {
-  kind: "technical_summary" | "doctor_note" | "reference_ranges_note";
+  kind: "technical_summary" | "doctor_note" | "reference_ranges_note" | "narrative_biological_summary";
   title: string;
   context: string;
   anomalies: string[];
@@ -151,10 +151,15 @@ function parseSummary(content: string, diagnostics?: AssistantDiagnostics): Pars
     (line) =>
       /^note de synth[eè]se m[eé]dicale/i.test(line) ||
       /^note m[eé]dicale/i.test(line) ||
-      /^note sur les valeurs physiologiques/i.test(line),
+      /^note sur les valeurs physiologiques/i.test(line) ||
+      /^r[ée]sum[ée] biologique court/i.test(line) ||
+      /^synth[eè]se biologique [ée]ditoriale/i.test(line),
   );
   if (titleLine) {
     const isReferenceRangesNote = /^note sur les valeurs physiologiques/i.test(titleLine);
+    const isNarrativeBiologicalSummary =
+      /^r[ée]sum[ée] biologique court/i.test(titleLine) ||
+      /^synth[eè]se biologique [ée]ditoriale/i.test(titleLine);
     const llmNarrativeReferenceNote =
       isReferenceRangesNote && String(diagnostics?.final_answer_source || "").toLowerCase() === "llm_writer";
     const noteLines: string[] = [];
@@ -179,6 +184,8 @@ function parseSummary(content: string, diagnostics?: AssistantDiagnostics): Pars
         !/^note de synth[eè]se m[eé]dicale/i.test(line) &&
         !/^note m[eé]dicale/i.test(line) &&
         !/^note sur les valeurs physiologiques/i.test(line) &&
+        !/^r[ée]sum[ée] biologique court/i.test(line) &&
+        !/^synth[eè]se biologique [ée]ditoriale/i.test(line) &&
         !/^document analys[ée]\s*:/i.test(line) &&
         !/^points biologiques notables\s*:/i.test(line) &&
         !/^param[eè]tres hors r[ée]f[ée]rence notables\s*:/i.test(line) &&
@@ -219,11 +226,13 @@ function parseSummary(content: string, diagnostics?: AssistantDiagnostics): Pars
 
     for (const line of lines) {
       if (
-        /^note de synth[eè]se m[eé]dicale/i.test(line) ||
-        /^note m[eé]dicale/i.test(line) ||
-        /^note sur les valeurs physiologiques/i.test(line) ||
-        /^document analys[ée]\s*:/i.test(line) ||
-        /^points biologiques notables\s*:/i.test(line) ||
+          /^note de synth[eè]se m[eé]dicale/i.test(line) ||
+          /^note m[eé]dicale/i.test(line) ||
+          /^note sur les valeurs physiologiques/i.test(line) ||
+          /^r[ée]sum[ée] biologique court/i.test(line) ||
+          /^synth[eè]se biologique [ée]ditoriale/i.test(line) ||
+          /^document analys[ée]\s*:/i.test(line) ||
+          /^points biologiques notables\s*:/i.test(line) ||
         /^param[eè]tres hors r[ée]f[ée]rence notables\s*:/i.test(line) ||
         /^plages et statuts document[ée]s\s*:/i.test(line) ||
         /^plages de r[ée]f[ée]rence document[ée]es\s*:/i.test(line) ||
@@ -242,7 +251,9 @@ function parseSummary(content: string, diagnostics?: AssistantDiagnostics): Pars
     }
 
     return {
-      kind: isReferenceRangesNote ? "reference_ranges_note" : "doctor_note",
+      kind: isReferenceRangesNote
+        ? "reference_ranges_note"
+        : (isNarrativeBiologicalSummary ? "narrative_biological_summary" : "doctor_note"),
       title: normalizeMedicalUnits(cleanSegment(titleLine)),
       context: isReferenceRangesNote
         ? (sourcePagesHint || firstSentenceOnly(documentAnalyzedRaw))
@@ -403,8 +414,12 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
   const sourceLink = firstSourceLink(sources);
   const parsedSource = parsed.source && !/^document fourni\.?$/i.test(parsed.source) ? parsed.source : "";
   const rawSynthesis = synthesisText(parsed.warning || parsed.conclusion);
-  const isDoctorNote = parsed.kind === "doctor_note" || parsed.kind === "reference_ranges_note";
+  const isDoctorNote =
+    parsed.kind === "doctor_note" ||
+    parsed.kind === "reference_ranges_note" ||
+    parsed.kind === "narrative_biological_summary";
   const isReferenceRangesNote = parsed.kind === "reference_ranges_note";
+  const isNarrativeBiologicalSummary = parsed.kind === "narrative_biological_summary";
   const isLlmWriter = String(diagnostics?.final_answer_source || "").toLowerCase() === "llm_writer";
   const docScope = Array.isArray(diagnostics?.requested_doc_ids) && diagnostics?.requested_doc_ids?.length
     ? diagnostics.requested_doc_ids.join(", ")
@@ -450,7 +465,15 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
       <div className="flex flex-wrap items-center gap-2">
         <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-card/80 px-2.5 py-1 text-xs font-medium text-fg/80">
           <FlaskConical size={12} />
-          {isDoctorNote ? (isReferenceRangesNote ? "Note sur les valeurs physiologiques" : "Note médicale") : "Résumé technique"}
+          {isDoctorNote
+            ? (
+              isReferenceRangesNote
+                ? "Note sur les valeurs physiologiques"
+                : (isNarrativeBiologicalSummary
+                  ? (parsed.title.replace(/\s+[—-]\s+.*$/, "").trim() || "Résumé biologique")
+                  : "Note médicale")
+            )
+            : "Résumé technique"}
         </span>
         {diagnostics?.llm_quality_escalation_used ? (
           <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-2.5 py-1 text-xs font-medium text-cyan-200">
@@ -498,7 +521,9 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
           ) : (
             <>
               <section className="space-y-2 rounded-2xl border border-border/50 bg-card/40 p-3">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Note clinique</p>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">
+                  {isNarrativeBiologicalSummary ? "Synthèse clinique" : "Note clinique"}
+                </p>
                 <p className="text-sm leading-6 text-fg/90">
                   {doctorNoteParagraph ? firstSentence(doctorNoteParagraph) : firstSentence(fallbackNarrative)}
                 </p>
@@ -522,7 +547,9 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
 
               <div className="grid gap-2 sm:grid-cols-2">
                 <section className="space-y-1 rounded-2xl border border-border/50 bg-card/35 p-3">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Avertissement</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">
+                    {isNarrativeBiologicalSummary ? "Conclusion prudente" : "Avertissement"}
+                  </p>
                   <p className="text-sm leading-6 text-fg/90">{DOCTOR_NOTE_DEMO_COMPACT ? firstSentence(synthesis) : synthesis}</p>
                 </section>
                 <section className="space-y-1 rounded-2xl border border-border/50 bg-card/35 p-3">
