@@ -69,6 +69,42 @@ def _mk_result(*, chunk_id: str, doc_id: str, analyte: str, analyte_norm: str, v
 
 
 class TestGenerationDocScope(unittest.TestCase):
+    def test_llm_timeout_circuit_opens_only_after_threshold(self) -> None:
+        ga = __import__("generate_answer")
+        old_enabled = os.environ.get("MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_ENABLED")
+        old_routes = os.environ.get("MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_ROUTES")
+        old_threshold = os.environ.get("MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_FAILURE_THRESHOLD")
+        route = "doc_scoped_biological_summary"
+        model = "qwen2.5:7b-instruct"
+        try:
+            os.environ["MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_ENABLED"] = "1"
+            os.environ["MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_ROUTES"] = route
+            os.environ["MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_FAILURE_THRESHOLD"] = "2"
+            ga._clear_llm_timeout_circuit(route, model)
+            self.assertFalse(ga._is_llm_timeout_circuit_open(route, model))
+            failures = ga._record_llm_timeout_failure(route, model)
+            self.assertEqual(failures, 1)
+            self.assertFalse(ga._is_llm_timeout_circuit_open(route, model))
+            failures = ga._record_llm_timeout_failure(route, model)
+            self.assertEqual(failures, 2)
+            self.assertTrue(ga._is_llm_timeout_circuit_open(route, model))
+            ga._record_llm_timeout_success(route, model)
+            self.assertFalse(ga._is_llm_timeout_circuit_open(route, model))
+        finally:
+            ga._clear_llm_timeout_circuit(route, model)
+            if old_enabled is None:
+                os.environ.pop("MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_ENABLED", None)
+            else:
+                os.environ["MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_ENABLED"] = old_enabled
+            if old_routes is None:
+                os.environ.pop("MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_ROUTES", None)
+            else:
+                os.environ["MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_ROUTES"] = old_routes
+            if old_threshold is None:
+                os.environ.pop("MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_FAILURE_THRESHOLD", None)
+            else:
+                os.environ["MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_FAILURE_THRESHOLD"] = old_threshold
+
     def test_doc_scoped_biological_summary_llm_profile_compact_is_stricter(self) -> None:
         ga = __import__("generate_answer")
         qu = ga.parse_query_understanding(

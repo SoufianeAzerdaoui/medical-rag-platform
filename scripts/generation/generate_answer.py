@@ -166,6 +166,7 @@ except Exception:  # pragma: no cover - fallback for CLI-only runs without backe
 
 LOGGER = logging.getLogger("medical_rag.generation")
 _LLM_TIMEOUT_CIRCUIT_STATE: dict[str, float] = {}
+_LLM_TIMEOUT_CIRCUIT_FAILURES: dict[str, int] = {}
 
 
 def _is_feature_enabled(name: str, default: bool = True) -> bool:
@@ -229,6 +230,13 @@ def _llm_timeout_circuit_ttl_s() -> int:
         return 900
 
 
+def _llm_timeout_circuit_failure_threshold() -> int:
+    try:
+        return max(1, int(os.getenv("MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_FAILURE_THRESHOLD", "2")))
+    except Exception:
+        return 2
+
+
 def _llm_timeout_circuit_routes() -> set[str]:
     raw = str(
         os.getenv(
@@ -255,10 +263,13 @@ def _is_llm_timeout_circuit_open(route: str, model: str) -> bool:
     if route_norm not in _llm_timeout_circuit_routes():
         return False
     key = _llm_timeout_circuit_key(route_norm, model)
+    has_state = key in _LLM_TIMEOUT_CIRCUIT_STATE
     expires_at = float(_LLM_TIMEOUT_CIRCUIT_STATE.get(key, 0.0) or 0.0)
     now = time.time()
     if expires_at <= now:
         _LLM_TIMEOUT_CIRCUIT_STATE.pop(key, None)
+        if has_state:
+            _LLM_TIMEOUT_CIRCUIT_FAILURES.pop(key, None)
         return False
     return True
 
@@ -278,6 +289,37 @@ def _open_llm_timeout_circuit(route: str, model: str) -> None:
         str(model or "").strip(),
         ttl_s,
     )
+
+
+def _clear_llm_timeout_circuit(route: str, model: str) -> None:
+    key = _llm_timeout_circuit_key(route, model)
+    _LLM_TIMEOUT_CIRCUIT_STATE.pop(key, None)
+    _LLM_TIMEOUT_CIRCUIT_FAILURES.pop(key, None)
+
+
+def _record_llm_timeout_failure(route: str, model: str) -> int:
+    route_norm = str(route or "").strip().lower()
+    if not _llm_timeout_circuit_enabled() or route_norm not in _llm_timeout_circuit_routes():
+        return 1
+    key = _llm_timeout_circuit_key(route_norm, model)
+    failures = int(_LLM_TIMEOUT_CIRCUIT_FAILURES.get(key, 0) or 0) + 1
+    _LLM_TIMEOUT_CIRCUIT_FAILURES[key] = failures
+    threshold = _llm_timeout_circuit_failure_threshold()
+    if failures >= threshold:
+        _open_llm_timeout_circuit(route_norm, model)
+    else:
+        LOGGER.warning(
+            "llm_timeout_failure route=%s model=%s failures=%s threshold=%s",
+            route_norm,
+            str(model or "").strip(),
+            failures,
+            threshold,
+        )
+    return failures
+
+
+def _record_llm_timeout_success(route: str, model: str) -> None:
+    _clear_llm_timeout_circuit(route, model)
 
 
 def _is_critical_medical_intent(query_understanding: QueryUnderstanding) -> bool:
@@ -671,7 +713,7 @@ def _doc_scoped_biological_summary_llm_profile(query_understanding: QueryUnderst
         "timeout_ms": 90000,
         "num_predict": 150,
         "prompt_target_chars": 2200,
-        "prompt_hard_limit_chars": 3000,
+        "prompt_hard_limit_chars": 3600,
         "num_ctx_cap": 3072,
     }
     if render_profile == "compact_biological_summary":
@@ -684,7 +726,7 @@ def _doc_scoped_biological_summary_llm_profile(query_understanding: QueryUnderst
                 "timeout_ms": 70000,
                 "num_predict": 120,
                 "prompt_target_chars": 1700,
-                "prompt_hard_limit_chars": 2400,
+                "prompt_hard_limit_chars": 3200,
                 "num_ctx_cap": 2048,
             }
         )
@@ -698,7 +740,7 @@ def _doc_scoped_biological_summary_llm_profile(query_understanding: QueryUnderst
                 "timeout_ms": 85000,
                 "num_predict": 150,
                 "prompt_target_chars": 2100,
-                "prompt_hard_limit_chars": 2800,
+                "prompt_hard_limit_chars": 3600,
                 "num_ctx_cap": 2560,
             }
         )
@@ -712,7 +754,7 @@ def _doc_scoped_biological_summary_llm_profile(query_understanding: QueryUnderst
                 "timeout_ms": 95000,
                 "num_predict": 170,
                 "prompt_target_chars": 2400,
-                "prompt_hard_limit_chars": 3200,
+                "prompt_hard_limit_chars": 4000,
                 "num_ctx_cap": 3072,
             }
         )
@@ -724,7 +766,7 @@ def _doc_scoped_biological_summary_llm_profile(query_understanding: QueryUnderst
             profile["num_predict"] = min(int(profile["num_predict"]), 120)
             profile["timeout_ms"] = min(int(profile["timeout_ms"]), 70000)
             profile["prompt_target_chars"] = min(int(profile["prompt_target_chars"]), 1700)
-            profile["prompt_hard_limit_chars"] = min(int(profile["prompt_hard_limit_chars"]), 2400)
+            profile["prompt_hard_limit_chars"] = min(int(profile["prompt_hard_limit_chars"]), 3200)
             profile["num_ctx_cap"] = min(int(profile["num_ctx_cap"]), 2048)
         elif requested_lines >= 7:
             profile["max_rows"] = min(max(int(profile["max_rows"]), 6), 6)
@@ -733,7 +775,22 @@ def _doc_scoped_biological_summary_llm_profile(query_understanding: QueryUnderst
             profile["num_predict"] = max(int(profile["num_predict"]), 170)
             profile["timeout_ms"] = max(int(profile["timeout_ms"]), 95000)
             profile["prompt_target_chars"] = max(int(profile["prompt_target_chars"]), 2400)
-            profile["prompt_hard_limit_chars"] = max(int(profile["prompt_hard_limit_chars"]), 3200)
+            profile["prompt_hard_limit_chars"] = max(int(profile["prompt_hard_limit_chars"]), 4000)
+
+    try:
+        timeout_override_s = int(os.getenv("MEDICAL_RAG_SUMMARY_WRITER_TIMEOUT_S", "0"))
+    except Exception:
+        timeout_override_s = 0
+    if timeout_override_s > 0:
+        profile["timeout_ms"] = max(int(profile["timeout_ms"]), timeout_override_s * 1000)
+
+    try:
+        predict_override = int(os.getenv("MEDICAL_RAG_SUMMARY_WRITER_MAX_TOKENS", "0"))
+    except Exception:
+        predict_override = 0
+    if predict_override > 0:
+        profile["num_predict"] = max(int(profile["num_predict"]), predict_override)
+
     return profile
 
 
@@ -10009,9 +10066,15 @@ def _build_llm_evidence_pack(
                 "status": status_display,
                 "technical_status_code": status_code or None,
                 "interpretation_status": status_code or None,
-                "priority_level": (str(ev.get("priority_level") or "").strip() or None),
-                "priority_reason": (str(ev.get("priority_reason") or "").strip() or None),
-                "source_label": str(ev.get("source") or "source non disponible").strip(),
+                **(
+                    {}
+                    if route == "doc_scoped_biological_summary"
+                    else {
+                        "priority_level": (str(ev.get("priority_level") or "").strip() or None),
+                        "priority_reason": (str(ev.get("priority_reason") or "").strip() or None),
+                        "source_label": str(ev.get("source") or "source non disponible").strip(),
+                    }
+                ),
             }
         )
     llm_pack = {
@@ -10315,29 +10378,18 @@ def _compose_level2_micro_prompt_answer(
         within_count_hint = 1 if render_profile in {"compact_biological_summary", "editorial_biological_summary"} else 2
         prompt = (
             "Tu es un rédacteur médical technique.\n"
-            "Réponds UNIQUEMENT en JSON strict valide, sans markdown, sans texte hors JSON.\n"
-            "Schéma de sortie obligatoire:\n"
-            "{\n"
-            "  \"anormaux\": [\"Analyte 1\", \"Analyte 2\"],\n"
-            "  \"within_reference\": [\"Analyte A\", \"Analyte B\"],\n"
-            "  \"conclusion\": \"Conclusion technique courte\"\n"
-            "}\n\n"
+            "Rédige une synthèse narrative courte en 3 à 5 lignes.\n"
+            "Format attendu: ouverture clinique, anomalies majeures, résultats dans la référence si présents, conclusion prudente.\n\n"
             "Règles critiques:\n"
             "- N'inclus jamais de bloc Sources.\n"
             "- N'invente aucune valeur, unité, référence, source ou analyte.\n"
-            "- \"anormaux\" doit contenir UNIQUEMENT des analytes issus des Faits anormaux.\n"
-            "- \"within_reference\" doit contenir UNIQUEMENT des analytes issus des Faits dans la référence.\n"
-            "- Ne mets JAMAIS un analyte anormal dans \"within_reference\".\n"
             "- Ne donne pas de diagnostic.\n"
             "- Ne propose pas de traitement.\n"
             "- Si le statut d’un analyte est inconnu ou needs_clinical_context, n’écris jamais qu’il est au-dessus/en dessous de la référence.\n"
-            f"- \"anormaux\" contient au maximum {abnormal_count_hint} analytes saillants.\n"
-            f"- \"within_reference\" contient au maximum {within_count_hint} analyte(s) documenté(s) dans la référence.\n"
+            f"- Mentionne au maximum {abnormal_count_hint} analytes saillants et au maximum {within_count_hint} analyte(s) dans la référence.\n"
             f"- {output_length_instruction}\n"
             "- N'utilise jamais « nécessite un contexte clinique » si les faits contiennent déjà un statut explicite.\n\n"
             f"{guardrail_block}\n"
-            "Facts contract (source de vérité):\n"
-            f"{json.dumps(facts_contract, ensure_ascii=False)}\n\n"
             "Faits anormaux:\n"
             f"{(chr(10).join(compact_abnormal_lines) if compact_abnormal_lines else '- Aucun fait anormal fourni.')}\n\n"
             "Faits dans la référence:\n"
@@ -15833,6 +15885,7 @@ def run_generation(
         deterministic_preferred_reason = str(selected_policy.get("deterministic_preferred_reason") or "").strip() or None
         llm_timeout_circuit_blocked = False
         llm_timeout_circuit_route = str(selected_route or query_understanding.intent or "").strip().lower()
+        llm_timeout_failures = 0
         if generation_strategy == "deterministic_preferred" and not bool(llm_cfg.get("use_llm", False)):
             if selected_route == "doc_scoped_biological_summary":
                 llm_skipped_reason = "biological_summary_deterministic_preferred"
@@ -16274,7 +16327,7 @@ def run_generation(
         if writer_error and "timeout" in writer_error.lower():
             fallback_reason_debug = "llm_timeout"
             fallback_stage = "llm_call"
-            _open_llm_timeout_circuit(llm_timeout_circuit_route, writer_model)
+            llm_timeout_failures = _record_llm_timeout_failure(llm_timeout_circuit_route, writer_model)
             llm_candidate_answer = None
             llm_candidate_validation_status = None
             llm_candidate_validation_errors = None
@@ -18010,6 +18063,8 @@ def run_generation(
                 "pass": False,
                 "reasons": ["directional_claim_on_ambiguous_status"],
             }
+        if str(final_answer_source or "").strip().lower() in {"llm_writer", "llm_writer_repaired"}:
+            _record_llm_timeout_success(llm_timeout_circuit_route, writer_model)
         if llm_candidate_repair_used and not llm_repair_status:
             llm_repair_status = "attempted"
         elif not llm_candidate_repair_used:
@@ -18159,6 +18214,8 @@ def run_generation(
                 "llm_route_model_forced": llm_model_forced,
                 "llm_timeout_circuit_blocked": llm_timeout_circuit_blocked,
                 "llm_timeout_circuit_route": llm_timeout_circuit_route,
+                "llm_timeout_failures": llm_timeout_failures,
+                "llm_timeout_circuit_failure_threshold": _llm_timeout_circuit_failure_threshold(),
                 "llm_retry_policy_max_attempts": _llm_max_retry_attempts(),
                 **_llm_runtime_metrics_for_debug(
                     llm_writer_attempted=llm_writer_attempted_flag,

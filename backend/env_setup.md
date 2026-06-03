@@ -29,7 +29,15 @@ MEDICAL_RAG_LLM_MAX_TOKENS=384
 MEDICAL_RAG_LLM_TIMEOUT=180
 MEDICAL_RAG_SUMMARY_TIMEOUT_CAP_S=120
 MEDICAL_RAG_SUMMARY_MAX_TOKENS=220
+MEDICAL_RAG_SUMMARY_WRITER_TIMEOUT_S=120
+MEDICAL_RAG_SUMMARY_WRITER_MAX_TOKENS=220
 MEDICAL_RAG_ALLOW_MODEL_OVERRIDE=false
+MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_ENABLED=1
+MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_FAILURE_THRESHOLD=2
+MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_TTL_S=900
+MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_ROUTES=doc_scoped_medical_interpretation_guarded
+MEDICAL_RAG_OLLAMA_TIMEOUT_RETRIES=1
+MEDICAL_RAG_OLLAMA_RETRY_BACKOFF_MS=750
 MEDICAL_RAG_OLLAMA_URL=http://127.0.0.1:11434
 MEDICAL_RAG_OLLAMA_MODEL=qwen2.5:7b-instruct
 MEDICAL_RAG_GEMINI_MODEL=gemini-2.5-flash
@@ -39,6 +47,8 @@ GEMINI_API_KEY=your_api_key_here
 Notes :
 - ne pas committer de vraies clés/secrets ;
 - `ADMIN_EMAILS` accepte une liste séparée par virgules.
+- le circuit timeout est en mémoire processus, pas dans Redis ; un redémarrage du backend le réinitialise ;
+- la route `doc_scoped_biological_summary` n'est pas couverte par le circuit par défaut, sauf si `MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_ROUTES` l'ajoute explicitement.
 
 ## Test rapide
 
