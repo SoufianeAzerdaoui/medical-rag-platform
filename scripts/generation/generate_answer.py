@@ -361,6 +361,56 @@ def _normalize_llm_fallback_reason(raw_reason: str | None) -> str | None:
     return text
 
 
+def _doc_scoped_summary_fallback_renderer_name(*, from_llm_path: bool = False) -> str:
+    if from_llm_path:
+        return "deterministic_doc_scoped_biological_summary_fallback"
+    return "deterministic_biological_summary_short"
+
+
+def _first_non_empty_string(items: list[str] | None) -> str | None:
+    for item in list(items or []):
+        token = str(item or "").strip()
+        if token:
+            return token
+    return None
+
+
+def _derive_llm_candidate_rejected_reason(
+    *,
+    contract_errors: list[str] | None = None,
+    validation_status: str | None = None,
+    validation_errors: list[str] | None = None,
+    validation_warnings: list[str] | None = None,
+    quality_gate_result: dict[str, Any] | None = None,
+    fallback_reason: str | None = None,
+    hard_gate_errors: list[str] | None = None,
+) -> str | None:
+    contract_first = _first_non_empty_string(contract_errors)
+    if contract_first:
+        return f"contract_violation:{contract_first}"
+
+    hard_gate_first = _first_non_empty_string(hard_gate_errors)
+    if hard_gate_first:
+        return f"hard_gate:{hard_gate_first}"
+
+    validation_first = _first_non_empty_string(validation_errors)
+    if validation_first:
+        return f"validation_error:{validation_first}"
+
+    quality_gate = dict(quality_gate_result or {})
+    if quality_gate and not bool(quality_gate.get("pass")):
+        quality_reason = _first_non_empty_string(list(quality_gate.get("reasons") or []))
+        if quality_reason:
+            return f"quality_gate:{quality_reason}"
+
+    warning_first = _first_non_empty_string(validation_warnings)
+    if warning_first and str(validation_status or "").strip().lower() in {"fail", "warning"}:
+        return f"validation_warning:{warning_first}"
+
+    normalized_fallback = str(fallback_reason or "").strip()
+    return normalized_fallback or None
+
+
 def _is_hybrid_structured_writer_intent(query_understanding: QueryUnderstanding) -> bool:
     intent = str(getattr(query_understanding, "intent", "") or "").strip().lower()
     technical_condition = str(getattr(query_understanding, "technical_condition", "") or "").strip().lower()
@@ -10564,6 +10614,11 @@ def _should_retry_with_validator(
         return False
     route = str(selected_route or "").strip().lower()
     if route == "doc_scoped_biological_summary":
+        status = str(validation.get("validation_status") or "").strip().lower()
+        if status == "fail":
+            return True
+        if errors & _STYLE_RETRY_KEYS:
+            return True
         soft_retry_keys = {
             "missing_conclusion",
             "narrative_too_short",
@@ -10571,8 +10626,7 @@ def _should_retry_with_validator(
             "readability_concatenated_tokens",
             "missing_query_criterion_in_intro",
         }
-        if not (errors | warnings) & (set(_STYLE_RETRY_KEYS) - soft_retry_keys):
-            return False
+        return bool(warnings & (_STYLE_RETRY_KEYS | soft_retry_keys))
     return bool((errors | warnings) & _STYLE_RETRY_KEYS)
 
 
@@ -15977,10 +16031,14 @@ def run_generation(
         llm_candidate_validation_status: str | None = None
         llm_candidate_validation_errors: list[str] | None = None
         llm_candidate_validation_warnings: list[str] | None = None
+        llm_candidate_rejected_reason: str | None = None
+        llm_candidate_contract_errors: list[str] = list(contract_violation_list or [])
         llm_candidate_repair_used = False
         llm_repaired_answer: str | None = None
         llm_repaired_validation_status: str | None = None
         llm_repaired_validation_errors: list[str] = []
+        llm_repaired_validation_warnings: list[str] = []
+        llm_repair_status: str | None = None
         llm_writer_final_attempted = False
         llm_writer_final_accepted = False
         llm_writer_final_error: str | None = None
@@ -16189,6 +16247,13 @@ def run_generation(
             llm_candidate_validation_status = str(candidate_validation.get("validation_status") or "")
             llm_candidate_validation_errors = list(candidate_validation.get("errors") or [])
             llm_candidate_validation_warnings = list(candidate_validation.get("warnings") or [])
+            llm_candidate_rejected_reason = _derive_llm_candidate_rejected_reason(
+                contract_errors=llm_candidate_contract_errors,
+                validation_status=llm_candidate_validation_status,
+                validation_errors=llm_candidate_validation_errors,
+                validation_warnings=llm_candidate_validation_warnings,
+                fallback_reason=fallback_reason_debug,
+            )
             false_no_abnormal_summary_detected = (
                 false_no_abnormal_summary_detected
                 or ("false_no_abnormal_summary" in set(llm_candidate_validation_errors or []))
@@ -16892,6 +16957,7 @@ def run_generation(
             except Exception as exc:
                 llm_repair_error_type = type(exc).__name__
                 llm_repair_error_message = str(exc)
+                llm_repair_status = "error"
                 retry_composed = {"mode": "llm_writer_error_fallback", "answer": "", "llm_error": str(exc)}
             retry_answer = str(retry_composed.get("answer") or "").strip()
             if selected_route == "doc_scoped_biological_summary":
@@ -16967,8 +17033,13 @@ def run_generation(
                     generation_mode = retry_mode
                     writer_error = retry_writer_error
                     validation = retry_validation
+                    fallback_reason_debug = None
+                    fallback_renderer_used = None
                     llm_repaired_validation_status = str(retry_validation.get("validation_status") or "")
                     llm_repaired_validation_errors = list(retry_validation.get("errors") or [])
+                    llm_repaired_validation_warnings = list(retry_validation.get("warnings") or [])
+                    llm_repair_status = "passed"
+                    llm_candidate_rejected_reason = None
                 else:
                     fallback_composed = compose_professional_answer(
                         user_question=q,
@@ -16993,12 +17064,16 @@ def run_generation(
                     if selected_route == "doc_scoped_priority_anomalies":
                         fallback_reason_debug = fallback_reason_debug or "priority_style_rejected_use_deterministic"
                     else:
-                        fallback_reason_debug = fallback_reason_debug or "llm_repair_failed"
+                        fallback_reason_debug = "llm_validation_failed_after_repair"
                     fallback_stage = "post_validation_repair"
                     if selected_route == "doc_scoped_biological_summary":
-                        fallback_renderer_used = "deterministic_biological_summary_short"
+                        fallback_renderer_used = _doc_scoped_summary_fallback_renderer_name(from_llm_path=True)
                     elif selected_route == "reference_ranges_summary":
                         fallback_renderer_used = "reference_ranges_deterministic_fallback"
+                    llm_repaired_validation_status = str(retry_validation.get("validation_status") or "")
+                    llm_repaired_validation_errors = list(retry_validation.get("errors") or [])
+                    llm_repaired_validation_warnings = list(retry_validation.get("warnings") or [])
+                    llm_repair_status = "failed_validation"
                     validation = validate_answer(
                         query=q,
                         answer_text=final_answer,
@@ -17048,6 +17123,8 @@ def run_generation(
                         recent_style_history=style_history,
                     )
             stage_times_ms["repair_ms"] = round((time.perf_counter() - t_rep0) * 1000.0, 3)
+        elif llm_candidate_repair_used:
+            llm_repair_status = llm_repair_status or "not_attempted"
 
         # Hard gate: never return an invalid LLM/hybrid answer to end-users.
         llm_like_mode = (
@@ -17613,6 +17690,7 @@ def run_generation(
             str(selected_route or "").strip().lower() == "doc_scoped_biological_summary"
             and bool(llm_candidate_answer)
             and allow_soft_llm_reaccept
+            and str(llm_repair_status or "").strip().lower() != "failed_validation"
             and _summary_candidate_is_substantive(str(llm_candidate_answer or ""))
             and (
                 (
@@ -17724,6 +17802,11 @@ def run_generation(
             str(generation_mode or "").strip().lower().startswith("deterministic_")
             or str(fallback_renderer_used or "").strip()
         )
+        llm_repair_succeeded = bool(
+            llm_candidate_repair_used
+            and str(llm_repaired_validation_status or "").strip().lower() in {"pass", "warning"}
+            and not deterministic_rendered
+        )
         if rr_answer_source_override == "deterministic_renderer":
             llm_writer_accepted_flag = False
             final_answer_source = "deterministic_renderer"
@@ -17738,7 +17821,10 @@ def run_generation(
                     or llm_writer_final_accepted
                 )
             )
-            final_answer_source = "llm_writer" if llm_writer_accepted_flag else "deterministic_renderer"
+            if llm_writer_accepted_flag and llm_repair_succeeded:
+                final_answer_source = "llm_writer_repaired"
+            else:
+                final_answer_source = "llm_writer" if llm_writer_accepted_flag else "deterministic_renderer"
         renderer_used = (
             str(rr_renderer_used_override or fallback_renderer_used or "").strip()
             or (
@@ -17746,7 +17832,9 @@ def run_generation(
                 if str(selected_route or "").strip().lower() == "reference_ranges_summary"
                 and str(generation_mode or "").strip().lower().startswith("deterministic_")
                 else (
-                    "deterministic_biological_summary_short"
+                    _doc_scoped_summary_fallback_renderer_name(
+                        from_llm_path=bool(str(fallback_reason_debug or "").strip())
+                    )
                     if str(selected_route or "").strip().lower() == "doc_scoped_biological_summary"
                     and str(generation_mode or "").strip().lower().startswith("deterministic_")
                     else ""
@@ -17759,12 +17847,12 @@ def run_generation(
                 evidences=list(displayed_evidences or []),
             )
             if str(selected_route or "").strip().lower() == "doc_scoped_biological_summary"
-            and str(final_answer_source or "").strip().lower() == "llm_writer"
+            and str(final_answer_source or "").strip().lower() in {"llm_writer", "llm_writer_repaired"}
             else []
         )
         if (
             str(selected_route or "").strip().lower() == "doc_scoped_biological_summary"
-            and str(final_answer_source or "").strip().lower() == "llm_writer"
+            and str(final_answer_source or "").strip().lower() in {"llm_writer", "llm_writer_repaired"}
             and final_writer_directional_conflicts
             and not _summary_conflicts_only_soft_unmatched_directional(final_writer_directional_conflicts)
         ):
@@ -17787,6 +17875,22 @@ def run_generation(
                 "pass": False,
                 "reasons": ["directional_claim_on_ambiguous_status"],
             }
+        if llm_candidate_repair_used and not llm_repair_status:
+            llm_repair_status = "attempted"
+        elif not llm_candidate_repair_used:
+            llm_repair_status = None
+        if str(final_answer_source or "").strip().lower() in {"llm_writer", "llm_writer_repaired"}:
+            llm_candidate_rejected_reason = None
+        else:
+            llm_candidate_rejected_reason = _derive_llm_candidate_rejected_reason(
+                contract_errors=llm_candidate_contract_errors,
+                validation_status=llm_candidate_validation_status or str((validation or {}).get("validation_status") or ""),
+                validation_errors=llm_candidate_validation_errors or list((validation or {}).get("errors") or []),
+                validation_warnings=llm_candidate_validation_warnings or list((validation or {}).get("warnings") or []),
+                quality_gate_result=quality_gate_result if isinstance(quality_gate_result, dict) else None,
+                fallback_reason=fallback_reason_debug,
+                hard_gate_errors=list(hard_gate_errors_at_any_point or []),
+            )
         return _inject_visualization_payload(
             {
             "request_id": request_id,
@@ -17820,6 +17924,15 @@ def run_generation(
             "final_answer_source": final_answer_source,
             "renderer_used": renderer_used,
             "fallback_reason": fallback_reason_debug,
+            "llm_candidate_answer": llm_candidate_answer,
+            "llm_candidate_validation_status": llm_candidate_validation_status,
+            "llm_candidate_validation_errors": llm_candidate_validation_errors,
+            "llm_candidate_validation_warnings": llm_candidate_validation_warnings,
+            "llm_candidate_rejected_reason": llm_candidate_rejected_reason,
+            "llm_candidate_contract_errors": llm_candidate_contract_errors,
+            "llm_repair_attempted": llm_candidate_repair_used,
+            "llm_repair_status": llm_repair_status,
+            "llm_repaired_answer": llm_repaired_answer,
             "detected_analytes": exact_analytes,
             "query_understanding": _query_understanding_payload(query_understanding),
             "structured_evidence_pack": structured_pack,
@@ -17981,12 +18094,16 @@ def run_generation(
                 "llm_candidate_validation_status": llm_candidate_validation_status,
                 "llm_candidate_validation_errors": llm_candidate_validation_errors,
                 "llm_candidate_validation_warnings": llm_candidate_validation_warnings,
+                "llm_candidate_rejected_reason": llm_candidate_rejected_reason,
+                "llm_candidate_contract_errors": llm_candidate_contract_errors,
                 "final_postprocess_fixed_warnings": final_postprocess_fixed_warnings,
                 "llm_candidate_repair_used": llm_candidate_repair_used,
                 "llm_repaired_answer": llm_repaired_answer,
                 "llm_repaired_validation_status": llm_repaired_validation_status,
                 "llm_repaired_validation_errors": llm_repaired_validation_errors,
+                "llm_repaired_validation_warnings": llm_repaired_validation_warnings,
                 "llm_repair_attempted": llm_candidate_repair_used,
+                "llm_repair_status": llm_repair_status,
                 "llm_repair_answer": llm_repaired_answer,
                 "llm_repair_error_type": llm_repair_error_type,
                 "llm_repair_error_message": llm_repair_error_message,

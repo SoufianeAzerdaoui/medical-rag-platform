@@ -7,6 +7,7 @@ export type DocumentaryMetrics = {
   ignoredCount: number;
   confidence: DocumentaryConfidenceLevel;
   extractedValues: number;
+  extractedValuesLabel: string;
   missingElements: number;
   diagnosisProposed: "Oui" | "Non";
   fromBackendMetrics: boolean;
@@ -119,6 +120,9 @@ export function getMessageDocumentaryMetrics(message: MessageItem): DocumentaryM
 
   const hasDisplayedEvidences =
     diagnostics.displayed_evidences_count !== undefined ||
+    diagnostics.evidence_pack_count !== undefined ||
+    diagnostics.lab_result_count !== undefined ||
+    diagnostics.value_numeric_count !== undefined ||
     diagnostics.included_rows_count !== undefined ||
     diagnostics.used_sources_count !== undefined;
   const hasMissingValues =
@@ -147,9 +151,22 @@ export function getMessageDocumentaryMetrics(message: MessageItem): DocumentaryM
     "extracted_items_count",
     "reported_values_count",
   ]);
+  const structuredValueCount = pickDiagnosticNumber(diagnostics, [
+    "value_numeric_count",
+    "lab_result_count",
+    "evidence_pack_count",
+    "displayed_evidences_count",
+    "included_rows_count",
+  ]);
   const extractedValues = extractedFromDiagnostics !== null
     ? Math.max(0, Math.round(extractedFromDiagnostics))
-    : estimateExtractedValues(content);
+    : structuredValueCount !== null
+      ? Math.max(0, Math.round(structuredValueCount))
+      : estimateExtractedValues(content);
+  const extractedValuesLabel =
+    structuredValueCount !== null && structuredValueCount > 0
+      ? "Valeurs structurées retrouvées"
+      : "Valeurs extraites";
 
   const missingFromDiagnostics = toNumber(
     diagnostics.missing_values_count ??
@@ -171,9 +188,10 @@ export function getMessageDocumentaryMetrics(message: MessageItem): DocumentaryM
     ignoredCount,
     confidence,
     extractedValues,
+    extractedValuesLabel,
     missingElements,
     diagnosisProposed,
-    fromBackendMetrics: hasDisplayedEvidences && hasMissingValues && hasSafetyScore,
+    fromBackendMetrics: hasDisplayedEvidences && (hasMissingValues || hasSafetyScore || structuredValueCount !== null),
   };
 }
 

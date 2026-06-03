@@ -121,7 +121,7 @@ class ChatResponse(BaseModel):
     selected_route: str | None = None
     llm_writer_attempted: bool | None = None
     llm_writer_accepted: bool | None = None
-    final_answer_source: Literal["llm_writer", "deterministic_renderer"] | None = None
+    final_answer_source: Literal["llm_writer", "llm_writer_repaired", "deterministic_renderer"] | None = None
     renderer_used: str | None = None
     fallback_reason: str | None = None
     visualization: dict[str, Any] | None = None

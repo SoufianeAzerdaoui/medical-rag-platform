@@ -1939,6 +1939,124 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertNotIn("résultats dans la référence uniquement", low)
         self.assertNotIn("analytes anormaux et normaux identifiés", low)
 
+    def test_doc_scoped_biological_summary_uses_repaired_llm_answer_after_candidate_validation_failure(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        candidate = (
+            "Anormaux : Bilirubine Directe = 6 mg/l (réf 0.00 - 5.00, au-dessus).\n"
+            "Résultats dans la référence uniquement : aucun résultat strictement dans la référence parmi les éléments sélectionnés.\n"
+            "Conclusion technique : Analytes anormaux et normaux identifiés, sans diagnostic."
+        )
+        repaired = (
+            "Le bilan met surtout en évidence une élévation de la bilirubine directe et de la créatinine parmi les anomalies les plus notables. "
+            "Aucun résultat strictement dans la référence n’est mis en avant dans les éléments sélectionnés. "
+            "Cette synthèse reste strictement descriptive et doit être interprétée avec prudence, sans diagnostic."
+        )
+        call_count = {"n": 0}
+
+        def _fake_micro(**kwargs: object) -> dict[str, object]:
+            call_count["n"] += 1
+            answer = candidate if call_count["n"] == 1 else repaired
+            return {
+                "mode": "hybrid_structured_llm_writer",
+                "answer": answer,
+                "llm_candidate_answer": answer,
+                "llm_error": None,
+                "use_micro_prompt": True,
+            }
+
+        original_validate = __import__("generate_answer").validate_answer
+
+        def _validate_candidate_then_repair(*args, **kwargs):
+            answer_text = str(kwargs.get("answer_text") or "").strip()
+            if answer_text == candidate.strip():
+                return {"validation_status": "fail", "errors": ["output_format_not_respected"], "warnings": []}
+            if answer_text.startswith(repaired.strip()):
+                return {"validation_status": "pass", "errors": [], "warnings": []}
+            return original_validate(*args, **kwargs)
+
+        try:
+            with mock.patch("generate_answer._compose_level2_micro_prompt_answer", side_effect=_fake_micro), mock.patch(
+                "generate_answer.validate_answer", side_effect=_validate_candidate_then_repair
+            ):
+                result = run_generation(
+                    query="Fais une synthèse biologique courte du report 12. Limite-toi à 3 à 5 lignes, mentionne uniquement les anomalies majeures, les résultats dans la référence et une conclusion prudente, sans diagnostic.",
+                    mode="keyword",
+                    top_k=30,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        self.assertEqual(str(result.get("final_answer_source") or ""), "llm_writer_repaired")
+        self.assertTrue(bool(result.get("llm_repair_attempted")))
+        self.assertEqual(str(result.get("llm_repair_status") or ""), "passed")
+        self.assertEqual(str(result.get("fallback_reason") or ""), "")
+        self.assertEqual(list(result.get("llm_candidate_validation_errors") or []), ["output_format_not_respected"])
+        self.assertEqual(str(result.get("llm_candidate_rejected_reason") or ""), "")
+        self.assertTrue(str(result.get("llm_repaired_answer") or "").startswith(repaired))
+
+    def test_doc_scoped_biological_summary_repair_failure_exposes_reason_before_deterministic_fallback(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        candidate = (
+            "Anormaux : Bilirubine Directe = 6 mg/l (réf 0.00 - 5.00, au-dessus).\n"
+            "Résultats dans la référence uniquement : aucun résultat strictement dans la référence parmi les éléments sélectionnés.\n"
+            "Conclusion technique : Analytes anormaux et normaux identifiés, sans diagnostic."
+        )
+        repaired = "Conclusion technique : sans diagnostic."
+        call_count = {"n": 0}
+
+        def _fake_micro(**kwargs: object) -> dict[str, object]:
+            call_count["n"] += 1
+            answer = candidate if call_count["n"] == 1 else repaired
+            return {
+                "mode": "hybrid_structured_llm_writer",
+                "answer": answer,
+                "llm_candidate_answer": answer,
+                "llm_error": None,
+                "use_micro_prompt": True,
+            }
+
+        original_validate = __import__("generate_answer").validate_answer
+
+        def _validate_fail_both(*args, **kwargs):
+            answer_text = str(kwargs.get("answer_text") or "").strip()
+            if answer_text == candidate.strip():
+                return {"validation_status": "fail", "errors": ["output_format_not_respected"], "warnings": []}
+            if answer_text.startswith(repaired.strip()):
+                return {"validation_status": "fail", "errors": ["missing_professional_intro"], "warnings": ["missing_conclusion"]}
+            return original_validate(*args, **kwargs)
+
+        try:
+            with mock.patch("generate_answer._compose_level2_micro_prompt_answer", side_effect=_fake_micro), mock.patch(
+                "generate_answer.validate_answer", side_effect=_validate_fail_both
+            ):
+                result = run_generation(
+                    query="Fais une synthèse biologique courte du report 12. Limite-toi à 3 à 5 lignes, mentionne uniquement les anomalies majeures, les résultats dans la référence et une conclusion prudente, sans diagnostic.",
+                    mode="keyword",
+                    top_k=30,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        self.assertEqual(str(result.get("final_answer_source") or ""), "deterministic_renderer")
+        self.assertTrue(bool(result.get("llm_repair_attempted")))
+        self.assertEqual(str(result.get("llm_repair_status") or ""), "failed_validation")
+        self.assertEqual(str(result.get("fallback_reason") or ""), "llm_validation_failed_after_repair")
+        self.assertEqual(str(result.get("renderer_used") or ""), "deterministic_doc_scoped_biological_summary_fallback")
+        self.assertEqual(
+            str(result.get("llm_candidate_rejected_reason") or ""),
+            "validation_error:output_format_not_respected",
+        )
+
     def test_biological_summary_doctor_note_reference_ranges_includes_range_section(self) -> None:
         ga = __import__("generate_answer")
         evidences = [
