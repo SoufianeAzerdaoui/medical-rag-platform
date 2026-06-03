@@ -9347,44 +9347,6 @@ def _summary_directional_status_conflicts(
     answer: str,
     evidences: list[dict[str, Any]],
 ) -> list[str]:
-    def _split_summary_sentences(text: str) -> list[str]:
-        raw = str(text or "").strip()
-        if not raw:
-            return []
-        parts = re.split(r"(?:\n|;|[!?]+|(?<=[A-Za-zÀ-ÿ\)])\.(?=\s|$))+", raw)
-        return [part.strip() for part in parts if part and part.strip()]
-
-    def _sentence_mentions_analyte(sentence_norm: str, sentence_compact: str, ev: dict[str, Any]) -> bool:
-        raw_variants = [
-            str(ev.get("analyte") or ""),
-            str(ev.get("analyte_label") or ""),
-            str(ev.get("display_name") or ""),
-            str(ev.get("source_analyte") or ""),
-            str(ev.get("analyte_norm") or ""),
-        ]
-        canonical_key = _canonical_analyte_key(
-            str(ev.get("analyte_norm") or ev.get("analyte") or ev.get("display_name") or "")
-        )
-        if canonical_key:
-            raw_variants.append(canonical_key)
-            raw_variants.append(_canonical_display_name(canonical_key.replace(" ", "_")))
-
-        seen: set[str] = set()
-        for raw_variant in raw_variants:
-            cleaned = _clean_analyte_label(raw_variant).strip()
-            if not cleaned:
-                continue
-            variant_norm = norm_text(cleaned)
-            if not variant_norm or variant_norm in seen:
-                continue
-            seen.add(variant_norm)
-            if variant_norm in sentence_norm:
-                return True
-            variant_compact = re.sub(r"[^a-z0-9]+", "", variant_norm)
-            if len(variant_compact) >= 3 and variant_compact in sentence_compact:
-                return True
-        return False
-
     conflicts: list[str] = []
     sentences = _split_summary_sentences(str(answer or ""))
     if not sentences:
@@ -9403,7 +9365,7 @@ def _summary_directional_status_conflicts(
             analyte = _clean_analyte_label(str(ev.get("analyte") or ev.get("analyte_label") or ev.get("display_name") or "")).strip()
             if not analyte:
                 continue
-            if not _sentence_mentions_analyte(sn, sn_compact, ev):
+            if not _summary_sentence_mentions_analyte(sn, sn_compact, ev):
                 continue
 
             matched_evidence = True
@@ -9425,6 +9387,46 @@ def _summary_directional_status_conflicts(
         if not matched_evidence:
             conflicts.append("directional_claim_unmatched_analyte")
     return sorted(set(conflicts))
+
+
+def _split_summary_sentences(text: str) -> list[str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    parts = re.split(r"(?:\n|;|[!?]+|(?<=[A-Za-zÀ-ÿ\)])\.(?=\s|$))+", raw)
+    return [part.strip() for part in parts if part and part.strip()]
+
+
+def _summary_sentence_mentions_analyte(sentence_norm: str, sentence_compact: str, ev: dict[str, Any]) -> bool:
+    raw_variants = [
+        str(ev.get("analyte") or ""),
+        str(ev.get("analyte_label") or ""),
+        str(ev.get("display_name") or ""),
+        str(ev.get("source_analyte") or ""),
+        str(ev.get("analyte_norm") or ""),
+    ]
+    canonical_key = _canonical_analyte_key(
+        str(ev.get("analyte_norm") or ev.get("analyte") or ev.get("display_name") or "")
+    )
+    if canonical_key:
+        raw_variants.append(canonical_key)
+        raw_variants.append(_canonical_display_name(canonical_key.replace(" ", "_")))
+
+    seen: set[str] = set()
+    for raw_variant in raw_variants:
+        cleaned = _clean_analyte_label(raw_variant).strip()
+        if not cleaned:
+            continue
+        variant_norm = norm_text(cleaned)
+        if not variant_norm or variant_norm in seen:
+            continue
+        seen.add(variant_norm)
+        if variant_norm in sentence_norm:
+            return True
+        variant_compact = re.sub(r"[^a-z0-9]+", "", variant_norm)
+        if len(variant_compact) >= 3 and variant_compact in sentence_compact:
+            return True
+    return False
 
 
 def _evaluate_summary_quality_gate(
@@ -9537,6 +9539,19 @@ def _summary_quality_gate_requires_deterministic_fallback(
 def _summary_conflicts_only_soft_unmatched_directional(conflicts: list[str] | set[str] | tuple[str, ...] | None) -> bool:
     normalized = {str(conflict or "").strip() for conflict in (conflicts or []) if str(conflict or "").strip()}
     return bool(normalized) and normalized == {"directional_claim_unmatched_analyte"}
+
+
+def _summary_has_any_matched_directional_claim(answer: str, evidences: list[dict[str, Any]]) -> bool:
+    directional_tokens = ["au dessus", "au-dessus", "above", "superieur", "supérieur", "en dessous", "below", "inferieur", "inférieur"]
+    for sentence in _split_summary_sentences(answer):
+        sentence_norm = norm_text(sentence)
+        if not any(token in sentence_norm for token in directional_tokens):
+            continue
+        sentence_compact = re.sub(r"[^a-z0-9]+", "", sentence_norm)
+        for ev in list(evidences or []):
+            if _summary_sentence_mentions_analyte(sentence_norm, sentence_compact, ev):
+                return True
+    return False
 
 
 def _relax_doc_scoped_biological_summary_validation(validation: dict[str, Any]) -> dict[str, Any]:
@@ -16391,11 +16406,15 @@ def run_generation(
                 ]
             )
         def _summary_candidate_soft_direction_ok(text: str) -> bool:
+            answer_text = str(text or "")
             conflicts = _summary_directional_status_conflicts(
-                answer=str(text or ""),
+                answer=answer_text,
                 evidences=list(displayed_evidences or []),
             )
-            return _summary_conflicts_only_soft_unmatched_directional(conflicts)
+            return bool(
+                _summary_has_any_matched_directional_claim(answer_text, list(displayed_evidences or []))
+                and _summary_conflicts_only_soft_unmatched_directional(conflicts)
+            )
         if route_norm_for_quality in {"doc_scoped_biological_summary", "reference_ranges_summary"}:
             final_answer = _normalize_summary_readability(final_answer)
             quality_gate_result = _evaluate_summary_quality_gate(
@@ -17414,6 +17433,14 @@ def run_generation(
             if str(selected_route or "").strip().lower() == "doc_scoped_biological_summary" and bool(llm_candidate_answer)
             else []
         )
+        llm_candidate_has_matched_directional_claim = bool(
+            str(selected_route or "").strip().lower() == "doc_scoped_biological_summary"
+            and bool(llm_candidate_answer)
+            and _summary_has_any_matched_directional_claim(
+                str(llm_candidate_answer or final_answer),
+                list(displayed_evidences or []),
+            )
+        )
         if (
             str(selected_route or "").strip().lower() == "doc_scoped_biological_summary"
             and bool(llm_candidate_answer)
@@ -17424,7 +17451,10 @@ def run_generation(
                     not _summary_candidate_has_direction(str(llm_candidate_answer or ""))
                     and not llm_candidate_directional_conflicts
                 )
-                or _summary_conflicts_only_soft_unmatched_directional(llm_candidate_directional_conflicts)
+                or (
+                    llm_candidate_has_matched_directional_claim
+                    and _summary_conflicts_only_soft_unmatched_directional(llm_candidate_directional_conflicts)
+                )
             )
         ):
             final_answer = str(llm_candidate_answer or final_answer).strip() or final_answer
