@@ -2288,13 +2288,13 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertNotIn("aucun exemple exploitable", answer_n)
         self.assertTrue(any(token in answer_n for token in ["profil patient", "homme", "femme", "amh"]))
 
-    def test_report10_unknown_status_directional_claim_triggers_quality_gate_fallback(self) -> None:
+    def test_report10_unmatched_directional_claim_triggers_quality_gate_fallback(self) -> None:
         old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
         os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
         candidate = (
             "Note médicale — report_10.\n"
             "Le document contient plusieurs résultats biologiques exploitables.\n"
-            "Triglycérides est au-dessus de la référence selon les lignes analysées.\n"
+            "Insuline est au-dessus de la référence selon les lignes analysées.\n"
             "Conclusion technique : note descriptive uniquement, sans diagnostic médical.\n"
             "Source : report_10, pages 1-3."
         )
@@ -2335,7 +2335,7 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertFalse(bool(result.get("llm_writer_accepted")))
         quality_gate = dict(result.get("quality_gate") or {})
         reasons = [str(r) for r in list(quality_gate.get("reasons") or [])]
-        self.assertTrue(any(r.startswith("directional_claim_on_ambiguous_status") for r in reasons))
+        self.assertIn("directional_claim_unmatched_analyte", reasons)
 
     def test_summary_quality_gate_rejects_anomaly_contradiction(self) -> None:
         ga = __import__("generate_answer")
