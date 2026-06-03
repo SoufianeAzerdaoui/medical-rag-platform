@@ -7011,6 +7011,11 @@ def _build_doc_scoped_biological_summary_answer(
 
     abnormal = [r for r in rows if _status_of(r) in {"above_reference", "below_reference"}]
     normal = [r for r in rows if _status_of(r) == "within_reference"]
+    needs_context = [
+        r
+        for r in rows
+        if _summary_status_code_exact(r) == "needs_clinical_context" or _status_of(r) == "unknown"
+    ]
     abnormal_sorted = sorted(abnormal, key=_severity_rank)
     doc_ids = sorted(
         {
@@ -7067,7 +7072,7 @@ def _build_doc_scoped_biological_summary_answer(
                 return "dans la référence"
             return "statut à vérifier"
 
-        notable_entries: list[tuple[str, str]] = []
+        notable_entries: list[tuple[dict[str, Any], str, str]] = []
         seen_notable: set[str] = set()
         for ev in abnormal_sorted:
             analyte = str(ev.get("analyte") or ev.get("analyte_label") or ev.get("display_name") or "").strip()
@@ -7077,12 +7082,12 @@ def _build_doc_scoped_biological_summary_answer(
             if key in seen_notable:
                 continue
             seen_notable.add(key)
-            notable_entries.append((analyte, _status_phrase(ev)))
+            notable_entries.append((ev, analyte, _status_phrase(ev)))
 
         notable_main = notable_entries[:5]
-        has_below_notable = any("en dessous" in norm_text(status) for _, status in notable_entries)
-        if has_below_notable and not any("en dessous" in norm_text(status) for _, status in notable_main):
-            first_below = next((entry for entry in notable_entries if "en dessous" in norm_text(entry[1])), None)
+        has_below_notable = any("en dessous" in norm_text(status) for _, _, status in notable_entries)
+        if has_below_notable and not any("en dessous" in norm_text(status) for _, _, status in notable_main):
+            first_below = next((entry for entry in notable_entries if "en dessous" in norm_text(entry[2])), None)
             if first_below:
                 preserved = [entry for entry in notable_main if entry != first_below]
                 notable_main = (preserved[:4] + [first_below])[:5]
@@ -7091,7 +7096,10 @@ def _build_doc_scoped_biological_summary_answer(
             notable_prefix = "Paramètres hors référence notables : " if wants_reference_ranges else "Points biologiques notables : "
             notable_line = (
                 notable_prefix
-                + ", ".join(f"{name} ({status})" for name, status in notable_main)
+                + ", ".join(
+                    f"{name} = {_value_with_unit(ev)}, {status}"
+                    for ev, name, status in notable_main
+                )
                 + "."
             )
         else:
@@ -7102,12 +7110,12 @@ def _build_doc_scoped_biological_summary_answer(
             if len(notable_extra) <= 6:
                 extra_line = (
                     "Sont également notés : "
-                    + ", ".join(f"{name} ({status})" for name, status in notable_extra)
+                    + ", ".join(f"{name} ({status})" for _, name, status in notable_extra)
                     + "."
                 )
             else:
-                below_count = sum(1 for _, status in notable_extra if "en dessous" in norm_text(status))
-                above_count = sum(1 for _, status in notable_extra if "au dessus" in norm_text(status) or "au-dessus" in norm_text(status))
+                below_count = sum(1 for _, _, status in notable_extra if "en dessous" in norm_text(status))
+                above_count = sum(1 for _, _, status in notable_extra if "au dessus" in norm_text(status) or "au-dessus" in norm_text(status))
                 unknown_count = max(0, len(notable_extra) - below_count - above_count)
                 grouped_parts: list[str] = []
                 if below_count:
@@ -7142,6 +7150,25 @@ def _build_doc_scoped_biological_summary_answer(
             )
         else:
             normal_line = _doc_scoped_no_within_reference_sentence()
+
+        context_labels: list[str] = []
+        seen_context: set[str] = set()
+        for ev in needs_context:
+            analyte = str(ev.get("analyte") or ev.get("analyte_label") or ev.get("display_name") or "").strip()
+            if not analyte:
+                continue
+            key = norm_text(analyte)
+            if key in seen_context:
+                continue
+            seen_context.add(key)
+            context_labels.append(analyte)
+        context_prudence_line = ""
+        if context_labels:
+            context_prudence_line = (
+                "Lecture prudente : "
+                + ", ".join(context_labels[:6])
+                + " nécessitent une lecture prudente, car leurs références dépendent du profil patient ou du contexte clinique."
+            )
 
         range_line = ""
         if wants_reference_ranges:
@@ -7200,6 +7227,8 @@ def _build_doc_scoped_biological_summary_answer(
             compact_lines_source = [lead_line, compact_opening, compact_focus]
             if normal_line:
                 compact_lines_source.append(normal_line)
+            if context_prudence_line:
+                compact_lines_source.append(context_prudence_line)
             compact_lines_source.extend([warning_line, source_line, conclusion_line])
             lines = compact_lines_source
         elif render_profile_norm == "editorial_biological_summary":
@@ -7215,6 +7244,8 @@ def _build_doc_scoped_biological_summary_answer(
                 narrative_lines.append(extra_line)
             if normal_line:
                 narrative_lines.append(normal_line)
+            if context_prudence_line:
+                narrative_lines.append(context_prudence_line)
             narrative_lines.extend([warning_line, source_line, conclusion_line])
             lines = narrative_lines
         else:
@@ -7226,6 +7257,8 @@ def _build_doc_scoped_biological_summary_answer(
                 lines.append(extra_line)
             if normal_line:
                 lines.append(normal_line)
+            if context_prudence_line:
+                lines.append(context_prudence_line)
             lines.append(warning_line)
             lines.append(source_line)
             lines.append(conclusion_line)
@@ -7243,7 +7276,7 @@ def _build_doc_scoped_biological_summary_answer(
                     if str(ln or "").strip() and ln not in ordered_body:
                         ordered_body.append(ln)
             else:
-                for ln in [notable_line, normal_line, context_line, extra_line]:
+                for ln in [notable_line, context_prudence_line, normal_line, context_line, extra_line]:
                     if str(ln or "").strip() and ln not in ordered_body:
                         ordered_body.append(ln)
             body_candidates = [ln for ln in ordered_body if ln not in {warning_ln, conclusion_ln, source_ln}]
@@ -18585,6 +18618,22 @@ def run_generation(
                 fallback_reason=fallback_reason_debug,
                 hard_gate_errors=list(hard_gate_errors_at_any_point or []),
             )
+        llm_quality_gate_result = dict(quality_gate_result or {}) if isinstance(quality_gate_result, dict) else None
+        final_answer_quality_gate = llm_quality_gate_result
+        if str(selected_route or "").strip().lower() in {"doc_scoped_biological_summary", "reference_ranges_summary"}:
+            final_answer_quality_gate = _evaluate_summary_quality_gate(
+                answer=str(final_answer or ""),
+                selected_route=str(selected_route or ""),
+                displayed_evidences=list(summary_all_evidences or displayed_evidences or []),
+            )
+        final_quality_reasons = list((final_answer_quality_gate or {}).get("reasons") or [])
+        synthesis_quality_reason = _first_non_empty_string([str(reason) for reason in final_quality_reasons])
+        if final_answer_quality_gate and not bool(final_answer_quality_gate.get("pass")):
+            quality_final_status = "fail"
+        elif str(final_answer_source or "").strip().lower() == "deterministic_renderer":
+            quality_final_status = "warning"
+        else:
+            quality_final_status = str((quality or {}).get("final_status") or "pass")
         return _inject_visualization_payload(
             {
             "request_id": request_id,
@@ -18608,7 +18657,11 @@ def run_generation(
             "sources": source_citations,
             "validation": validation,
             "quality_report": quality,
-            "quality_gate": quality_gate_result,
+            "quality_gate": final_answer_quality_gate,
+            "llm_quality_gate": llm_quality_gate_result,
+            "final_answer_quality_gate": final_answer_quality_gate,
+            "quality_final_status": quality_final_status,
+            "synthesis_quality_reason": synthesis_quality_reason,
             "llm_error": writer_error,
             "error_type": "llm_writer_error" if writer_error else None,
             "generation_mode": generation_mode,
@@ -18690,7 +18743,11 @@ def run_generation(
                 "fallback_stage": fallback_stage,
                 "fallback_renderer_used": fallback_renderer_used,
                 "specialized_fallback_kind": specialized_fallback_kind,
-                "quality_gate": quality_gate_result,
+                "quality_gate": final_answer_quality_gate,
+                "llm_quality_gate": llm_quality_gate_result,
+                "final_answer_quality_gate": final_answer_quality_gate,
+                "quality_final_status": quality_final_status,
+                "synthesis_quality_reason": synthesis_quality_reason,
                 "generation_writer": "llm_writer" if str(generation_mode).startswith("llm_") or generation_mode == "hybrid_structured_llm_writer" else "professional_fallback",
                 "retry_used": retry_used,
                 "final_generation_mode": generation_mode,
