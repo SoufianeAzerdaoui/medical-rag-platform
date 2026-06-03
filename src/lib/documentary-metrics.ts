@@ -109,6 +109,7 @@ export function getMessageDocumentaryMetrics(message: MessageItem): DocumentaryM
   const diagnostics = (message.diagnostics || {}) as Record<string, unknown>;
   const uniqueMessageSources = uniqueSources(Array.isArray(message.sources) ? message.sources : []);
   const sourceCountFromDiagnostics = pickDiagnosticNumber(diagnostics, [
+    "sources_count",
     "displayed_evidences_count",
     "included_rows_count",
     "used_sources_count",
@@ -147,12 +148,14 @@ export function getMessageDocumentaryMetrics(message: MessageItem): DocumentaryM
   const ignoredCount = candidateCount !== null ? Math.max(0, Math.round(candidateCount) - sourceCount) : 0;
 
   const extractedFromDiagnostics = pickDiagnosticNumber(diagnostics, [
+    "structured_values_count",
     "extracted_values_count",
     "extracted_items_count",
     "reported_values_count",
   ]);
   const structuredValueCount = pickDiagnosticNumber(diagnostics, [
     "value_numeric_count",
+    "structured_values_count",
     "lab_result_count",
     "evidence_pack_count",
     "displayed_evidences_count",
@@ -162,6 +165,8 @@ export function getMessageDocumentaryMetrics(message: MessageItem): DocumentaryM
     ? Math.max(0, Math.round(extractedFromDiagnostics))
     : structuredValueCount !== null
       ? Math.max(0, Math.round(structuredValueCount))
+      : sourceCount > 0
+        ? Math.max(1, Math.round(sourceCount))
       : estimateExtractedValues(content);
   const extractedValuesLabel =
     structuredValueCount !== null && structuredValueCount > 0

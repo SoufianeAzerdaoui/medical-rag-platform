@@ -125,6 +125,8 @@ export interface AssistantDiagnostics {
   evidence_pack_count?: number | null;
   lab_result_count?: number | null;
   value_numeric_count?: number | null;
+  structured_values_count?: number | null;
+  sources_count?: number | null;
   llm_skipped_reason?: string | null;
   generation_mode_before_fallback?: string | null;
   fallback_decision_path?: string | null;
@@ -201,6 +203,12 @@ export interface RagResponse {
   llm_repair_attempted?: boolean | null;
   llm_repair_status?: string | null;
   llm_repaired_answer?: string | null;
+  displayed_evidences_count?: number | null;
+  evidence_pack_count?: number | null;
+  lab_result_count?: number | null;
+  value_numeric_count?: number | null;
+  structured_values_count?: number | null;
+  sources_count?: number | null;
   visualization?: VisualizationPayload;
   chart_data?: VisualizationPayload;
   patients?: Array<Record<string, unknown>>;
