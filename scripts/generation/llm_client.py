@@ -20,6 +20,20 @@ class LLMClientError(RuntimeError):
     """Raised when generation fails in a controlled way."""
 
 
+def _ollama_timeout_retries() -> int:
+    try:
+        return max(0, int(os.getenv("MEDICAL_RAG_OLLAMA_TIMEOUT_RETRIES", "1")))
+    except Exception:
+        return 1
+
+
+def _ollama_retry_backoff_ms() -> int:
+    try:
+        return max(100, int(os.getenv("MEDICAL_RAG_OLLAMA_RETRY_BACKOFF_MS", "750")))
+    except Exception:
+        return 750
+
+
 def _normalize_ollama_url(raw_url: str | None) -> str:
     raw = str(raw_url or "").strip()
     if not raw:
@@ -88,6 +102,8 @@ class LLMClient:
             "system_prompt_chars": system_prompt_chars,
             "user_prompt_chars": user_prompt_chars,
             "llm_timeout_ms": int(timeout) * 1000,
+            "ollama_retry_limit": _ollama_timeout_retries() if provider_norm == "ollama" else 0,
+            "ollama_retry_backoff_ms": _ollama_retry_backoff_ms() if provider_norm == "ollama" else 0,
         }
         if provider_norm == "ollama":
             return self._generate_ollama(
@@ -493,44 +509,65 @@ class LLMClient:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-
-        try:
-            with request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read().decode("utf-8", errors="replace")
-                status = getattr(resp, "status", 200)
-        except error.HTTPError as exc:
-            if isinstance(self.last_call_debug, dict):
-                self.last_call_debug.update(
-                    {
-                        "llm_elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 3),
-                        "llm_raw_error_type": "HTTPError",
-                        "llm_raw_error_message": str(exc),
-                    }
-                )
-            msg = self._http_error_message(exc)
-            raise LLMClientError(msg) from exc
-        except error.URLError as exc:
-            if isinstance(self.last_call_debug, dict):
-                self.last_call_debug.update(
-                    {
-                        "llm_elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 3),
-                        "llm_raw_error_type": "URLError",
-                        "llm_raw_error_message": str(exc.reason),
-                    }
-                )
-            if isinstance(exc.reason, ConnectionRefusedError) or isinstance(exc.reason, socket.error):
-                raise LLMClientError("Ollama service unavailable. Check systemctl status ollama.") from exc
-            raise LLMClientError(f"Ollama request failed: {exc.reason}") from exc
-        except (TimeoutError, socket.timeout) as exc:
-            if isinstance(self.last_call_debug, dict):
-                self.last_call_debug.update(
-                    {
-                        "llm_elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 3),
-                        "llm_raw_error_type": "TimeoutError",
-                        "llm_raw_error_message": str(exc),
-                    }
-                )
-            raise LLMClientError("Ollama timeout. Increase timeout or reduce max_tokens.") from exc
+        retry_limit = _ollama_timeout_retries()
+        retry_backoff_ms = _ollama_retry_backoff_ms()
+        attempt = 0
+        raw = ""
+        status = 200
+        while True:
+            attempt += 1
+            try:
+                with request.urlopen(req, timeout=timeout) as resp:
+                    raw = resp.read().decode("utf-8", errors="replace")
+                    status = getattr(resp, "status", 200)
+                break
+            except error.HTTPError as exc:
+                retryable_http = exc.code in {502, 503, 504}
+                if retryable_http and attempt <= retry_limit:
+                    time.sleep((retry_backoff_ms * attempt) / 1000.0)
+                    continue
+                if isinstance(self.last_call_debug, dict):
+                    self.last_call_debug.update(
+                        {
+                            "llm_elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 3),
+                            "llm_raw_error_type": "HTTPError",
+                            "llm_raw_error_message": str(exc),
+                            "ollama_attempt_count": attempt,
+                        }
+                    )
+                msg = self._http_error_message(exc)
+                raise LLMClientError(msg) from exc
+            except error.URLError as exc:
+                retryable_url = isinstance(exc.reason, (TimeoutError, socket.timeout))
+                if retryable_url and attempt <= retry_limit:
+                    time.sleep((retry_backoff_ms * attempt) / 1000.0)
+                    continue
+                if isinstance(self.last_call_debug, dict):
+                    self.last_call_debug.update(
+                        {
+                            "llm_elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 3),
+                            "llm_raw_error_type": "URLError",
+                            "llm_raw_error_message": str(exc.reason),
+                            "ollama_attempt_count": attempt,
+                        }
+                    )
+                if isinstance(exc.reason, ConnectionRefusedError) or isinstance(exc.reason, socket.error):
+                    raise LLMClientError("Ollama service unavailable. Check systemctl status ollama.") from exc
+                raise LLMClientError(f"Ollama request failed: {exc.reason}") from exc
+            except (TimeoutError, socket.timeout) as exc:
+                if attempt <= retry_limit:
+                    time.sleep((retry_backoff_ms * attempt) / 1000.0)
+                    continue
+                if isinstance(self.last_call_debug, dict):
+                    self.last_call_debug.update(
+                        {
+                            "llm_elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 3),
+                            "llm_raw_error_type": "TimeoutError",
+                            "llm_raw_error_message": str(exc),
+                            "ollama_attempt_count": attempt,
+                        }
+                    )
+                raise LLMClientError("Ollama timeout. Increase timeout or reduce max_tokens.") from exc
 
         if status >= 400:
             raise LLMClientError(f"Ollama HTTP error: status={status}")
@@ -592,6 +629,8 @@ class LLMClient:
                     "eval_count": eval_count,
                     "eval_duration": eval_duration,
                     "tokens_per_second_estimate": round(tps, 3) if tps > 0 else 0.0,
+                    "ollama_attempt_count": attempt,
+                    "ollama_retry_limit": retry_limit,
                 }
             )
 
