@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import logging
 import os
@@ -7058,21 +7059,12 @@ def _build_doc_scoped_biological_summary_answer(
         def _status_phrase(ev: dict[str, Any]) -> str:
             ref = _reference_short(ev.get("reference") or ev.get("reference_short"))
             status = _status_of(ev)
-            ref_n = norm_text(ref)
-            ref_is_placeholder = ref_n in {
-                "",
-                "non disponible",
-                "ref disponible",
-                "réf. disponible",
-                "reference textuelle disponible",
-                "référence textuelle disponible",
-            }
-            if ref_is_placeholder:
-                return "écart documenté"
             if status == "above_reference":
                 return "au-dessus de la référence"
             if status == "below_reference":
                 return "en dessous de la référence"
+            if status == "within_reference":
+                return "dans la référence"
             return "statut à vérifier"
 
         notable_entries: list[tuple[str, str]] = []
@@ -7148,6 +7140,8 @@ def _build_doc_scoped_biological_summary_answer(
                 + ", ".join(normal_labels[:10])
                 + "."
             )
+        else:
+            normal_line = _doc_scoped_no_within_reference_sentence()
 
         range_line = ""
         if wants_reference_ranges:
@@ -7249,7 +7243,7 @@ def _build_doc_scoped_biological_summary_answer(
                     if str(ln or "").strip() and ln not in ordered_body:
                         ordered_body.append(ln)
             else:
-                for ln in [context_line, notable_line, extra_line, normal_line]:
+                for ln in [notable_line, normal_line, context_line, extra_line]:
                     if str(ln or "").strip() and ln not in ordered_body:
                         ordered_body.append(ln)
             body_candidates = [ln for ln in ordered_body if ln not in {warning_ln, conclusion_ln, source_ln}]
@@ -9728,6 +9722,153 @@ def _summary_status_bucket(ev: dict[str, Any]) -> str:
     return "ambiguous"
 
 
+def _summary_status_code_exact(ev: dict[str, Any]) -> str:
+    return str(
+        ev.get("technical_status_code")
+        or ev.get("interpretation_status")
+        or ev.get("status")
+        or ""
+    ).strip().lower()
+
+
+def _doc_scoped_no_within_reference_sentence() -> str:
+    return "Aucun résultat dans la référence n’est mis en avant dans les éléments structurés sélectionnés."
+
+
+def _doc_scoped_summary_classification_counts(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    data = list(rows or [])
+    above_rows = [ev for ev in data if _summary_status_code_exact(ev) == "above_reference"]
+    below_rows = [ev for ev in data if _summary_status_code_exact(ev) == "below_reference"]
+    within_rows = [ev for ev in data if _summary_status_code_exact(ev) == "within_reference"]
+    needs_context_rows = [ev for ev in data if _summary_status_code_exact(ev) == "needs_clinical_context"]
+
+    def _unique_analytes(items: list[dict[str, Any]]) -> list[str]:
+        labels: list[str] = []
+        seen: set[str] = set()
+        for ev in items:
+            raw = str(ev.get("analyte") or ev.get("analyte_label") or ev.get("display_name") or "").strip()
+            label = _clean_analyte_label(raw) or raw
+            key = norm_text(label)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            labels.append(label)
+        return labels
+
+    pages = sorted(
+        {
+            int(p)
+            for p in [ev.get("page") for ev in data]
+            if str(p).strip().isdigit()
+        }
+    )
+    source_pages = ""
+    if pages:
+        source_pages = f"page {pages[0]}" if len(pages) == 1 else f"pages {pages[0]}-{pages[-1]}"
+
+    major_anomalies = _unique_analytes(above_rows + below_rows)[:5]
+    return {
+        "above_reference_count": len(above_rows),
+        "below_reference_count": len(below_rows),
+        "within_reference_count": len(within_rows),
+        "needs_clinical_context_count": len(needs_context_rows),
+        "major_anomalies_count": len(major_anomalies),
+        "selected_normal_results_count": len(_unique_analytes(within_rows)),
+        "source_pages": source_pages or None,
+        "above_reference_labels": _unique_analytes(above_rows),
+        "below_reference_labels": _unique_analytes(below_rows),
+        "within_reference_labels": _unique_analytes(within_rows),
+        "needs_clinical_context_labels": _unique_analytes(needs_context_rows),
+    }
+
+
+def _doc_scoped_summary_retry_fact_block(rows: list[dict[str, Any]]) -> str:
+    counts = _doc_scoped_summary_classification_counts(rows)
+
+    def _fmt_block(items: list[str]) -> str:
+        if not items:
+            return "- aucun"
+        return "\n".join(f"- {item}" for item in items[:8])
+
+    return (
+        "ANOMALIES_ABOVE:\n"
+        f"{_fmt_block(list(counts.get('above_reference_labels') or []))}\n"
+        "ANOMALIES_BELOW:\n"
+        f"{_fmt_block(list(counts.get('below_reference_labels') or []))}\n"
+        "NEEDS_CONTEXT:\n"
+        f"{_fmt_block(list(counts.get('needs_clinical_context_labels') or []))}\n"
+        "WITHIN_REFERENCE:\n"
+        f"{_fmt_block(list(counts.get('within_reference_labels') or []))}\n"
+        "SOURCE_PAGES:\n"
+        f"- {str(counts.get('source_pages') or 'non précisé')}"
+    )
+
+
+def _doc_scoped_biological_summary_repair_errors(
+    *,
+    candidate_answer: str,
+    repaired_answer: str,
+    evidences: list[dict[str, Any]],
+    query_understanding: Any,
+) -> list[str]:
+    candidate_raw = str(candidate_answer or "").strip()
+    repaired_raw = str(repaired_answer or "").strip()
+    rows = list(evidences or [])
+    if not repaired_raw:
+        return ["repair_empty_answer"]
+
+    errors: list[str] = []
+    repaired_norm = norm_text(repaired_raw)
+    candidate_norm = norm_text(candidate_raw)
+    counts = _doc_scoped_summary_classification_counts(rows)
+    abnormal_rows = [ev for ev in rows if _summary_row_status_kind(ev) == "abnormal"]
+    within_rows = [ev for ev in rows if _summary_row_status_kind(ev) == "within"]
+
+    candidate_mentions = _summary_text_mentions_rows(candidate_raw, abnormal_rows + within_rows)
+    repaired_mentions = _summary_text_mentions_rows(repaired_raw, abnormal_rows + within_rows)
+    repaired_abnormal_mentions = _summary_text_mentions_rows(repaired_raw, abnormal_rows)
+    repaired_within_mentions = _summary_text_mentions_rows(repaired_raw, within_rows)
+
+    if candidate_norm:
+        similarity = difflib.SequenceMatcher(None, candidate_norm, repaired_norm).ratio()
+        if candidate_norm == repaired_norm or similarity >= 0.97:
+            errors.append("repair_not_materially_different")
+        elif repaired_mentions <= candidate_mentions and similarity >= 0.9:
+            errors.append("repair_not_materially_improved")
+
+    if int(counts.get("major_anomalies_count") or 0) >= 4 and repaired_abnormal_mentions < 4:
+        errors.append("repair_missing_major_anomaly_coverage")
+    elif len(rows) >= 5 and repaired_mentions < 4:
+        errors.append("repair_still_too_poor_for_available_facts")
+
+    if within_rows:
+        if repaired_within_mentions <= 0:
+            errors.append("repair_missing_within_reference_coverage")
+    elif norm_text(_doc_scoped_no_within_reference_sentence()) not in repaired_norm:
+        errors.append("repair_missing_no_within_reference_sentence")
+
+    if "ecart documente" in repaired_norm and not any(
+        marker in repaired_norm
+        for marker in [
+            "au dessus de la reference",
+            "au-dessus de la référence",
+            "au-dessus de la reference",
+            "en dessous de la reference",
+            "dans la reference",
+        ]
+    ):
+        errors.append("repair_uses_vague_status_labels")
+
+    if _doc_scoped_biological_summary_needs_repair(
+        answer=repaired_raw,
+        evidences=rows,
+        query_understanding=query_understanding,
+    ):
+        errors.append("repair_still_sparse")
+
+    return list(dict.fromkeys(errors))
+
+
 def _answer_claims_no_abnormal(answer: str) -> bool:
     n = norm_text(answer or "")
     if not n:
@@ -10932,7 +11073,12 @@ def _should_retry_with_validator(
     return bool((errors | warnings) & _STYLE_RETRY_KEYS)
 
 
-def _build_validator_retry_feedback(validation: dict[str, Any]) -> str:
+def _build_validator_retry_feedback(
+    validation: dict[str, Any],
+    *,
+    displayed_evidences: list[dict[str, Any]] | None = None,
+    query_understanding: Any | None = None,
+) -> str:
     errors = [str(e) for e in (validation.get("errors") or [])]
     warnings = [str(w) for w in (validation.get("warnings") or [])]
     items = errors + warnings
@@ -10951,11 +11097,16 @@ def _build_validator_retry_feedback(validation: dict[str, Any]) -> str:
             "Supprime toute mention 'Aucun fait anormal' et liste les anomalies fournies dans la section 'Anormaux'."
         )
     if "summary_too_poor_for_available_facts" in errors:
+        facts_block = _doc_scoped_summary_retry_fact_block(list(displayed_evidences or []))
         return (
             "La synthèse est trop pauvre par rapport aux faits disponibles. "
+            "Tu dois produire une version réellement plus informative. "
             "Mentionne au moins 4 anomalies majeures si elles sont documentées, en incluant plusieurs analytes distincts, "
             "ajoute au moins 3 résultats dans la référence lorsqu'ils sont présents, "
-            "garde une conclusion prudente sans diagnostic et cite la source."
+            f"ou écris exactement '{_doc_scoped_no_within_reference_sentence()}' si aucun résultat dans la référence n'est disponible. "
+            "Précise au-dessus/en dessous quand le statut est disponible, garde une conclusion prudente sans diagnostic et cite la source. "
+            "Utilise strictement les blocs structurés suivants comme source de vérité :\n"
+            f"{facts_block}"
         )
     if "missing_conclusion" in items:
         return (
@@ -17250,7 +17401,12 @@ def run_generation(
             t_rep0 = time.perf_counter()
             retry_used = True
             llm_candidate_repair_used = True
-            retry_feedback = _build_validator_retry_feedback(validation)
+            retry_candidate_answer = str(llm_candidate_answer or final_answer or "").strip()
+            retry_feedback = _build_validator_retry_feedback(
+                validation,
+                displayed_evidences=list(summary_all_evidences or displayed_evidences or []),
+                query_understanding=query_understanding,
+            )
             try:
                 if use_micro_prompt:
                     retry_composed = _compose_level2_micro_prompt_answer(
@@ -17355,17 +17511,126 @@ def run_generation(
                     chart_data_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[1],
                 )
                 if str(retry_validation.get("validation_status") or "fail") != "fail":
-                    final_answer = retry_answer
-                    generation_mode = retry_mode
-                    writer_error = retry_writer_error
-                    validation = retry_validation
-                    fallback_reason_debug = None
-                    fallback_renderer_used = None
-                    llm_repaired_validation_status = str(retry_validation.get("validation_status") or "")
-                    llm_repaired_validation_errors = list(retry_validation.get("errors") or [])
-                    llm_repaired_validation_warnings = list(retry_validation.get("warnings") or [])
-                    llm_repair_status = "passed"
-                    llm_candidate_rejected_reason = None
+                    retry_repair_errors: list[str] = []
+                    if selected_route == "doc_scoped_biological_summary":
+                        retry_repair_errors = _doc_scoped_biological_summary_repair_errors(
+                            candidate_answer=retry_candidate_answer,
+                            repaired_answer=retry_answer,
+                            evidences=list(summary_all_evidences or displayed_evidences or []),
+                            query_understanding=query_understanding,
+                        )
+                        retry_quality_gate = _evaluate_summary_quality_gate(
+                            answer=retry_answer,
+                            selected_route=selected_route,
+                            displayed_evidences=list(summary_all_evidences or displayed_evidences or []),
+                        )
+                        if "summary_too_poor_for_available_facts" in set(str(r) for r in (retry_quality_gate.get("reasons") or [])):
+                            retry_repair_errors.append("summary_too_poor_for_available_facts")
+                        retry_repair_errors = list(dict.fromkeys(retry_repair_errors))
+                        if retry_repair_errors:
+                            retry_validation = dict(retry_validation or {})
+                            retry_validation["validation_status"] = "fail"
+                            retry_validation["errors"] = list(dict.fromkeys(list(retry_validation.get("errors") or []) + retry_repair_errors))
+                    if str(retry_validation.get("validation_status") or "fail") != "fail":
+                        final_answer = retry_answer
+                        generation_mode = retry_mode
+                        writer_error = retry_writer_error
+                        validation = retry_validation
+                        fallback_reason_debug = None
+                        fallback_renderer_used = None
+                        llm_repaired_validation_status = str(retry_validation.get("validation_status") or "")
+                        llm_repaired_validation_errors = list(retry_validation.get("errors") or [])
+                        llm_repaired_validation_warnings = list(retry_validation.get("warnings") or [])
+                        llm_repair_status = "passed"
+                        llm_candidate_rejected_reason = None
+                        if selected_route == "doc_scoped_biological_summary":
+                            quality_gate_result = _evaluate_summary_quality_gate(
+                                answer=final_answer,
+                                selected_route=selected_route,
+                                displayed_evidences=list(summary_all_evidences or displayed_evidences or []),
+                            )
+                    else:
+                        fallback_composed = compose_professional_answer(
+                            user_question=q,
+                            query_understanding=query_understanding,
+                            evidence_pack=structured_pack,
+                            mode="fallback",
+                            source_citations=source_citations,
+                        )
+                        final_answer = str(fallback_composed.get("answer") or final_answer).strip()
+                        final_answer = _build_route_specific_short_fallback_answer(
+                            selected_route=selected_route,
+                            query_understanding=query_understanding,
+                            displayed_evidences=displayed_evidences,
+                            evidence_all_summary=summary_all_evidences,
+                            default_answer=final_answer,
+                        )
+                        if selected_route == "reference_ranges_summary":
+                            generation_mode = "deterministic_reference_ranges_summary"
+                        else:
+                            generation_mode = "deterministic_safety_fallback_after_llm_validation_failure"
+                        writer_error = None
+                        if selected_route == "doc_scoped_priority_anomalies":
+                            fallback_reason_debug = fallback_reason_debug or "priority_style_rejected_use_deterministic"
+                        else:
+                            fallback_reason_debug = "llm_validation_failed_after_repair"
+                        fallback_stage = "post_validation_repair"
+                        if selected_route == "doc_scoped_biological_summary":
+                            fallback_renderer_used = _doc_scoped_summary_fallback_renderer_name(from_llm_path=True)
+                        elif selected_route == "reference_ranges_summary":
+                            fallback_renderer_used = "reference_ranges_deterministic_fallback"
+                        llm_repaired_validation_status = str(retry_validation.get("validation_status") or "")
+                        llm_repaired_validation_errors = list(retry_validation.get("errors") or [])
+                        llm_repaired_validation_warnings = list(retry_validation.get("warnings") or [])
+                        llm_repair_status = "failed_validation"
+                        validation = validate_answer(
+                            query=q,
+                            answer_text=final_answer,
+                            evidence_pack=evidence_pack,
+                            displayed_evidences=displayed_evidences,
+                            source_citations=source_citations,
+                            exact_analyte=exact_analyte,
+                            llm_error=None,
+                            generation_mode=generation_mode,
+                            retrieval_status="answerable" if displayed_evidences else "insufficient_context",
+                            show_low_quality=show_low_quality,
+                            max_display_results=max_display_results,
+                            show_all_results=show_all_results,
+                            query_received=query_received,
+                            query_used_for_retrieval=query_used_for_retrieval,
+                            query_used_for_prompt=query_used_for_prompt,
+                            query_stored=q,
+                            detected_analytes=exact_analytes,
+                            requested_doc_id=requested_doc_ids[0] if len(requested_doc_ids) == 1 else None,
+                            requested_doc_ids=requested_doc_ids,
+                            missing_requested_doc_ids=missing_requested_doc_ids,
+                            requested_analytes=exact_analytes,
+                            found_requested_analytes=found_requested_analytes,
+                            found_requested_analyte_norms=found_requested_analyte_norms,
+                            missing_requested_analytes=missing_requested_analytes,
+                            current_vs_previous_requested=query_understanding.requires_previous_results,
+                            diagnostic_safety_intent=bool(intents.get("diagnostic_safety_question")),
+                            query_intents=intents,
+                            output_format_requested=query_understanding.output_format,
+                            answer_style_requested=query_understanding.answer_style,
+                            requested_table_columns=query_understanding.requested_table_columns,
+                            requested_technical_condition=query_understanding.technical_condition,
+                            source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                            requested_value=query_understanding.requested_value,
+                            comparison_operator=query_understanding.comparison_operator,
+                            raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                            unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+                            user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+                            requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+                            visualization_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[0],
+                            chart_data_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[1],
+                        )
+                        quality = _quality_report(
+                            answer=final_answer,
+                            validation=validation,
+                            source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                            recent_style_history=style_history,
+                        )
                 else:
                     fallback_composed = compose_professional_answer(
                         user_question=q,
@@ -18037,18 +18302,28 @@ def run_generation(
                 displayed_evidences=list(displayed_evidences or []),
                 query_understanding=query_understanding,
             )
-            generation_mode = "hybrid_structured_llm_writer"
-            llm_writer_final_accepted = True
-            fallback_reason_debug = None
-            fallback_stage = None
-            fallback_renderer_used = None
-            writer_error = None
-            validation = _relax_doc_scoped_biological_summary_validation(validation)
-            quality_gate_result = dict(quality_gate_result or {})
-            quality_gate_result["pass"] = True
-            quality_gate_result["accepted_with_warnings"] = bool(quality_gate_result.get("reasons"))
-            quality_gate_result["preserved_llm"] = True
-            quality_gate_result["soft_warning_only"] = bool(quality_gate_result.get("reasons"))
+            soft_accept_gate = _evaluate_summary_quality_gate(
+                answer=final_answer,
+                selected_route=selected_route,
+                displayed_evidences=list(summary_all_evidences or displayed_evidences or []),
+            )
+            if "summary_too_poor_for_available_facts" not in {
+                str(reason).strip() for reason in (soft_accept_gate.get("reasons") or [])
+            }:
+                generation_mode = "hybrid_structured_llm_writer"
+                llm_writer_final_accepted = True
+                fallback_reason_debug = None
+                fallback_stage = None
+                fallback_renderer_used = None
+                writer_error = None
+                validation = _relax_doc_scoped_biological_summary_validation(validation)
+                quality_gate_result = dict(soft_accept_gate or {})
+                quality_gate_result["pass"] = True
+                quality_gate_result["accepted_with_warnings"] = bool(quality_gate_result.get("reasons"))
+                quality_gate_result["preserved_llm"] = True
+                quality_gate_result["soft_warning_only"] = bool(quality_gate_result.get("reasons"))
+            else:
+                force_sparse_summary_repair = True
 
         if (
             str(selected_route or "").strip().lower() == "doc_scoped_biological_summary"
@@ -18109,6 +18384,11 @@ def run_generation(
             displayed_evidences=list(displayed_evidences or []),
             evidence_pack=list(evidence_pack or []),
             sources=list(source_citations or []),
+        )
+        doc_scoped_fact_counts = (
+            _doc_scoped_summary_classification_counts(list(summary_all_evidences or displayed_evidences or []))
+            if str(selected_route or "").strip().lower() == "doc_scoped_biological_summary"
+            else {}
         )
         fallback_decision_path = _build_fallback_decision_path(
             planner_execution=planner_execution,
@@ -18218,24 +18498,75 @@ def run_generation(
                 query_understanding=query_understanding,
             )
         ):
+            repair_candidate = str(final_answer or llm_candidate_answer or "").strip()
             repaired_answer = _repair_sparse_doc_scoped_biological_summary_answer(
-                answer=str(final_answer or llm_candidate_answer or ""),
+                answer=repair_candidate,
                 evidences=list(summary_all_evidences or displayed_evidences or []),
                 query_understanding=query_understanding,
             )
-            if repaired_answer and repaired_answer.strip() and repaired_answer.strip() != str(final_answer or "").strip():
-                final_answer = repaired_answer
-                llm_candidate_answer = repaired_answer
-                llm_repaired_answer = repaired_answer
+            if repaired_answer and repaired_answer.strip():
+                late_repair_errors = _doc_scoped_biological_summary_repair_errors(
+                    candidate_answer=repair_candidate,
+                    repaired_answer=repaired_answer,
+                    evidences=list(summary_all_evidences or displayed_evidences or []),
+                    query_understanding=query_understanding,
+                )
+                late_repair_gate = _evaluate_summary_quality_gate(
+                    answer=repaired_answer,
+                    selected_route=selected_route,
+                    displayed_evidences=list(summary_all_evidences or displayed_evidences or []),
+                )
+                if "summary_too_poor_for_available_facts" in {
+                    str(reason).strip() for reason in (late_repair_gate.get("reasons") or [])
+                }:
+                    late_repair_errors.append("summary_too_poor_for_available_facts")
+                late_repair_errors = list(dict.fromkeys(late_repair_errors))
                 llm_candidate_repair_used = True
-                llm_repair_status = "passed"
-                llm_repaired_validation_status = "passed"
-                llm_repaired_validation_errors = []
-                llm_repaired_validation_warnings = []
-                writer_error = None
-                fallback_reason_debug = None
-                fallback_stage = None
-                fallback_renderer_used = None
+                llm_repaired_answer = repaired_answer
+                if late_repair_errors:
+                    final_answer = _build_route_specific_short_fallback_answer(
+                        selected_route=selected_route,
+                        query_understanding=query_understanding,
+                        displayed_evidences=displayed_evidences,
+                        evidence_all_summary=summary_all_evidences,
+                        default_answer=_build_doc_scoped_biological_summary_answer(
+                            list(summary_all_evidences or displayed_evidences or []),
+                            max_lines=getattr(query_understanding, "requested_summary_points", None),
+                            no_diagnosis=str(getattr(query_understanding, "safety_intent", "") or "").strip().lower() == "no_diagnosis_constraint",
+                            render_profile=_doc_scoped_summary_render_profile(query_understanding),
+                        ),
+                    )
+                    generation_mode = "deterministic_doc_scoped_biological_summary"
+                    final_answer_source = "deterministic_renderer"
+                    llm_writer_accepted_flag = False
+                    llm_repair_status = "failed_validation"
+                    llm_repaired_validation_status = "failed_validation"
+                    llm_repaired_validation_errors = late_repair_errors
+                    llm_repaired_validation_warnings = list(late_repair_gate.get("reasons") or [])
+                    fallback_reason_debug = "llm_validation_failed_after_repair"
+                    fallback_stage = "post_validation_repair"
+                    fallback_renderer_used = _doc_scoped_summary_fallback_renderer_name(from_llm_path=True)
+                    renderer_used = fallback_renderer_used
+                    writer_error = None
+                    quality_gate_result = {
+                        "score": 0.0,
+                        "threshold": float(late_repair_gate.get("threshold") or 0.85),
+                        "pass": False,
+                        "reasons": late_repair_errors,
+                    }
+                else:
+                    final_answer = repaired_answer
+                    llm_candidate_answer = repaired_answer
+                    llm_repair_status = "passed"
+                    llm_repaired_validation_status = "passed"
+                    llm_repaired_validation_errors = []
+                    llm_repaired_validation_warnings = list(late_repair_gate.get("reasons") or [])
+                    writer_error = None
+                    fallback_reason_debug = None
+                    fallback_stage = None
+                    fallback_renderer_used = None
+                    renderer_used = None
+                    quality_gate_result = late_repair_gate
         if str(final_answer_source or "").strip().lower() in {"llm_writer", "llm_writer_repaired"}:
             _record_llm_timeout_success(llm_timeout_circuit_route, writer_model)
         if llm_candidate_repair_used and not llm_repair_status:
@@ -18302,6 +18633,12 @@ def run_generation(
             "value_numeric_count": evidence_metrics["value_numeric_count"],
             "structured_values_count": evidence_metrics["structured_values_count"],
             "sources_count": evidence_metrics["sources_count"],
+            "above_reference_count": int(doc_scoped_fact_counts.get("above_reference_count") or 0),
+            "below_reference_count": int(doc_scoped_fact_counts.get("below_reference_count") or 0),
+            "within_reference_count": int(doc_scoped_fact_counts.get("within_reference_count") or 0),
+            "needs_clinical_context_count": int(doc_scoped_fact_counts.get("needs_clinical_context_count") or 0),
+            "major_anomalies_count": int(doc_scoped_fact_counts.get("major_anomalies_count") or 0),
+            "selected_normal_results_count": int(doc_scoped_fact_counts.get("selected_normal_results_count") or 0),
             "detected_analytes": exact_analytes,
             "query_understanding": _query_understanding_payload(query_understanding),
             "structured_evidence_pack": structured_pack,
@@ -18458,6 +18795,12 @@ def run_generation(
                 "value_numeric_count": evidence_metrics["value_numeric_count"],
                 "structured_values_count": evidence_metrics["structured_values_count"],
                 "sources_count": evidence_metrics["sources_count"],
+                "above_reference_count": int(doc_scoped_fact_counts.get("above_reference_count") or 0),
+                "below_reference_count": int(doc_scoped_fact_counts.get("below_reference_count") or 0),
+                "within_reference_count": int(doc_scoped_fact_counts.get("within_reference_count") or 0),
+                "needs_clinical_context_count": int(doc_scoped_fact_counts.get("needs_clinical_context_count") or 0),
+                "major_anomalies_count": int(doc_scoped_fact_counts.get("major_anomalies_count") or 0),
+                "selected_normal_results_count": int(doc_scoped_fact_counts.get("selected_normal_results_count") or 0),
                 "hard_gate_triggered": hard_gate_triggered,
                 "hard_gate_errors": hard_gate_hits if 'hard_gate_hits' in locals() else [],
                 "hard_gate_policy": "global_non_negotiable",

@@ -251,6 +251,30 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertGreaterEqual(sum(1 for label in expected_labels if label in low), 4)
         self.assertIn("source", low)
 
+    def test_doc_scoped_repair_requires_material_improvement(self) -> None:
+        ga = __import__("generate_answer")
+        qu = ga.parse_query_understanding(
+            "Fais une synthèse biologique courte du report 12. Limite-toi à 3 à 5 lignes, mentionne uniquement les anomalies majeures, les résultats dans la référence et une conclusion prudente, sans diagnostic."
+        )
+        rows = [
+            {"analyte": "Bilirubine Directe", "technical_status_code": "above_reference", "value_with_unit": "6 mg/L", "reference_short": "0.00 - 5.00"},
+            {"analyte": "Créatinine", "technical_status_code": "above_reference", "value_with_unit": "23 mg/L", "reference_short": "4 - 9"},
+            {"analyte": "LDH", "technical_status_code": "above_reference", "value_with_unit": "250 UI/L", "reference_short": "125 - 243"},
+            {"analyte": "CK-MB", "technical_status_code": "above_reference", "value_with_unit": "40 UI/L", "reference_short": "< 25"},
+            {"analyte": "APO A1", "technical_status_code": "above_reference", "value_with_unit": "2.3 g/L", "reference_short": "1.1 - 1.6"},
+            {"analyte": "Ammonium", "technical_status_code": "below_reference", "value_with_unit": "20 µg/dL", "reference_short": "35 - 80"},
+        ]
+        candidate = "Résumé biologique court — Bilirubine Directe (écart documenté), LDH (écart documenté)."
+        errors = ga._doc_scoped_biological_summary_repair_errors(
+            candidate_answer=candidate,
+            repaired_answer=candidate,
+            evidences=rows,
+            query_understanding=qu,
+        )
+        self.assertIn("repair_not_materially_different", errors)
+        self.assertIn("repair_missing_major_anomaly_coverage", errors)
+        self.assertIn("repair_missing_no_within_reference_sentence", errors)
+
     def test_doc_scoped_biological_summary_rewrite_rejects_generic_clinical_opening(self) -> None:
         ga = __import__("generate_answer")
         self.assertTrue(ga._llm_summary_requires_professional_rewrite(
@@ -259,6 +283,26 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertFalse(ga._llm_summary_requires_professional_rewrite(
             "Le bilan montre plusieurs écarts biologiques documentés, sans diagnostic."
         ))
+
+    def test_doc_scoped_biological_summary_uses_precise_status_labels(self) -> None:
+        ga = __import__("generate_answer")
+        rows = [
+            {"analyte": "Bilirubine Directe", "technical_status_code": "above_reference", "value_with_unit": "6 mg/L", "reference_short": "0.00 - 5.00"},
+            {"analyte": "Ammonium", "technical_status_code": "below_reference", "value_with_unit": "20 µg/dL", "reference_short": "35 - 80"},
+            {"analyte": "ASAT", "technical_status_code": "within_reference", "value_with_unit": "31 UI/L", "reference_short": "10 - 40"},
+        ]
+        rendered = ga._build_doc_scoped_biological_summary_answer(
+            rows,
+            max_lines=7,
+            no_diagnosis=True,
+            render_profile="doctor_note_reference_ranges",
+        )
+        low = rendered.lower()
+        self.assertIn("plages et statuts documentés", low)
+        self.assertIn("au-dessus de la référence", low)
+        self.assertIn("en dessous de la référence", low)
+        self.assertIn("dans la référence", low)
+        self.assertNotIn("écart documenté", low)
 
     def test_general_conversation_bonjour_fast_path_no_retrieval(self) -> None:
         result = run_generation(
@@ -458,6 +502,14 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertGreater(int(debug.get("value_numeric_count") or 0), 0)
         self.assertGreater(int(debug.get("structured_values_count") or 0), 0)
         self.assertGreater(int(debug.get("sources_count") or 0), 0)
+        self.assertGreater(int(result.get("above_reference_count") or 0), 0)
+        self.assertGreater(int(result.get("below_reference_count") or 0), 0)
+        self.assertGreater(int(result.get("major_anomalies_count") or 0), 0)
+        self.assertGreaterEqual(int(result.get("selected_normal_results_count") or 0), 0)
+        self.assertGreater(int(debug.get("above_reference_count") or 0), 0)
+        self.assertGreater(int(debug.get("below_reference_count") or 0), 0)
+        self.assertGreater(int(debug.get("major_anomalies_count") or 0), 0)
+        self.assertGreaterEqual(int(debug.get("selected_normal_results_count") or 0), 0)
 
     def test_single_report_request_filters_out_other_docs(self) -> None:
         keep = _mk_result(
