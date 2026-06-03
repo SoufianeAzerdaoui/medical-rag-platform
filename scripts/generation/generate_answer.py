@@ -9203,6 +9203,13 @@ def _safe_llm_summary_conclusion(conclusion: str | None, *, no_diagnosis: bool) 
         "acido",
         "altere",
         "altéré",
+        "ouverture clinique",
+        "requiert une evaluation clinique approfondie",
+        "requiert une évaluation clinique approfondie",
+        "evaluation clinique approfondie",
+        "évaluation clinique approfondie",
+        "patient presente",
+        "patient présente",
     }
     weak_markers = (
         "analytes anormaux incluent",
@@ -9296,6 +9303,13 @@ def _llm_summary_requires_professional_rewrite(text: str | None) -> bool:
         return True
     n = norm_text(raw)
     weak_markers = (
+        "ouverture clinique",
+        "patient presente",
+        "patient présente",
+        "requiert une evaluation clinique approfondie",
+        "requiert une évaluation clinique approfondie",
+        "evaluation clinique approfondie",
+        "évaluation clinique approfondie",
         "analytes anormaux incluent",
         "anormaux :",
         "resultats dans la reference uniquement",
