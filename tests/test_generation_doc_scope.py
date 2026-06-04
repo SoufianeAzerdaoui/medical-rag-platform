@@ -70,6 +70,16 @@ def _mk_result(*, chunk_id: str, doc_id: str, analyte: str, analyte_norm: str, v
 
 
 class TestGenerationDocScope(unittest.TestCase):
+    def setUp(self) -> None:
+        self._orig_document_identity_guard = os.environ.get("MEDICAL_RAG_DOCUMENT_IDENTITY_GUARD_ENABLED")
+        os.environ["MEDICAL_RAG_DOCUMENT_IDENTITY_GUARD_ENABLED"] = "0"
+
+    def tearDown(self) -> None:
+        if self._orig_document_identity_guard is None:
+            os.environ.pop("MEDICAL_RAG_DOCUMENT_IDENTITY_GUARD_ENABLED", None)
+        else:
+            os.environ["MEDICAL_RAG_DOCUMENT_IDENTITY_GUARD_ENABLED"] = self._orig_document_identity_guard
+
     def test_llm_timeout_circuit_opens_only_after_threshold(self) -> None:
         ga = __import__("generate_answer")
         old_enabled = os.environ.get("MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_ENABLED")
@@ -669,6 +679,48 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertIn("synthesis_quality_reason", result)
         self.assertIn("selected_major_anomalies_for_fallback", result)
         self.assertIn("selected_major_anomalies_for_fallback", debug)
+
+    def test_document_identity_guard_blocks_mismatched_doc_scope_before_retrieval(self) -> None:
+        os.environ["MEDICAL_RAG_DOCUMENT_IDENTITY_GUARD_ENABLED"] = "1"
+        with mock.patch(
+            "generate_answer._requested_document_identity_snapshots",
+            return_value=[
+                {
+                    "requested_doc_id": "report_12",
+                    "resolved_doc_id": "report_12",
+                    "resolved_filename": "report (12).pdf",
+                    "resolved_file_hash": "abc123",
+                    "resolved_page_count": 1,
+                    "indexed_page_count": 3,
+                    "ingestion_timestamp": "2026-06-04T00:00:00+00:00",
+                    "source_pdf_path": "docs/report (12).pdf",
+                    "document_identity_mismatch": True,
+                    "document_identity_status": "mismatch",
+                    "document_identity_reasons": ["page_count_mismatch"],
+                    "indexed_source_pdf_path": "docs/report (12).pdf",
+                }
+            ],
+        ):
+            result = run_generation(
+                query="Fais une synthèse biologique courte du report 12.",
+                mode="keyword",
+                top_k=5,
+                index_dir="data/indexes",
+                search_engine=_FailIfCalledSearchEngine(),
+            )
+        self.assertEqual(str(result.get("generation_mode") or ""), "deterministic_document_identity_guard")
+        self.assertEqual(str(result.get("fallback_reason") or ""), "document_identity_mismatch")
+        self.assertEqual(str(result.get("final_answer_source") or ""), "deterministic_renderer")
+        self.assertTrue(bool(result.get("document_identity_mismatch")))
+        self.assertEqual(int(result.get("resolved_page_count") or 0), 1)
+        self.assertEqual(int(result.get("indexed_page_count") or 0), 3)
+        self.assertEqual(len(result.get("sources") or []), 0)
+        self.assertIn("document_identity_mismatch", str((result.get("answer") or "")).lower())
+        debug = dict(result.get("debug") or {})
+        self.assertTrue(bool(debug.get("document_identity_mismatch")))
+        self.assertEqual(str(debug.get("requested_doc_id") or ""), "report_12")
+        self.assertEqual(str(debug.get("source_pdf_path") or ""), "docs/report (12).pdf")
+        self.assertEqual(list(debug.get("document_identity_reasons") or []), ["page_count_mismatch"])
 
     def test_single_report_request_filters_out_other_docs(self) -> None:
         keep = _mk_result(

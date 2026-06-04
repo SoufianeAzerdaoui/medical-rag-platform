@@ -151,6 +151,17 @@ class ChatResponse(BaseModel):
     needs_clinical_context_count: int | None = None
     major_anomalies_count: int | None = None
     selected_normal_results_count: int | None = None
+    requested_doc_id: str | None = None
+    resolved_doc_id: str | None = None
+    resolved_filename: str | None = None
+    resolved_file_hash: str | None = None
+    resolved_page_count: int | None = None
+    indexed_page_count: int | None = None
+    ingestion_timestamp: str | None = None
+    source_pdf_path: str | None = None
+    document_identity_mismatch: bool | None = None
+    document_identity_status: str | None = None
+    document_identity_reasons: list[str] | None = None
     visualization: dict[str, Any] | None = None
     chart_data: dict[str, Any] | None = None
     patients: list[dict[str, Any]] | None = None

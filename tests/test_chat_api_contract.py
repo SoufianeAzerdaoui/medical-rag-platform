@@ -272,6 +272,64 @@ class TestChatApiContract(unittest.TestCase):
         self.assertEqual((response.debug or {}).get("final_answer_source"), "llm_writer_repaired")
         self.assertIsNone((response.debug or {}).get("fallback_reason"))
 
+    def test_chat_contract_exposes_document_identity_guard_fields(self) -> None:
+        def _fake_run_generation(**_kwargs):
+            return {
+                "answer": "Impossible de répondre de façon fiable pour report_12.",
+                "generation_time_seconds": 0.2,
+                "generation_mode": "deterministic_document_identity_guard",
+                "validation": {"validation_status": "fail", "warnings": [], "errors": ["document_identity_mismatch"]},
+                "quality_report": {"final_status": "fail"},
+                "query_understanding": {"intent": "doc_scoped_summary", "requested_doc_ids": ["report_12"]},
+                "sources": [],
+                "displayed_evidences": [],
+                "final_answer_source": "deterministic_renderer",
+                "fallback_reason": "document_identity_mismatch",
+                "quality_final_status": "fail",
+                "synthesis_quality_reason": "document_identity_mismatch",
+                "requested_doc_id": "report_12",
+                "resolved_doc_id": "report_12",
+                "resolved_filename": "report (12).pdf",
+                "resolved_file_hash": "abc123",
+                "resolved_page_count": 1,
+                "indexed_page_count": 3,
+                "ingestion_timestamp": "2026-06-04T00:00:00+00:00",
+                "source_pdf_path": "docs/report (12).pdf",
+                "document_identity_mismatch": True,
+                "document_identity_status": "mismatch",
+                "document_identity_reasons": ["page_count_mismatch"],
+                "debug": {
+                    "final_answer_source": "deterministic_renderer",
+                    "fallback_reason": "document_identity_mismatch",
+                    "requested_doc_id": "report_12",
+                    "resolved_doc_id": "report_12",
+                    "resolved_filename": "report (12).pdf",
+                    "resolved_page_count": 1,
+                    "indexed_page_count": 3,
+                    "source_pdf_path": "docs/report (12).pdf",
+                    "document_identity_mismatch": True,
+                    "document_identity_status": "mismatch",
+                    "document_identity_reasons": ["page_count_mismatch"],
+                },
+            }
+
+        response = chat_service.process_chat(
+            payload=ChatRequest(conversation_id="conv_identity", message="q"),
+            current_user={"id": "u1"},
+            state_service=_FakeStateService(),
+            run_generation=_fake_run_generation,
+            logger=logging.getLogger("test.chat.contract"),
+        )
+        self.assertEqual(response.requested_doc_id, "report_12")
+        self.assertEqual(response.resolved_doc_id, "report_12")
+        self.assertEqual(response.resolved_filename, "report (12).pdf")
+        self.assertEqual(response.resolved_page_count, 1)
+        self.assertEqual(response.indexed_page_count, 3)
+        self.assertTrue(bool(response.document_identity_mismatch))
+        self.assertEqual(response.document_identity_status, "mismatch")
+        self.assertEqual(response.document_identity_reasons, ["page_count_mismatch"])
+        self.assertEqual((response.debug or {}).get("source_pdf_path"), "docs/report (12).pdf")
+
     def test_llm_model_override_is_applied_only_in_devtest(self) -> None:
         captured: list[dict] = []
 

@@ -321,6 +321,61 @@ export function useChatActions() {
             (debug.selected_normal_results_count as number | null) ??
             (rawDebug.selected_normal_results_count as number | null) ??
             null,
+          requested_doc_id:
+            (response.requested_doc_id as string | null) ??
+            (debug.requested_doc_id as string | null) ??
+            (rawDebug.requested_doc_id as string | null) ??
+            null,
+          resolved_doc_id:
+            (response.resolved_doc_id as string | null) ??
+            (debug.resolved_doc_id as string | null) ??
+            (rawDebug.resolved_doc_id as string | null) ??
+            null,
+          resolved_filename:
+            (response.resolved_filename as string | null) ??
+            (debug.resolved_filename as string | null) ??
+            (rawDebug.resolved_filename as string | null) ??
+            null,
+          resolved_file_hash:
+            (response.resolved_file_hash as string | null) ??
+            (debug.resolved_file_hash as string | null) ??
+            (rawDebug.resolved_file_hash as string | null) ??
+            null,
+          resolved_page_count:
+            (response.resolved_page_count as number | null) ??
+            (debug.resolved_page_count as number | null) ??
+            (rawDebug.resolved_page_count as number | null) ??
+            null,
+          indexed_page_count:
+            (response.indexed_page_count as number | null) ??
+            (debug.indexed_page_count as number | null) ??
+            (rawDebug.indexed_page_count as number | null) ??
+            null,
+          ingestion_timestamp:
+            (response.ingestion_timestamp as string | null) ??
+            (debug.ingestion_timestamp as string | null) ??
+            (rawDebug.ingestion_timestamp as string | null) ??
+            null,
+          source_pdf_path:
+            (response.source_pdf_path as string | null) ??
+            (debug.source_pdf_path as string | null) ??
+            (rawDebug.source_pdf_path as string | null) ??
+            null,
+          document_identity_mismatch:
+            (response.document_identity_mismatch as boolean | null) ??
+            (debug.document_identity_mismatch as boolean | null) ??
+            (rawDebug.document_identity_mismatch as boolean | null) ??
+            null,
+          document_identity_status:
+            (response.document_identity_status as string | null) ??
+            (debug.document_identity_status as string | null) ??
+            (rawDebug.document_identity_status as string | null) ??
+            null,
+          document_identity_reasons:
+            (response.document_identity_reasons as string[] | null) ??
+            (debug.document_identity_reasons as string[] | null) ??
+            (rawDebug.document_identity_reasons as string[] | null) ??
+            null,
           llm_skipped_reason:
             (debug.llm_skipped_reason as string | null) ??
             (rawDebug.llm_skipped_reason as string | null) ??
