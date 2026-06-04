@@ -95,6 +95,9 @@ function synthesisQualityReasonLabel(value: unknown): string | null {
   if (raw === "summary_too_poor_for_available_facts") {
     return "Synthèse trop pauvre au regard des faits disponibles";
   }
+  if (raw === "llm_validation_failed_after_repair") {
+    return "Réparation LLM insuffisante, fallback déterministe utilisé";
+  }
   return raw.replace(/_/g, " ");
 }
 
