@@ -19346,10 +19346,13 @@ def run_generation(
             synthesis_quality_reason = _first_non_empty_string([str(reason) for reason in final_quality_reasons])
         if not synthesis_quality_reason and str(fallback_reason_debug or "").strip():
             synthesis_quality_reason = str(fallback_reason_debug or "").strip()
-        if final_answer_quality_gate and not bool(final_answer_quality_gate.get("pass")):
+        final_gate_pass = bool(final_answer_quality_gate.get("pass")) if final_answer_quality_gate else None
+        if final_answer_quality_gate and not final_gate_pass:
             quality_final_status = "fail"
         elif str(final_answer_source or "").strip().lower() == "deterministic_renderer":
             quality_final_status = "warning"
+        elif final_gate_pass is True:
+            quality_final_status = "pass"
         else:
             quality_final_status = str((quality or {}).get("final_status") or "pass")
         return _inject_visualization_payload(
