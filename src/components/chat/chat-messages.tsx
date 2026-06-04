@@ -98,22 +98,44 @@ function synthesisQualityReasonLabel(value: unknown): string | null {
   if (raw === "llm_validation_failed_after_repair") {
     return "Réparation LLM insuffisante, fallback déterministe utilisé";
   }
+  if (raw === "doc_scoped_biological_summary_strict_repair") {
+    return "Réparation LLM stricte utilisée pour améliorer la synthèse";
+  }
   return raw.replace(/_/g, " ");
 }
 
-function synthesisQualityBadge(status: "pass" | "warning" | "fail", finalAnswerSource: string, fallbackReason: string): {
+function synthesisQualityBadge(
+  status: "pass" | "warning" | "fail",
+  finalAnswerSource: string,
+  fallbackReason: string,
+  repairStatus: string,
+): {
   label: string;
   className: string;
 } {
+  const isDeterministic = finalAnswerSource === "deterministic_renderer";
+  const isRepaired = finalAnswerSource === "llm_writer_repaired";
   if (status === "fail") {
     return {
-      label: finalAnswerSource === "deterministic_renderer" || fallbackReason ? "Fallback déterministe / à vérifier" : "À vérifier",
+      label: isDeterministic || fallbackReason ? "Fallback déterministe / à vérifier" : "À vérifier",
       className: "doc-confidence-low",
+    };
+  }
+  if (isDeterministic || fallbackReason) {
+    return {
+      label: "Fallback déterministe",
+      className: "status-low",
+    };
+  }
+  if (isRepaired && repairStatus === "passed") {
+    return {
+      label: status === "warning" ? "Réparation LLM acceptée / à surveiller" : "Réparation LLM acceptée",
+      className: status === "warning" ? "status-low" : "doc-confidence-high",
     };
   }
   if (status === "warning") {
     return {
-      label: finalAnswerSource === "deterministic_renderer" ? "Fallback déterministe" : "À surveiller",
+      label: "À surveiller",
       className: "status-low",
     };
   }
@@ -526,20 +548,29 @@ export function ChatMessages() {
                       const diagnostics = (message.diagnostics || {}) as Record<string, unknown>;
                       const finalAnswerSource = String(diagnostics.final_answer_source || "").trim().toLowerCase();
                       const fallbackReason = String(diagnostics.fallback_reason || "").trim();
+                      const repairStatus = String(diagnostics.llm_repair_status || "").trim().toLowerCase();
                       const explicitFinalStatus = String(diagnostics.quality_final_status || "").trim().toLowerCase();
                       const finalGate = (diagnostics.final_answer_quality_gate as Record<string, unknown> | null) || null;
                       const finalGatePass = finalGate ? Boolean(finalGate.pass) : null;
+                      const repairedWriterAccepted =
+                        finalAnswerSource === "llm_writer_repaired" &&
+                        repairStatus === "passed" &&
+                        !fallbackReason;
                       const finalStatus: "pass" | "warning" | "fail" =
                         explicitFinalStatus === "fail" || finalGatePass === false
                           ? "fail"
-                          : explicitFinalStatus === "warning" || finalAnswerSource === "deterministic_renderer"
+                          : finalAnswerSource === "deterministic_renderer"
                             ? "warning"
-                            : "pass";
-                      const qualityBadge = synthesisQualityBadge(finalStatus, finalAnswerSource, fallbackReason);
+                            : repairedWriterAccepted
+                              ? "pass"
+                              : explicitFinalStatus === "warning"
+                                ? "warning"
+                                : "pass";
+                      const qualityBadge = synthesisQualityBadge(finalStatus, finalAnswerSource, fallbackReason, repairStatus);
                       const qualityReason = synthesisQualityReasonLabel(
-                        diagnostics.synthesis_quality_reason ||
-                        (Array.isArray(finalGate?.reasons) ? finalGate?.reasons?.[0] : null) ||
-                        fallbackReason,
+                        (repairedWriterAccepted ? null : diagnostics.synthesis_quality_reason) ||
+                        ((finalStatus === "fail" || finalStatus === "warning") && Array.isArray(finalGate?.reasons) ? finalGate?.reasons?.[0] : null) ||
+                        ((finalAnswerSource === "deterministic_renderer" || fallbackReason) ? fallbackReason : null),
                       );
                       return (
                         <>

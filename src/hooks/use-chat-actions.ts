@@ -218,6 +218,16 @@ export function useChatActions() {
             (debug.llm_repair_status as string | null) ??
             (rawDebug.llm_repair_status as string | null) ??
             null,
+          llm_repair_validation_errors:
+            (response.llm_repair_validation_errors as string[] | null) ??
+            (debug.llm_repair_validation_errors as string[] | null) ??
+            (rawDebug.llm_repair_validation_errors as string[] | null) ??
+            null,
+          llm_repair_truncation_detected:
+            (response.llm_repair_truncation_detected as boolean | null) ??
+            (debug.llm_repair_truncation_detected as boolean | null) ??
+            (rawDebug.llm_repair_truncation_detected as boolean | null) ??
+            null,
           llm_repaired_answer:
             (response.llm_repaired_answer as string | null) ??
             (debug.llm_repaired_answer as string | null) ??
@@ -375,6 +385,16 @@ export function useChatActions() {
                 (response.llm_repair_status as string | null) ??
                 (debug.llm_repair_status as string | null) ??
                 (rawDebug.llm_repair_status as string | null) ??
+                null,
+              llm_repair_validation_errors:
+                (response.llm_repair_validation_errors as string[] | null) ??
+                (debug.llm_repair_validation_errors as string[] | null) ??
+                (rawDebug.llm_repair_validation_errors as string[] | null) ??
+                null,
+              llm_repair_truncation_detected:
+                (response.llm_repair_truncation_detected as boolean | null) ??
+                (debug.llm_repair_truncation_detected as boolean | null) ??
+                (rawDebug.llm_repair_truncation_detected as boolean | null) ??
                 null,
             },
           ]);

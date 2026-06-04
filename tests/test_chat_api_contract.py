@@ -226,6 +226,52 @@ class TestChatApiContract(unittest.TestCase):
         self.assertEqual(len(response.displayed_evidences), 5)
         self.assertIsInstance((response.debug or {}).get("stage_timings_ms"), dict)
 
+    def test_chat_contract_exposes_repaired_writer_without_fallback_flags(self) -> None:
+        def _fake_run_generation(**_kwargs):
+            return {
+                "answer": "Synthèse réparée valide.\n\nSource : report_12, pages 1-2.",
+                "generation_time_seconds": 0.9,
+                "generation_mode": "hybrid_structured_llm_writer",
+                "validation": {"validation_status": "pass", "warnings": [], "errors": []},
+                "quality_report": {"final_status": "pass"},
+                "query_understanding": {"intent": "doc_scoped_biological_summary", "requested_doc_ids": ["report_12"]},
+                "sources": [],
+                "displayed_evidences": [],
+                "final_answer_source": "llm_writer_repaired",
+                "fallback_reason": None,
+                "llm_repair_attempted": True,
+                "llm_repair_status": "passed",
+                "llm_quality_escalation_used": True,
+                "llm_quality_escalation_reason": "doc_scoped_biological_summary_strict_repair",
+                "quality_final_status": "pass",
+                "synthesis_quality_reason": None,
+                "llm_quality_gate": {"pass": False, "reasons": ["summary_too_poor_for_available_facts"], "score": 0.75, "threshold": 0.85},
+                "final_answer_quality_gate": {"pass": True, "reasons": [], "score": 1.0, "threshold": 0.85},
+                "debug": {
+                    "final_answer_source": "llm_writer_repaired",
+                    "fallback_reason": None,
+                    "llm_repair_status": "passed",
+                    "llm_quality_escalation_used": True,
+                    "llm_quality_escalation_reason": "doc_scoped_biological_summary_strict_repair",
+                    "quality_final_status": "pass",
+                    "synthesis_quality_reason": None,
+                },
+            }
+
+        response = chat_service.process_chat(
+            payload=ChatRequest(conversation_id="conv_3", message="q"),
+            current_user={"id": "u1"},
+            state_service=_FakeStateService(),
+            run_generation=_fake_run_generation,
+            logger=logging.getLogger("test.chat.contract"),
+        )
+        self.assertEqual(response.final_answer_source, "llm_writer_repaired")
+        self.assertIsNone(response.fallback_reason)
+        self.assertEqual(response.llm_repair_status, "passed")
+        self.assertEqual(response.quality_final_status, "pass")
+        self.assertEqual((response.debug or {}).get("final_answer_source"), "llm_writer_repaired")
+        self.assertIsNone((response.debug or {}).get("fallback_reason"))
+
     def test_llm_model_override_is_applied_only_in_devtest(self) -> None:
         captured: list[dict] = []
 

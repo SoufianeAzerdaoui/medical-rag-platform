@@ -10115,6 +10115,13 @@ def _doc_scoped_biological_summary_repair_errors(
     ):
         errors.append("repair_still_sparse")
 
+    errors.extend(
+        _doc_scoped_biological_summary_truncation_errors(
+            answer=repaired_raw,
+            displayed_evidences=rows,
+        )
+    )
+
     return list(dict.fromkeys(errors))
 
 
@@ -10350,6 +10357,54 @@ def _summary_missing_value_placeholders_for_structured_rows(
     return missing
 
 
+def _doc_scoped_biological_summary_truncation_errors(
+    *,
+    answer: str,
+    displayed_evidences: list[dict[str, Any]],
+) -> list[str]:
+    text = str(answer or "").strip()
+    if not text:
+        return []
+
+    errors: list[str] = []
+    if re.search(r"[,:;(\-–]\s*$", text):
+        errors.append("repair_truncated_terminal_punctuation")
+
+    blocks = [block.strip() for block in text.split("\n\n") if block.strip()]
+    prudent_sections = [
+        match.group(1).strip()
+        for match in re.finditer(r"(?is)lecture prudente\s*:\s*(.+?)(?:\.\s|$)", text)
+        if str(match.group(1) or "").strip()
+    ]
+    for prudent_text in prudent_sections:
+        prudent_norm = norm_text(prudent_text)
+        if not any(token in prudent_norm for token in ["necessit", "contexte", "profil patient", "lecture prudente selon"]):
+            errors.append("repair_truncated_prudent_reading_section")
+        if re.search(r"(?:,|\s)([A-ZÀ-Ÿ][a-zà-ÿ]{0,2})\s*$", prudent_text):
+            errors.append("repair_truncated_prudent_reading_section")
+
+    counts = _doc_scoped_summary_classification_counts(list(displayed_evidences or []))
+    source_pages = str(counts.get("source_pages") or "").strip()
+    source_block = next(
+        (
+            block
+            for block in reversed(blocks)
+            if norm_text(block).startswith("source")
+        ),
+        "",
+    )
+    if not source_block:
+        errors.append("repair_missing_complete_source")
+    else:
+        source_norm = norm_text(source_block)
+        if source_pages and norm_text(source_pages) not in source_norm:
+            errors.append("repair_missing_complete_source")
+        elif len(source_block) < 12:
+            errors.append("repair_missing_complete_source")
+
+    return list(dict.fromkeys(errors))
+
+
 def _evaluate_summary_quality_gate(
     *,
     answer: str,
@@ -10418,6 +10473,13 @@ def _evaluate_summary_quality_gate(
         if missing_value_labels:
             reasons.append("missing_values_in_final_answer_despite_structured_values")
             score -= 0.35
+        truncation_errors = _doc_scoped_biological_summary_truncation_errors(
+            answer=text,
+            displayed_evidences=list(displayed_evidences or []),
+        )
+        if truncation_errors:
+            reasons.extend(truncation_errors)
+            score -= min(0.45, 0.2 * len(truncation_errors))
 
     score = max(0.0, min(1.0, score))
     threshold = 0.85
@@ -16804,6 +16866,8 @@ def run_generation(
         llm_repaired_validation_status: str | None = None
         llm_repaired_validation_errors: list[str] = []
         llm_repaired_validation_warnings: list[str] = []
+        llm_repair_validation_errors: list[str] = []
+        llm_repair_truncation_detected = False
         llm_repair_status: str | None = None
         llm_writer_final_attempted = False
         llm_writer_final_accepted = False
@@ -17869,6 +17933,10 @@ def run_generation(
                         llm_repaired_validation_status = str(retry_validation.get("validation_status") or "")
                         llm_repaired_validation_errors = list(retry_validation.get("errors") or [])
                         llm_repaired_validation_warnings = list(retry_validation.get("warnings") or [])
+                        llm_repair_validation_errors = list(llm_repaired_validation_errors)
+                        llm_repair_truncation_detected = any(
+                            "truncated" in str(err).lower() for err in llm_repair_validation_errors
+                        )
                         llm_repair_status = "passed"
                         llm_candidate_rejected_reason = None
                         if selected_route == "doc_scoped_biological_summary":
@@ -17910,6 +17978,10 @@ def run_generation(
                         llm_repaired_validation_status = str(retry_validation.get("validation_status") or "")
                         llm_repaired_validation_errors = list(retry_validation.get("errors") or [])
                         llm_repaired_validation_warnings = list(retry_validation.get("warnings") or [])
+                        llm_repair_validation_errors = list(llm_repaired_validation_errors)
+                        llm_repair_truncation_detected = any(
+                            "truncated" in str(err).lower() for err in llm_repair_validation_errors
+                        )
                         llm_repair_status = "failed_validation"
                         validation = validate_answer(
                             query=q,
@@ -17992,6 +18064,10 @@ def run_generation(
                     llm_repaired_validation_status = str(retry_validation.get("validation_status") or "")
                     llm_repaired_validation_errors = list(retry_validation.get("errors") or [])
                     llm_repaired_validation_warnings = list(retry_validation.get("warnings") or [])
+                    llm_repair_validation_errors = list(llm_repaired_validation_errors)
+                    llm_repair_truncation_detected = any(
+                        "truncated" in str(err).lower() for err in llm_repair_validation_errors
+                    )
                     llm_repair_status = "failed_validation"
                     validation = validate_answer(
                         query=q,
@@ -18876,6 +18952,10 @@ def run_generation(
                     llm_repaired_validation_status = "failed_validation"
                     llm_repaired_validation_errors = late_repair_errors
                     llm_repaired_validation_warnings = list(late_repair_gate.get("reasons") or [])
+                    llm_repair_validation_errors = list(llm_repaired_validation_errors)
+                    llm_repair_truncation_detected = any(
+                        "truncated" in str(err).lower() for err in llm_repair_validation_errors
+                    )
                     fallback_reason_debug = "llm_validation_failed_after_repair"
                     fallback_stage = "post_validation_repair"
                     fallback_renderer_used = _doc_scoped_summary_fallback_renderer_name(from_llm_path=True)
@@ -18894,6 +18974,10 @@ def run_generation(
                     llm_repaired_validation_status = "passed"
                     llm_repaired_validation_errors = []
                     llm_repaired_validation_warnings = list(late_repair_gate.get("reasons") or [])
+                    llm_repair_validation_errors = list(llm_repaired_validation_errors)
+                    llm_repair_truncation_detected = any(
+                        "truncated" in str(err).lower() for err in llm_repair_validation_errors
+                    )
                     writer_error = None
                     fallback_reason_debug = None
                     fallback_stage = None
@@ -18990,6 +19074,8 @@ def run_generation(
             "llm_candidate_contract_errors": llm_candidate_contract_errors,
             "llm_repair_attempted": llm_candidate_repair_used,
             "llm_repair_status": llm_repair_status,
+            "llm_repair_validation_errors": llm_repair_validation_errors,
+            "llm_repair_truncation_detected": llm_repair_truncation_detected,
             "llm_repaired_answer": llm_repaired_answer,
             "displayed_evidences_count": evidence_metrics["displayed_evidences_count"],
             "evidence_pack_count": evidence_metrics["evidence_pack_count"],
@@ -19193,6 +19279,8 @@ def run_generation(
                 "llm_repaired_validation_warnings": llm_repaired_validation_warnings,
                 "llm_repair_attempted": llm_candidate_repair_used,
                 "llm_repair_status": llm_repair_status,
+                "llm_repair_validation_errors": llm_repair_validation_errors,
+                "llm_repair_truncation_detected": llm_repair_truncation_detected,
                 "llm_repair_answer": llm_repaired_answer,
                 "llm_repair_error_type": llm_repair_error_type,
                 "llm_repair_error_message": llm_repair_error_message,
