@@ -4,6 +4,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -2370,19 +2371,19 @@ class TestGenerationDocScope(unittest.TestCase):
             "Conclusion technique : Analytes anormaux et normaux identifiés, sans diagnostic."
         )
         repaired = (
-            "Le bilan met surtout en évidence une élévation de la bilirubine directe et de la créatinine parmi les anomalies les plus notables. "
-            "Aucun résultat strictement dans la référence n’est mis en avant dans les éléments sélectionnés. "
-            "Cette synthèse reste strictement descriptive et doit être interprétée avec prudence, sans diagnostic."
+            "Points biologiques notables : Bilirubine Directe = 6 mg/L, au-dessus de la référence, "
+            "LDH = 250 UI/L, au-dessus de la référence, CKMB (CPKMB) = 40 UI/L, au-dessus de la référence, "
+            "APOLIPOPROTÉINE A1 (APO A1) = 2.3 g/L, au-dessus de la référence.\n\n"
+            "Aucun résultat dans la référence n’est mis en avant dans les éléments structurés sélectionnés.\n\n"
+            "Lecture prudente : ACIDE URIQUE, Cholestérol total, Créatinine, GGT nécessitent une lecture prudente, car leurs références dépendent du profil patient ou du contexte clinique.\n\n"
+            "Conclusion technique : le profil met en évidence plusieurs écarts biologiques documentés, à interpréter avec prudence, sans diagnostic.\n\n"
+            "Source : report_12, pages 1-2."
         )
-        call_count = {"n": 0}
-
         def _fake_micro(**kwargs: object) -> dict[str, object]:
-            call_count["n"] += 1
-            answer = candidate if call_count["n"] == 1 else repaired
             return {
                 "mode": "hybrid_structured_llm_writer",
-                "answer": answer,
-                "llm_candidate_answer": answer,
+                "answer": candidate,
+                "llm_candidate_answer": candidate,
                 "llm_error": None,
                 "use_micro_prompt": True,
             }
@@ -2392,13 +2393,15 @@ class TestGenerationDocScope(unittest.TestCase):
         def _validate_candidate_then_repair(*args, **kwargs):
             answer_text = str(kwargs.get("answer_text") or "").strip()
             if answer_text == candidate.strip():
-                return {"validation_status": "fail", "errors": ["output_format_not_respected"], "warnings": []}
-            if answer_text.startswith(repaired.strip()):
+                return {"validation_status": "fail", "errors": ["summary_too_poor_for_available_facts"], "warnings": []}
+            if answer_text.startswith("Points biologiques notables : Bilirubine Directe = 6 mg/L"):
                 return {"validation_status": "pass", "errors": [], "warnings": []}
             return original_validate(*args, **kwargs)
 
         try:
             with mock.patch("generate_answer._compose_level2_micro_prompt_answer", side_effect=_fake_micro), mock.patch(
+                "generate_answer._attempt_doc_scoped_biological_summary_llm_salvage", return_value=(repaired, None)
+            ), mock.patch(
                 "generate_answer.validate_answer", side_effect=_validate_candidate_then_repair
             ):
                 result = run_generation(
@@ -2417,9 +2420,9 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertTrue(bool(result.get("llm_repair_attempted")))
         self.assertEqual(str(result.get("llm_repair_status") or ""), "passed")
         self.assertEqual(str(result.get("fallback_reason") or ""), "")
-        self.assertEqual(list(result.get("llm_candidate_validation_errors") or []), ["output_format_not_respected"])
+        self.assertEqual(list(result.get("llm_candidate_validation_errors") or []), ["summary_too_poor_for_available_facts"])
         self.assertEqual(str(result.get("llm_candidate_rejected_reason") or ""), "")
-        self.assertTrue(str(result.get("llm_repaired_answer") or "").startswith(repaired))
+        self.assertTrue(str(result.get("llm_repaired_answer") or "").startswith("Points biologiques notables : Bilirubine Directe = 6 mg/L"))
 
     def test_doc_scoped_biological_summary_repair_failure_exposes_reason_before_deterministic_fallback(self) -> None:
         old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
@@ -2430,15 +2433,11 @@ class TestGenerationDocScope(unittest.TestCase):
             "Conclusion technique : Analytes anormaux et normaux identifiés, sans diagnostic."
         )
         repaired = "Conclusion technique : sans diagnostic."
-        call_count = {"n": 0}
-
         def _fake_micro(**kwargs: object) -> dict[str, object]:
-            call_count["n"] += 1
-            answer = candidate if call_count["n"] == 1 else repaired
             return {
                 "mode": "hybrid_structured_llm_writer",
-                "answer": answer,
-                "llm_candidate_answer": answer,
+                "answer": candidate,
+                "llm_candidate_answer": candidate,
                 "llm_error": None,
                 "use_micro_prompt": True,
             }
@@ -2448,13 +2447,15 @@ class TestGenerationDocScope(unittest.TestCase):
         def _validate_fail_both(*args, **kwargs):
             answer_text = str(kwargs.get("answer_text") or "").strip()
             if answer_text == candidate.strip():
-                return {"validation_status": "fail", "errors": ["output_format_not_respected"], "warnings": []}
-            if answer_text.startswith(repaired.strip()):
+                return {"validation_status": "fail", "errors": ["summary_too_poor_for_available_facts"], "warnings": []}
+            if answer_text.startswith("Conclusion technique : sans diagnostic."):
                 return {"validation_status": "fail", "errors": ["missing_professional_intro"], "warnings": ["missing_conclusion"]}
             return original_validate(*args, **kwargs)
 
         try:
             with mock.patch("generate_answer._compose_level2_micro_prompt_answer", side_effect=_fake_micro), mock.patch(
+                "generate_answer._attempt_doc_scoped_biological_summary_llm_salvage", return_value=(repaired, None)
+            ), mock.patch(
                 "generate_answer.validate_answer", side_effect=_validate_fail_both
             ):
                 result = run_generation(
@@ -2476,8 +2477,113 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertEqual(str(result.get("renderer_used") or ""), "deterministic_doc_scoped_biological_summary_fallback")
         self.assertEqual(
             str(result.get("llm_candidate_rejected_reason") or ""),
-            "validation_error:output_format_not_respected",
+            "validation_error:summary_too_poor_for_available_facts",
         )
+
+    def test_doc_scoped_biological_summary_repair_errors_reject_truncated_prudent_line(self) -> None:
+        ga = __import__("generate_answer")
+        evidences = [
+            {
+                "doc_id": "report_12",
+                "page": 1,
+                "analyte": "Bilirubine Directe",
+                "value_raw": "6",
+                "unit": "mg/L",
+                "technical_status_code": "above_reference",
+            },
+            {
+                "doc_id": "report_12",
+                "page": 1,
+                "analyte": "AMMONIUM",
+                "value_raw": "20",
+                "unit": "µg/dL",
+                "technical_status_code": "below_reference",
+            },
+            {
+                "doc_id": "report_12",
+                "page": 2,
+                "analyte": "Créatinine",
+                "value_raw": "23",
+                "unit": "mg/L",
+                "technical_status_code": "needs_clinical_context",
+            },
+        ]
+        errors = ga._doc_scoped_biological_summary_repair_errors(
+            candidate_answer="Synthèse courte insuffisante.",
+            repaired_answer=(
+                "Points biologiques notables : Bilirubine Directe = 6 mg/L, au-dessus de la référence. "
+                "Lecture prudente : ACIDE URIQUE, Ch\n\n"
+                "Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic."
+            ),
+            evidences=evidences,
+            query_understanding=SimpleNamespace(
+                safety_intent="no_diagnosis_constraint",
+                answer_style="short",
+                requested_summary_points=5,
+            ),
+        )
+        self.assertIn("repair_truncated_prudent_reading_section", errors)
+        self.assertIn("repair_missing_complete_source", errors)
+
+    def test_doc_scoped_biological_summary_truncated_repair_falls_back_and_exposes_debug(self) -> None:
+        old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")
+        os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = "1"
+        candidate = (
+            "Anormaux : Bilirubine Directe = 6 mg/l (réf 0.00 - 5.00, au-dessus).\n"
+            "Résultats dans la référence uniquement : aucun résultat strictement dans la référence parmi les éléments sélectionnés.\n"
+            "Conclusion technique : Analytes anormaux et normaux identifiés, sans diagnostic."
+        )
+        repaired = (
+            "Points biologiques notables : Bilirubine Directe = 6 mg/L, au-dessus de la référence, "
+            "LDH = 250 UI/L, au-dessus de la référence, CKMB (CPKMB) = 40 UI/L, au-dessus de la référence, "
+            "APOLIPOPROTÉINE A1 (APO A1) = 2.3 g/L, au-dessus de la référence, AMMONIUM = 20 µg/dL, en dessous de la référence.\n\n"
+            "Aucun résultat dans la référence n’est mis en avant dans les éléments structurés sélectionnés.\n\n"
+            "Lecture prudente : ACIDE URIQUE, Ch\n\n"
+            "Conclusion technique : le profil met en évidence plusieurs écarts biologiques documentés, à interpréter avec prudence, sans diagnostic."
+        )
+        def _fake_micro(**kwargs: object) -> dict[str, object]:
+            return {
+                "mode": "hybrid_structured_llm_writer",
+                "answer": candidate,
+                "llm_candidate_answer": candidate,
+                "llm_error": None,
+                "use_micro_prompt": True,
+            }
+
+        original_validate = __import__("generate_answer").validate_answer
+
+        def _validate_candidate_then_truncated_repair(*args, **kwargs):
+            answer_text = str(kwargs.get("answer_text") or "").strip()
+            if answer_text == candidate.strip():
+                return {"validation_status": "fail", "errors": ["summary_too_poor_for_available_facts"], "warnings": []}
+            if answer_text.startswith("Points biologiques notables : Bilirubine Directe = 6 mg/L"):
+                return {"validation_status": "pass", "errors": [], "warnings": []}
+            return original_validate(*args, **kwargs)
+
+        try:
+            with mock.patch("generate_answer._compose_level2_micro_prompt_answer", side_effect=_fake_micro), mock.patch(
+                "generate_answer._attempt_doc_scoped_biological_summary_llm_salvage", return_value=(repaired, None)
+            ), mock.patch(
+                "generate_answer.validate_answer", side_effect=_validate_candidate_then_truncated_repair
+            ):
+                result = run_generation(
+                    query="Fais une synthèse biologique courte du report 12. Limite-toi à 3 à 5 lignes, mentionne uniquement les anomalies majeures, les résultats dans la référence et une conclusion prudente, sans diagnostic.",
+                    mode="keyword",
+                    top_k=30,
+                    index_dir="data/indexes",
+                )
+        finally:
+            if old_force is None:
+                os.environ.pop("MEDICAL_RAG_FORCE_LLM_WRITER", None)
+            else:
+                os.environ["MEDICAL_RAG_FORCE_LLM_WRITER"] = old_force
+
+        self.assertEqual(str(result.get("final_answer_source") or ""), "deterministic_renderer")
+        self.assertEqual(str(result.get("fallback_reason") or ""), "llm_validation_failed_after_repair")
+        self.assertEqual(str(result.get("llm_repair_status") or ""), "failed_validation")
+        self.assertTrue(bool(result.get("llm_repair_truncation_detected")))
+        self.assertIn("repair_truncated_prudent_reading_section", list(result.get("llm_repair_validation_errors") or []))
+        self.assertIn("repair_missing_complete_source", list(result.get("llm_repair_validation_errors") or []))
 
     def test_biological_summary_doctor_note_reference_ranges_includes_range_section(self) -> None:
         ga = __import__("generate_answer")

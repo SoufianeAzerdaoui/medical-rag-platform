@@ -120,6 +120,8 @@ export interface AssistantDiagnostics {
   llm_candidate_contract_errors?: string[] | null;
   llm_repair_attempted?: boolean | null;
   llm_repair_status?: string | null;
+  llm_repair_validation_errors?: string[] | null;
+  llm_repair_truncation_detected?: boolean | null;
   llm_repaired_answer?: string | null;
   llm_quality_gate?: Record<string, unknown> | null;
   final_answer_quality_gate?: Record<string, unknown> | null;
@@ -212,6 +214,8 @@ export interface RagResponse {
   llm_candidate_contract_errors?: string[] | null;
   llm_repair_attempted?: boolean | null;
   llm_repair_status?: string | null;
+  llm_repair_validation_errors?: string[] | null;
+  llm_repair_truncation_detected?: boolean | null;
   llm_repaired_answer?: string | null;
   llm_quality_gate?: Record<string, unknown> | null;
   final_answer_quality_gate?: Record<string, unknown> | null;

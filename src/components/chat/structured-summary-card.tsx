@@ -621,10 +621,10 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
             )
             : "Résumé technique"}
         </span>
-        {diagnostics?.llm_quality_escalation_used ? (
+        {diagnostics?.llm_quality_escalation_used && isLlmWriter ? (
           <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-2.5 py-1 text-xs font-medium text-cyan-200">
             <BadgeCheck size={12} />
-            Gemini éditorial
+            Réécriture LLM validée
           </span>
         ) : null}
         <span className="inline-flex items-center gap-1 rounded-full border border-accent/30 bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent transition hover:-translate-y-px">
