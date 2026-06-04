@@ -343,6 +343,43 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertIn("ammonium = 20 µg/dl", low)
         self.assertIn("aucun résultat dans la référence n’est mis en avant", low)
 
+    def test_compact_biological_summary_uses_value_numeric_when_raw_missing(self) -> None:
+        ga = __import__("generate_answer")
+        rows = [
+            {"analyte": "Bilirubine Directe", "technical_status_code": "above_reference", "value_numeric": 6.0, "unit": "mg/L", "reference_short": "0.00 - 5.00"},
+            {"analyte": "LDH", "technical_status_code": "above_reference", "value_numeric": 250.0, "unit": "UI/L", "reference_short": "125 - 243"},
+            {"analyte": "Ammonium", "technical_status_code": "below_reference", "value_numeric": 20.0, "unit": "µg/dL", "reference_short": "35 - 80"},
+        ]
+        rendered = ga._build_doc_scoped_biological_summary_answer(
+            rows,
+            max_lines=6,
+            no_diagnosis=True,
+            render_profile="compact_biological_summary",
+        )
+        low = rendered.lower()
+        self.assertIn("bilirubine directe =", low)
+        self.assertNotIn("non disponible", low)
+
+    def test_final_summary_quality_gate_rejects_non_disponible_when_structured_values_exist(self) -> None:
+        ga = __import__("generate_answer")
+        rows = [
+            {"analyte": "Bilirubine Directe", "technical_status_code": "above_reference", "value_numeric": 6.0, "unit": "mg/L"},
+            {"analyte": "LDH", "technical_status_code": "above_reference", "value_numeric": 250.0, "unit": "UI/L"},
+            {"analyte": "CKMB (CPKMB)", "technical_status_code": "above_reference", "value_numeric": 40.0, "unit": "UI/L"},
+            {"analyte": "APO A1", "technical_status_code": "above_reference", "value_numeric": 2.3, "unit": "g/L"},
+            {"analyte": "AMMONIUM", "technical_status_code": "below_reference", "value_numeric": 20.0, "unit": "µg/dL"},
+        ]
+        gate = ga._evaluate_summary_quality_gate(
+            answer=(
+                "Points biologiques notables : Bilirubine Directe = non disponible, au-dessus de la référence, "
+                "LDH = non disponible, au-dessus de la référence, CKMB (CPKMB) = non disponible, au-dessus de la référence."
+            ),
+            selected_route="doc_scoped_biological_summary",
+            displayed_evidences=rows,
+        )
+        self.assertFalse(bool(gate.get("pass")))
+        self.assertIn("missing_values_in_final_answer_despite_structured_values", list(gate.get("reasons") or []))
+
     def test_general_conversation_bonjour_fast_path_no_retrieval(self) -> None:
         result = run_generation(
             query="Bonjour.",
@@ -555,6 +592,8 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertIn("final_answer_quality_gate", debug)
         self.assertIn("quality_final_status", result)
         self.assertIn("synthesis_quality_reason", result)
+        self.assertIn("selected_major_anomalies_for_fallback", result)
+        self.assertIn("selected_major_anomalies_for_fallback", debug)
 
     def test_single_report_request_filters_out_other_docs(self) -> None:
         keep = _mk_result(

@@ -7055,6 +7055,12 @@ def _build_doc_scoped_biological_summary_answer(
         def _value_with_unit(ev: dict[str, Any]) -> str:
             value_raw = str(ev.get("current_value") or "").strip()
             if not value_raw:
+                value_raw = str(ev.get("value_raw") or "").strip()
+            if not value_raw and ev.get("value_numeric") is not None:
+                numeric = _to_float(ev.get("value_numeric"))
+                if numeric is not None:
+                    value_raw = str(int(numeric)) if float(numeric).is_integer() else str(numeric)
+            if not value_raw:
                 value_raw = str(ev.get("value_with_unit") or "").strip()
             unit_raw = str(ev.get("unit") or "").strip()
             if value_raw and unit_raw and unit_raw not in value_raw:
@@ -7204,7 +7210,7 @@ def _build_doc_scoped_biological_summary_answer(
         pages = sorted(
             {
                 int(p)
-                for p in [r.get("page") for r in rows]
+                for p in [r.get("page") or r.get("page_number") for r in rows]
                 if str(p).strip().isdigit()
             }
         )
@@ -7224,7 +7230,7 @@ def _build_doc_scoped_biological_summary_answer(
             lead_line = f"Résumé biologique court — {doc_scope}."
             compact_opening = context_line
             compact_focus = notable_line if notable_line else "Aucun écart anormal exploitable retrouvé dans les données retenues."
-            compact_lines_source = [lead_line, compact_opening, compact_focus]
+            compact_lines_source = [lead_line, compact_focus]
             if normal_line:
                 compact_lines_source.append(normal_line)
             if context_prudence_line:
@@ -7283,6 +7289,24 @@ def _build_doc_scoped_biological_summary_answer(
             tail = [warning_ln, conclusion_ln, source_ln]
             slots = max(0, max_l_note - 1 - len(tail))
             compact_lines = [title_ln, *body_candidates[:slots], *tail]
+        if (
+            render_profile_norm == "compact_biological_summary"
+            and normal_line == _doc_scoped_no_within_reference_sentence()
+            and normal_line not in compact_lines
+        ):
+            inserted: list[str] = []
+            for ln in compact_lines:
+                inserted.append(ln)
+                if ln == notable_line and normal_line not in inserted:
+                    inserted.append(normal_line)
+            compact_lines = []
+            seen_compact: set[str] = set()
+            for ln in inserted:
+                key = norm_text(ln)
+                if not key or key in seen_compact:
+                    continue
+                seen_compact.add(key)
+                compact_lines.append(ln)
         return "\n\n".join(compact_lines).strip()
 
     if render_profile_norm in {
@@ -9815,6 +9839,35 @@ def _doc_scoped_summary_classification_counts(rows: list[dict[str, Any]]) -> dic
     }
 
 
+def _doc_scoped_selected_major_anomalies_for_fallback(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ev in list(rows or []):
+        status = _summary_status_code_exact(ev)
+        if status not in {"above_reference", "below_reference"}:
+            continue
+        analyte = _clean_analyte_label(
+            str(ev.get("analyte") or ev.get("analyte_label") or ev.get("display_name") or "")
+        )
+        analyte_key = norm_text(analyte)
+        if not analyte_key or analyte_key in seen:
+            continue
+        seen.add(analyte_key)
+        selected.append(
+            {
+                "analyte": analyte,
+                "value_raw": str(ev.get("value_raw") or ev.get("current_value") or "").strip() or None,
+                "value_numeric": ev.get("value_numeric"),
+                "unit": str(ev.get("unit") or "").strip() or None,
+                "interpretation_status": status,
+                "page_number": ev.get("page_number") or ev.get("page"),
+            }
+        )
+        if len(selected) >= 5:
+            break
+    return selected
+
+
 def _doc_scoped_summary_retry_fact_block(rows: list[dict[str, Any]]) -> str:
     counts = _doc_scoped_summary_classification_counts(rows)
 
@@ -10101,6 +10154,34 @@ def _summary_text_mentions_rows(text: str, rows: list[dict[str, Any]]) -> int:
     return len(matched)
 
 
+def _summary_missing_value_placeholders_for_structured_rows(
+    text: str,
+    rows: list[dict[str, Any]],
+) -> list[str]:
+    sentence_norm = norm_text(text or "")
+    if not sentence_norm:
+        return []
+    missing: list[str] = []
+    seen: set[str] = set()
+    for ev in list(rows or []):
+        raw_label = str(ev.get("analyte") or ev.get("analyte_label") or ev.get("display_name") or "").strip()
+        label = _clean_analyte_label(raw_label)
+        key = norm_text(label)
+        if not key or key in seen:
+            continue
+        has_structured_value = (
+            ev.get("value_numeric") is not None
+            or bool(str(ev.get("value_raw") or ev.get("current_value") or "").strip())
+        )
+        if not has_structured_value:
+            continue
+        pattern = re.compile(rf"{re.escape(key)}[^.\n;:]*non disponible")
+        if pattern.search(sentence_norm):
+            seen.add(key)
+            missing.append(label or raw_label)
+    return missing
+
+
 def _evaluate_summary_quality_gate(
     *,
     answer: str,
@@ -10158,6 +10239,17 @@ def _evaluate_summary_quality_gate(
             if mention_count < 3:
                 reasons.append("summary_too_poor_for_available_facts")
                 score -= 0.25
+        missing_value_labels = _summary_missing_value_placeholders_for_structured_rows(
+            text,
+            [
+                ev
+                for ev in list(displayed_evidences or [])
+                if _summary_status_code_exact(ev) in {"above_reference", "below_reference"}
+            ],
+        )
+        if missing_value_labels:
+            reasons.append("missing_values_in_final_answer_despite_structured_values")
+            score -= 0.35
 
     score = max(0.0, min(1.0, score))
     threshold = 0.85
@@ -18423,6 +18515,11 @@ def run_generation(
             if str(selected_route or "").strip().lower() == "doc_scoped_biological_summary"
             else {}
         )
+        selected_major_anomalies_for_fallback = (
+            _doc_scoped_selected_major_anomalies_for_fallback(list(summary_all_evidences or displayed_evidences or []))
+            if str(selected_route or "").strip().lower() == "doc_scoped_biological_summary"
+            else []
+        )
         fallback_decision_path = _build_fallback_decision_path(
             planner_execution=planner_execution,
             answerability_assessment=answerability_assessment,
@@ -18627,7 +18724,18 @@ def run_generation(
                 displayed_evidences=list(summary_all_evidences or displayed_evidences or []),
             )
         final_quality_reasons = list((final_answer_quality_gate or {}).get("reasons") or [])
-        synthesis_quality_reason = _first_non_empty_string([str(reason) for reason in final_quality_reasons])
+        llm_quality_reasons = list((llm_quality_gate_result or {}).get("reasons") or [])
+        synthesis_quality_reason = None
+        if (
+            str(final_answer_source or "").strip().lower() == "deterministic_renderer"
+            and llm_quality_gate_result
+            and not bool(llm_quality_gate_result.get("pass"))
+        ):
+            synthesis_quality_reason = _first_non_empty_string([str(reason) for reason in llm_quality_reasons])
+        if not synthesis_quality_reason:
+            synthesis_quality_reason = _first_non_empty_string([str(reason) for reason in final_quality_reasons])
+        if not synthesis_quality_reason and str(fallback_reason_debug or "").strip():
+            synthesis_quality_reason = str(fallback_reason_debug or "").strip()
         if final_answer_quality_gate and not bool(final_answer_quality_gate.get("pass")):
             quality_final_status = "fail"
         elif str(final_answer_source or "").strip().lower() == "deterministic_renderer":
@@ -18692,6 +18800,7 @@ def run_generation(
             "needs_clinical_context_count": int(doc_scoped_fact_counts.get("needs_clinical_context_count") or 0),
             "major_anomalies_count": int(doc_scoped_fact_counts.get("major_anomalies_count") or 0),
             "selected_normal_results_count": int(doc_scoped_fact_counts.get("selected_normal_results_count") or 0),
+            "selected_major_anomalies_for_fallback": selected_major_anomalies_for_fallback,
             "detected_analytes": exact_analytes,
             "query_understanding": _query_understanding_payload(query_understanding),
             "structured_evidence_pack": structured_pack,
@@ -18858,6 +18967,7 @@ def run_generation(
                 "needs_clinical_context_count": int(doc_scoped_fact_counts.get("needs_clinical_context_count") or 0),
                 "major_anomalies_count": int(doc_scoped_fact_counts.get("major_anomalies_count") or 0),
                 "selected_normal_results_count": int(doc_scoped_fact_counts.get("selected_normal_results_count") or 0),
+                "selected_major_anomalies_for_fallback": selected_major_anomalies_for_fallback,
                 "hard_gate_triggered": hard_gate_triggered,
                 "hard_gate_errors": hard_gate_hits if 'hard_gate_hits' in locals() else [],
                 "hard_gate_policy": "global_non_negotiable",
