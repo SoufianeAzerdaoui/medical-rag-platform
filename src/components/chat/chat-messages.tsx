@@ -89,6 +89,37 @@ function evidenceBadgeLabel(level: "elevee" | "moyenne" | "faible"): string {
   return "Faible";
 }
 
+function synthesisQualityReasonLabel(value: unknown): string | null {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (raw === "summary_too_poor_for_available_facts") {
+    return "Synthèse trop pauvre au regard des faits disponibles";
+  }
+  return raw.replace(/_/g, " ");
+}
+
+function synthesisQualityBadge(status: "pass" | "warning" | "fail", finalAnswerSource: string, fallbackReason: string): {
+  label: string;
+  className: string;
+} {
+  if (status === "fail") {
+    return {
+      label: finalAnswerSource === "deterministic_renderer" || fallbackReason ? "Fallback déterministe / à vérifier" : "À vérifier",
+      className: "doc-confidence-low",
+    };
+  }
+  if (status === "warning") {
+    return {
+      label: finalAnswerSource === "deterministic_renderer" ? "Fallback déterministe" : "À surveiller",
+      className: "status-low",
+    };
+  }
+  return {
+    label: "Validée",
+    className: "doc-confidence-high",
+  };
+}
+
 type AssistantRenderType = "medical_structured" | "conversational" | "general_markdown";
 
 function resolveAssistantRenderType(params: {
@@ -488,6 +519,27 @@ export function ChatMessages() {
                 ) : null}
                 {isDone && isAssistant && evidenceMeter && evidenceMeter.sourceCount > 0 ? (
                   <div className="mt-4 rounded-xl border border-border/70 bg-fg/[0.025] p-3">
+                    {(() => {
+                      const diagnostics = (message.diagnostics || {}) as Record<string, unknown>;
+                      const finalAnswerSource = String(diagnostics.final_answer_source || "").trim().toLowerCase();
+                      const fallbackReason = String(diagnostics.fallback_reason || "").trim();
+                      const explicitFinalStatus = String(diagnostics.quality_final_status || "").trim().toLowerCase();
+                      const finalGate = (diagnostics.final_answer_quality_gate as Record<string, unknown> | null) || null;
+                      const finalGatePass = finalGate ? Boolean(finalGate.pass) : null;
+                      const finalStatus: "pass" | "warning" | "fail" =
+                        explicitFinalStatus === "fail" || finalGatePass === false
+                          ? "fail"
+                          : explicitFinalStatus === "warning" || finalAnswerSource === "deterministic_renderer"
+                            ? "warning"
+                            : "pass";
+                      const qualityBadge = synthesisQualityBadge(finalStatus, finalAnswerSource, fallbackReason);
+                      const qualityReason = synthesisQualityReasonLabel(
+                        diagnostics.synthesis_quality_reason ||
+                        (Array.isArray(finalGate?.reasons) ? finalGate?.reasons?.[0] : null) ||
+                        fallbackReason,
+                      );
+                      return (
+                        <>
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-xs font-semibold uppercase tracking-wide text-fg/70">Niveau de support documentaire</p>
                       <div className="flex flex-wrap items-center justify-end gap-2">
@@ -507,6 +559,18 @@ export function ChatMessages() {
                       <p>Éléments manquants : <span className="font-semibold text-fg">{evidenceMeter.missingElements}</span></p>
                       <p>Diagnostic proposé : <span className="font-semibold text-fg">{evidenceMeter.diagnosisProposed}</span></p>
                     </div>
+                    <div className="mt-3 flex items-start justify-between gap-3 border-t border-border/50 pt-3">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-fg/70">Qualité de synthèse</p>
+                        {qualityReason ? <p className="mt-1 text-xs text-fg/68">{qualityReason}</p> : null}
+                      </div>
+                      <span className={`whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] font-semibold ${qualityBadge.className}`}>
+                        {qualityBadge.label}
+                      </span>
+                    </div>
+                        </>
+                      );
+                    })()}
                   </div>
                 ) : null}
                 {isDone && shouldRenderSourceLinks && evidenceMeter && evidenceMeter.sourceCount > 0 && !detailsHidden ? (

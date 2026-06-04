@@ -271,7 +271,25 @@ function parseSummary(content: string, diagnostics?: AssistantDiagnostics): Pars
         !/^conclusion technique\s*:/i.test(line),
     ) || "";
 
-    if (isReferenceRangesNote && !llmNarrativeReferenceNote) {
+    const faithfulNarrativeLines = isNarrativeBiologicalSummary
+      ? lines
+          .filter(
+            (line) =>
+              !/^r[ée]sum[ée] biologique court/i.test(line) &&
+              !/^synth[eè]se biologique [ée]ditoriale/i.test(line) &&
+              !/^note descriptive uniquement/i.test(line) &&
+              !/^source\s*:/i.test(line) &&
+              !/^conclusion technique\s*:/i.test(line),
+          )
+          .map((line) => normalizeMedicalUnits(cleanSegment(line)))
+          .filter(Boolean)
+      : [];
+
+    if (isNarrativeBiologicalSummary) {
+      for (const line of faithfulNarrativeLines) {
+        if (!noteLines.includes(line)) noteLines.push(line);
+      }
+    } else if (isReferenceRangesNote && !llmNarrativeReferenceNote) {
       for (const line of lines) {
         if (
           /^plages min-max\s*:/i.test(line) ||
@@ -522,7 +540,13 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
     parsed.kind === "narrative_biological_summary";
   const isReferenceRangesNote = parsed.kind === "reference_ranges_note";
   const isNarrativeBiologicalSummary = parsed.kind === "narrative_biological_summary";
-  const isLlmWriter = String(diagnostics?.final_answer_source || "").toLowerCase() === "llm_writer";
+  const finalAnswerSource = String(diagnostics?.final_answer_source || "").toLowerCase();
+  const isLlmWriter = finalAnswerSource === "llm_writer" || finalAnswerSource === "llm_writer_repaired";
+  const useFaithfulNarrative = isNarrativeBiologicalSummary && (
+    finalAnswerSource === "llm_writer" ||
+    finalAnswerSource === "llm_writer_repaired" ||
+    finalAnswerSource === "deterministic_renderer"
+  );
   const docScope = Array.isArray(diagnostics?.requested_doc_ids) && diagnostics?.requested_doc_ids?.length
     ? diagnostics.requested_doc_ids.map((item) => prettifyDocumentLabel(String(item || ""))).join(", ")
     : null;
@@ -560,13 +584,17 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
       )
       ? editorialSynthesis
       : (rawSynthesis || editorialSynthesis);
-  const narrativeParagraph = isNarrativeBiologicalSummary && isLlmWriter
-    ? (faithfulNarrativeText || sentenceExcerpt(fallbackNarrative || content, 3))
+  const faithfulNarrativeBody = parsed.noteLines
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n\n");
+  const narrativeParagraph = useFaithfulNarrative
+    ? (faithfulNarrativeBody || faithfulNarrativeText || sentenceExcerpt(fallbackNarrative || content, 3))
     : sentenceExcerpt(doctorNoteParagraph || fallbackNarrative, isNarrativeBiologicalSummary ? 3 : 2);
-  const explicitConclusion = isNarrativeBiologicalSummary && isLlmWriter
+  const explicitConclusion = useFaithfulNarrative
     ? extractExplicitConclusion(faithfulNarrativeText || backendNarrative || fallbackNarrative || content)
     : "";
-  const narrativeConclusion = isNarrativeBiologicalSummary && isLlmWriter
+  const narrativeConclusion = useFaithfulNarrative
     ? explicitConclusion
     : sentenceExcerpt(synthesis, 2);
 
@@ -639,7 +667,7 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
                 <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">
                   {isNarrativeBiologicalSummary ? "Synthèse clinique" : "Note clinique"}
                 </p>
-                <p className={`text-sm leading-6 text-fg/90 ${isNarrativeBiologicalSummary && isLlmWriter ? "whitespace-pre-line" : ""}`}>
+                <p className={`text-sm leading-6 text-fg/90 ${useFaithfulNarrative ? "whitespace-pre-line" : ""}`}>
                   {narrativeParagraph || firstSentence(fallbackNarrative)}
                 </p>
                 {rangeSentence ? (
@@ -666,7 +694,7 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
                     {isNarrativeBiologicalSummary ? "Conclusion prudente" : "Avertissement"}
                   </p>
                   {narrativeConclusion ? (
-                    <p className={`text-sm leading-6 text-fg/90 ${isNarrativeBiologicalSummary && isLlmWriter ? "whitespace-pre-line" : ""}`}>
+                    <p className={`text-sm leading-6 text-fg/90 ${useFaithfulNarrative ? "whitespace-pre-line" : ""}`}>
                       {DOCTOR_NOTE_DEMO_COMPACT ? firstSentence(narrativeConclusion) : narrativeConclusion}
                     </p>
                   ) : (

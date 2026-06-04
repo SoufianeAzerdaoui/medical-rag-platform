@@ -223,6 +223,26 @@ export function useChatActions() {
             (debug.llm_repaired_answer as string | null) ??
             (rawDebug.llm_repaired_answer as string | null) ??
             null,
+          llm_quality_gate:
+            (response.llm_quality_gate as Record<string, unknown> | null) ??
+            (debug.llm_quality_gate as Record<string, unknown> | null) ??
+            (rawDebug.llm_quality_gate as Record<string, unknown> | null) ??
+            null,
+          final_answer_quality_gate:
+            (response.final_answer_quality_gate as Record<string, unknown> | null) ??
+            (debug.final_answer_quality_gate as Record<string, unknown> | null) ??
+            (rawDebug.final_answer_quality_gate as Record<string, unknown> | null) ??
+            null,
+          quality_final_status:
+            (response.quality_final_status as "pass" | "warning" | "fail" | null) ??
+            (debug.quality_final_status as "pass" | "warning" | "fail" | null) ??
+            (rawDebug.quality_final_status as "pass" | "warning" | "fail" | null) ??
+            null,
+          synthesis_quality_reason:
+            (response.synthesis_quality_reason as string | null) ??
+            (debug.synthesis_quality_reason as string | null) ??
+            (rawDebug.synthesis_quality_reason as string | null) ??
+            null,
           displayed_evidences_count:
             (response.displayed_evidences_count as number | null) ??
             (debug.displayed_evidences_count as number | null) ??
@@ -260,6 +280,36 @@ export function useChatActions() {
             (response.sources_count as number | null) ??
             (debug.sources_count as number | null) ??
             (rawDebug.sources_count as number | null) ??
+            null,
+          above_reference_count:
+            (response.above_reference_count as number | null) ??
+            (debug.above_reference_count as number | null) ??
+            (rawDebug.above_reference_count as number | null) ??
+            null,
+          below_reference_count:
+            (response.below_reference_count as number | null) ??
+            (debug.below_reference_count as number | null) ??
+            (rawDebug.below_reference_count as number | null) ??
+            null,
+          within_reference_count:
+            (response.within_reference_count as number | null) ??
+            (debug.within_reference_count as number | null) ??
+            (rawDebug.within_reference_count as number | null) ??
+            null,
+          needs_clinical_context_count:
+            (response.needs_clinical_context_count as number | null) ??
+            (debug.needs_clinical_context_count as number | null) ??
+            (rawDebug.needs_clinical_context_count as number | null) ??
+            null,
+          major_anomalies_count:
+            (response.major_anomalies_count as number | null) ??
+            (debug.major_anomalies_count as number | null) ??
+            (rawDebug.major_anomalies_count as number | null) ??
+            null,
+          selected_normal_results_count:
+            (response.selected_normal_results_count as number | null) ??
+            (debug.selected_normal_results_count as number | null) ??
+            (rawDebug.selected_normal_results_count as number | null) ??
             null,
           llm_skipped_reason:
             (debug.llm_skipped_reason as string | null) ??

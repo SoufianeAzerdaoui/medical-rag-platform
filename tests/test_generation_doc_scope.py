@@ -304,6 +304,45 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertIn("dans la référence", low)
         self.assertNotIn("écart documenté", low)
 
+    def test_doc_scoped_biological_summary_adds_prudent_context_line_for_needs_context(self) -> None:
+        ga = __import__("generate_answer")
+        rows = [
+            {"analyte": "Créatinine", "technical_status_code": "needs_clinical_context", "value_with_unit": "23 mg/L", "reference_short": "4 - 9"},
+            {"analyte": "Acide urique", "technical_status_code": "needs_clinical_context", "value_with_unit": "23 mg/L", "reference_short": "25 - 70"},
+            {"analyte": "Bilirubine Directe", "technical_status_code": "above_reference", "value_with_unit": "6 mg/L", "reference_short": "0.00 - 5.00"},
+        ]
+        rendered = ga._build_doc_scoped_biological_summary_answer(
+            rows,
+            max_lines=6,
+            no_diagnosis=True,
+            render_profile="compact_biological_summary",
+        )
+        low = rendered.lower()
+        self.assertIn("lecture prudente", low)
+        self.assertIn("créatinine", low)
+        self.assertIn("acide urique", low)
+
+    def test_compact_biological_summary_fallback_keeps_values_and_no_within_sentence(self) -> None:
+        ga = __import__("generate_answer")
+        rows = [
+            {"analyte": "Bilirubine Directe", "technical_status_code": "above_reference", "value_with_unit": "6 mg/L", "reference_short": "0.00 - 5.00"},
+            {"analyte": "LDH", "technical_status_code": "above_reference", "value_with_unit": "250 UI/L", "reference_short": "125 - 243"},
+            {"analyte": "CK-MB", "technical_status_code": "above_reference", "value_with_unit": "40 UI/L", "reference_short": "< 25"},
+            {"analyte": "APO A1", "technical_status_code": "above_reference", "value_with_unit": "2.3 g/L", "reference_short": "1.1 - 1.6"},
+            {"analyte": "Ammonium", "technical_status_code": "below_reference", "value_with_unit": "20 µg/dL", "reference_short": "35 - 80"},
+        ]
+        rendered = ga._build_doc_scoped_biological_summary_answer(
+            rows,
+            max_lines=6,
+            no_diagnosis=True,
+            render_profile="compact_biological_summary",
+        )
+        low = rendered.lower()
+        self.assertIn("bilirubine directe = 6 mg/l", low)
+        self.assertIn("ldh = 250 ui/l", low)
+        self.assertIn("ammonium = 20 µg/dl", low)
+        self.assertIn("aucun résultat dans la référence n’est mis en avant", low)
+
     def test_general_conversation_bonjour_fast_path_no_retrieval(self) -> None:
         result = run_generation(
             query="Bonjour.",
@@ -510,6 +549,12 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertGreater(int(debug.get("below_reference_count") or 0), 0)
         self.assertGreater(int(debug.get("major_anomalies_count") or 0), 0)
         self.assertGreaterEqual(int(debug.get("selected_normal_results_count") or 0), 0)
+        self.assertIn("llm_quality_gate", result)
+        self.assertIn("final_answer_quality_gate", result)
+        self.assertIn("llm_quality_gate", debug)
+        self.assertIn("final_answer_quality_gate", debug)
+        self.assertIn("quality_final_status", result)
+        self.assertIn("synthesis_quality_reason", result)
 
     def test_single_report_request_filters_out_other_docs(self) -> None:
         keep = _mk_result(
