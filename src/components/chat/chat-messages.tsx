@@ -104,6 +104,23 @@ function synthesisQualityReasonLabel(value: unknown): string | null {
   return raw.replace(/_/g, " ");
 }
 
+function shouldSuppressSynthesisQualityReason(params: {
+  finalAnswerSource: string;
+  fallbackReason: string;
+  repairStatus: string;
+  finalGatePass: boolean | null;
+  rawReason: unknown;
+}): boolean {
+  const source = params.finalAnswerSource;
+  const reason = String(params.rawReason || "").trim();
+  if (!reason || params.fallbackReason || params.finalGatePass === false) return false;
+  const writerAccepted =
+    source === "llm_writer" ||
+    (source === "llm_writer_repaired" && params.repairStatus === "passed");
+  if (!writerAccepted) return false;
+  return reason.startsWith("repair_") || reason.startsWith("llm_validation_");
+}
+
 function synthesisQualityBadge(
   status: "pass" | "warning" | "fail",
   finalAnswerSource: string,
@@ -559,6 +576,10 @@ export function ChatMessages() {
                       const finalStatus: "pass" | "warning" | "fail" =
                         explicitFinalStatus === "fail" || finalGatePass === false
                           ? "fail"
+                          : finalGatePass === true &&
+                              !fallbackReason &&
+                              (finalAnswerSource === "llm_writer" || repairedWriterAccepted)
+                            ? "pass"
                           : finalAnswerSource === "deterministic_renderer"
                             ? "warning"
                             : repairedWriterAccepted
@@ -566,11 +587,20 @@ export function ChatMessages() {
                               : explicitFinalStatus === "warning"
                                 ? "warning"
                                 : "pass";
+                      const rawQualityReason =
+                        diagnostics.synthesis_quality_reason ||
+                        ((finalStatus === "fail" || finalStatus === "warning") && Array.isArray(finalGate?.reasons) ? finalGate?.reasons?.[0] : null) ||
+                        ((finalAnswerSource === "deterministic_renderer" || fallbackReason) ? fallbackReason : null);
+                      const suppressQualityReason = shouldSuppressSynthesisQualityReason({
+                        finalAnswerSource,
+                        fallbackReason,
+                        repairStatus,
+                        finalGatePass,
+                        rawReason: rawQualityReason,
+                      });
                       const qualityBadge = synthesisQualityBadge(finalStatus, finalAnswerSource, fallbackReason, repairStatus);
                       const qualityReason = synthesisQualityReasonLabel(
-                        (repairedWriterAccepted ? null : diagnostics.synthesis_quality_reason) ||
-                        ((finalStatus === "fail" || finalStatus === "warning") && Array.isArray(finalGate?.reasons) ? finalGate?.reasons?.[0] : null) ||
-                        ((finalAnswerSource === "deterministic_renderer" || fallbackReason) ? fallbackReason : null),
+                        repairedWriterAccepted || suppressQualityReason ? null : rawQualityReason,
                       );
                       return (
                         <>
