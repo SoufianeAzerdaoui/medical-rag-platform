@@ -7274,6 +7274,14 @@ def _build_doc_scoped_biological_summary_answer(
         wants_reference_ranges = render_profile_norm in {"doctor_note_reference_ranges", "doctor_note_ranges"}
         doc_scope = ", ".join(doc_ids) if doc_ids else "document fourni"
 
+        def _context_entry(ev: dict[str, Any], analyte: str) -> str:
+            value = _summary_row_value_with_unit(ev)
+            reference = _summary_row_reference_detail(ev)
+            entry = f"{analyte} = {value}" if value and norm_text(value) != "non disponible" else analyte
+            if reference and norm_text(reference) not in {"non disponible", "réf disponible", "ref disponible"}:
+                entry += f" (réf {reference})"
+            return entry
+
         date_raw = ""
         for r in rows:
             for key in ("report_date", "request_date", "date"):
@@ -7325,6 +7333,28 @@ def _build_doc_scoped_biological_summary_answer(
                 )
                 + "."
             )
+        elif needs_context:
+            context_entries: list[tuple[dict[str, Any], str]] = []
+            seen_context_entries: set[str] = set()
+            for ev in needs_context:
+                analyte = str(ev.get("analyte") or ev.get("analyte_label") or ev.get("display_name") or "").strip()
+                if not analyte:
+                    continue
+                key = norm_text(analyte)
+                if key in seen_context_entries:
+                    continue
+                seen_context_entries.add(key)
+                context_entries.append((ev, analyte))
+            context_focus = context_entries[:5]
+            context_prefix = (
+                "Paramètre à lecture prudente : "
+                if len(context_focus) == 1
+                else "Paramètres à lecture prudente : "
+            )
+            notable_line = context_prefix + ", ".join(
+                _context_entry(ev, analyte)
+                for ev, analyte in context_focus
+            ) + "."
         else:
             notable_line = "Aucun écart anormal exploitable retrouvé dans les données retenues."
 
@@ -7387,11 +7417,18 @@ def _build_doc_scoped_biological_summary_answer(
             context_labels.append(analyte)
         context_prudence_line = ""
         if context_labels:
-            context_prudence_line = (
-                "Lecture prudente : "
-                + ", ".join(context_labels[:6])
-                + " nécessitent une lecture prudente, car leurs références dépendent du profil patient ou du contexte clinique."
-            )
+            if len(context_labels) == 1:
+                context_prudence_line = (
+                    "Lecture prudente : "
+                    + context_labels[0]
+                    + " nécessite une lecture prudente, car sa référence dépend du profil patient ou du contexte clinique."
+                )
+            else:
+                context_prudence_line = (
+                    "Lecture prudente : "
+                    + ", ".join(context_labels[:6])
+                    + " nécessitent une lecture prudente, car leurs références dépendent du profil patient ou du contexte clinique."
+                )
 
         range_line = ""
         if wants_reference_ranges:
@@ -10055,6 +10092,20 @@ def _summary_row_reference_short(ev: dict[str, Any]) -> str:
         or ev.get("reference_range")
         or ev.get("reference_range_raw")
     )
+
+
+def _summary_row_reference_detail(ev: dict[str, Any]) -> str:
+    placeholders = {"", "non disponible", "réf disponible", "ref disponible"}
+    for raw in (
+        ev.get("reference_range"),
+        ev.get("reference_range_raw"),
+        ev.get("reference"),
+        ev.get("reference_short"),
+    ):
+        text = str(raw or "").strip()
+        if norm_text(text) not in placeholders:
+            return text
+    return ""
 
 
 def _summary_row_page(ev: dict[str, Any]) -> int | None:
