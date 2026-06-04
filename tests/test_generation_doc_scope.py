@@ -333,6 +333,35 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertIn("créatinine", low)
         self.assertIn("acide urique", low)
 
+    def test_compact_biological_summary_context_only_rows_show_values_and_singular_prudence(self) -> None:
+        ga = __import__("generate_answer")
+        rows = [
+            {
+                "doc_id": "report_12",
+                "page": 1,
+                "analyte": "CLAIRANCE DE LA CRÉATININE",
+                "current_value": "20",
+                "unit": "ml/min/1,73m² ISC",
+                "reference_range": "Homme : 66 - 163 ml/min/1,73m² ISC ; Femme : 66 - 165 ml/min/1,73m² ISC",
+                "technical_status_code": "needs_clinical_context",
+            }
+        ]
+        rendered = ga._build_doc_scoped_biological_summary_answer(
+            rows,
+            max_lines=5,
+            no_diagnosis=True,
+            render_profile="compact_biological_summary",
+        )
+        self.assertNotIn("Aucun écart anormal exploitable retrouvé", rendered)
+        self.assertIn("Paramètre à lecture prudente", rendered)
+        self.assertIn("CLAIRANCE DE LA CRÉATININE = 20 ml/min/1,73m² ISC", rendered)
+        self.assertIn("réf Homme : 66 - 163 ml/min/1,73m² ISC", rendered)
+        self.assertIn(
+            "Lecture prudente : CLAIRANCE DE LA CRÉATININE nécessite une lecture prudente",
+            rendered,
+        )
+        self.assertNotIn("CLAIRANCE DE LA CRÉATININE nécessitent", rendered)
+
     def test_compact_biological_summary_fallback_keeps_values_and_no_within_sentence(self) -> None:
         ga = __import__("generate_answer")
         rows = [
