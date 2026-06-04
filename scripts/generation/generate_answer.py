@@ -7052,32 +7052,6 @@ def _build_doc_scoped_biological_summary_answer(
                 else "Bilan biologique ; synthèse des plages de référence et des statuts techniques documentés."
             )
 
-        def _value_with_unit(ev: dict[str, Any]) -> str:
-            value_raw = str(ev.get("current_value") or "").strip()
-            if not value_raw:
-                value_raw = str(ev.get("value_raw") or "").strip()
-            if not value_raw and ev.get("value_numeric") is not None:
-                numeric = _to_float(ev.get("value_numeric"))
-                if numeric is not None:
-                    value_raw = str(int(numeric)) if float(numeric).is_integer() else str(numeric)
-            if not value_raw:
-                value_raw = str(ev.get("value_with_unit") or "").strip()
-            unit_raw = str(ev.get("unit") or "").strip()
-            if value_raw and unit_raw and unit_raw not in value_raw:
-                return f"{value_raw} {unit_raw}".strip()
-            return value_raw or "non disponible"
-
-        def _status_phrase(ev: dict[str, Any]) -> str:
-            ref = _reference_short(ev.get("reference") or ev.get("reference_short"))
-            status = _status_of(ev)
-            if status == "above_reference":
-                return "au-dessus de la référence"
-            if status == "below_reference":
-                return "en dessous de la référence"
-            if status == "within_reference":
-                return "dans la référence"
-            return "statut à vérifier"
-
         notable_entries: list[tuple[dict[str, Any], str, str]] = []
         seen_notable: set[str] = set()
         for ev in abnormal_sorted:
@@ -7088,7 +7062,7 @@ def _build_doc_scoped_biological_summary_answer(
             if key in seen_notable:
                 continue
             seen_notable.add(key)
-            notable_entries.append((ev, analyte, _status_phrase(ev)))
+            notable_entries.append((ev, analyte, _summary_row_status_phrase(ev)))
 
         notable_main = notable_entries[:5]
         has_below_notable = any("en dessous" in norm_text(status) for _, _, status in notable_entries)
@@ -7103,7 +7077,7 @@ def _build_doc_scoped_biological_summary_answer(
             notable_line = (
                 notable_prefix
                 + ", ".join(
-                    f"{name} = {_value_with_unit(ev)}, {status}"
+                    f"{name} = {_summary_row_value_with_unit(ev)}, {status}"
                     for ev, name, status in notable_main
                 )
                 + "."
@@ -7199,8 +7173,8 @@ def _build_doc_scoped_biological_summary_answer(
                 if key in seen_ranges:
                     continue
                 seen_ranges.add(key)
-                status_text = _status_phrase(ev)
-                value_txt = _value_with_unit(ev)
+                status_text = _summary_row_status_phrase(ev)
+                value_txt = _summary_row_value_with_unit(ev)
                 range_parts.append(f"{analyte} = {value_txt} (réf {reference}, {status_text})")
             if range_parts:
                 range_line = "Plages et statuts documentés : " + "; ".join(range_parts[:8]) + "."
@@ -7221,10 +7195,14 @@ def _build_doc_scoped_biological_summary_answer(
             source_line = f"Source : {doc_scope}."
 
         warning_line = "Note descriptive uniquement, sans diagnostic médical ni recommandation thérapeutique."
-        conclusion_line = "Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic."
+        conclusion_line = (
+            "Conclusion technique : synthèse documentaire prudente fondée sur les valeurs structurées du rapport, sans diagnostic."
+        )
         if not no_diagnosis:
             warning_line = "Note descriptive uniquement, sans recommandation thérapeutique."
-            conclusion_line = "Conclusion technique : synthèse descriptive limitée aux données disponibles."
+            conclusion_line = (
+                "Conclusion technique : synthèse documentaire prudente fondée sur les valeurs structurées du rapport."
+            )
 
         if render_profile_norm == "compact_biological_summary":
             lead_line = f"Résumé biologique court — {doc_scope}."
@@ -9792,6 +9770,72 @@ def _doc_scoped_no_within_reference_sentence() -> str:
     return "Aucun résultat dans la référence n’est mis en avant dans les éléments structurés sélectionnés."
 
 
+def _summary_row_analyte_label(ev: dict[str, Any]) -> str:
+    return _clean_analyte_label(
+        str(ev.get("analyte") or ev.get("analyte_label") or ev.get("display_name") or "analyte")
+    ).strip() or "analyte"
+
+
+def _summary_row_value_with_unit(ev: dict[str, Any]) -> str:
+    value_raw = str(ev.get("current_value") or "").strip()
+    if not value_raw:
+        value_raw = str(ev.get("value_raw") or "").strip()
+    if not value_raw and ev.get("value_numeric") is not None:
+        numeric = _to_float(ev.get("value_numeric"))
+        if numeric is not None:
+            value_raw = str(int(numeric)) if float(numeric).is_integer() else str(numeric)
+    if not value_raw:
+        value_raw = str(ev.get("value_with_unit") or "").strip()
+    unit_raw = str(ev.get("unit") or "").strip()
+    if value_raw and unit_raw and unit_raw not in value_raw:
+        return f"{value_raw} {unit_raw}".strip()
+    return value_raw or "non disponible"
+
+
+def _summary_row_status_phrase(ev: dict[str, Any]) -> str:
+    status = _summary_status_code_exact(ev)
+    if status == "above_reference":
+        return "au-dessus de la référence"
+    if status == "below_reference":
+        return "en dessous de la référence"
+    if status == "within_reference":
+        return "dans la référence"
+    if status == "needs_clinical_context":
+        return "lecture prudente selon le contexte clinique"
+    return "statut à vérifier"
+
+
+def _summary_row_reference_short(ev: dict[str, Any]) -> str:
+    return _reference_short(
+        ev.get("reference")
+        or ev.get("reference_short")
+        or ev.get("reference_range")
+        or ev.get("reference_range_raw")
+    )
+
+
+def _summary_row_page(ev: dict[str, Any]) -> int | None:
+    for raw in (ev.get("page"), ev.get("page_number")):
+        if str(raw).strip().isdigit():
+            return int(raw)
+    return None
+
+
+def _summary_row_fact_line(ev: dict[str, Any], *, include_reference: bool = True) -> str:
+    analyte = _summary_row_analyte_label(ev)
+    value = _summary_row_value_with_unit(ev)
+    status = _summary_row_status_phrase(ev)
+    parts = [f"{analyte} = {value}"]
+    reference = _summary_row_reference_short(ev)
+    if include_reference and reference and norm_text(reference) not in {"non disponible", "réf disponible", "ref disponible"}:
+        parts.append(f"réf {reference}")
+    parts.append(status)
+    page = _summary_row_page(ev)
+    if page is not None:
+        parts.append(f"page {page}")
+    return " ; ".join(parts)
+
+
 def _doc_scoped_summary_classification_counts(rows: list[dict[str, Any]]) -> dict[str, Any]:
     data = list(rows or [])
     above_rows = [ev for ev in data if _summary_status_code_exact(ev) == "above_reference"]
@@ -9861,6 +9905,7 @@ def _doc_scoped_selected_major_anomalies_for_fallback(rows: list[dict[str, Any]]
                 "unit": str(ev.get("unit") or "").strip() or None,
                 "interpretation_status": status,
                 "page_number": ev.get("page_number") or ev.get("page"),
+                "reference_range": _summary_row_reference_short(ev) or None,
             }
         )
         if len(selected) >= 5:
@@ -9870,24 +9915,142 @@ def _doc_scoped_selected_major_anomalies_for_fallback(rows: list[dict[str, Any]]
 
 def _doc_scoped_summary_retry_fact_block(rows: list[dict[str, Any]]) -> str:
     counts = _doc_scoped_summary_classification_counts(rows)
+    data = list(rows or [])
 
-    def _fmt_block(items: list[str]) -> str:
+    def _fmt_rows(items: list[dict[str, Any]], *, include_reference: bool = True) -> str:
         if not items:
             return "- aucun"
-        return "\n".join(f"- {item}" for item in items[:8])
+        rendered: list[str] = []
+        for ev in items[:8]:
+            rendered.append(f"- {_summary_row_fact_line(ev, include_reference=include_reference)}")
+        return "\n".join(rendered)
+
+    above_rows = [ev for ev in data if _summary_status_code_exact(ev) == "above_reference"]
+    below_rows = [ev for ev in data if _summary_status_code_exact(ev) == "below_reference"]
+    within_rows = [ev for ev in data if _summary_status_code_exact(ev) == "within_reference"]
+    needs_context_rows = [ev for ev in data if _summary_status_code_exact(ev) == "needs_clinical_context"]
 
     return (
         "ANOMALIES_ABOVE:\n"
-        f"{_fmt_block(list(counts.get('above_reference_labels') or []))}\n"
+        f"{_fmt_rows(above_rows)}\n"
         "ANOMALIES_BELOW:\n"
-        f"{_fmt_block(list(counts.get('below_reference_labels') or []))}\n"
+        f"{_fmt_rows(below_rows)}\n"
         "NEEDS_CONTEXT:\n"
-        f"{_fmt_block(list(counts.get('needs_clinical_context_labels') or []))}\n"
+        f"{_fmt_rows(needs_context_rows, include_reference=False)}\n"
         "WITHIN_REFERENCE:\n"
-        f"{_fmt_block(list(counts.get('within_reference_labels') or []))}\n"
+        f"{_fmt_rows(within_rows)}\n"
         "SOURCE_PAGES:\n"
         f"- {str(counts.get('source_pages') or 'non précisé')}"
     )
+
+
+def _build_doc_scoped_biological_summary_salvage_prompt(
+    *,
+    failed_answer: str,
+    evidences: list[dict[str, Any]],
+    query_understanding: Any,
+) -> str:
+    rows = list(evidences or [])
+    render_profile = _doc_scoped_summary_render_profile(query_understanding)
+    no_diag = str(getattr(query_understanding, "safety_intent", "") or "").strip().lower() == "no_diagnosis_constraint"
+    requested_lines = max(4, int(getattr(query_understanding, "requested_summary_points", None) or 5))
+    fact_counts = _doc_scoped_summary_classification_counts(rows)
+    source_pages = str(fact_counts.get("source_pages") or "page non précisée")
+    doc_ids = sorted(
+        {
+            str(ev.get("doc_id") or "").strip()
+            for ev in rows
+            if str(ev.get("doc_id") or "").strip()
+        }
+    )
+    doc_scope = ", ".join(doc_ids) if doc_ids else "document fourni"
+    min_anomaly_mentions = max(3, min(5, int(fact_counts.get("major_anomalies_count") or 0)))
+    scaffold = _build_doc_scoped_biological_summary_answer(
+        rows,
+        max_lines=requested_lines,
+        no_diagnosis=no_diag,
+        render_profile=render_profile,
+    )
+    within_count = int(fact_counts.get("within_reference_count") or 0)
+    needs_context_count = int(fact_counts.get("needs_clinical_context_count") or 0)
+    within_instruction = (
+        f"- Écris exactement la phrase suivante si aucun résultat dans la référence n’est retenu : « {_doc_scoped_no_within_reference_sentence()} »."
+        if within_count <= 0
+        else "- Mentionne quelques résultats dans la référence s’ils sont présents dans WITHIN_REFERENCE."
+    )
+    prudence_instruction = (
+        "- Ajoute une ligne « Lecture prudente : ... » pour les paramètres NEEDS_CONTEXT, sans les classer au-dessus/en dessous."
+        if needs_context_count > 0
+        else "- N’ajoute pas de ligne « Lecture prudente » si aucun paramètre NEEDS_CONTEXT n’est fourni."
+    )
+    return (
+        "La première synthèse a été rejetée car trop pauvre au regard des faits.\n"
+        "Réécris entièrement une synthèse narrative plus informative et matériellement meilleure.\n"
+        f"Longueur cible : {requested_lines} lignes environ, sans Markdown.\n"
+        "Contraintes obligatoires :\n"
+        f"- Mentionne au moins {min_anomaly_mentions} analytes distincts si disponibles dans les anomalies majeures.\n"
+        "- Conserve strictement les valeurs, unités, statuts et pages fournis.\n"
+        "- Utilise « au-dessus de la référence » / « en dessous de la référence » uniquement quand le statut est explicite.\n"
+        "- N’utilise pas l’expression « écart documenté » seule pour tous les analytes.\n"
+        "- Ne commence pas par « Ouverture clinique ».\n"
+        "- N’écris pas « Requiert une évaluation clinique approfondie ».\n"
+        f"{within_instruction}\n"
+        f"{prudence_instruction}\n"
+        "- Garde une conclusion prudente commençant par « Conclusion technique : » et sans diagnostic.\n"
+        f"- Termine par « Source : {doc_scope}, {source_pages}. ».\n\n"
+        "Version rejetée :\n"
+        f"{str(failed_answer or '').strip()}\n\n"
+        "Faits structurés (source de vérité) :\n"
+        f"{_doc_scoped_summary_retry_fact_block(rows)}\n\n"
+        "Scaffold factuel acceptable à reformuler naturellement :\n"
+        f"{scaffold}"
+    )
+
+
+def _attempt_doc_scoped_biological_summary_llm_salvage(
+    *,
+    failed_answer: str,
+    evidences: list[dict[str, Any]],
+    query_understanding: Any,
+    llm_client: LLMClient | None,
+    model: str,
+    num_ctx: int,
+    timeout_s: int,
+    max_tokens: int,
+) -> tuple[str, str | None]:
+    rows = list(evidences or [])
+    if not rows:
+        return "", "missing_evidence_rows"
+    client = llm_client
+    if client is None:
+        return "", "missing_llm_client"
+    system_prompt = (
+        "Tu es un rédacteur médical technique prudent.\n"
+        "Réécris uniquement avec les faits fournis.\n"
+        "Aucune invention, aucun diagnostic, aucun traitement.\n"
+        "Texte final uniquement, sans raisonnement interne.\n"
+        "/no_think"
+    )
+    user_prompt = _build_doc_scoped_biological_summary_salvage_prompt(
+        failed_answer=failed_answer,
+        evidences=rows,
+        query_understanding=query_understanding,
+    )
+    try:
+        answer = _generate_structured_llm_text(
+            client=client,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=model,
+            temperature=0.0,
+            num_ctx=max(1024, min(int(num_ctx), 2048)),
+            max_tokens=max(140, min(int(max_tokens), 240)),
+            timeout=max(12, min(int(timeout_s), 60)),
+            keep_alive="5m",
+        ).strip()
+    except LLMClientError as exc:
+        return "", str(exc)
+    return _normalize_summary_readability(answer), None
 
 
 def _doc_scoped_biological_summary_repair_errors(
@@ -10021,6 +10184,11 @@ def _normalize_summary_display_labels(text: str) -> str:
         (r"(?i)\bckmb\b", "CK-MB"),
         (r"(?i)\bige\s+totales?\b", "IgE totales"),
         (r"(?i)\bck\s*\(cpk\)\b", "CK"),
+        (r"(?i)\bmg\/l\b", "mg/L"),
+        (r"(?i)\bg\/l\b", "g/L"),
+        (r"(?i)\bui\/l\b", "UI/L"),
+        (r"(?i)\bµg\/dl\b", "µg/dL"),
+        (r"(?i)\bug\/dl\b", "µg/dL"),
     ]
     for pat, repl in replacements:
         out = re.sub(pat, repl, out)
@@ -11222,7 +11390,14 @@ def _build_validator_retry_feedback(
             "Supprime toute mention 'Aucun fait anormal' et liste les anomalies fournies dans la section 'Anormaux'."
         )
     if "summary_too_poor_for_available_facts" in errors:
-        facts_block = _doc_scoped_summary_retry_fact_block(list(displayed_evidences or []))
+        evidence_rows = list(displayed_evidences or [])
+        facts_block = _doc_scoped_summary_retry_fact_block(evidence_rows)
+        scaffold = _build_doc_scoped_biological_summary_answer(
+            evidence_rows,
+            max_lines=max(5, int(getattr(query_understanding, "requested_summary_points", None) or 5)),
+            no_diagnosis=str(getattr(query_understanding, "safety_intent", "") or "").strip().lower() == "no_diagnosis_constraint",
+            render_profile=_doc_scoped_summary_render_profile(query_understanding),
+        )
         return (
             "La synthèse est trop pauvre par rapport aux faits disponibles. "
             "Tu dois produire une version réellement plus informative. "
@@ -11231,7 +11406,9 @@ def _build_validator_retry_feedback(
             f"ou écris exactement '{_doc_scoped_no_within_reference_sentence()}' si aucun résultat dans la référence n'est disponible. "
             "Précise au-dessus/en dessous quand le statut est disponible, garde une conclusion prudente sans diagnostic et cite la source. "
             "Utilise strictement les blocs structurés suivants comme source de vérité :\n"
-            f"{facts_block}"
+            f"{facts_block}\n\n"
+            "Le scaffold factuel suivant est acceptable sur le fond mais doit être reformulé plus naturellement, sans perdre d'information :\n"
+            f"{scaffold}"
         )
     if "missing_conclusion" in items:
         return (
@@ -16635,6 +16812,8 @@ def run_generation(
         llm_repair_error_message: str | None = None
         llm_postprocess_error_type: str | None = None
         llm_postprocess_error_message: str | None = None
+        llm_quality_escalation_used = False
+        llm_quality_escalation_reason: str | None = None
         if composed_llm_postprocess_error_type:
             llm_postprocess_error_type = composed_llm_postprocess_error_type
         if composed_llm_postprocess_error_message:
@@ -17532,8 +17711,32 @@ def run_generation(
                 displayed_evidences=list(summary_all_evidences or displayed_evidences or []),
                 query_understanding=query_understanding,
             )
+            retry_requires_strict_summary_salvage = bool(
+                selected_route == "doc_scoped_biological_summary"
+                and "summary_too_poor_for_available_facts" in {
+                    str(err).strip() for err in (validation.get("errors") or [])
+                }
+            )
             try:
-                if use_micro_prompt:
+                if retry_requires_strict_summary_salvage:
+                    llm_quality_escalation_used = True
+                    llm_quality_escalation_reason = "doc_scoped_biological_summary_strict_repair"
+                    salvage_answer, salvage_error = _attempt_doc_scoped_biological_summary_llm_salvage(
+                        failed_answer=retry_candidate_answer,
+                        evidences=list(summary_all_evidences or displayed_evidences or []),
+                        query_understanding=query_understanding,
+                        llm_client=writer_llm_client,
+                        model=writer_model,
+                        num_ctx=num_ctx,
+                        timeout_s=policy_timeout_s,
+                        max_tokens=policy_max_tokens,
+                    )
+                    retry_composed = {
+                        "mode": "hybrid_structured_llm_writer" if salvage_answer else "llm_writer_error_fallback",
+                        "answer": salvage_answer,
+                        "llm_error": salvage_error,
+                    }
+                elif use_micro_prompt:
                     retry_composed = _compose_level2_micro_prompt_answer(
                         selected_route=selected_route,
                         query_understanding=query_understanding,
@@ -18995,11 +19198,13 @@ def run_generation(
                 "llm_repair_error_message": llm_repair_error_message,
                 "llm_postprocess_error_type": llm_postprocess_error_type,
                 "llm_postprocess_error_message": llm_postprocess_error_message,
-                "llm_quality_escalation_used": bool(composed.get("llm_quality_escalation_used")) if isinstance(composed, dict) else False,
+                "llm_quality_escalation_used": bool(
+                    llm_quality_escalation_used
+                    or (bool(composed.get("llm_quality_escalation_used")) if isinstance(composed, dict) else False)
+                ),
                 "llm_quality_escalation_reason": (
-                    (str(composed.get("llm_quality_escalation_reason") or "") or None)
-                    if isinstance(composed, dict)
-                    else None
+                    llm_quality_escalation_reason
+                    or ((str(composed.get("llm_quality_escalation_reason") or "") or None) if isinstance(composed, dict) else None)
                 ),
                 "writer_profile": writer_profile_runtime,
                 "llm_provider_effective_runtime": llm_provider_effective_runtime,

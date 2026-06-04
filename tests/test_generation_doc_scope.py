@@ -342,6 +342,80 @@ class TestGenerationDocScope(unittest.TestCase):
         self.assertIn("ldh = 250 ui/l", low)
         self.assertIn("ammonium = 20 µg/dl", low)
         self.assertIn("aucun résultat dans la référence n’est mis en avant", low)
+        self.assertIn("synthèse documentaire prudente", low)
+
+    def test_doc_scoped_summary_retry_fact_block_contains_values_status_and_pages(self) -> None:
+        ga = __import__("generate_answer")
+        rows = [
+            {"analyte": "Bilirubine Directe", "technical_status_code": "above_reference", "value_raw": "6", "unit": "mg/L", "reference_short": "0.00 - 5.00", "page": 1},
+            {"analyte": "Ammonium", "technical_status_code": "below_reference", "value_raw": "20", "unit": "µg/dL", "reference_short": "35 - 80", "page_number": 2},
+            {"analyte": "Créatinine", "technical_status_code": "needs_clinical_context", "value_raw": "23", "unit": "mg/L", "page": 2},
+        ]
+        block = ga._doc_scoped_summary_retry_fact_block(rows)
+        low = block.lower()
+        self.assertIn("bilirubine directe = 6 mg/l", low)
+        self.assertIn("au-dessus de la référence", block)
+        self.assertIn("ammonium = 20 µg/dl", low)
+        self.assertIn("en dessous de la référence", block)
+        self.assertIn("créatinine = 23 mg/l", low)
+        self.assertIn("lecture prudente selon le contexte clinique", block)
+        self.assertIn("page 1", low)
+        self.assertIn("page 2", low)
+
+    def test_doc_scoped_biological_summary_salvage_prompt_uses_fact_block_and_scaffold(self) -> None:
+        ga = __import__("generate_answer")
+        qu = ga.parse_query_understanding(
+            "Fais une synthèse biologique courte du report 12. Limite-toi à 3 à 5 lignes, sans diagnostic."
+        )
+        rows = [
+            {"doc_id": "report_12", "analyte": "Bilirubine Directe", "technical_status_code": "above_reference", "value_raw": "6", "unit": "mg/L", "reference_short": "0.00 - 5.00", "page": 1},
+            {"doc_id": "report_12", "analyte": "LDH", "technical_status_code": "above_reference", "value_raw": "250", "unit": "UI/L", "reference_short": "125 - 243", "page": 2},
+            {"doc_id": "report_12", "analyte": "CKMB (CPKMB)", "technical_status_code": "above_reference", "value_raw": "40", "unit": "UI/L", "reference_short": "< 25", "page": 2},
+            {"doc_id": "report_12", "analyte": "APOLIPOPROTÉINE A1 (APO A1)", "technical_status_code": "above_reference", "value_raw": "2.3", "unit": "g/L", "reference_short": "1.1 - 1.6", "page": 2},
+            {"doc_id": "report_12", "analyte": "AMMONIUM", "technical_status_code": "below_reference", "value_raw": "20", "unit": "µg/dL", "reference_short": "35 - 80", "page": 1},
+        ]
+        prompt = ga._build_doc_scoped_biological_summary_salvage_prompt(
+            failed_answer="AMMONIUM (écart documenté)",
+            evidences=rows,
+            query_understanding=qu,
+        )
+        low = prompt.lower()
+        self.assertIn("bilirubine directe = 6 mg/l", low)
+        self.assertIn("source : report_12, pages 1-2.", low)
+        self.assertIn("aucun résultat dans la référence n’est mis en avant", low)
+        self.assertIn("scaffold factuel acceptable", low)
+        self.assertIn("ouverture clinique", low)
+
+    def test_doc_scoped_biological_summary_salvage_normalizes_answer_units(self) -> None:
+        ga = __import__("generate_answer")
+        qu = ga.parse_query_understanding(
+            "Fais une synthèse biologique courte du report 12. Limite-toi à 3 à 5 lignes, sans diagnostic."
+        )
+        rows = [
+            {"doc_id": "report_12", "analyte": "Bilirubine Directe", "technical_status_code": "above_reference", "value_raw": "6", "unit": "mg/L", "reference_short": "0.00 - 5.00", "page": 1},
+            {"doc_id": "report_12", "analyte": "AMMONIUM", "technical_status_code": "below_reference", "value_raw": "20", "unit": "µg/dL", "reference_short": "35 - 80", "page": 1},
+        ]
+        with mock.patch(
+            "generate_answer._generate_structured_llm_text",
+            return_value=(
+                "Le bilan retient Bilirubine Directe = 6 mg/l et AMMONIUM = 20 µg/dl.\n"
+                "Conclusion technique : lecture descriptive prudente, sans diagnostic.\n"
+                "Source : report_12, pages 1-2."
+            ),
+        ):
+            answer, err = ga._attempt_doc_scoped_biological_summary_llm_salvage(
+                failed_answer="AMMONIUM (écart documenté)",
+                evidences=rows,
+                query_understanding=qu,
+                llm_client=mock.Mock(),
+                model="qwen2.5:7b-instruct",
+                num_ctx=2048,
+                timeout_s=60,
+                max_tokens=220,
+            )
+        self.assertIsNone(err)
+        self.assertIn("6 mg/L", answer)
+        self.assertIn("20 µg/dL", answer)
 
     def test_compact_biological_summary_uses_value_numeric_when_raw_missing(self) -> None:
         ga = __import__("generate_answer")

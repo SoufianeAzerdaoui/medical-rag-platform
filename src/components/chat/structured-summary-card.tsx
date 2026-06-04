@@ -115,13 +115,16 @@ function ensureSentence(value: string): string {
 function normalizeMedicalUnits(value: string): string {
   return value
     .replace(/\bmg\/l\b/gi, "mg/L")
+    .replace(/\bg\/l\b/gi, "g/L")
     .replace(/\bng\/ml\b/gi, "ng/mL")
     .replace(/\bmmol\/l\b/gi, "mmol/L")
     .replace(/\bpmol\/l\b/gi, "pmol/L")
     .replace(/\bmeq\/l\b/gi, "mEq/L")
     .replace(/\biu\/ml\b/gi, "IU/mL")
     .replace(/\bmui\/l\b/gi, "mUI/L")
-    .replace(/\bui\/l\b/gi, "UI/L");
+    .replace(/\bui\/l\b/gi, "UI/L")
+    .replace(/\bµg\/dl\b/gi, "µg/dL")
+    .replace(/\bug\/dl\b/gi, "µg/dL");
 }
 
 function splitLineItems(value: string): string[] {
