@@ -164,6 +164,10 @@ try:
     from backend.services.feature_flag_service import get_feature_flag as _runtime_get_feature_flag
 except Exception:  # pragma: no cover - fallback for CLI-only runs without backend package
     _runtime_get_feature_flag = None
+try:
+    from backend.services.document_identity_service import resolve_document_identities
+except Exception:  # pragma: no cover - fallback for lightweight generation-only environments
+    resolve_document_identities = None  # type: ignore[assignment]
 
 LOGGER = logging.getLogger("medical_rag.generation")
 _LLM_TIMEOUT_CIRCUIT_STATE: dict[str, float] = {}
@@ -181,6 +185,14 @@ def _is_feature_enabled(name: str, default: bool = True) -> bool:
 
 def _llm_global_enabled() -> bool:
     return _is_feature_enabled("LLM_GLOBAL_ENABLED", default=True)
+
+
+def _document_identity_guard_enabled() -> bool:
+    explicit = os.getenv("MEDICAL_RAG_DOCUMENT_IDENTITY_GUARD_ENABLED")
+    if explicit is None and os.getenv("PYTEST_CURRENT_TEST"):
+        return False
+    raw = str(explicit or "1").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _llm_max_retry_attempts() -> int:
@@ -416,6 +428,237 @@ def _first_non_empty_string(items: list[str] | None) -> str | None:
         if token:
             return token
     return None
+
+
+def _requested_document_identity_snapshots(requested_doc_ids: list[str] | None) -> list[dict[str, Any]]:
+    if resolve_document_identities is None:
+        return []
+    try:
+        return list(resolve_document_identities(list(requested_doc_ids or [])) or [])
+    except Exception:
+        return []
+
+
+def _primary_document_identity_snapshot(snapshots: list[dict[str, Any]] | None) -> dict[str, Any]:
+    items = [dict(item) for item in list(snapshots or []) if isinstance(item, dict)]
+    if not items:
+        return {}
+    for item in items:
+        if bool(item.get("document_identity_mismatch")):
+            return item
+    return items[0]
+
+
+def _render_document_identity_mismatch_answer(snapshot: dict[str, Any]) -> str:
+    requested_doc_id = str(snapshot.get("requested_doc_id") or snapshot.get("resolved_doc_id") or "ce document").strip()
+    resolved_filename = str(snapshot.get("resolved_filename") or requested_doc_id or "").strip()
+    resolved_page_count = snapshot.get("resolved_page_count")
+    indexed_page_count = snapshot.get("indexed_page_count")
+    source_pdf_path = str(snapshot.get("source_pdf_path") or "").strip()
+    reasons = {str(reason).strip().lower() for reason in list(snapshot.get("document_identity_reasons") or []) if str(reason).strip()}
+
+    details: list[str] = []
+    if (
+        resolved_page_count not in (None, "")
+        and indexed_page_count not in (None, "")
+        and str(resolved_page_count) != str(indexed_page_count)
+    ):
+        details.append(
+            f"Le PDF actuel compte {resolved_page_count} page(s), alors que l’index courant en annonce {indexed_page_count}."
+        )
+    if "multiple_versions_for_doc_id" in reasons:
+        details.append("Plusieurs versions semblent associées au même doc_id dans le registre documentaire.")
+    if "source_pdf_path_mismatch" in reasons and source_pdf_path:
+        details.append(f"Le chemin source actuellement résolu est {source_pdf_path}.")
+    if "file_hash_mismatch" in reasons:
+        details.append("Le hash du fichier courant ne correspond pas au hash documentaire attendu.")
+    if not details:
+        details.append("Le document actuellement résolu ne correspond pas aux artefacts indexés.")
+
+    source_line = f"Source PDF actuelle : {resolved_filename}" if resolved_filename else None
+    if source_pdf_path:
+        source_line = f"Source PDF actuelle : {source_pdf_path}"
+    parts = [
+        f"Impossible de répondre de façon fiable pour {requested_doc_id}.",
+        "Alerte documentaire : le document demandé ne correspond pas à l’index courant (`document_identity_mismatch`).",
+        " ".join(details),
+        "Réingestion requise avant toute synthèse ou interprétation.",
+    ]
+    if source_line:
+        parts.append(source_line)
+    return "\n\n".join(part for part in parts if str(part or "").strip())
+
+
+def _build_document_identity_mismatch_result(
+    *,
+    query: str,
+    query_received: str,
+    query_used_for_retrieval: str,
+    query_used_for_prompt: str,
+    request_id: str,
+    provider: str,
+    model: str,
+    top_k: int,
+    max_display_results: int,
+    show_all_results: bool,
+    show_low_quality: bool,
+    timeout: int,
+    started: float,
+    selected_route: str,
+    route_reason: str,
+    query_understanding: QueryUnderstanding,
+    requested_doc_ids: list[str],
+    missing_requested_doc_ids: list[str],
+    identity_snapshots: list[dict[str, Any]],
+    stage_times_ms: dict[str, float],
+) -> dict[str, Any]:
+    elapsed = time.perf_counter() - started
+    snapshot = _primary_document_identity_snapshot(identity_snapshots)
+    answer = _render_document_identity_mismatch_answer(snapshot)
+    validation = {
+        "validation_status": "fail",
+        "errors": ["document_identity_mismatch"],
+        "warnings": [],
+        "document_identity_mismatch": True,
+    }
+    quality_gate = {
+        "score": 0.0,
+        "threshold": 0.85,
+        "pass": False,
+        "reasons": ["document_identity_mismatch"],
+    }
+    quality = {
+        "faithfulness_score": 0.0,
+        "format_compliance_score": 1.0,
+        "readability_score": 0.8,
+        "source_ux_score": 0.0,
+        "style_repetition_score": 1.0,
+        "safety_score": 1.0,
+        "final_status": "fail",
+    }
+    stage_times_ms["total_ms"] = round(elapsed * 1000.0, 3)
+    return {
+        "request_id": request_id,
+        "query": query,
+        "query_received": query_received,
+        "query_used_for_retrieval": query_used_for_retrieval,
+        "query_used_for_prompt": query_used_for_prompt,
+        "query_stored": query,
+        "normalized_query": norm_text(query),
+        "mode": "sql_deterministic",
+        "provider": provider,
+        "model": model,
+        "top_k": top_k,
+        "max_display_results": int(max_display_results),
+        "show_all_results": bool(show_all_results),
+        "show_low_quality": bool(show_low_quality),
+        "timeout": timeout,
+        "generation_time_seconds": round(elapsed, 3),
+        "answer": answer,
+        "citations": [],
+        "sources": [],
+        "validation": validation,
+        "quality_report": quality,
+        "quality_gate": quality_gate,
+        "llm_quality_gate": None,
+        "final_answer_quality_gate": quality_gate,
+        "quality_final_status": "fail",
+        "synthesis_quality_reason": "document_identity_mismatch",
+        "llm_error": None,
+        "error_type": None,
+        "generation_mode": "deterministic_document_identity_guard",
+        "selected_route": selected_route,
+        "llm_writer_attempted": False,
+        "llm_writer_accepted": False,
+        "final_answer_source": "deterministic_renderer",
+        "renderer_used": "document_identity_guard",
+        "fallback_reason": "document_identity_mismatch",
+        "requested_doc_id": snapshot.get("requested_doc_id"),
+        "resolved_doc_id": snapshot.get("resolved_doc_id"),
+        "resolved_filename": snapshot.get("resolved_filename"),
+        "resolved_file_hash": snapshot.get("resolved_file_hash"),
+        "resolved_page_count": snapshot.get("resolved_page_count"),
+        "indexed_page_count": snapshot.get("indexed_page_count"),
+        "ingestion_timestamp": snapshot.get("ingestion_timestamp"),
+        "source_pdf_path": snapshot.get("source_pdf_path"),
+        "document_identity_mismatch": True,
+        "document_identity_status": snapshot.get("document_identity_status") or "mismatch",
+        "document_identity_reasons": list(snapshot.get("document_identity_reasons") or ["document_identity_mismatch"]),
+        "displayed_evidences_count": 0,
+        "evidence_pack_count": 0,
+        "lab_result_count": 0,
+        "value_numeric_count": 0,
+        "structured_values_count": 0,
+        "sources_count": 0,
+        "above_reference_count": 0,
+        "below_reference_count": 0,
+        "within_reference_count": 0,
+        "needs_clinical_context_count": 0,
+        "major_anomalies_count": 0,
+        "selected_normal_results_count": 0,
+        "detected_analytes": list(query_understanding.requested_analytes or []),
+        "query_understanding": _query_understanding_payload(query_understanding),
+        "structured_evidence_pack": {},
+        "style_memory_entry": {
+            "intent": query_understanding.intent,
+            "output_format": query_understanding.output_format,
+            "answer_text": answer,
+        },
+        "evidence_pack": [],
+        "displayed_evidences": [],
+        "display": {
+            "selected_candidates_count": 0,
+            "low_quality_evidence_filtered_count": 0,
+            "hidden_result_count": 0,
+            "requested_multi_result_query": False,
+            "display_notes": [],
+        },
+        "retrieval": {
+            "answerability": {
+                "status": "blocked",
+                "reason": "document_identity_mismatch",
+            },
+            "filters": {"doc_ids": requested_doc_ids, "analytes": list(query_understanding.requested_analytes or [])},
+            "top_results": [],
+            "context_chunks": [],
+            "sources": [],
+        },
+        "prompt": "",
+        "debug": {
+            "request_id": request_id,
+            "query_received": query_received,
+            "query_used_for_retrieval": query_used_for_retrieval,
+            "query_used_for_prompt": query_used_for_prompt,
+            "requested_doc_ids": list(requested_doc_ids or []),
+            "missing_requested_doc_ids": list(missing_requested_doc_ids or []),
+            "generation_mode": "deterministic_document_identity_guard",
+            "selected_route": selected_route,
+            "route_reason": route_reason,
+            "fallback_reason": "document_identity_mismatch",
+            "final_answer_source": "deterministic_renderer",
+            "renderer_used": "document_identity_guard",
+            "quality_gate": quality_gate,
+            "llm_quality_gate": None,
+            "final_answer_quality_gate": quality_gate,
+            "quality_final_status": "fail",
+            "synthesis_quality_reason": "document_identity_mismatch",
+            "generation_writer": "professional_fallback",
+            "document_identity_mismatch": True,
+            "document_identity_status": snapshot.get("document_identity_status") or "mismatch",
+            "document_identity_reasons": list(snapshot.get("document_identity_reasons") or ["document_identity_mismatch"]),
+            "document_identity_checks": identity_snapshots,
+            "requested_doc_id": snapshot.get("requested_doc_id"),
+            "resolved_doc_id": snapshot.get("resolved_doc_id"),
+            "resolved_filename": snapshot.get("resolved_filename"),
+            "resolved_file_hash": snapshot.get("resolved_file_hash"),
+            "resolved_page_count": snapshot.get("resolved_page_count"),
+            "indexed_page_count": snapshot.get("indexed_page_count"),
+            "ingestion_timestamp": snapshot.get("ingestion_timestamp"),
+            "source_pdf_path": snapshot.get("source_pdf_path"),
+            "indexed_source_pdf_path": snapshot.get("indexed_source_pdf_path"),
+            "stage_timings_ms": dict(stage_times_ms),
+        },
+    }
 
 
 def _derive_llm_candidate_rejected_reason(
@@ -14451,6 +14694,35 @@ def run_generation(
         query_understanding = replace(query_understanding, requested_doc_ids=requested_doc_ids)
     requested_doc_id = requested_doc_ids[0] if len(requested_doc_ids) == 1 else None
     missing_requested_doc_ids = _resolve_missing_requested_doc_ids(sqlite_path, requested_doc_ids)
+    document_identity_snapshots = _requested_document_identity_snapshots(requested_doc_ids)
+    primary_document_identity = _primary_document_identity_snapshot(document_identity_snapshots)
+    document_identity_mismatch_detected = bool(
+        _document_identity_guard_enabled()
+        and any(bool(item.get("document_identity_mismatch")) for item in document_identity_snapshots if isinstance(item, dict))
+    )
+    if document_identity_mismatch_detected:
+        return _build_document_identity_mismatch_result(
+            query=q,
+            query_received=query_received,
+            query_used_for_retrieval=query_used_for_retrieval,
+            query_used_for_prompt=query_used_for_prompt,
+            request_id=request_id,
+            provider=provider,
+            model=model,
+            top_k=top_k,
+            max_display_results=max_display_results,
+            show_all_results=show_all_results,
+            show_low_quality=show_low_quality,
+            timeout=timeout,
+            started=started,
+            selected_route=selected_route,
+            route_reason=route_reason,
+            query_understanding=query_understanding,
+            requested_doc_ids=requested_doc_ids,
+            missing_requested_doc_ids=missing_requested_doc_ids,
+            identity_snapshots=document_identity_snapshots,
+            stage_times_ms=stage_times_ms,
+        )
     sensitive_or_treatment = _query_is_sensitive_or_treatment(q)
     if str(getattr(query_understanding, "requested_context_type", "") or "") == "medical_qualitative_comment":
         LOGGER.info(
@@ -19089,6 +19361,17 @@ def run_generation(
             "needs_clinical_context_count": int(doc_scoped_fact_counts.get("needs_clinical_context_count") or 0),
             "major_anomalies_count": int(doc_scoped_fact_counts.get("major_anomalies_count") or 0),
             "selected_normal_results_count": int(doc_scoped_fact_counts.get("selected_normal_results_count") or 0),
+            "requested_doc_id": primary_document_identity.get("requested_doc_id"),
+            "resolved_doc_id": primary_document_identity.get("resolved_doc_id"),
+            "resolved_filename": primary_document_identity.get("resolved_filename"),
+            "resolved_file_hash": primary_document_identity.get("resolved_file_hash"),
+            "resolved_page_count": primary_document_identity.get("resolved_page_count"),
+            "indexed_page_count": primary_document_identity.get("indexed_page_count"),
+            "ingestion_timestamp": primary_document_identity.get("ingestion_timestamp"),
+            "source_pdf_path": primary_document_identity.get("source_pdf_path"),
+            "document_identity_mismatch": bool(primary_document_identity.get("document_identity_mismatch")) if primary_document_identity else False,
+            "document_identity_status": primary_document_identity.get("document_identity_status"),
+            "document_identity_reasons": list(primary_document_identity.get("document_identity_reasons") or []),
             "selected_major_anomalies_for_fallback": selected_major_anomalies_for_fallback,
             "detected_analytes": exact_analytes,
             "query_understanding": _query_understanding_payload(query_understanding),
@@ -19256,6 +19539,20 @@ def run_generation(
                 "needs_clinical_context_count": int(doc_scoped_fact_counts.get("needs_clinical_context_count") or 0),
                 "major_anomalies_count": int(doc_scoped_fact_counts.get("major_anomalies_count") or 0),
                 "selected_normal_results_count": int(doc_scoped_fact_counts.get("selected_normal_results_count") or 0),
+                "requested_doc_id": primary_document_identity.get("requested_doc_id"),
+                "resolved_doc_id": primary_document_identity.get("resolved_doc_id"),
+                "resolved_filename": primary_document_identity.get("resolved_filename"),
+                "resolved_file_hash": primary_document_identity.get("resolved_file_hash"),
+                "resolved_page_count": primary_document_identity.get("resolved_page_count"),
+                "indexed_page_count": primary_document_identity.get("indexed_page_count"),
+                "ingestion_timestamp": primary_document_identity.get("ingestion_timestamp"),
+                "source_pdf_path": primary_document_identity.get("source_pdf_path"),
+                "document_identity_mismatch": bool(primary_document_identity.get("document_identity_mismatch")) if primary_document_identity else False,
+                "document_identity_status": primary_document_identity.get("document_identity_status"),
+                "document_identity_reasons": list(primary_document_identity.get("document_identity_reasons") or []),
+                "document_identity_checks": document_identity_snapshots,
+                "indexed_source_pdf_path": primary_document_identity.get("indexed_source_pdf_path"),
+                "extraction_document_path": primary_document_identity.get("extraction_document_path"),
                 "selected_major_anomalies_for_fallback": selected_major_anomalies_for_fallback,
                 "hard_gate_triggered": hard_gate_triggered,
                 "hard_gate_errors": hard_gate_hits if 'hard_gate_hits' in locals() else [],
