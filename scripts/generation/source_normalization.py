@@ -15,7 +15,8 @@ def normalize_source_for_response(source: dict[str, Any]) -> dict[str, Any]:
     if source_pdf and source_pdf.lower().startswith("docs/"):
         source_pdf = source_pdf[5:]
     page = src.get("page")
-    line = src.get("line", src.get("row"))
+    line = src.get("line")
+    row = src.get("row")
     label = str(src.get("label") or "").strip()
     if label.lower().startswith("docs/"):
         label = label[5:]
@@ -38,6 +39,7 @@ def normalize_source_for_response(source: dict[str, Any]) -> dict[str, Any]:
         "source_pdf": source_pdf,
         "page": page if isinstance(page, int) else None,
         "line": line if isinstance(line, int) else None,
+        "row": row if isinstance(row, int) else None,
         "doc_id": doc_id,
         "viewer_url": viewer_url,
         "source_url": source_url,
@@ -52,11 +54,19 @@ def dedup_normalized_sources(sources: list[dict[str, Any]]) -> list[dict[str, An
     seen: set[tuple[str, Any, Any, str]] = set()
     for src in sources or []:
         n = normalize_source_for_response(src)
+        label = str(n.get("label") or "").strip().lower()
+        page = n.get("page")
+        line = n.get("line")
+        row = n.get("row")
+        if line is None:
+            row = None
         key = (
             str(n.get("source_pdf") or "").strip().lower(),
-            n.get("page"),
-            n.get("line"),
+            page,
+            line,
+            row,
             str(n.get("url") or "").strip(),
+            label,
         )
         if key in seen:
             continue

@@ -92,6 +92,13 @@ class TestConversationStateManagement(unittest.TestCase):
         }
         self.assertIsNone(_get_transformable_context(state))
 
+    def test_c2_transformable_pack_is_blocked_for_mismatched_requested_doc_ids(self) -> None:
+        state = {
+            "last_transformable_evidence_pack": _old_medical_pack(),
+        }
+        self.assertIsNone(_get_transformable_context(state, requested_doc_ids=["report_24"]))
+        self.assertIsNotNone(_get_transformable_context(state, requested_doc_ids=["report_31"]))
+
     def test_d_valid_medical_pack_stays_transformable(self) -> None:
         chat_id = "ut-state-d"
         new_pack = {

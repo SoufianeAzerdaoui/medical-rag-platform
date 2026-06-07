@@ -108,8 +108,16 @@ AUTH_SCHEME = auth_service.AUTH_SCHEME
 get_current_user = auth_service.get_current_user
 
 ALLOWED_FRONTEND_ORIGINS = [origin.strip() for origin in FRONTEND_ORIGIN.split(",") if origin.strip()]
-# Dev-safe fallback: allow localhost / 127.0.0.1 on any port for preflight CORS.
-LOCAL_DEV_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+
+
+def _local_dev_origin_regex() -> str:
+    # Local development default: allow any http(s) origin.
+    # This avoids false CORS rejections when the browser uses a hostname,
+    # loopback alias, or LAN IP that differs from the configured FRONTEND_ORIGIN.
+    return r"^https?://.+$"
+
+
+LOCAL_DEV_ORIGIN_REGEX = _local_dev_origin_regex()
 
 app.add_middleware(
     CORSMiddleware,
@@ -136,8 +144,8 @@ def _evidence_pack_is_transformable(pack: Any) -> bool:
     return evidence_pack_transformable(pack)
 
 
-def _get_transformable_context(state: dict[str, Any]) -> dict[str, Any] | None:
-    return transformable_context(state)
+def _get_transformable_context(state: dict[str, Any], requested_doc_ids: list[str] | None = None) -> dict[str, Any] | None:
+    return transformable_context(state, requested_doc_ids=requested_doc_ids)
 
 
 def _update_conversation_state(chat_id: str, state: dict[str, Any], generation: dict[str, Any], user_message: str) -> None:
@@ -1041,6 +1049,7 @@ def get_pdf(doc_id: str, page: int | None = Query(default=None, ge=1)) -> FileRe
     if not is_valid_doc_id(doc_id):
         raise HTTPException(status_code=404, detail="Document introuvable")
 
+    _refresh_resolver_cache()
     resolved = _resolver().resolve_pdf_for_doc_id(doc_id)
     if not resolved or not resolved.pdf_path:
         raise HTTPException(status_code=404, detail="PDF source introuvable")
@@ -1050,11 +1059,21 @@ def get_pdf(doc_id: str, page: int | None = Query(default=None, ge=1)) -> FileRe
         raise HTTPException(status_code=404, detail="PDF source introuvable")
 
     filename = resolved.filename or f"{doc_id}.pdf"
+    try:
+        cache_version = str(int(pdf_path.stat().st_mtime_ns))
+    except Exception:
+        cache_version = str(int(time.time()))
     return FileResponse(
         path=str(pdf_path),
         media_type="application/pdf",
         filename=filename,
-        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "no-store, no-cache, max-age=0, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "ETag": f'"{doc_id}-{cache_version}"',
+        },
     )
 
 

@@ -16,6 +16,7 @@ for root in (SCRIPTS_ROOT, GENERATION_ROOT, PROJECT_ROOT):
 from backend_api import get_pdf
 from citation_builder import build_source_citations
 from generate_answer import run_generation
+from professional_answer_composer import deduplicate_sources
 from retrieval.models import RetrievalResult, SearchResponse
 
 
@@ -82,8 +83,11 @@ class TestSourceCitationsBackend(unittest.TestCase):
         self.assertEqual(source["doc_id"], "report_19")
         self.assertEqual(source["page"], 1)
         self.assertEqual(source["row"], 2)
+        self.assertIsNone(source.get("line"))
         self.assertIn("report", (source.get("label") or "").lower())
-        self.assertEqual(source["url"], "/api/documents/report_19/pdf?page=1")
+        self.assertNotIn("ligne", (source.get("label") or "").lower())
+        self.assertEqual(source["url"], "/viewer/pdf?doc_id=report_19&page=1")
+        self.assertEqual(source["viewer_url"], "/viewer/pdf?doc_id=report_19&page=1")
         self.assertNotIn("/home/", json.dumps(source))
 
     def test_source_citation_builder_unknown_doc(self) -> None:
@@ -97,8 +101,8 @@ class TestSourceCitationsBackend(unittest.TestCase):
         sources = build_source_citations(evidences)
         self.assertEqual(len(sources), 1)
         self.assertEqual(sources[0]["doc_id"], "unknown_999")
-        self.assertIsNone(sources[0]["url"])
-        self.assertIsNone(sources[0]["viewer_url"])
+        self.assertEqual(sources[0]["url"], "/viewer/pdf?doc_id=unknown_999&page=1")
+        self.assertEqual(sources[0]["viewer_url"], "/viewer/pdf?doc_id=unknown_999&page=1")
 
     def test_path_traversal_doc_id_rejected(self) -> None:
         with self.assertRaises(HTTPException) as ctx:
@@ -130,7 +134,7 @@ class TestSourceCitationsBackend(unittest.TestCase):
         self.assertTrue(sources)
         first = sources[0]
         self.assertEqual(first.get("doc_id"), "report_19")
-        self.assertIn("/api/documents/report_19/pdf", str(first.get("url") or ""))
+        self.assertIn("/viewer/pdf?doc_id=report_19", str(first.get("url") or ""))
 
     def test_normal_mode_sources_do_not_expose_chunk_id(self) -> None:
         keep = _mk_result(chunk_id="chk_report_19_insuline_very_long_identifier", doc_id="report_19")
@@ -156,6 +160,34 @@ class TestSourceCitationsBackend(unittest.TestCase):
         for src in result.get("sources") or []:
             self.assertNotIn("chunk_id=", str(src.get("label") or "").lower())
         self.assertNotIn("chunk_id=", str(result.get("answer") or "").lower())
+
+    def test_deduplicate_sources_collapses_same_page_labels(self) -> None:
+        sources = [
+            {
+                "doc_id": "report_16",
+                "filename": "report (16).pdf",
+                "page": "1",
+                "row": "1",
+                "url": "/viewer/pdf?doc_id=report_16&page=1",
+                "viewer_url": "/viewer/pdf?doc_id=report_16&page=1",
+                "label": "report (16).pdf — page 1",
+            },
+            {
+                "doc_id": "report_16",
+                "filename": "report (16).pdf",
+                "page": 1,
+                "row": 2,
+                "url": "/viewer/pdf?doc_id=report_16&page=1",
+                "viewer_url": "/viewer/pdf?doc_id=report_16&page=1",
+                "label": "report (16).pdf — page 1",
+            },
+        ]
+
+        out = deduplicate_sources(sources)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["page"], 1)
+        self.assertEqual(out[0]["rows"], [1, 2])
+        self.assertIn("page 1", str(out[0].get("label") or "").lower())
 
 
 if __name__ == "__main__":

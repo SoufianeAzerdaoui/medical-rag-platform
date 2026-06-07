@@ -109,5 +109,5 @@ def evidence_pack_transformable(pack: Any) -> bool:
     return evidence_pack_is_transformable(pack)
 
 
-def transformable_context(state: dict[str, Any]) -> dict[str, Any] | None:
-    return get_transformable_context(state)
+def transformable_context(state: dict[str, Any], *, requested_doc_ids: list[str] | None = None) -> dict[str, Any] | None:
+    return get_transformable_context(state, requested_doc_ids=requested_doc_ids)

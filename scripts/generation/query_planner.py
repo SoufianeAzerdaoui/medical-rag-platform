@@ -29,6 +29,8 @@ INTENT_TO_ROUTE: dict[str, str] = {
     "doc_scoped_single_analyte_status": "doc_scoped_single_analyte_status",
     "single_analyte_lookup": "doc_scoped_single_analyte_status",
     "doc_scoped_analyte_query": "doc_scoped_single_analyte_status",
+    "doc_scoped_numeric_result_lookup": "doc_scoped_results",
+    "doc_scoped_results": "doc_scoped_results",
     "doc_scoped_abnormal_results": "doc_scoped_abnormal_results",
     "doc_scoped_summary": "doc_scoped_biological_summary",
     "doc_scoped_biological_summary": "doc_scoped_biological_summary",
@@ -55,6 +57,7 @@ INTENT_TO_ROUTE: dict[str, str] = {
 
 ROUTE_POLICY: dict[str, str] = {
     "doc_scoped_single_analyte_status": "deterministic_only",
+    "doc_scoped_results": "deterministic_preferred",
     "doc_scoped_abnormal_results": "deterministic_preferred",
     "doc_scoped_biological_summary": "deterministic_preferred",
     "doc_scoped_priority_anomalies": "deterministic_preferred",
@@ -74,6 +77,7 @@ ROUTE_POLICY: dict[str, str] = {
 
 DOC_SCOPED_ROUTES = {
     "doc_scoped_single_analyte_status",
+    "doc_scoped_results",
     "doc_scoped_abnormal_results",
     "doc_scoped_biological_summary",
     "doc_scoped_priority_anomalies",

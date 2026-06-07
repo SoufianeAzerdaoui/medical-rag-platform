@@ -269,9 +269,49 @@ def evidence_pack_is_transformable(pack: Any) -> bool:
     return False
 
 
-def get_transformable_context(state: dict[str, Any]) -> dict[str, Any] | None:
+def _pack_doc_ids(pack: dict[str, Any] | None) -> list[str]:
+    if not isinstance(pack, dict) or not pack:
+        return []
+    rows = pack.get("evidences")
+    if not isinstance(rows, list):
+        rows = pack.get("results")
+    if not isinstance(rows, list):
+        rows = pack.get("rows")
+    if not isinstance(rows, list):
+        return []
+    doc_ids = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        doc_id = str(row.get("doc_id") or row.get("documentId") or row.get("document_id") or "").strip()
+        if not doc_id:
+            continue
+        key = doc_id.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        doc_ids.append(doc_id)
+    return doc_ids
+
+
+def _transformable_context_matches_requested_docs(pack: dict[str, Any], requested_doc_ids: list[str] | None) -> bool:
+    requested = [str(d).strip().lower() for d in list(requested_doc_ids or []) if str(d).strip()]
+    if not requested:
+        return True
+    pack_doc_ids = [d.lower() for d in _pack_doc_ids(pack) if str(d).strip()]
+    if not pack_doc_ids:
+        return False
+    return sorted(set(pack_doc_ids)) == sorted(set(requested))
+
+
+def get_transformable_context(state: dict[str, Any], *, requested_doc_ids: list[str] | None = None) -> dict[str, Any] | None:
     pack = state.get("last_transformable_evidence_pack")
-    return pack if isinstance(pack, dict) and pack else None
+    if not isinstance(pack, dict) or not pack:
+        return None
+    if not _transformable_context_matches_requested_docs(pack, requested_doc_ids):
+        return None
+    return pack
 
 
 def get_qualitative_context(state: dict[str, Any]) -> dict[str, Any] | None:

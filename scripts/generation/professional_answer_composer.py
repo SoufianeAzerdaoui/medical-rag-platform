@@ -996,6 +996,17 @@ def choose_presentation_format(query_understanding: QueryUnderstanding, evidence
         return "table"
     if query_understanding.intent == "reference_ranges_summary":
         return "paragraph"
+    if query_understanding.intent == "doc_scoped_results":
+        if len(evidences) == 1:
+            return "paragraph"
+        doc_ids = {
+            _safe_str(ev.get("doc_id"))
+            for ev in evidences
+            if _safe_str(ev.get("doc_id"))
+        }
+        if len(doc_ids) == 1 and not requested_cols:
+            return "list"
+        return "table"
     if output_format == "table" or requested_cols:
         return "table"
     if len(evidences) >= 2:
@@ -1077,7 +1088,9 @@ def deduplicate_sources(sources: list[dict[str, Any]] | None) -> list[dict[str, 
         doc_id = _safe_str(src.get("doc_id")).lower()
         if not doc_id:
             continue
-        page = int(src.get("page")) if isinstance(src.get("page"), int) else None
+        page = _safe_int(src.get("page") if src.get("page") is not None else src.get("page_number"))
+        if page is not None and page < 0:
+            page = None
         key = (doc_id, page)
         entry = grouped.get(
             key,
@@ -1092,8 +1105,9 @@ def deduplicate_sources(sources: list[dict[str, Any]] | None) -> list[dict[str, 
                 "label": src.get("label"),
             },
         )
-        if isinstance(src.get("row"), int):
-            entry["rows"].append(int(src["row"]))
+        row = _safe_int(src.get("row") if src.get("row") is not None else src.get("line"))
+        if row is not None:
+            entry["rows"].append(int(row))
         if isinstance(src.get("rows"), list):
             entry["rows"].extend([int(r) for r in src["rows"] if isinstance(r, int)])
         if not entry.get("filename") and src.get("filename"):
@@ -1116,12 +1130,17 @@ def deduplicate_sources(sources: list[dict[str, Any]] | None) -> list[dict[str, 
 
 def _source_lines(source_citations: list[dict[str, Any]]) -> list[str]:
     lines: list[str] = []
+    seen: set[str] = set()
     for src in deduplicate_sources(source_citations):
         href = src.get("url") or src.get("viewer_url")
         if href:
-            lines.append(f"- [{src.get('label')}]({href})")
+            line = f"- [{src.get('label')}]({href})"
         else:
-            lines.append(f"- {src.get('label')}")
+            line = f"- {src.get('label')}"
+        if line in seen:
+            continue
+        seen.add(line)
+        lines.append(line)
     return lines
 
 
@@ -1951,13 +1970,22 @@ def _build_content_table(
 
 def _build_content_list(evidences: list[dict[str, Any]], include_previous: bool) -> str:
     lines: list[str] = []
-    for ev in evidences:
-        line = (
-            f"- {_display_analyte(ev)}: {ev.get('current_value') or 'non disponible'}"
-            f"{(' ' + _safe_str(ev.get('unit'))) if _safe_str(ev.get('unit')) else ''}"
-            f" | référence: {_safe_str(ev.get('reference'), 'non disponible')}"
-            f" | statut: {_safe_str(ev.get('technical_status'), 'non interprétable')}"
-        )
+    chunk_size = 5 if len(evidences) > 10 else len(evidences)
+    for idx, ev in enumerate(evidences):
+        if chunk_size and len(evidences) > 10 and idx % chunk_size == 0:
+            block_start = idx + 1
+            block_end = min(idx + chunk_size, len(evidences))
+            if lines:
+                lines.append("")
+            lines.append(f"Résultats {block_start} à {block_end}")
+        value = _safe_str(ev.get("current_value"), "non disponible")
+        unit = _safe_str(ev.get("unit"), "")
+        reference = _safe_str(ev.get("reference"), "non disponible")
+        status = _safe_str(ev.get("technical_status"), "non interprétable")
+        line = f"- {_display_analyte(ev)}: {value}"
+        line += f" | unité: {unit or 'non disponible'}"
+        line += f" | référence: {reference}"
+        line += f" | statut: {status}"
         if include_previous:
             line += f" | antérieur: {_safe_str(ev.get('previous_result'), 'non disponible')}"
             line += f" | variation: {_safe_str(ev.get('variation'), 'non comparable')}"
@@ -2261,14 +2289,19 @@ def render_professional_fallback(
         intent in {"doc_scoped_results", "single_analyte_lookup"}
         and len(evidences) == 1
         and len(requested_docs) == 1
-        and len(requested_analytes) == 1
         and not missing_items
         and presentation in {"list", "paragraph"}
     ):
         ev = dict(evidences[0] or {})
         analyte = _single_analyte_display_label(_display_analyte(ev))
         report_label = _human_report_label(_safe_str(ev.get("doc_id")) or requested_docs[0])
-        value = _safe_str(ev.get("current_value"), _safe_str(ev.get("value_raw"), "non disponible"))
+        value = _safe_str(
+            ev.get("current_value"),
+            _safe_str(
+                ev.get("value_raw"),
+                _safe_str(ev.get("value_numeric"), _safe_str(ev.get("value_with_unit"), "non disponible")),
+            ),
+        )
         unit = _safe_str(ev.get("unit"))
         value_text = value if not unit else f"{value} {unit}"
         reference = _safe_str(ev.get("reference"), _safe_str(ev.get("reference_range"), "non disponible"))
@@ -2336,7 +2369,13 @@ def render_professional_fallback(
         else:
             first = dict(evidences[0] or {})
             analyte = _display_analyte(first)
-            value = _safe_str(first.get("current_value"), _safe_str(first.get("value_raw"), "non disponible"))
+            value = _safe_str(
+                first.get("current_value"),
+                _safe_str(
+                    first.get("value_raw"),
+                    _safe_str(first.get("value_numeric"), _safe_str(first.get("value_with_unit"), "non disponible")),
+                ),
+            )
             unit = _safe_str(first.get("unit"), "")
             reference = _safe_str(first.get("reference"), _safe_str(first.get("reference_range"), "non disponible"))
             status_code = _safe_str(first.get("technical_status_code"), "")
@@ -3017,8 +3056,32 @@ class ClinicalDeterministicRenderer:
     @staticmethod
     def _get_value_str(row: dict) -> str:
         """Return the numeric value string from a row."""
-        val = str(row.get("current_value") or row.get("value_raw") or row.get("value_numeric") or "").strip()
+        val = str(
+            row.get("current_value")
+            or row.get("value_raw")
+            or row.get("value_numeric")
+            or row.get("value_with_unit")
+            or ""
+        ).strip()
         return val if val else "–"
+
+    @staticmethod
+    def _get_value_display(row: dict) -> str:
+        """Return the best display value, including the unit when needed."""
+        value = str(row.get("current_value") or row.get("value_raw") or "").strip()
+        if not value and row.get("value_numeric") is not None:
+            try:
+                num = float(row.get("value_numeric"))
+            except Exception:
+                value = str(row.get("value_numeric") or "").strip()
+            else:
+                value = str(int(num)) if num.is_integer() else str(num)
+        if not value:
+            value = str(row.get("value_with_unit") or "").strip()
+        unit = str(row.get("unit") or "").strip()
+        if value and unit and unit not in value:
+            return f"{value} {unit}".strip()
+        return value if value else "–"
 
     @staticmethod
     def _get_unit(row: dict) -> str:
@@ -3132,12 +3195,10 @@ class ClinicalDeterministicRenderer:
         key_rows = (anomaly_rows + normal_rows)[:3]
         for row in key_rows:
             label = self._get_display_label(row)
-            value = self._get_value_str(row)
-            unit = self._get_unit(row)
+            value = self._get_value_display(row)
             status = self._get_status_fr(row)
             doc = self._get_doc_id(row)
-            val_str = f"{value} {unit}".strip()
-            lines.append(f"- **{label}** = {val_str} ({status}) — {doc}")
+            lines.append(f"- **{label}** = {value} ({status}) — {doc}")
 
         # Sources block
         sources = sorted({self._get_source_label(r) for r in displayed_evidences})
@@ -3192,9 +3253,7 @@ class ClinicalDeterministicRenderer:
         table_rows: list[dict] = []
         for row in displayed_evidences:
             label = self._get_display_label(row)
-            value = self._get_value_str(row)
-            unit = self._get_unit(row)
-            val_str = f"{value} {unit}".strip()
+            val_str = self._get_value_display(row)
             status = self._get_status_fr(row)
             ref_c = self._get_ref_concise(row)
             doc_id = self._get_doc_id(row)

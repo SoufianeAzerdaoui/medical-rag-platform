@@ -2,13 +2,14 @@
 
 import { AlertTriangle, BadgeCheck, FileText, HelpCircle, ShieldCheck } from "lucide-react";
 import { AssistantMarkdown } from "@/components/chat/assistant-markdown";
-import type { ChatSource } from "@/types/chat";
+import type { AssistantDiagnostics, ChatSource } from "@/types/chat";
 
 type ResultTone = "normal" | "high" | "low" | "critical" | "unknown";
 
 type MedicalResult = {
   analyte: string;
   value: string;
+  unit?: string;
   reference: string;
   status: string;
   source: string;
@@ -35,7 +36,28 @@ type EvolutionItem = {
   variationPct: number | null;
 };
 
-const SECTION_CHROME = "rounded-xl border border-border/70 bg-card/[0.58] p-4 shadow-sm";
+type BackendCounts = {
+  above: number | null;
+  below: number | null;
+  within: number | null;
+  major: number | null;
+};
+
+type NarrativeResultBlock = {
+  startIndex: number;
+  endIndex: number;
+  result: MedicalResult;
+};
+
+type CompactResultGroup = {
+  startIndex: number;
+  endIndex: number;
+  heading: string;
+  results: MedicalResult[];
+};
+
+const SECTION_CHROME =
+  "relative overflow-hidden rounded-[24px] border border-border/70 bg-[radial-gradient(circle_at_top_right,rgba(14,165,233,0.08),transparent_28%),linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.015))] p-4 shadow-[0_18px_50px_hsl(220_35%_5%_/_0.12)]";
 
 function normalize(value: string): string {
   return value
@@ -117,6 +139,18 @@ function toneFromStatus(status: string, value: string): ResultTone {
   return "unknown";
 }
 
+function splitValueAndUnit(value: string): { value: string; unit: string } {
+  const normalized = normalize(value);
+  const match = normalized.match(/^([+-]?\d+(?:[.,]\d+)?)(?:\s+(.+))?$/);
+  if (!match) {
+    return { value: normalized, unit: "" };
+  }
+  return {
+    value: match[1].replace(",", "."),
+    unit: normalize(match[2] || ""),
+  };
+}
+
 function resultFromTable(table: MarkdownTable): MedicalResult[] {
   const headers = table.headers;
   const hasMedicalShape = headers.some((h) => /analyse|analyte|param|marqueur|resultat|résultat|test|examen/i.test(h)) &&
@@ -131,14 +165,16 @@ function resultFromTable(table: MarkdownTable): MedicalResult[] {
       const status = getCell(headers, row, ["statut", "status", "interpretation", "etat"]);
       const source = getCell(headers, row, ["source", "document", "rapport", "doc"]);
       if (!analyte && !value) return null;
+      const split = splitValueAndUnit(value || "Non trouvé");
       return {
         analyte: analyte || "Paramètre",
-        value: value || "Non trouvé",
+        value: split.value || "Non trouvé",
+        unit: split.unit || undefined,
         reference: reference || "Non disponible",
         status: status || "À vérifier",
         source: source || "Voir sources",
         tone: toneFromStatus(status, value),
-      };
+      } as MedicalResult;
     })
     .filter((item): item is MedicalResult => Boolean(item));
 }
@@ -248,64 +284,426 @@ function dedupeBulletLines(content: string): string {
   return filtered.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-function MedicalResultCard({ result }: { result: MedicalResult }) {
+function toDisplayCount(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, Math.round(value));
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return Math.max(0, Math.round(parsed));
+  }
+  return null;
+}
+
+function getBackendCounts(source: Record<string, unknown>): BackendCounts {
+  return {
+    above: toDisplayCount(source.above_reference_count),
+    below: toDisplayCount(source.below_reference_count),
+    within: toDisplayCount(source.within_reference_count),
+    major: toDisplayCount(source.major_anomalies_count),
+  };
+}
+
+function isNarrativeResultTitle(line: string): boolean {
+  const normalized = normalize(line);
+  if (!normalized) return false;
+  if (normalized.includes(":")) return false;
+  if (/^[#>*\-•]/.test(normalized)) return false;
+  if (
+    /^(synthese|synthèse|conclusion|source|sources|niveau de support documentaire|qualite de synthese|qualité de synthèse|ecarts documentes|écarts documentés|elements a lire|éléments à lire|resultats dans la reference|résultats dans la référence|cadre|support documentaire|lecture)\b/i.test(
+      normalized,
+    )
+  ) {
+    return false;
+  }
+  return /[a-zàâçéèêëîïôùûüÿœ]/i.test(normalized);
+}
+
+function readNarrativeLabelValue(lines: string[], labels: string[]): string {
+  const normalizedLabels = labels.map((label) => normalizeKey(label));
+  for (const line of lines) {
+    const plain = normalize(line).replace(/^\s*[-*•]\s*/, "");
+    const key = normalizeKey(plain);
+    for (const label of normalizedLabels) {
+      if (key.startsWith(label)) {
+        return plain.split(/[:：]/).slice(1).join(":").trim();
+      }
+    }
+  }
+  return "";
+}
+
+function parseNarrativeResults(content: string): NarrativeResultBlock[] {
+  const rawLines = String(content || "").split(/\r?\n/);
+  const blocks: NarrativeResultBlock[] = [];
+
+  let i = 0;
+  while (i < rawLines.length) {
+    const current = normalize(rawLines[i]);
+    if (!isNarrativeResultTitle(current)) {
+      i += 1;
+      continue;
+    }
+
+    const blockLines: string[] = [rawLines[i]];
+    let j = i + 1;
+    let sawLabel = false;
+    while (j < rawLines.length) {
+      const line = rawLines[j];
+      const normalized = normalize(line);
+      if (!normalized) {
+        if (sawLabel) {
+          j += 1;
+          break;
+        }
+        j += 1;
+        continue;
+      }
+      if (
+        sawLabel &&
+        (isNarrativeResultTitle(normalized) ||
+          /^(conclusion technique|source documentaire|niveau de support documentaire|qualite de synthese|qualité de synthèse|sources cliquables)\b/i.test(
+            normalized,
+          ))
+      ) {
+        break;
+      }
+      blockLines.push(line);
+      if (/^(?:[-*•]\s*)?(?:\*\*)?(valeur|référence(?: disponible)?|reference(?: disponible)?|statut technique|statut interprétatif|source)(?:\*\*)?\s*[:：]/i.test(normalized)) {
+        sawLabel = true;
+      }
+      j += 1;
+    }
+
+    const value = readNarrativeLabelValue(blockLines, ["Valeur"]);
+    const splitValue = splitValueAndUnit(value || "");
+    const reference = readNarrativeLabelValue(blockLines, ["Référence disponible", "Référence", "Reference", "Intervalle de référence", "Plage de référence"]);
+    const status = readNarrativeLabelValue(blockLines, ["Statut technique", "Statut interprétatif"]);
+    const source = readNarrativeLabelValue(blockLines, ["Source"]);
+    if (!splitValue.value || !source) {
+      i += 1;
+      continue;
+    }
+
+    const title = normalize(blockLines[0]).replace(/^###\s*/, "");
+    blocks.push({
+      startIndex: i,
+      endIndex: j,
+      result: {
+        analyte: title || "Paramètre",
+        value: splitValue.value,
+        unit: splitValue.unit || undefined,
+        reference: reference || "Non disponible",
+        status: status || "À vérifier",
+        source: source || "Voir sources",
+        tone: toneFromStatus(status, splitValue.value),
+      } as MedicalResult,
+    });
+    i = j;
+  }
+
+  return blocks;
+}
+
+function parseCompactResultLine(line: string): MedicalResult | null {
+  const normalized = normalize(line).replace(/^[-*•]\s*/, "");
+  if (!normalized) return null;
+  if (/^résultats?\s+\d+\s+à\s+\d+$/i.test(normalized)) return null;
+  if (/^conclusion technique\b/i.test(normalized) || /^source(s)?\b/i.test(normalized)) return null;
+
+  const segments = normalized
+    .split("|")
+    .map((segment) => normalize(segment))
+    .filter(Boolean);
+  if (segments.length < 2) return null;
+
+  const head = segments[0] || "";
+  const headMatch = head.match(/^(.+?)\s*:\s*(.+)$/);
+  if (!headMatch) return null;
+
+  const analyte = normalize(headMatch[1]);
+  const valueAndUnit = splitValueAndUnit(headMatch[2]);
+  const fields = new Map<string, string>();
+  for (const segment of segments.slice(1)) {
+    const match = segment.match(/^([^:：]+)\s*[:：]\s*(.+)$/);
+    if (!match?.[1] || !match[2]) continue;
+    fields.set(normalizeKey(match[1]), normalize(match[2]));
+  }
+
+  const unit = fields.get(normalizeKey("unité")) || fields.get(normalizeKey("unite")) || valueAndUnit.unit;
+  const reference = fields.get(normalizeKey("référence")) || fields.get(normalizeKey("reference")) || "Non disponible";
+  const status = fields.get(normalizeKey("statut")) || fields.get(normalizeKey("statut technique")) || fields.get(normalizeKey("statut interprétatif")) || "À vérifier";
+  return {
+    analyte: analyte || "Paramètre",
+    value: valueAndUnit.value || "Non trouvé",
+    unit: unit || undefined,
+    reference,
+    status,
+    source: "",
+    tone: toneFromStatus(status, valueAndUnit.value),
+  };
+}
+
+function parseCompactResultGroups(content: string): CompactResultGroup[] {
+  const rawLines = String(content || "").split(/\r?\n/);
+  const groups: CompactResultGroup[] = [];
+
+  let i = 0;
+  while (i < rawLines.length) {
+    const heading = normalize(rawLines[i]);
+    const headingMatch = heading.match(/^résultats\s+(\d+)\s+à\s+(\d+)$/i);
+    if (!headingMatch) {
+      i += 1;
+      continue;
+    }
+
+    const startIndex = i;
+    const results: MedicalResult[] = [];
+    let j = i + 1;
+    while (j < rawLines.length) {
+      const current = normalize(rawLines[j]);
+      if (!current) {
+        j += 1;
+        continue;
+      }
+      if (
+        /^résultats\s+\d+\s+à\s+\d+$/i.test(current) ||
+        /^conclusion technique\b/i.test(current) ||
+        /^source(s)?\b/i.test(current) ||
+        /^écarts documentés\b/i.test(current) ||
+        /^elements à lire avec prudence\b/i.test(current) ||
+        /^éléments à lire avec prudence\b/i.test(current)
+      ) {
+        break;
+      }
+
+      if (/^[-*•]\s+/.test(current)) {
+        const parsed = parseCompactResultLine(current);
+        if (parsed) results.push(parsed);
+      }
+      j += 1;
+    }
+
+    if (results.length > 0) {
+      groups.push({
+        startIndex,
+        endIndex: j,
+        heading,
+        results,
+      });
+    }
+    i = j;
+  }
+
+  return groups;
+}
+
+function removeLineRanges(content: string, ranges: Array<{ startIndex: number; endIndex: number }>): string {
+  if (ranges.length === 0) return content;
+  const lines = String(content || "").split(/\r?\n/);
+  const toRemove = new Set<number>();
+  for (const range of ranges) {
+    for (let i = range.startIndex; i < range.endIndex; i += 1) {
+      toRemove.add(i);
+    }
+  }
+  return lines.filter((_, index) => !toRemove.has(index)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function MedicalResultCard({ result, compact = false, showSource = true }: { result: MedicalResult; compact?: boolean; showSource?: boolean }) {
   return (
-    <article className="rounded-xl border border-border/70 bg-card/80 p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-accent/30">
+    <article className={compact
+      ? "group relative overflow-hidden rounded-[22px] border border-border/70 bg-[radial-gradient(circle_at_top_right,rgba(14,165,233,0.08),transparent_30%),linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.018))] p-3.5 shadow-[0_12px_34px_hsl(220_35%_5%_/_0.10)] transition hover:-translate-y-0.5 hover:border-accent/30"
+      : "group relative overflow-hidden rounded-[22px] border border-border/70 bg-[radial-gradient(circle_at_top_right,rgba(14,165,233,0.09),transparent_30%),linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))] p-4 shadow-[0_14px_40px_hsl(220_35%_5%_/_0.12)] transition hover:-translate-y-0.5 hover:border-accent/30"
+    }>
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/35 to-transparent" />
       <div className="flex items-start justify-between gap-3">
-        <h4 className="min-w-0 text-sm font-semibold text-fg">{result.analyte}</h4>
-        <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${toneBadge(result.tone)}`}>
+        <div className="min-w-0 space-y-1">
+          <h4 className={compact ? "truncate text-[13px] font-semibold tracking-[0.01em] text-fg/96" : "truncate text-sm font-semibold tracking-[0.01em] text-fg/96"}>{result.analyte}</h4>
+          <p className="text-[10px] uppercase tracking-[0.18em] text-fg/55">Synthèse médicale structurée</p>
+        </div>
+        <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-semibold shadow-sm ${toneBadge(result.tone)}`}>
           {statusLabel(result.tone, result.status)}
         </span>
       </div>
-      <p className="mt-3 text-2xl font-semibold tracking-tight text-fg">{result.value}</p>
-      <dl className="mt-3 grid gap-2 text-xs">
-        <div className="flex gap-2">
-          <dt className="min-w-20 text-fg/55">Référence</dt>
-          <dd className="text-fg/82">{result.reference}</dd>
+
+      <div className={compact ? "mt-3 rounded-[18px] border border-border/60 bg-card/55 p-3" : "mt-4 rounded-[18px] border border-border/60 bg-card/55 p-4"}>
+        <p className="text-[10px] uppercase tracking-[0.2em] text-fg/55">Valeur documentée</p>
+        <div className="mt-2 flex flex-wrap items-end gap-2">
+          <p className={compact ? "text-2xl font-semibold tracking-tight text-fg/96" : "text-3xl font-semibold tracking-tight text-fg/96"}>{result.value}</p>
+          {result.unit ? (
+            <span className="mb-0.5 rounded-full border border-border/60 bg-bg/35 px-2.5 py-1 text-xs font-medium text-fg/76">
+              {result.unit}
+            </span>
+          ) : null}
         </div>
-        <div className="flex gap-2">
-          <dt className="min-w-20 text-fg/55">Source</dt>
-          <dd className="break-words text-fg/82">{result.source}</dd>
+      </div>
+
+      <dl className={compact ? "mt-3 grid gap-2 text-xs sm:grid-cols-2" : "mt-4 grid gap-3 text-sm sm:grid-cols-2"}>
+        <div className="rounded-2xl border border-border/60 bg-card/45 px-3 py-2.5">
+          <dt className="text-[10px] uppercase tracking-[0.18em] text-fg/55">Référence</dt>
+          <dd className="mt-1 leading-6 text-fg/85">{result.reference}</dd>
         </div>
+        {showSource ? (
+          <div className="rounded-2xl border border-border/60 bg-card/45 px-3 py-2.5">
+            <dt className="text-[10px] uppercase tracking-[0.18em] text-fg/55">Source documentaire</dt>
+            <dd className="mt-1 break-words leading-6 text-fg/85">{result.source}</dd>
+          </div>
+        ) : null}
       </dl>
     </article>
   );
 }
 
-export function MedicalAnswerBlocks({ content, sources = [] }: { content: string; sources?: ChatSource[] }) {
+export function MedicalAnswerBlocks({ content, sources = [], diagnostics }: { content: string; sources?: ChatSource[]; diagnostics?: AssistantDiagnostics }) {
   const tables = parseMarkdownTables(content);
-  const results = tables.flatMap(resultFromTable);
+  const tableResults = tables.flatMap(resultFromTable);
+  const compactResultGroups = tableResults.length > 0 ? [] : parseCompactResultGroups(content);
+  const compactResultBlocks = compactResultGroups.flatMap((group) => group.results);
+  const narrativeResultBlocks = tableResults.length > 0 || compactResultGroups.length > 0 ? [] : parseNarrativeResults(content);
+  const results = tableResults.length > 0 ? tableResults : compactResultGroups.length > 0 ? compactResultBlocks : narrativeResultBlocks.map((block) => block.result);
   const evolutionFromTables = tables.flatMap(parseEvolutionFromTable);
   const evolutionFromText = evolutionFromTables.length === 0 ? parseEvolutionFromText(content) : [];
   const evolutionItems = [...evolutionFromTables, ...evolutionFromText];
-  const contentWithoutTables = results.length > 0 ? removeTables(content, tables) : content;
-  const sanitizedSummaryContent = dedupeBulletLines(contentWithoutTables);
+  const contentWithoutStructuredResults = tableResults.length > 0
+    ? removeTables(content, tables)
+    : compactResultGroups.length > 0
+      ? removeLineRanges(content, compactResultGroups)
+      : removeLineRanges(content, narrativeResultBlocks);
+  const sanitizedSummaryContent = dedupeBulletLines(contentWithoutStructuredResults);
   const abnormalResults = results.filter((result) => result.tone === "high" || result.tone === "low" || result.tone === "critical");
   const missingResults = results.filter((result) => result.tone === "unknown");
   const sourceItems = sources.map(sourceSummary).filter((item): item is SourceSummary => Boolean(item)).slice(0, 5);
+  const backendCounts = getBackendCounts((diagnostics || {}) as Record<string, unknown>);
+  const backendAbnormalCount = backendCounts.major ?? ((backendCounts.above ?? 0) + (backendCounts.below ?? 0));
+  const backendWithinCount = backendCounts.within ?? results.filter((result) => result.tone === "normal").length;
+  const backendResultCount =
+    toDisplayCount(diagnostics?.displayed_evidences_count) ??
+    toDisplayCount(diagnostics?.lab_result_count) ??
+    toDisplayCount(diagnostics?.structured_values_count) ??
+    toDisplayCount(diagnostics?.evidence_pack_count);
+  const resultCount = results.length > 0 ? results.length : (backendResultCount ?? 0);
+  const supportDocumentaryLabel = (() => {
+    if (backendAbnormalCount > 0 && backendWithinCount > 0) {
+      return `${backendAbnormalCount} hors référence / ${backendWithinCount} dans la référence`;
+    }
+    if (backendAbnormalCount > 0) {
+      return `${backendAbnormalCount} hors référence`;
+    }
+    if (backendWithinCount > 0) {
+      return `${backendWithinCount} dans la référence`;
+    }
+    if (resultCount > 0) {
+      return `${resultCount} résultat${resultCount > 1 ? "s" : ""}`;
+    }
+    return "Prêt";
+  })();
+  const resultSummaryLabel = (() => {
+    if (backendAbnormalCount > 0 && backendWithinCount > 0) {
+      return `${backendAbnormalCount} écart${backendAbnormalCount > 1 ? "s" : ""} et ${backendWithinCount} résultat${backendWithinCount > 1 ? "s" : ""} normal${backendWithinCount > 1 ? "aux" : ""}`;
+    }
+    if (backendAbnormalCount > 0) {
+      return `${backendAbnormalCount} écart${backendAbnormalCount > 1 ? "s" : ""} documenté${backendAbnormalCount > 1 ? "s" : ""}`;
+    }
+    if (backendWithinCount > 0) {
+      return `${backendWithinCount} résultat${backendWithinCount > 1 ? "s" : ""} dans la référence`;
+    }
+    if (resultCount > 0) {
+      return `${resultCount} résultat${resultCount > 1 ? "s" : ""} documenté${resultCount > 1 ? "s" : ""}`;
+    }
+    return "Lecture descriptive";
+  })();
 
   return (
-    <div className="space-y-3">
-      <section className={SECTION_CHROME}>
-        <div className="mb-3 flex items-center gap-2">
-          <ShieldCheck size={16} className="text-accent" />
-          <h3 className="text-sm font-semibold">Résumé prudent</h3>
+    <div className="space-y-4">
+      <section className={`${SECTION_CHROME} p-5`}>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <div className="rounded-full border border-accent/20 bg-accent/10 p-1.5 text-accent">
+              <ShieldCheck size={14} />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-fg/96">Synthèse structurée</h3>
+              <p className="text-xs text-fg/58">Lecture prudente et documentée.</p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2 text-[11px] text-fg/60">
+            <span className="rounded-full border border-border/60 bg-card/70 px-2.5 py-1">Résultats documentés: {resultCount}</span>
+            <span className="rounded-full border border-border/60 bg-card/70 px-2.5 py-1">Variations: {evolutionItems.length}</span>
+            <span className="rounded-full border border-border/60 bg-card/70 px-2.5 py-1">Sources: {sourceItems.length}</span>
+          </div>
         </div>
-        {contentWithoutTables ? (
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="rounded-2xl border border-border/60 bg-card/50 px-3 py-2.5">
+            <p className="text-[10px] uppercase tracking-[0.18em] text-fg/55">Synthèse</p>
+            <p className="mt-1 text-sm font-semibold text-fg/92">{resultSummaryLabel}</p>
+          </div>
+          <div className="rounded-2xl border border-border/60 bg-card/50 px-3 py-2.5">
+            <p className="text-[10px] uppercase tracking-[0.18em] text-fg/55">Cadre</p>
+            <p className="mt-1 text-sm font-semibold text-fg/92">Prudente, sans diagnostic</p>
+          </div>
+          <div className="rounded-2xl border border-border/60 bg-card/50 px-3 py-2.5">
+            <p className="text-[10px] uppercase tracking-[0.18em] text-fg/55">Support documentaire</p>
+            <p className="mt-1 text-sm font-semibold text-fg/92">{supportDocumentaryLabel}</p>
+          </div>
+        </div>
+      </section>
+
+      <section className={SECTION_CHROME}>
+        <div className="mb-4 flex items-center gap-2">
+          <div className="rounded-full border border-accent/20 bg-accent/10 p-1.5 text-accent">
+            <ShieldCheck size={14} />
+          </div>
+          <h3 className="text-sm font-semibold">Synthèse</h3>
+        </div>
+        {sanitizedSummaryContent ? (
           <AssistantMarkdown content={sanitizedSummaryContent} />
         ) : (
           <p className="text-sm leading-6 text-fg/78">Résumé basé uniquement sur les éléments disponibles dans les documents fournis.</p>
         )}
       </section>
 
-      {results.length > 0 ? (
+      {compactResultGroups.length > 0 ? (
         <section className={SECTION_CHROME}>
-          <div className="mb-3 flex items-center justify-between gap-3">
+          <div className="mb-4 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
-              <BadgeCheck size={16} className="text-accent" />
-              <h3 className="text-sm font-semibold">Résultats importants</h3>
+              <div className="rounded-full border border-accent/20 bg-accent/10 p-1.5 text-accent">
+                <BadgeCheck size={14} />
+              </div>
+              <h3 className="text-sm font-semibold">Résultats documentés</h3>
             </div>
-            <span className="rounded-full border border-border bg-card px-2.5 py-1 text-[11px] text-fg/58">{results.length}</span>
+            <span className="rounded-full border border-border bg-card px-2.5 py-1 text-[11px] text-fg/58">
+              {results.length}
+            </span>
+          </div>
+          <div className="space-y-4">
+            {compactResultGroups.map((group, groupIndex) => (
+              <div key={`${group.heading}-${groupIndex}`} className="space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/60">{group.heading}</p>
+                  <span className="rounded-full border border-border/60 bg-card/70 px-2.5 py-1 text-[11px] text-fg/60">
+                    {group.results.length}
+                  </span>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {group.results.map((result, index) => (
+                    <MedicalResultCard key={`${result.analyte}-${result.value}-${groupIndex}-${index}`} result={result} compact showSource={false} />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : results.length > 0 ? (
+        <section className={SECTION_CHROME}>
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <div className="rounded-full border border-accent/20 bg-accent/10 p-1.5 text-accent">
+                <BadgeCheck size={14} />
+              </div>
+              <h3 className="text-sm font-semibold">Résultats documentés</h3>
+            </div>
+            <span className="rounded-full border border-border bg-card px-2.5 py-1 text-[11px] text-fg/58">
+              {results.length}
+            </span>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
             {results.map((result, index) => (
@@ -317,20 +715,22 @@ export function MedicalAnswerBlocks({ content, sources = [] }: { content: string
 
       {evolutionItems.length > 0 ? (
         <section className={SECTION_CHROME}>
-          <div className="mb-3 flex items-center gap-2">
-            <BadgeCheck size={16} className="text-accent" />
-            <h3 className="text-sm font-semibold">Analyse timeline</h3>
+          <div className="mb-4 flex items-center gap-2">
+            <div className="rounded-full border border-accent/20 bg-accent/10 p-1.5 text-accent">
+              <BadgeCheck size={14} />
+            </div>
+            <h3 className="text-sm font-semibold">Évolution</h3>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
             {evolutionItems.map((item, index) => (
-              <article key={`${item.analyte}-${item.previous}-${item.current}-${index}`} className="rounded-xl border border-border/70 bg-card/80 p-4">
-                <p className="text-sm font-semibold text-fg">{item.analyte}</p>
-                <dl className="mt-2 space-y-1 text-xs text-fg/78">
-                  <div className="flex justify-between gap-3"><dt>Ancien</dt><dd className="font-medium text-fg">{item.previousRaw}</dd></div>
-                  <div className="flex justify-between gap-3"><dt>Actuel</dt><dd className="font-medium text-fg">{item.currentRaw}</dd></div>
-                  <div className="flex justify-between gap-3"><dt>Variation</dt><dd className="font-semibold text-accent">{variationLabel(item.variationPct)}</dd></div>
+              <article key={`${item.analyte}-${item.previous}-${item.current}-${index}`} className="rounded-[22px] border border-border/70 bg-card/70 p-4 shadow-[0_12px_34px_hsl(220_35%_5%_/_0.10)]">
+                <p className="text-sm font-semibold text-fg/96">{item.analyte}</p>
+                <dl className="mt-3 space-y-1 text-xs text-fg/78">
+                  <div className="flex justify-between gap-3 rounded-lg bg-bg/35 px-2.5 py-2"><dt>Ancien</dt><dd className="font-medium text-fg">{item.previousRaw}</dd></div>
+                  <div className="flex justify-between gap-3 rounded-lg bg-bg/35 px-2.5 py-2"><dt>Actuel</dt><dd className="font-medium text-fg">{item.currentRaw}</dd></div>
+                  <div className="flex justify-between gap-3 rounded-lg bg-accent/8 px-2.5 py-2"><dt>Variation</dt><dd className="font-semibold text-accent">{variationLabel(item.variationPct)}</dd></div>
                 </dl>
-                <p className="mt-3 rounded-md border border-border/60 bg-fg/[0.03] px-2 py-2 text-center text-xs text-fg/85">
+                <p className="mt-3 rounded-xl border border-border/60 bg-fg/[0.03] px-3 py-2.5 text-center text-xs text-fg/85">
                   {item.previousRaw} ───────────────▶ {item.currentRaw}
                 </p>
               </article>
@@ -340,31 +740,46 @@ export function MedicalAnswerBlocks({ content, sources = [] }: { content: string
       ) : null}
 
       <section className={SECTION_CHROME}>
-        <div className="mb-3 flex items-center gap-2">
-          <AlertTriangle size={16} className="text-amber-500" />
-          <h3 className="text-sm font-semibold">Valeurs hors référence</h3>
+        <div className="mb-4 flex items-center gap-2">
+          <div className="rounded-full border border-amber-500/20 bg-amber-500/10 p-1.5 text-amber-300">
+            <AlertTriangle size={14} />
+          </div>
+          <h3 className="text-sm font-semibold">Écarts documentés</h3>
         </div>
         {abnormalResults.length > 0 ? (
           <div className="grid gap-2">
             {abnormalResults.map((result, index) => (
-              <div key={`${result.analyte}-abnormal-${index}`} className={`rounded-lg border px-3 py-2 text-sm ${toneBadge(result.tone)}`}>
-                <span className="font-semibold">{result.analyte}</span>
-                <span className="mx-2 text-fg/40">·</span>
-                <span>{result.value}</span>
-                <span className="mx-2 text-fg/40">·</span>
-                <span>{statusLabel(result.tone, result.status)}</span>
+              <div key={`${result.analyte}-abnormal-${index}`} className={`rounded-2xl border px-3 py-2.5 text-sm shadow-sm ${toneBadge(result.tone)}`}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold">{result.analyte}</span>
+                  <span className="text-fg/40">·</span>
+                  <span>
+                    {result.value}
+                    {result.unit ? ` ${result.unit}` : ""}
+                  </span>
+                  <span className="text-fg/40">·</span>
+                  <span>{statusLabel(result.tone, result.status)}</span>
+                </div>
               </div>
             ))}
           </div>
         ) : (
-          <p className="text-sm leading-6 text-fg/70">Aucune valeur hors référence clairement détectée dans la réponse affichée.</p>
+          <p className="text-sm leading-6 text-fg/70">
+            {resultCount > 0
+              ? backendWithinCount > 0
+                ? "Les résultats affichés restent dans la référence."
+                : "Les résultats affichés ne comportent pas d’écart clairement objectivé."
+              : "Aucune valeur hors référence clairement détectée dans la réponse affichée."}
+          </p>
         )}
       </section>
 
       <section className={SECTION_CHROME}>
-        <div className="mb-3 flex items-center gap-2">
-          <HelpCircle size={16} className="text-fg/55" />
-          <h3 className="text-sm font-semibold">Éléments manquants / à vérifier</h3>
+        <div className="mb-4 flex items-center gap-2">
+          <div className="rounded-full border border-border/60 bg-card/70 p-1.5 text-fg/55">
+            <HelpCircle size={14} />
+          </div>
+          <h3 className="text-sm font-semibold">Éléments à lire avec prudence</h3>
         </div>
         {missingResults.length > 0 ? (
           <div className="flex flex-wrap gap-2">
@@ -380,9 +795,11 @@ export function MedicalAnswerBlocks({ content, sources = [] }: { content: string
       </section>
 
       <section className={SECTION_CHROME}>
-        <div className="mb-3 flex items-center gap-2">
-          <FileText size={16} className="text-accent" />
-          <h3 className="text-sm font-semibold">Sources utilisées</h3>
+        <div className="mb-4 flex items-center gap-2">
+          <div className="rounded-full border border-accent/20 bg-accent/10 p-1.5 text-accent">
+            <FileText size={14} />
+          </div>
+          <h3 className="text-sm font-semibold">Sources documentaires</h3>
         </div>
         {sourceItems.length > 0 ? (
           <div className="flex flex-wrap gap-2">
@@ -393,12 +810,12 @@ export function MedicalAnswerBlocks({ content, sources = [] }: { content: string
                   href={source.href}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="rounded-lg border border-border/80 bg-card px-3 py-1.5 text-xs font-medium text-accent underline-offset-2 hover:underline"
+                  className="rounded-xl border border-border/70 bg-card/70 px-3 py-1.5 text-xs font-medium text-accent underline-offset-2 transition hover:border-accent/30 hover:bg-accent/8 hover:underline"
                 >
                   {source.label}
                 </a>
               ) : (
-                <span key={`${source.label}-${index}`} className="rounded-lg border border-border/80 bg-card px-3 py-1.5 text-xs text-fg/72">
+                <span key={`${source.label}-${index}`} className="rounded-xl border border-border/70 bg-card/70 px-3 py-1.5 text-xs text-fg/72">
                   {source.label}
                 </span>
               ),

@@ -74,6 +74,7 @@ def evaluate_answerability(
     requested_doc_ids: list[str] | None = None,
     safety_intent: str | None = None,
     ambiguity_flags: list[str] | None = None,
+    allow_no_analyte_doc_scoped_lookup: bool = False,
 ) -> dict[str, Any]:
     """
     Deterministic answerability gate used before answer generation.
@@ -97,6 +98,24 @@ def evaluate_answerability(
     flags = list(ambiguity_flags or [])
 
     if not canonical_requested:
+        if allow_no_analyte_doc_scoped_lookup and req_docs and rows:
+            matched_doc_ids = sorted(
+                {
+                    str(r.get("doc_id") or "").strip()
+                    for r in rows
+                    if str(r.get("doc_id") or "").strip()
+                }
+            )
+            return {
+                "status": "answerable_exact",
+                "reason": "doc_scoped_numeric_lookup_without_analyte",
+                "matching_strategy": "document_level",
+                "confidence_score": 1.0,
+                "found_rows_count": len(rows),
+                "not_found_analytes": [],
+                "matched_doc_ids": matched_doc_ids,
+                "missing_doc_ids": [d for d in req_docs if d not in set(matched_doc_ids)],
+            }
         if _critical_ambiguity(flags):
             return {
                 "status": "ambiguous",

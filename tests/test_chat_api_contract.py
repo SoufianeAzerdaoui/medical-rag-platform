@@ -764,6 +764,56 @@ class TestChatApiContract(unittest.TestCase):
         self.assertIn('"contract_violation_count": 2', summary_call)
         self.assertIn('"llm_attempt_rate": 0.0', summary_call)
 
+    def test_request_summary_log_prefers_generation_quality_final_status(self) -> None:
+        def _fake_run_generation(**_kwargs):
+            return {
+                "answer": "Synthèse validée.",
+                "generation_time_seconds": 0.04,
+                "generation_mode": "hybrid_structured_llm_writer",
+                "validation": {"validation_status": "warning", "warnings": ["legacy_warning"], "errors": []},
+                "quality_report": {"final_status": "warning"},
+                "quality_final_status": "pass",
+                "final_answer_quality_gate": {"pass": True, "reasons": [], "score": 1.0, "threshold": 0.85},
+                "query_understanding": {
+                    "intent": "doc_scoped_summary",
+                    "requested_doc_ids": ["report_12"],
+                    "requested_analytes": [],
+                },
+                "sources": [{"doc_id": "report_12", "page": 1}],
+                "displayed_evidences": [],
+                "debug": {
+                    "selected_route": "doc_scoped_biological_summary",
+                    "generation_writer": "llm_writer",
+                    "llm_writer_attempted": True,
+                    "llm_writer_accepted": True,
+                    "fallback_reason": None,
+                },
+            }
+
+        old_app_env = os.environ.get("APP_ENV")
+        logger = logging.getLogger("test.chat.contract.quality_status_summary")
+        try:
+            os.environ["APP_ENV"] = "test"
+            with patch.object(logger, "info") as info_mock:
+                response = chat_service.process_chat(
+                    payload=ChatRequest(conversation_id="conv_quality_summary", message="q"),
+                    current_user={"id": "u1"},
+                    state_service=_FakeStateService(),
+                    run_generation=_fake_run_generation,
+                    logger=logger,
+                )
+        finally:
+            if old_app_env is None:
+                os.environ.pop("APP_ENV", None)
+            else:
+                os.environ["APP_ENV"] = old_app_env
+
+        self.assertEqual(response.quality_final_status, "pass")
+        joined_calls = [" ".join(str(arg) for arg in call.args) for call in info_mock.call_args_list]
+        summary_call = next((entry for entry in joined_calls if "chat_request_summary" in entry), "")
+        self.assertIn('"quality_final_status": "pass"', summary_call)
+        self.assertNotIn('"quality_final_status": "warning"', summary_call)
+
     def test_hard_gate_reason_is_exposed_in_debug_and_summary(self) -> None:
         def _fake_run_generation(**_kwargs):
             return {

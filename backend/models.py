@@ -96,6 +96,7 @@ class SourceItem(BaseModel):
     doc_id: str | None = None
     filename: str | None = None
     row: int | None = None
+    line: int | None = None
     label: str | None = None
     url: str | None = None
     viewer_url: str | None = None

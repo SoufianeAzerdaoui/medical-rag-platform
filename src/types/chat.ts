@@ -8,6 +8,7 @@ export type SourceCitation = {
   filename?: string | null;
   page?: number | null;
   row?: number | null;
+  line?: number | null;
   label: string;
   url?: string | null;
   viewer_url?: string | null;
@@ -18,6 +19,7 @@ export type LegacySourceItem = {
   documentName?: string;
   documentId?: string;
   page?: number;
+  line?: number;
   section?: string;
   excerpt?: string;
   score?: number;

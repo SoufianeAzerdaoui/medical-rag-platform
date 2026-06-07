@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
 
 from config_loader import get_assistant_messages_config
@@ -48,6 +49,27 @@ def _join_doc_labels(doc_ids: list[str]) -> str:
     labels = [_label_from_doc_id(d) for d in list(doc_ids or []) if str(d).strip()]
     if not labels:
         return "les documents demandés"
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return f"{labels[0]} et {labels[1]}"
+    return f"{', '.join(labels[:-1])} et {labels[-1]}"
+
+
+def _doc_pdf_label_from_doc_id(doc_id: str) -> str:
+    raw = str(doc_id or "").strip()
+    if not raw:
+        return "le document demandé"
+    match = re.fullmatch(r"([A-Za-z]+)_([0-9]+)", raw)
+    if match:
+        return f"{match.group(1)} ({match.group(2)}).pdf"
+    return raw.replace("_", " ")
+
+
+def _join_doc_pdf_labels(doc_ids: list[str]) -> str:
+    labels = [_doc_pdf_label_from_doc_id(d) for d in list(doc_ids or []) if str(d).strip()]
+    if not labels:
+        return "le document demandé"
     if len(labels) == 1:
         return labels[0]
     if len(labels) == 2:
@@ -131,14 +153,16 @@ def build_specialized_fallback(
         )
 
     if fallback_kind == "document_not_found":
+        doc_pdf_labels = _join_doc_pdf_labels(docs)
         template = _assistant_message(
             ["fallbacks", "document_not_found_template"],
             (
-                "Aucun résultat biologique exploitable n’a été retrouvé dans {doc_labels} pour la demande formulée.\n\n"
+                "Aucune donnée structurée exploitable n’a été extraite de {doc_pdf_labels} pour la demande formulée.\n\n"
+                "Source documentaire : {doc_pdf_labels}.\n"
                 "Conclusion technique : le périmètre documentaire demandé ne contient pas de données compatibles."
             ),
         )
-        answer = _safe_format(template, doc_labels=doc_labels)
+        answer = _safe_format(template, doc_labels=doc_labels, doc_pdf_labels=doc_pdf_labels)
         return SpecializedFallback(
             kind=fallback_kind,
             answer=answer,
@@ -248,10 +272,12 @@ def build_specialized_fallback(
             warning_code="specialized_fallback_partial_answer",
         )
 
+    doc_pdf_labels = _join_doc_pdf_labels(docs)
     template = _assistant_message(
         ["fallbacks", "insufficient_evidence_template"],
         (
-            "Information insuffisante dans les données structurées disponibles pour répondre de façon fiable.\n\n"
+            "Aucune donnée structurée exploitable n’a été identifiée pour répondre de façon fiable.\n\n"
+            "Source documentaire : {doc_pdf_labels}.\n"
             "Conclusion technique : aucun résultat exploitable n’a été identifié pour {analyte_label}{criterion} dans {doc_labels}."
         ),
     )
@@ -260,6 +286,7 @@ def build_specialized_fallback(
         analyte_label=analyte_label,
         criterion=criterion,
         doc_labels=doc_labels,
+        doc_pdf_labels=doc_pdf_labels,
     )
     return SpecializedFallback(
         kind="insufficient_evidence",

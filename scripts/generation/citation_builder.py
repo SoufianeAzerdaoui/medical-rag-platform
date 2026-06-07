@@ -40,7 +40,7 @@ def _safe_int(value: Any) -> int | None:
         return None
 
 
-def _build_label(*, filename: str | None, doc_id: str, page: int | None, row: int | None = None) -> str:
+def _build_label(*, filename: str | None, doc_id: str, page: int | None, line: int | None = None) -> str:
     base = (filename or "").strip() or doc_id
     base = re.sub(r"\[doc_id=.*?\]", "", base, flags=re.IGNORECASE).strip()
     base = re.sub(r"chunk_id\s*=\s*[^\],\s]+", "", base, flags=re.IGNORECASE).strip()
@@ -53,10 +53,10 @@ def _build_label(*, filename: str | None, doc_id: str, page: int | None, row: in
         has_page = re.search(r"\bpage\s*\d+\b", base, flags=re.IGNORECASE) is not None
         if not has_page:
             base = f"{base} — page {page}"
-    if row is not None:
+    if line is not None:
         has_line = re.search(r"\bligne(?:s)?\s*\d+", base, flags=re.IGNORECASE) is not None
         if not has_line:
-            base = f"{base}, ligne {row}"
+            base = f"{base}, ligne {line}"
     return " ".join(base.split())
 
 
@@ -114,6 +114,7 @@ def build_source_citations(
                     continue
                 page = _safe_int(src.get("page_number") if src.get("page_number") is not None else src.get("page"))
                 row = _safe_int(src.get("row_index") if src.get("row_index") is not None else src.get("row"))
+                line = _safe_int(src.get("source_line_start") if src.get("source_line_start") is not None else src.get("line"))
                 dedupe_key = (doc_id.lower(), page, row)
                 if dedupe_key in seen:
                     continue
@@ -129,9 +130,9 @@ def build_source_citations(
                         "filename": filename,
                         "source_pdf": filename,
                         "page": page,
-                        "line": row,
+                        "line": line,
                         "row": row,
-                        "label": _build_label(filename=filename, doc_id=doc_id, page=page, row=row),
+                        "label": _build_label(filename=filename, doc_id=doc_id, page=page, line=line),
                         "url": page_url,
                         "source_url": page_url,
                         "viewer_url": viewer_url,
@@ -143,6 +144,7 @@ def build_source_citations(
             continue
         page = _safe_int(ev.get("page_number") if ev.get("page_number") is not None else ev.get("page"))
         row = _safe_int(ev.get("row_index") if ev.get("row_index") is not None else ev.get("row"))
+        line = _safe_int(ev.get("source_line_start") if ev.get("source_line_start") is not None else ev.get("line"))
         dedupe_key = (doc_id.lower(), page, row)
         if dedupe_key in seen:
             continue
@@ -160,9 +162,9 @@ def build_source_citations(
                 "filename": filename,
                 "source_pdf": filename,
                 "page": page,
-                "line": row,
+                "line": line,
                 "row": row,
-                "label": _build_label(filename=filename, doc_id=doc_id, page=page, row=row),
+                "label": _build_label(filename=filename, doc_id=doc_id, page=page, line=line),
                 "url": page_url,
                 "source_url": page_url,
                 "viewer_url": viewer_url,
@@ -175,7 +177,7 @@ def build_source_citations(
                 doc_id=str(src.get("doc_id") or ""),
                 filename=src.get("source_pdf"),
                 page=src.get("page"),
-                row=src.get("line"),
+                row=src.get("row"),
                 label=str(src.get("label") or ""),
                 url=src.get("url"),
                 viewer_url=src.get("viewer_url"),

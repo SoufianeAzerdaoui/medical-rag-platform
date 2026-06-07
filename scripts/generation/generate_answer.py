@@ -6117,7 +6117,7 @@ def _render_global_biological_summary_answer(evidences: list[dict[str, Any]], *,
                 "Précisez un rapport ou demandez une synthèse sur l’ensemble des rapports disponibles."
             ),
         )
-    lines = ["Anomalies principales :", ""]
+    lines = [_global_biological_summary_lead_sentence(evidences, max_items=max_items), ""]
     shown = 0
     for ev in list(evidences or []):
         status = str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
@@ -6134,8 +6134,22 @@ def _render_global_biological_summary_answer(evidences: list[dict[str, Any]], *,
             break
     if shown == 0:
         lines.append("- Aucune anomalie explicite exploitable n’a été retrouvée.")
+    within_shown = 0
+    for ev in list(evidences or []):
+        status = str(ev.get("technical_status_code") or ev.get("interpretation_status") or "").strip().lower()
+        if status != "within_reference":
+            continue
+        analyte = str(ev.get("analyte") or ev.get("analyte_norm") or "analyte").strip()
+        value = str(ev.get("current_value") or ev.get("value_raw") or "non disponible").strip()
+        unit = str(ev.get("unit") or "").strip()
+        ref = str(ev.get("reference") or ev.get("reference_range") or "réf. disponible").strip()
+        lines.append(f"- {analyte}: {value}{(' ' + unit) if unit else ''} ; dans la référence (réf. {ref}).")
+        within_shown += 1
+        if within_shown >= max(1, min(3, int(max_items // 2 or 1))):
+            break
     lines.append("")
-    lines.append("Résultats dans la référence : non listés dans cette synthèse globale sauf demande explicite.")
+    if within_shown == 0:
+        lines.append("Résultats dans la référence : non listés dans cette synthèse globale sauf demande explicite.")
     lines.append("Conclusion technique : synthèse descriptive globale, sans diagnostic.")
     return "\n".join(lines).strip()
 
@@ -6983,10 +6997,20 @@ def _status_code(row: dict[str, Any]) -> str:
     if not ref:
         ref = str(_extract_reference_from_text(str(row.get("analyte") or "")) or "").strip()
     val = str(row.get("value_raw") or row.get("current_value") or row.get("value") or "").strip()
+    value_with_unit = str(row.get("value_with_unit") or "").strip()
+    numeric_value = row.get("value_numeric")
+    if not val and value_with_unit:
+        val = value_with_unit
+    if not val and numeric_value is not None:
+        val = str(numeric_value).strip()
     if status in {"above_reference", "below_reference", "within_reference"}:
         # Guardrail for complex profile references:
         # when explicit intervals are present and the value falls inside one of them,
         # keep an inclusive within_reference classification.
+        if status in {"above_reference", "below_reference"} and ref and val:
+            numeric_probe = _parse_numeric_value(val) if not _to_float(val) else _to_float(val)
+            if numeric_probe is not None and _is_within_any_inclusive_interval(str(numeric_probe), ref):
+                return "within_reference"
         if status in {"above_reference", "below_reference"} and ref and val and _is_within_any_inclusive_interval(val, ref):
             return "within_reference"
         return status
@@ -6995,6 +7019,10 @@ def _status_code(row: dict[str, Any]) -> str:
     if not val:
         return "not_interpretable"
     cf = _to_float(val)
+    if cf is None and value_with_unit:
+        cf = _parse_numeric_value(value_with_unit)
+    if cf is None and numeric_value is not None:
+        cf = _to_float(numeric_value) or _parse_numeric_value(numeric_value)
     if cf is None:
         return "not_interpretable"
     if _is_within_any_inclusive_interval(val, ref):
@@ -7291,18 +7319,6 @@ def _build_doc_scoped_biological_summary_answer(
                     break
             if date_raw:
                 break
-        context_line = (
-            f"Bilan biologique du {date_raw} avec plusieurs écarts biologiques documentés dans le rapport."
-            if date_raw
-            else "Bilan biologique avec plusieurs écarts biologiques documentés dans le rapport."
-        )
-        if wants_reference_ranges:
-            context_line = (
-                f"Bilan biologique du {date_raw} ; synthèse des plages de référence et des statuts techniques documentés."
-                if date_raw
-                else "Bilan biologique ; synthèse des plages de référence et des statuts techniques documentés."
-            )
-
         notable_entries: list[tuple[dict[str, Any], str, str]] = []
         seen_notable: set[str] = set()
         for ev in abnormal_sorted:
@@ -7324,7 +7340,14 @@ def _build_doc_scoped_biological_summary_answer(
                 notable_main = (preserved[:4] + [first_below])[:5]
         notable_extra = notable_entries[5:]
         if notable_main:
-            notable_prefix = "Paramètres hors référence notables : " if wants_reference_ranges else "Points biologiques notables : "
+            if wants_reference_ranges:
+                notable_prefix = "Paramètres hors référence notables : "
+            elif len(notable_main) == 1:
+                notable_prefix = "Anomalie documentée : "
+            elif len(notable_main) == 2:
+                notable_prefix = "Anomalies documentées : "
+            else:
+                notable_prefix = "Écarts documentés : "
             notable_line = (
                 notable_prefix
                 + ", ".join(
@@ -7396,11 +7419,20 @@ def _build_doc_scoped_biological_summary_answer(
             normal_labels.append(analyte)
         normal_line = ""
         if normal_labels:
-            normal_line = (
-                "Plusieurs autres paramètres sont dans l’intervalle de référence, notamment : "
-                + ", ".join(normal_labels[:10])
-                + "."
-            )
+            if len(normal_labels) == 1:
+                normal_line = f"Un autre paramètre est dans l’intervalle de référence : {normal_labels[0]}."
+            elif len(normal_labels) <= 3:
+                normal_line = (
+                    "Les résultats dans la référence comprennent : "
+                    + ", ".join(normal_labels[:10])
+                    + "."
+                )
+            else:
+                normal_line = (
+                    "Plusieurs autres paramètres sont dans l’intervalle de référence, notamment : "
+                    + ", ".join(normal_labels[:10])
+                    + "."
+                )
         else:
             normal_line = _doc_scoped_no_within_reference_sentence()
 
@@ -7429,6 +7461,13 @@ def _build_doc_scoped_biological_summary_answer(
                     + ", ".join(context_labels[:6])
                     + " nécessitent une lecture prudente, car leurs références dépendent du profil patient ou du contexte clinique."
                 )
+
+        summary_lead_line = _doc_scoped_biological_summary_lead_sentence(
+            abnormal_entries=notable_entries,
+            normal_labels=normal_labels,
+            context_labels=context_labels,
+            date_raw=date_raw,
+        )
 
         range_line = ""
         if wants_reference_ranges:
@@ -7485,25 +7524,38 @@ def _build_doc_scoped_biological_summary_answer(
             )
 
         if render_profile_norm == "compact_biological_summary":
-            lead_line = f"Résumé biologique court — {doc_scope}."
-            compact_opening = context_line
-            compact_focus = notable_line if notable_line else "Aucun écart anormal exploitable retrouvé dans les données retenues."
-            compact_lines_source = [lead_line, compact_focus]
-            if normal_line:
+            lead_line = summary_lead_line
+            compact_lines_source = [lead_line]
+            if range_line and sanitize_for_sentence(range_line) not in sanitize_for_sentence(lead_line):
+                compact_lines_source.append(range_line)
+            if normal_line == _doc_scoped_no_within_reference_sentence():
                 compact_lines_source.append(normal_line)
+            if notable_line:
+                notable_norm = norm_text(notable_line)
+                lead_norm = norm_text(lead_line)
+                # The lead sentence already carries the main factual payload; keep the
+                # additional line only when it adds new information (for example the
+                # lead is sparse or the notable line has a different angle).
+                if notable_norm and notable_norm not in lead_norm and not (
+                    "anomalie documentée" in notable_norm
+                    and ("anomalie" in lead_norm or "écart" in lead_norm or "ecart" in lead_norm)
+                ):
+                    compact_lines_source.append(notable_line)
+            if normal_line and normal_line != _doc_scoped_no_within_reference_sentence():
+                normal_norm = norm_text(normal_line)
+                lead_norm = norm_text(lead_line)
+                if normal_norm and normal_norm not in lead_norm:
+                    compact_lines_source.append(normal_line)
             if context_prudence_line:
                 compact_lines_source.append(context_prudence_line)
             compact_lines_source.extend([warning_line, source_line, conclusion_line])
             lines = compact_lines_source
         elif render_profile_norm == "editorial_biological_summary":
-            lead_line = f"Synthèse biologique éditoriale — {doc_scope}."
-            opening_line = context_line
-            if date_raw:
-                opening_line = f"Le bilan biologique du {date_raw} met en évidence plusieurs écarts documentés."
+            lead_line = summary_lead_line
             emphasis_line = notable_line
             if range_line:
                 emphasis_line = range_line
-            narrative_lines = [lead_line, opening_line, emphasis_line]
+            narrative_lines = [lead_line, emphasis_line]
             if extra_line:
                 narrative_lines.append(extra_line)
             if normal_line:
@@ -7513,7 +7565,7 @@ def _build_doc_scoped_biological_summary_answer(
             narrative_lines.extend([warning_line, source_line, conclusion_line])
             lines = narrative_lines
         else:
-            lines = [f"Note de synthèse médicale — {doc_scope}.", context_line]
+            lines = [f"Note de synthèse médicale — {doc_scope}.", summary_lead_line]
             if range_line:
                 lines.append(range_line)
             lines.append(notable_line)
@@ -7536,35 +7588,17 @@ def _build_doc_scoped_biological_summary_answer(
             source_ln = source_line
             ordered_body: list[str] = []
             if wants_reference_ranges:
-                for ln in [notable_line, range_line, extra_line, normal_line, context_line]:
+                for ln in [summary_lead_line, notable_line, range_line, extra_line, normal_line]:
                     if str(ln or "").strip() and ln not in ordered_body:
                         ordered_body.append(ln)
             else:
-                for ln in [notable_line, context_prudence_line, normal_line, context_line, extra_line]:
+                for ln in [summary_lead_line, notable_line, context_prudence_line, normal_line, extra_line]:
                     if str(ln or "").strip() and ln not in ordered_body:
                         ordered_body.append(ln)
             body_candidates = [ln for ln in ordered_body if ln not in {warning_ln, conclusion_ln, source_ln}]
             tail = [warning_ln, conclusion_ln, source_ln]
             slots = max(0, max_l_note - 1 - len(tail))
             compact_lines = [title_ln, *body_candidates[:slots], *tail]
-        if (
-            render_profile_norm == "compact_biological_summary"
-            and normal_line == _doc_scoped_no_within_reference_sentence()
-            and normal_line not in compact_lines
-        ):
-            inserted: list[str] = []
-            for ln in compact_lines:
-                inserted.append(ln)
-                if ln == notable_line and normal_line not in inserted:
-                    inserted.append(normal_line)
-            compact_lines = []
-            seen_compact: set[str] = set()
-            for ln in inserted:
-                key = norm_text(ln)
-                if not key or key in seen_compact:
-                    continue
-                seen_compact.add(key)
-                compact_lines.append(ln)
         return "\n\n".join(compact_lines).strip()
 
     if render_profile_norm in {
@@ -7589,16 +7623,22 @@ def _build_doc_scoped_biological_summary_answer(
             }
 
         a = str(ev.get("analyte") or ev.get("analyte_label") or ev.get("display_name") or "analyte").strip()
-        value_raw = str(ev.get("current_value") or "").strip()
+        value_raw = str(ev.get("current_value") or ev.get("value_raw") or "").strip()
         unit_raw = str(ev.get("unit") or "").strip()
         value_with_unit = str(ev.get("value_with_unit") or "").strip()
+        if not value_raw and ev.get("value_numeric") is not None:
+            numeric = _to_float(ev.get("value_numeric"))
+            if numeric is not None:
+                value_raw = str(int(numeric)) if float(numeric).is_integer() else str(numeric)
         reference = _reference_short(ev.get("reference") or ev.get("reference_short"))
         has_reference = not _is_reference_placeholder(reference)
         status = _status_of(ev)
         if not value_raw and value_with_unit:
             # Compact contract rows can only carry "value_with_unit".
             value_raw = value_with_unit
-        else:
+        if value_raw and unit_raw and unit_raw not in value_raw:
+            value_raw = f"{value_raw} {unit_raw}".strip()
+        elif not value_raw:
             value_raw = f"{value_raw} {unit_raw}".strip() if value_raw else "non disponible"
         status_label = "dans la référence"
         if status == "above_reference":
@@ -8046,10 +8086,30 @@ def _build_reference_ranges_deterministic_fallback(
         min(_cfg_int(line_limits.get("max"), 8), int(max_lines or _cfg_int(line_limits.get("default"), 7))),
     )
     conclusion_line = conclusion_no_diag if no_diagnosis else conclusion_default
-    intro_line = (
-        narrative_intro
-        or "Le rapport contient plusieurs formats de valeurs physiologiques : plages min-max, seuils numériques, références selon l’âge, selon le sexe et catégories interprétatives."
-    )
+    intro_line = narrative_intro
+    if not intro_line:
+        category_parts: list[str] = []
+        if line_minmax_names:
+            category_parts.append("plages min-max")
+        if line_profile_names:
+            category_parts.append("références selon l’âge ou le sexe")
+        if line_threshold_names:
+            category_parts.append("seuils numériques")
+        if interpretive_names:
+            category_parts.append("catégories interprétatives")
+        if category_parts:
+            if len(category_parts) == 1:
+                intro_line = f"Le rapport contient surtout des {category_parts[0]}."
+            elif len(category_parts) == 2:
+                intro_line = f"Le rapport combine {category_parts[0]} et {category_parts[1]}."
+            else:
+                intro_line = (
+                    "Le rapport combine plusieurs formats de valeurs physiologiques : "
+                    + ", ".join(category_parts[:-1])
+                    + f" et {category_parts[-1]}."
+                )
+        else:
+            intro_line = "Le rapport contient plusieurs formats de valeurs physiologiques documentées."
     per_doc_counts = dict(facts.get("per_doc_category_counts") or {})
     doc_scope_line = ""
     if len(doc_ids) > 1 and per_doc_counts:
@@ -8061,6 +8121,8 @@ def _build_reference_ranges_deterministic_fallback(
         ]
         if doc_lines:
             doc_scope_line = "Couverture documentaire : " + " ".join(doc_lines)
+    elif len(doc_ids) == 1:
+        doc_scope_line = f"Document analysé : {doc_scope}."
     minmax_line = f"Les plages min-max concernent notamment {_join_names(line_minmax_names)}."
     has_age_profile = bool(facts.get("has_age_profile"))
     has_sex_profile = bool(facts.get("has_sex_profile"))
@@ -8077,6 +8139,8 @@ def _build_reference_ranges_deterministic_fallback(
     threshold_line = (
         "D'autres paramètres utilisent des seuils ou catégories interprétatives, "
         f"notamment {_join_names(line_threshold_names)}."
+        if line_threshold_names
+        else "D'autres paramètres utilisent des seuils ou catégories interprétatives, sans exemple explicite exploitable dans les lignes retenues."
     )
     usage_line = "Ces références servent à structurer une lecture technique du rapport, sans conclure à un diagnostic."
     lines = [
@@ -9130,23 +9194,40 @@ def _ensure_biological_summary_conclusion(answer: str, *, has_abnormal: bool = T
         after = str(body[m.start() :]).lstrip()
         return f"{before}\n\n{conc}\n\n{after}".strip()
 
+    def _natural_conclusion() -> str:
+        if has_abnormal and has_within:
+            return (
+                "Conclusion technique : le bilan met en évidence plusieurs écarts biologiques documentés, "
+                "tout en conservant quelques résultats dans la référence parmi les éléments sélectionnés, sans diagnostic."
+            )
+        if has_abnormal:
+            return (
+                "Conclusion technique : le bilan met en évidence plusieurs écarts biologiques documentés, "
+                "à lire avec prudence, sans diagnostic."
+            )
+        if has_within:
+            return (
+                "Conclusion technique : le bilan reste globalement dans la référence parmi les éléments sélectionnés, sans diagnostic."
+            )
+        return "Conclusion technique : la synthèse reste descriptive et prudente, sans diagnostic."
+
+    def _is_generic_conclusion(body: str) -> bool:
+        n = norm_text(body)
+        return any(
+            marker in n
+            for marker in [
+                "synthese descriptive limitee aux donnees disponibles",
+                "synthese documentaire prudente fondee sur les valeurs structurees du rapport",
+                "lecture descriptive et prudente",
+                "le profil met en evidence plusieurs ecarts biologiques documentes",
+                "les resultats listes restent dans la reference",
+            ]
+        )
+
     text = str(answer or "").strip()
     if not text:
         return text
-    if has_abnormal and has_within:
-        conclusion = (
-            "Conclusion technique : le profil combine plusieurs écarts biologiques documentés et quelques résultats dans la référence parmi les éléments sélectionnés, sans conclusion diagnostique."
-        )
-    elif has_abnormal:
-        conclusion = (
-            "Conclusion technique : le profil met en évidence plusieurs écarts biologiques documentés, à interpréter avec prudence, sans diagnostic."
-        )
-    elif has_within:
-        conclusion = (
-            "Conclusion technique : les résultats listés restent dans la référence parmi les éléments sélectionnés, sans diagnostic."
-        )
-    else:
-        conclusion = "Conclusion technique : synthèse descriptive limitée aux données disponibles, sans diagnostic."
+    conclusion = _natural_conclusion()
     # Force neutral normal-only conclusion and remove over-interpretative phrasing.
     if not has_abnormal and has_within:
         text = re.sub(
@@ -9178,7 +9259,10 @@ def _ensure_biological_summary_conclusion(answer: str, *, has_abnormal: bool = T
         for ln in [x.strip() for x in text.splitlines() if x.strip()]:
             if norm_text(ln).startswith("conclusion technique"):
                 current_conclusion = ln
-        if current_conclusion and any(t in norm_text(current_conclusion) for t in ["le nombre de resultats anormaux", ": aucun", ": ras"]):
+        if current_conclusion and (
+            any(t in norm_text(current_conclusion) for t in ["le nombre de resultats anormaux", ": aucun", ": ras"])
+            or _is_generic_conclusion(current_conclusion)
+        ):
             text = re.sub(r"(?im)^conclusion technique\s*:.*$", "", text).strip()
             return _insert_conclusion_before_sources(text, conclusion)
         return text
@@ -10050,6 +10134,38 @@ def _doc_scoped_no_within_reference_sentence() -> str:
     return "Aucun résultat dans la référence n’est mis en avant dans les éléments structurés sélectionnés."
 
 
+def _doc_scoped_no_within_reference_present(value: str) -> bool:
+    text_norm = norm_text(value or "")
+    if not text_norm:
+        return False
+    canon = norm_text(_doc_scoped_no_within_reference_sentence())
+    if canon in text_norm:
+        return True
+    patterns = [
+        "aucun resultat dans la reference",
+        "aucun resultat strictement dans la reference",
+        "aucun resultat dans les elements structures selectionnes",
+        "aucun resultat n est mis en avant",
+        "aucun resultat n'est mis en avant",
+        "aucun resultat n a ete retenu",
+        "aucun resultat retenu dans la reference",
+    ]
+    if any(pattern in text_norm for pattern in patterns):
+        return True
+    return (
+        "aucun" in text_norm
+        and "resultat" in text_norm
+        and "reference" in text_norm
+        and (
+            "mis en avant" in text_norm
+            or "selectionne" in text_norm
+            or "selectionnes" in text_norm
+            or "retenu" in text_norm
+            or "stricteme" in text_norm
+        )
+    )
+
+
 def _summary_row_analyte_label(ev: dict[str, Any]) -> str:
     return _clean_analyte_label(
         str(ev.get("analyte") or ev.get("analyte_label") or ev.get("display_name") or "analyte")
@@ -10106,6 +10222,93 @@ def _summary_row_reference_detail(ev: dict[str, Any]) -> str:
         if norm_text(text) not in placeholders:
             return text
     return ""
+
+
+def _doc_scoped_biological_summary_lead_sentence(
+    *,
+    abnormal_entries: list[tuple[dict[str, Any], str, str]],
+    normal_labels: list[str],
+    context_labels: list[str],
+    date_raw: str = "",
+) -> str:
+    prefix = f"Le bilan biologique du {date_raw}" if date_raw else "Le bilan biologique"
+    abnormal_count = len(abnormal_entries)
+    normal_count = len(normal_labels)
+    context_count = len(context_labels)
+
+    context_suffix = ""
+    if context_count:
+        if context_count == 1:
+            context_suffix = f" ; quelques paramètres restent à lire avec prudence, notamment {context_labels[0]}"
+        else:
+            context_suffix = (
+                " ; quelques paramètres restent à lire avec prudence, notamment "
+                + ", ".join(context_labels[:3])
+            )
+
+    if abnormal_count == 0:
+        if normal_count == 0:
+            return f"{prefix} ne met pas en évidence d’écart anormal exploitable dans les données retenues{context_suffix}."
+        if normal_count == 1:
+            return f"{prefix} est principalement dans la référence, avec {normal_labels[0]} parmi les résultats retenus{context_suffix}."
+        if normal_count <= 3:
+            return f"{prefix} est principalement dans la référence, notamment {', '.join(normal_labels[:3])}{context_suffix}."
+        return f"{prefix} est principalement dans la référence sur les éléments retenus{context_suffix}."
+
+    focus_entries = abnormal_entries[:3]
+    focus_parts = [
+        f"{name} = {_summary_row_value_with_unit(ev)}, {status}"
+        for ev, name, status in focus_entries
+    ]
+    if abnormal_count == 1:
+        return f"{prefix} met surtout en évidence une anomalie documentée : {focus_parts[0]}{context_suffix}."
+    if abnormal_count == 2:
+        return f"{prefix} met surtout en évidence deux anomalies documentées : {focus_parts[0]} ; {focus_parts[1]}{context_suffix}."
+    if normal_count:
+        return (
+            f"{prefix} met en évidence {abnormal_count} écarts biologiques documentés et {normal_count} résultat(s) dans la référence, "
+            f"principalement {', '.join(name for _, name, _ in focus_entries)}{context_suffix}."
+        )
+    return (
+        f"{prefix} met en évidence {abnormal_count} écarts biologiques documentés, "
+        f"principalement {', '.join(name for _, name, _ in focus_entries)}{context_suffix}."
+    )
+
+
+def _global_biological_summary_lead_sentence(evidences: list[dict[str, Any]], *, max_items: int = 4) -> str:
+    rows = list(evidences or [])
+    abnormal_rows = [
+        ev for ev in rows
+        if str(ev.get("technical_status_code") or ev.get("interpretation_status") or ev.get("status") or "").strip().lower()
+        in {"above_reference", "below_reference"}
+    ]
+    within_rows = [
+        ev for ev in rows
+        if str(ev.get("technical_status_code") or ev.get("interpretation_status") or ev.get("status") or "").strip().lower()
+        == "within_reference"
+    ]
+    abnormal_labels = _summary_conclusion_labels(abnormal_rows, limit=max(1, int(max_items)))
+    within_labels = _summary_conclusion_labels(within_rows, limit=max(1, min(3, int(max_items))))
+    abnormal_focus = _join_summary_labels(abnormal_labels[: max(1, min(3, len(abnormal_labels)))])
+    within_focus = _join_summary_labels(within_labels[: max(1, min(2, len(within_labels)))])
+
+    if not abnormal_rows and not within_rows:
+        return "La synthèse globale ne retrouve pas d’écart biologique exploitable dans les éléments retenus."
+    if abnormal_rows and not within_rows:
+        if abnormal_focus:
+            return f"La synthèse globale met surtout en évidence des anomalies documentées, notamment {abnormal_focus}."
+        return "La synthèse globale met surtout en évidence des anomalies documentées."
+    if within_rows and not abnormal_rows:
+        if within_focus:
+            return f"La synthèse globale reste principalement dans la référence, notamment {within_focus}."
+        return "La synthèse globale reste principalement dans la référence."
+    if abnormal_focus and within_focus:
+        return f"La synthèse globale met en évidence des anomalies documentées tout en conservant quelques résultats dans la référence, notamment {abnormal_focus}, avec {within_focus} parmi les résultats normaux."
+    if abnormal_focus:
+        return f"La synthèse globale met en évidence des anomalies documentées, notamment {abnormal_focus}."
+    if within_focus:
+        return f"La synthèse globale reste globalement dans la référence, notamment {within_focus}."
+    return "La synthèse globale présente un mélange de résultats hors référence et dans la référence."
 
 
 def _summary_row_page(ev: dict[str, Any]) -> int | None:
@@ -10268,7 +10471,7 @@ def _build_doc_scoped_biological_summary_salvage_prompt(
     within_count = int(fact_counts.get("within_reference_count") or 0)
     needs_context_count = int(fact_counts.get("needs_clinical_context_count") or 0)
     within_instruction = (
-        f"- Écris exactement la phrase suivante si aucun résultat dans la référence n’est retenu : « {_doc_scoped_no_within_reference_sentence()} »."
+        f"- Si aucun résultat dans la référence n’est retenu, écris une phrase explicite de même sens (par exemple : « {_doc_scoped_no_within_reference_sentence()} »)."
         if within_count <= 0
         else "- Mentionne quelques résultats dans la référence s’ils sont présents dans WITHIN_REFERENCE."
     )
@@ -10387,7 +10590,7 @@ def _doc_scoped_biological_summary_repair_errors(
     if within_rows:
         if repaired_within_mentions <= 0:
             errors.append("repair_missing_within_reference_coverage")
-    elif norm_text(_doc_scoped_no_within_reference_sentence()) not in repaired_norm:
+    elif not _doc_scoped_no_within_reference_present(repaired_raw):
         errors.append("repair_missing_no_within_reference_sentence")
 
     if "ecart documente" in repaired_norm and not any(
@@ -10623,6 +10826,39 @@ def _summary_text_mentions_rows(text: str, rows: list[dict[str, Any]]) -> int:
     return len(matched)
 
 
+def _summary_has_rich_fact_coverage(text: str, rows: list[dict[str, Any]]) -> bool:
+    sentence_norm = norm_text(text or "")
+    if not sentence_norm:
+        return False
+
+    row_count = len(list(rows or []))
+    if row_count < 5:
+        return _summary_text_mentions_rows(sentence_norm, list(rows or [])) >= 2
+
+    mention_count = _summary_text_mentions_rows(sentence_norm, list(rows or []))
+    numeric_tokens = len(re.findall(r"\b\d+(?:[.,]\d+)?\b", sentence_norm))
+    directional_markers = sum(
+        1
+        for marker in (
+            "au-dessus",
+            "au dessus",
+            "above",
+            "en dessous",
+            "below",
+            "dans la référence",
+            "dans la reference",
+        )
+        if marker in sentence_norm
+    )
+    if mention_count >= 2:
+        return True
+    if mention_count >= 1 and numeric_tokens >= 4 and directional_markers >= 2:
+        return True
+    if numeric_tokens >= 6 and directional_markers >= 2:
+        return True
+    return False
+
+
 def _summary_missing_value_placeholders_for_structured_rows(
     text: str,
     rows: list[dict[str, Any]],
@@ -10667,7 +10903,7 @@ def _doc_scoped_biological_summary_truncation_errors(
     blocks = [block.strip() for block in text.split("\n\n") if block.strip()]
     prudent_sections = [
         match.group(1).strip()
-        for match in re.finditer(r"(?is)lecture prudente\s*:\s*(.+?)(?:\.\s|$)", text)
+        for match in re.finditer(r"(?ims)(?:^|[.!?]\s+)lecture prudente\s*:\s*(.+?)(?:\.\s|$)", text)
         if str(match.group(1) or "").strip()
     ]
     for prudent_text in prudent_sections:
@@ -10688,12 +10924,31 @@ def _doc_scoped_biological_summary_truncation_errors(
         "",
     )
     if not source_block:
-        errors.append("repair_missing_complete_source")
-    else:
-        source_norm = norm_text(source_block)
-        if source_pages and norm_text(source_pages) not in source_norm:
+        source_block = next(
+            (
+                line.strip()
+                for line in reversed(text.splitlines())
+                if norm_text(line).startswith("source")
+            ),
+            "",
+        )
+    if not source_block:
+        mention_count = _summary_text_mentions_rows(text, list(displayed_evidences or []))
+        if len(list(displayed_evidences or [])) > 1 and mention_count < 2 and not _summary_has_rich_fact_coverage(text, list(displayed_evidences or [])):
             errors.append("repair_missing_complete_source")
-        elif len(source_block) < 12:
+    else:
+        # For doc-scoped biological summaries, a visible source block is enough
+        # to preserve user trust; the canonical clickable source metadata is
+        # attached separately. We only reject empty/trivially truncated source
+        # fragments here.
+        source_tokens = re.findall(r"[A-Za-zÀ-ÿ0-9_]+", source_block)
+        mention_count = _summary_text_mentions_rows(text, list(displayed_evidences or []))
+        if (
+            len(list(displayed_evidences or [])) > 1
+            and len(source_tokens) < 2
+            and mention_count < 2
+            and not _summary_has_rich_fact_coverage(text, list(displayed_evidences or []))
+        ):
             errors.append("repair_missing_complete_source")
 
     return list(dict.fromkeys(errors))
@@ -10753,7 +11008,24 @@ def _evaluate_summary_quality_gate(
             score -= 0.1
         if len(list(displayed_evidences or [])) >= 5:
             mention_count = _summary_text_mentions_rows(text, list(displayed_evidences or []))
-            if mention_count < 3:
+            abnormal_rows = [
+                ev
+                for ev in list(displayed_evidences or [])
+                if _summary_status_code_exact(ev) in {"above_reference", "below_reference"}
+            ]
+            within_rows = [
+                ev
+                for ev in list(displayed_evidences or [])
+                if _summary_status_code_exact(ev) == "within_reference"
+            ]
+            min_mentions = 3
+            if len(abnormal_rows) >= 4 and within_rows:
+                # Rich multi-analyte summaries may stay concise while still being
+                # acceptable if they cover the major abnormal analytes and at
+                # least one within-reference result.
+                min_mentions = 2
+            rich_fact_coverage = _summary_has_rich_fact_coverage(text, list(displayed_evidences or []))
+            if mention_count < min_mentions and not rich_fact_coverage:
                 reasons.append("summary_too_poor_for_available_facts")
                 score -= 0.25
         missing_value_labels = _summary_missing_value_placeholders_for_structured_rows(
@@ -11759,7 +12031,7 @@ def _build_validator_retry_feedback(
             "Tu dois produire une version réellement plus informative. "
             "Mentionne au moins 4 anomalies majeures si elles sont documentées, en incluant plusieurs analytes distincts, "
             "ajoute au moins 3 résultats dans la référence lorsqu'ils sont présents, "
-            f"ou écris exactement '{_doc_scoped_no_within_reference_sentence()}' si aucun résultat dans la référence n'est disponible. "
+            f"ou écris une phrase explicite de même sens que '{_doc_scoped_no_within_reference_sentence()}' si aucun résultat dans la référence n'est disponible. "
             "Précise au-dessus/en dessous quand le statut est disponible, garde une conclusion prudente sans diagnostic et cite la source. "
             "Utilise strictement les blocs structurés suivants comme source de vérité :\n"
             f"{facts_block}\n\n"
@@ -12804,12 +13076,10 @@ def _format_doc_analyte_rows_answer(
             missing.append(analyte)
             continue
 
-        value = str(row.get("value_raw") or "non disponible")
-        unit = str(row.get("unit") or "").strip()
+        value_with_unit = _summary_row_value_with_unit(row)
         ref = str(row.get("reference_range") or "non disponible")
         status = _interpretation_fr(str(row.get("interpretation_status") or "unknown"))
         previous = str(row.get("previous_result_value_raw") or "").strip()
-        value_with_unit = f"{value} {unit}".strip()
         source_label = _source_label_for_row(row)
         lines.append(f"### {display_name} — {_report_label(requested_doc_id)}")
         lines.append("")
@@ -12829,13 +13099,22 @@ def _format_doc_analyte_rows_answer(
                 lines.append(f"- {rl}")
         if compare_previous:
             if previous:
-                variation = _variation_label(value, previous)
+                variation = _variation_label(str(row.get("current_value") or row.get("value_raw") or row.get("value_numeric") or "").strip() or value_with_unit, previous)
                 lines.append(f"- **Résultat antérieur** : {previous}")
                 lines.append(f"- **Variation** : {variation}")
             else:
                 lines.append("- **Résultat antérieur** : non disponible")
         lines.append("")
-        lines.append("Conclusion technique : la valeur est dans l’intervalle de référence indiqué, sans interprétation diagnostique.")
+        status_code = str(row.get("interpretation_status") or "").strip().lower()
+        if status_code == "within_reference":
+            conclusion = "Conclusion technique : la valeur est dans l’intervalle de référence indiqué, sans interprétation diagnostique."
+        elif status_code == "below_reference":
+            conclusion = "Conclusion technique : la valeur est en dessous de l’intervalle de référence indiqué, sans interprétation diagnostique."
+        elif status_code == "above_reference":
+            conclusion = "Conclusion technique : la valeur est au-dessus de l’intervalle de référence indiqué, sans interprétation diagnostique."
+        else:
+            conclusion = "Conclusion technique : la valeur est documentée sans interprétation diagnostique."
+        lines.append(conclusion)
         lines.append("")
 
     return "\n".join(lines).strip(), missing
@@ -12895,14 +13174,10 @@ def _format_multi_doc_single_analyte_status_answer(
     lines = [f"### {req_label} — rapports {report_labels}", "", "**Résultat retrouvé :**"]
     for doc_id, row in found_rows:
         label = _resolve_row_display_analyte(row, str(row.get("analyte_norm") or analyte).strip().lower())
-        value = str(row.get("value_raw") or "non disponible").strip()
-        unit = str(row.get("unit") or "").strip()
+        value = _summary_row_value_with_unit(row).strip()
         ref = str(row.get("reference_range") or "non disponible").strip()
         status = _interpretation_fr(str(row.get("interpretation_status") or "unknown"))
-        value_unit = f"{value}{(' ' + unit) if unit else ''}".strip()
-        lines.append(
-            f"- **{doc_id.replace('_', ' ')}** : {label} = **{value_unit}**"
-        )
+        lines.append(f"- **{doc_id.replace('_', ' ')}** : {label} = **{value}**")
         lines.append(f"  - Référence : {ref}")
         lines.append(f"  - Statut technique : {status}")
     if missing_docs:
@@ -12957,14 +13232,14 @@ def _format_doc_summary_answer(
         analyte = norm_text(str(row.get("analyte") or ""))
         label = _clean_analyte_label(str(row.get("analyte") or row.get("parameter") or "non précisé"))
         status = _interpretation_fr(str(row.get("interpretation_status") or "unknown"))
-        value = str(row.get("value_raw") or "non disponible")
-        unit = str(row.get("unit") or "").strip()
+        value_raw = str(row.get("current_value") or row.get("value_raw") or row.get("value_numeric") or "").strip()
+        value = _summary_row_value_with_unit(row)
         ref = str(row.get("reference_range") or "non disponible")
-        chunk = f"- {label}: {value}" + (f" {unit}" if unit else "") + f" | référence: {ref} | statut: {status}"
+        chunk = f"- {label}: {value} | référence: {ref} | statut: {status}"
         if compare_previous:
             previous = str(row.get("previous_result_value_raw") or "").strip()
             if previous:
-                chunk += f" | antérieur: {previous} | variation: {_variation_label(value, previous)}"
+                chunk += f" | antérieur: {previous} | variation: {_variation_label(value_raw or value, previous)}"
             else:
                 chunk += " | antérieur: non disponible"
 
@@ -13012,10 +13287,8 @@ def _format_multi_doc_comparison_answer(
             missing.append(analyte)
             continue
 
-        unit = ""
         ref = "non disponible"
         for row in present_rows:
-            unit = unit or str(row.get("unit") or "").strip()
             ref = ref if ref != "non disponible" else str(row.get("reference_range") or "non disponible")
         per_doc_parts: list[str] = []
         for doc_id in doc_ids:
@@ -13023,9 +13296,7 @@ def _format_multi_doc_comparison_answer(
             if not row:
                 per_doc_parts.append(f"{doc_id}=non présent")
                 continue
-            value = str(row.get("value_raw") or "non disponible").strip()
-            value_txt = value + (f" {unit}" if unit else "")
-            per_doc_parts.append(f"{doc_id}={value_txt}")
+            per_doc_parts.append(f"{doc_id}={_summary_row_value_with_unit(row).strip()}")
         lines.append(f"- {label}: " + " | ".join(per_doc_parts) + f" | référence: {ref}")
 
     return "\n".join(lines).strip(), missing
@@ -13062,16 +13333,14 @@ def _format_multi_doc_out_of_reference_by_doc_answer(
             if status not in {"above_reference", "below_reference"}:
                 continue
             analyte = _clean_analyte_label(row.get("analyte") or row.get("parameter") or row.get("analyte_norm") or "Analyte")
-            value = str(row.get("current_value") or row.get("value_raw") or "non disponible").strip()
-            unit = str(row.get("unit") or "").strip()
+            value = _summary_row_value_with_unit(row)
             ref = str(row.get("reference") or row.get("reference_range") or "non disponible").strip()
             key = (norm_text(analyte), value, status)
             if key in seen:
                 continue
             seen.add(key)
             status_fr = _interpretation_fr(status)
-            value_part = f"{value}{(' ' + unit) if unit else ''}".strip()
-            lines.append(f"- {analyte} : {value_part} ; référence : {ref} ; statut : {status_fr}.")
+            lines.append(f"- {analyte} : {value} ; référence : {ref} ; statut : {status_fr}.")
             kept += 1
             if kept >= max(1, int(max_items_per_doc)):
                 break
@@ -13444,6 +13713,8 @@ def run_generation(
             technical_condition=planned_condition or query_understanding.technical_condition,
         )
     stage_times_ms["query_understanding_ms"] = round((time.perf_counter() - t_qu0) * 1000.0, 3)
+    requested_doc_ids_for_context = list(query_understanding.requested_doc_ids or [])
+
     def _transformable_pack_size(pack: dict[str, Any] | None) -> int:
         if not isinstance(pack, dict) or not pack:
             return 0
@@ -13453,15 +13724,43 @@ def run_generation(
             len(list(pack.get("results") or [])),
         )
 
+    def _pack_doc_ids(pack: dict[str, Any] | None) -> set[str]:
+        if not isinstance(pack, dict) or not pack:
+            return set()
+        rows: list[dict[str, Any]] = []
+        for key in ("evidences", "results", "rows"):
+            maybe_rows = pack.get(key)
+            if isinstance(maybe_rows, list) and maybe_rows:
+                rows = [row for row in maybe_rows if isinstance(row, dict)]
+                if rows:
+                    break
+        doc_ids: set[str] = set()
+        for row in rows:
+            doc_id = str(row.get("doc_id") or row.get("documentId") or row.get("document_id") or "").strip().lower()
+            if doc_id:
+                doc_ids.add(doc_id)
+        return doc_ids
+
+    def _transformable_pack_matches_requested_docs(pack: dict[str, Any] | None, requested_doc_ids: list[str]) -> bool:
+        if not requested_doc_ids:
+            return True
+        pack_doc_ids = _pack_doc_ids(pack)
+        if not pack_doc_ids:
+            return False
+        requested_norm = {str(d).strip().lower() for d in requested_doc_ids if str(d).strip()}
+        return pack_doc_ids == requested_norm
+
     display_pack_ok = (
         isinstance(previous_displayed_evidence_pack, dict)
         and bool(previous_displayed_evidence_pack)
         and evidence_pack_is_transformable(previous_displayed_evidence_pack)
+        and _transformable_pack_matches_requested_docs(previous_displayed_evidence_pack, requested_doc_ids_for_context)
     )
     structured_pack_ok = (
         isinstance(previous_structured_evidence_pack, dict)
         and bool(previous_structured_evidence_pack)
         and evidence_pack_is_transformable(previous_structured_evidence_pack)
+        and _transformable_pack_matches_requested_docs(previous_structured_evidence_pack, requested_doc_ids_for_context)
     )
     if display_pack_ok and structured_pack_ok:
         display_size = _transformable_pack_size(previous_displayed_evidence_pack)
@@ -14391,6 +14690,15 @@ def run_generation(
                 )
                 has_doc_scoped_single_analyte_shape = True
     preserve_reference_range_route = bool(_is_explicit_reference_range_lookup_request(qn))
+    has_numeric_result_lookup = bool((getattr(query_understanding, "intents", {}) or {}).get("doc_scoped_numeric_result_lookup", False))
+    if (
+        bool(list(query_understanding.requested_doc_ids or []))
+        and has_numeric_result_lookup
+        and selected_route in {"unstructured", "doc_scoped_summary", "doc_scoped_biological_summary"}
+    ):
+        query_understanding = replace(query_understanding, intent="doc_scoped_results")
+        selected_route = "doc_scoped_results"
+        route_reason = "doc_scope+numeric_result_lookup"
     if has_doc_scoped_single_analyte_shape and selected_route in {
         "doc_scoped_abnormal_results",
         "doc_scoped_summary",
@@ -17603,12 +17911,70 @@ def run_generation(
                     structured_pack = _attach_source_fields_to_structured_pack(structured_pack, source_citations)
 
         answerability_rows = list(deduped_raw_evidence or displayed_evidences or evidence_pack or structured_rows or [])
+        if (
+            not answerability_rows
+            and str(selected_route or "").strip().lower() == "doc_scoped_results"
+            and bool(list(requested_doc_ids or []))
+            and not list(exact_analytes or query_understanding.requested_analytes or [])
+        ):
+            try:
+                doc_rows_for_lookup = _fetch_doc_lab_rows(
+                    sqlite_path=sqlite_path,
+                    requested_doc_ids=list(requested_doc_ids or []),
+                    analyte_norms=None,
+                    limit=700,
+                )
+            except Exception:
+                doc_rows_for_lookup = []
+            if doc_rows_for_lookup:
+                answerability_rows = list(doc_rows_for_lookup)
+                structured_rows = list(doc_rows_for_lookup)
+                display_rows = [_structured_record_from_row(r) for r in doc_rows_for_lookup]
+                displayed_evidences = list(display_rows)
+                evidence_pack = list(display_rows)
+                structured_pack["rows"] = list(doc_rows_for_lookup)
+                structured_pack["evidences"] = list(display_rows)
+                structured_pack["results"] = list(display_rows)
+                source_citations = build_source_citations(display_rows, resolver=source_resolver)
+                if displayed_evidences and not source_citations:
+                    source_citations = _fallback_sources_from_evidences(display_rows)
+                source_citations_for_response = list(source_citations)
+                if selected_route == "doc_scoped_priority_anomalies":
+                    precise = [s for s in source_citations if isinstance(s, dict) and s.get("page") is not None and s.get("row") is not None]
+                    if precise:
+                        source_citations_for_response = precise
+                structured_pack = _attach_source_fields_to_structured_pack(structured_pack, source_citations)
+        if (
+            not displayed_evidences
+            and str(selected_route or "").strip().lower() == "doc_scoped_results"
+            and bool(list(requested_doc_ids or []))
+            and not list(exact_analytes or query_understanding.requested_analytes or [])
+        ):
+            seeded_rows = list(structured_pack.get("evidences") or structured_pack.get("results") or [])
+            if seeded_rows:
+                displayed_evidences = [dict(r) for r in seeded_rows if isinstance(r, dict)]
+                evidence_pack = list(displayed_evidences)
+                if not structured_rows:
+                    structured_rows = [dict(r) for r in displayed_evidences]
+                structured_pack["evidences"] = list(displayed_evidences)
+                structured_pack["results"] = list(displayed_evidences)
+                if not source_citations:
+                    source_citations = build_source_citations(displayed_evidences, resolver=source_resolver)
+                    if displayed_evidences and not source_citations:
+                        source_citations = _fallback_sources_from_evidences(displayed_evidences)
+                source_citations_for_response = list(source_citations)
+                structured_pack = _attach_source_fields_to_structured_pack(structured_pack, source_citations)
         answerability_assessment = evaluate_answerability(
             requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
             evidence_rows=[dict(r) for r in answerability_rows if isinstance(r, dict)],
             requested_doc_ids=list(requested_doc_ids or []),
             safety_intent=str(getattr(query_understanding, "safety_intent", "") or ""),
             ambiguity_flags=list(getattr(query_understanding, "ambiguity_flags", []) or []),
+            allow_no_analyte_doc_scoped_lookup=bool(
+                selected_route == "doc_scoped_results"
+                and bool(list(requested_doc_ids or []))
+                and bool((getattr(query_understanding, "intents", {}) or {}).get("doc_scoped_numeric_result_lookup", False))
+            ),
         )
 
         if (
