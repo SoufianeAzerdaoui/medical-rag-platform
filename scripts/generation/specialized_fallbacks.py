@@ -9,6 +9,7 @@ from config_loader import get_assistant_messages_config
 
 FALLBACK_KINDS: set[str] = {
     "single_analyte_not_found",
+    "multi_analyte_not_found",
     "topic_not_found",
     "document_not_found",
     "ambiguous_analyte",
@@ -152,17 +153,80 @@ def build_specialized_fallback(
             warning_code="specialized_fallback_topic_not_found",
         )
 
-    if fallback_kind == "document_not_found":
+    if fallback_kind == "multi_analyte_not_found":
         doc_pdf_labels = _join_doc_pdf_labels(docs)
+        doc_labels = _join_doc_labels(docs)
+        source_line = (
+            f"Source documentaire : [{doc_pdf_labels}](/viewer/pdf?doc_id={docs[0]}&page=1)."
+            if len(docs) == 1
+            else f"Source documentaire : {doc_pdf_labels}."
+        )
         template = _assistant_message(
-            ["fallbacks", "document_not_found_template"],
+            ["fallbacks", "multi_analyte_not_found_template"],
             (
-                "Aucune donnée structurée exploitable n’a été extraite de {doc_pdf_labels} pour la demande formulée.\n\n"
-                "Source documentaire : {doc_pdf_labels}.\n"
-                "Conclusion technique : le périmètre documentaire demandé ne contient pas de données compatibles."
+                "### Analytes demandés — {doc_pdf_labels}\n\n"
+                "{analyte_lines}\n\n"
+                "{source_line}\n"
+                "Conclusion technique : aucun résultat exploitable correspondant aux analytes demandés n’a été identifié dans {doc_labels}."
             ),
         )
-        answer = _safe_format(template, doc_labels=doc_labels, doc_pdf_labels=doc_pdf_labels)
+        pretty_lines = [
+            f"- {str(a).strip().replace('_', ' ') or 'Analyte'} : non retrouvé dans {doc_labels} parmi les résultats disponibles."
+            for a in analytes
+        ]
+        analyte_lines = "\n".join(pretty_lines) if pretty_lines else f"- Aucun analyte demandé n’a pu être identifié dans {doc_labels}."
+        answer = _safe_format(
+            template,
+            analyte_lines=analyte_lines,
+            doc_labels=doc_labels,
+            doc_pdf_labels=doc_pdf_labels,
+            source_line=source_line,
+        )
+        return SpecializedFallback(
+            kind=fallback_kind,
+            answer=answer,
+            generation_mode="deterministic_no_evidence_response",
+            warning_code="specialized_fallback_multi_analyte_not_found",
+        )
+
+    if fallback_kind == "document_not_found":
+        doc_pdf_labels = _join_doc_pdf_labels(docs)
+        if analytes:
+            analyte_lines = "\n".join(
+                f"- {str(a).strip().replace('_', ' ') or 'Analyte'} : non retrouvé dans {doc_labels} parmi les résultats disponibles."
+                for a in analytes
+            )
+            source_line = (
+                f"Source documentaire : [{doc_pdf_labels}](/viewer/pdf?doc_id={docs[0]}&page=1)."
+                if len(docs) == 1
+                else f"Source documentaire : {doc_pdf_labels}."
+            )
+            template = _assistant_message(
+                ["fallbacks", "multi_analyte_document_not_found_template"],
+                (
+                    "### Analytes demandés — {doc_pdf_labels}\n\n"
+                    "{analyte_lines}\n\n"
+                    "{source_line}\n"
+                    "Conclusion technique : aucun résultat exploitable correspondant aux analytes demandés n’a été identifié dans {doc_labels}."
+                ),
+            )
+            answer = _safe_format(
+                template,
+                analyte_lines=analyte_lines,
+                doc_labels=doc_labels,
+                doc_pdf_labels=doc_pdf_labels,
+                source_line=source_line,
+            )
+        else:
+            template = _assistant_message(
+                ["fallbacks", "document_not_found_template"],
+                (
+                    "Aucune donnée structurée exploitable n’a été extraite de {doc_pdf_labels} pour la demande formulée.\n\n"
+                    "Source documentaire : {doc_pdf_labels}.\n"
+                    "Conclusion technique : le périmètre documentaire demandé ne contient pas de données compatibles."
+                ),
+            )
+            answer = _safe_format(template, doc_labels=doc_labels, doc_pdf_labels=doc_pdf_labels)
         return SpecializedFallback(
             kind=fallback_kind,
             answer=answer,
@@ -273,21 +337,48 @@ def build_specialized_fallback(
         )
 
     doc_pdf_labels = _join_doc_pdf_labels(docs)
-    template = _assistant_message(
-        ["fallbacks", "insufficient_evidence_template"],
-        (
-            "Aucune donnée structurée exploitable n’a été identifiée pour répondre de façon fiable.\n\n"
-            "Source documentaire : {doc_pdf_labels}.\n"
-            "Conclusion technique : aucun résultat exploitable n’a été identifié pour {analyte_label}{criterion} dans {doc_labels}."
-        ),
-    )
-    answer = _safe_format(
-        template,
-        analyte_label=analyte_label,
-        criterion=criterion,
-        doc_labels=doc_labels,
-        doc_pdf_labels=doc_pdf_labels,
-    )
+    if analytes and len(analytes) > 1 and docs:
+        analyte_lines = "\n".join(
+            f"- {str(a).strip().replace('_', ' ') or 'Analyte'} : non retrouvé dans {doc_labels} parmi les résultats disponibles."
+            for a in analytes
+        )
+        source_line = (
+            f"Source documentaire : [{doc_pdf_labels}](/viewer/pdf?doc_id={docs[0]}&page=1)."
+            if len(docs) == 1
+            else f"Source documentaire : {doc_pdf_labels}."
+        )
+        template = _assistant_message(
+            ["fallbacks", "multi_analyte_insufficient_evidence_template"],
+            (
+                "### Analytes demandés — {doc_pdf_labels}\n\n"
+                "{analyte_lines}\n\n"
+                "{source_line}\n"
+                "Conclusion technique : aucun résultat exploitable correspondant aux analytes demandés n’a été identifié dans {doc_labels}."
+            ),
+        )
+        answer = _safe_format(
+            template,
+            analyte_lines=analyte_lines,
+            doc_labels=doc_labels,
+            doc_pdf_labels=doc_pdf_labels,
+            source_line=source_line,
+        )
+    else:
+        template = _assistant_message(
+            ["fallbacks", "insufficient_evidence_template"],
+            (
+                "Aucune donnée structurée exploitable n’a été identifiée pour répondre de façon fiable.\n\n"
+                "Source documentaire : {doc_pdf_labels}.\n"
+                "Conclusion technique : aucun résultat exploitable n’a été identifié pour {analyte_label}{criterion} dans {doc_labels}."
+            ),
+        )
+        answer = _safe_format(
+            template,
+            analyte_label=analyte_label,
+            criterion=criterion,
+            doc_labels=doc_labels,
+            doc_pdf_labels=doc_pdf_labels,
+        )
     return SpecializedFallback(
         kind="insufficient_evidence",
         answer=answer,
@@ -326,16 +417,18 @@ def infer_specialized_fallback_kind(
         if "missing_doc_scope" in flags or "multiple_doc_scope_ambiguous" in flags:
             return "ambiguous_document_scope"
         if analytes:
-            return "ambiguous_analyte"
+            return "multi_analyte_not_found" if len(analytes) > 1 and docs else "ambiguous_analyte"
         return "ambiguous_document_scope"
 
     if status == "not_found":
+        if analytes and len(analytes) > 1 and docs:
+            return "multi_analyte_not_found"
         if analytes and len(analytes) == 1 and len(docs) == 1:
             return "single_analyte_not_found"
         if docs:
             return "document_not_found"
         if analytes:
-            return "topic_not_found" if ("topic" in reason) else "insufficient_evidence"
+            return "multi_analyte_not_found" if len(analytes) > 1 else ("topic_not_found" if ("topic" in reason) else "insufficient_evidence")
         return "insufficient_evidence"
 
     if docs and not analytes:

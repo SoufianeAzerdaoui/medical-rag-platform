@@ -987,6 +987,13 @@ def process_chat(
         final_answer_quality_gate_top = generation.get("final_answer_quality_gate") if isinstance(generation.get("final_answer_quality_gate"), dict) else None
         quality_final_status_top = str(generation.get("quality_final_status") or "").strip().lower() or None
         synthesis_quality_reason_top = str(generation.get("synthesis_quality_reason") or "").strip() or None
+        final_answer_validation_status_top = str(
+            generation.get("final_answer_validation_status")
+            or generation.get("validation_status")
+            or ((final_answer_quality_gate_top or {}).get("pass") and "pass")
+            or quality_final_status_top
+            or ""
+        ).strip().lower() or None
         response_debug: dict[str, Any] = {
             "debug_contract_version": "v2",
             "intent": str(qu.get("intent") or "") or None,
@@ -1000,6 +1007,7 @@ def process_chat(
             "llm_quality_gate": llm_quality_gate_top,
             "final_answer_quality_gate": final_answer_quality_gate_top,
             "quality_final_status": quality_final_status_top,
+            "final_answer_validation_status": final_answer_validation_status_top,
             "synthesis_quality_reason": synthesis_quality_reason_top,
             "displayed_evidences_count": int(generation_debug.get("displayed_evidences_count") or len(displayed_evidence_items) or 0),
             "evidence_pack_count": int(generation_debug.get("evidence_rows_count") or len(evidence_pack_items) or 0),
@@ -1206,7 +1214,8 @@ def process_chat(
 
         persisted_diagnostics: dict[str, Any] = {
             "quality_report": generation.get("quality_report") if isinstance(generation.get("quality_report"), dict) else None,
-            "validation_status": str((generation.get("validation") or {}).get("validation_status") or "") or None,
+            "validation_status": final_answer_validation_status_top,
+            "final_answer_validation_status": final_answer_validation_status_top,
             "generation_mode": str(generation.get("generation_mode") or "") or None,
             "generation_writer": str((generation_debug.get("generation_writer") or "")) or None,
             "llm_provider_requested": llm_provider,
@@ -1314,7 +1323,8 @@ def process_chat(
             document_ids=document_ids,
             response_time=float(generation.get("generation_time_seconds") or 0.0),
             quality_report=(generation.get("quality_report") if isinstance(generation.get("quality_report"), dict) else None),
-            validation_status=str((generation.get("validation") or {}).get("validation_status") or "") or None,
+            validation_status=final_answer_validation_status_top if final_answer_validation_status_top in {"pass", "warning", "fail"} else None,
+            final_answer_validation_status=final_answer_validation_status_top if final_answer_validation_status_top in {"pass", "warning", "fail"} else None,
             generation_mode=str(generation.get("generation_mode") or "") or None,
             generation_writer=str(((generation.get("debug") or {}).get("generation_writer") or "")) or None,
             provider=llm_provider,

@@ -59,6 +59,9 @@ ANALYTE_DISPLAY_NAMES: dict[str, str] = {
     "t3_libre": "T3 LIBRE",
     "anti_tg": "ANTI-TG",
     "ckmb": "CKMB",
+    "ldh": "LDH",
+    "bilirubine_directe": "BILIRUBINE DIRECTE",
+    "ammonium": "AMMONIUM",
     "crp": "CRP",
     "ace": "ACE",
     "psa_totale": "PSA TOTALE",
@@ -1647,8 +1650,11 @@ def decide_response_strategy(query_understanding: "QueryUnderstanding", evidence
         return ResponseStrategy("answer_directly", "Liste demandée.", True, True)
     if output == "paragraph":
         return ResponseStrategy("answer_directly", "Format paragraphe demandé.", True, True)
-    if not evidences and intent in {"unstructured", "doc_scoped_summary"}:
-        return ResponseStrategy("ask_clarification", "Contexte insuffisant et demande peu contrainte.", True, True)
+    if not evidences:
+        if intent == "unstructured":
+            return ResponseStrategy("ask_clarification", "Contexte insuffisant et demande peu contrainte.", True, True)
+        if intent == "doc_scoped_summary" and not qu.requested_doc_ids and output not in {"paragraph", "list", "table"}:
+            return ResponseStrategy("ask_clarification", "Contexte insuffisant et demande peu contrainte.", True, True)
     return ResponseStrategy("render_table", "Format structuré fiable par défaut.", True, True)
 
 

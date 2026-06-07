@@ -196,7 +196,7 @@ def append_citations(answer_text: str, citations: list[str]) -> str:
     if "sources :" in base.lower():
         return base
 
-    lines = [base, "", "Sources :"]
+    lines = [base, "Sources :"]
     lines.extend(f"- {c}" for c in citations)
     return "\n".join(lines).strip()
 
@@ -213,7 +213,7 @@ def append_source_citations(
     if "sources :" in base.lower():
         return base
 
-    lines = [base, "", "Sources :"]
+    lines = [base, "Sources :"]
     if sources:
         for src in sources:
             if src.get("url"):

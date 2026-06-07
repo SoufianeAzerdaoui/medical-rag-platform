@@ -379,7 +379,14 @@ export function ChatMessages() {
           (generationMode === "deterministic_single_analyte_lookup" ||
             selectedRoute === "doc_scoped_single_analyte_status" ||
             intent === "doc_scoped_single_analyte_status") &&
-          (message.diagnostics?.displayed_evidences_count === 1 || message.diagnostics?.included_rows_count === 1) &&
+          (
+            message.diagnostics?.displayed_evidences_count === 1 ||
+            message.diagnostics?.included_rows_count === 1 ||
+            message.diagnostics?.lab_result_count === 1 ||
+            message.diagnostics?.structured_values_count === 1 ||
+            selectedRoute === "doc_scoped_single_analyte_status" ||
+            generationMode === "deterministic_single_analyte_lookup"
+          ) &&
           !hasPatients &&
           !isCohortLike;
         const isStructuredSummaryRoute =
@@ -399,11 +406,25 @@ export function ChatMessages() {
 
         const contentHasTable = hasMarkdownTable(contentToRender);
         const explicitAnswerType = String(message?.diagnostics?.answer_type || message?.answer_type || "").trim().toLowerCase();
-        const validationStatus = String(message?.diagnostics?.validation_status || "").toLowerCase();
-        const shouldShowFailBanner = isAssistant && isDone && validationStatus === "fail";
+        const qualityFinalStatus = String(message?.diagnostics?.quality_final_status || "").toLowerCase();
+        const finalAnswerValidationStatus = String(
+          message?.diagnostics?.final_answer_validation_status || message?.diagnostics?.validation_status || "",
+        ).toLowerCase();
+        const validationStatus = qualityFinalStatus === "pass" ? "pass" : finalAnswerValidationStatus;
+        const shouldShowFailBanner =
+          isAssistant &&
+          isDone &&
+          validationStatus === "fail" &&
+          qualityFinalStatus === "fail" &&
+          finalAnswerValidationStatus === "fail";
         const debugFinalAnswerSource = String(message?.diagnostics?.final_answer_source || "").trim();
         const debugRendererUsed = String(message?.diagnostics?.renderer_used || "").trim();
         const showProvenanceDebug = isAssistant && isDone && qualityDebugEnabled && (debugFinalAnswerSource || debugRendererUsed);
+        const renderAsMarkdownTable =
+          isAssistant &&
+          isDone &&
+          contentHasTable &&
+          generationMode.includes("response_transform");
         const useSingleAnalyteCard =
           isSingleAnalyteDeterministic &&
           !contentHasTable &&
@@ -421,11 +442,21 @@ export function ChatMessages() {
           isDone &&
           selectedRoute === "doc_scoped_results" &&
           !contentHasTable &&
-          (message.diagnostics?.displayed_evidences_count === 1 ||
-            message.diagnostics?.included_rows_count === 1 ||
-            message.diagnostics?.lab_result_count === 1) &&
-          /(?:^|\n)\s*(?:-\s*)?(?:\*\*)?Valeur(?:\*\*)?\s*:/i.test(contentToRender) &&
-          /(?:^|\n)\s*(?:-\s*)?(?:\*\*)?Statut (?:technique|interprétatif)(?:\*\*)?\s*:/i.test(contentToRender) &&
+          (
+            /Analytes?\s+demand[ée]s/i.test(contentToRender) ||
+            /non retrouvé/i.test(contentToRender) ||
+            (message.diagnostics?.displayed_evidences_count === 1 ||
+              message.diagnostics?.included_rows_count === 1 ||
+              message.diagnostics?.lab_result_count === 1)
+          ) &&
+          (
+            /(?:^|\n)\s*(?:-\s*)?(?:\*\*)?Valeur(?:\*\*)?\s*:/i.test(contentToRender) ||
+            /non retrouvé/i.test(contentToRender)
+          ) &&
+          (
+            /(?:^|\n)\s*(?:-\s*)?(?:\*\*)?Statut (?:technique|interprétatif)(?:\*\*)?\s*:/i.test(contentToRender) ||
+            /non retrouvé/i.test(contentToRender)
+          ) &&
           /(?:^|\n)\s*(?:-\s*)?(?:\*\*)?Source(?:\*\*)?\s*:/i.test(contentToRender);
         const assistantRenderType = resolveAssistantRenderType({
           explicitAnswerType,
@@ -531,7 +562,9 @@ export function ChatMessages() {
                       <p className="mt-3 text-xs uppercase tracking-wide text-fg/65">Données utilisées</p>
                     ) : null}
                     
-                    {useSingleAnalyteCard || docScopedSingleResultFallback ? (
+                    {renderAsMarkdownTable ? (
+                      <AssistantMarkdown content={contentToRender} />
+                    ) : useSingleAnalyteCard || docScopedSingleResultFallback ? (
                       <SingleAnalyteResultCard content={contentToRender} sources={message.sources} />
                     ) : detailsHidden ? null : isStructuredSummaryRoute ? (
                       <StructuredSummaryCard

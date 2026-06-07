@@ -210,7 +210,7 @@ summary_quality_case_verdict() {
     def quality:
       (response.quality_final_status // response.quality_report.final_status // response.debug.quality_final_status // response.debug.raw_debug.quality_final_status // "");
     def validation:
-      (response.validation_status // response.validation.validation_status // response.debug.validation.validation_status // response.debug.raw_debug.validation.validation_status // "");
+      (response.final_answer_validation_status // response.validation_status // response.validation.validation_status // response.debug.validation.validation_status // response.debug.raw_debug.validation.validation_status // "");
     def llm_accepted:
       ((response.llm_writer_accepted // response.debug.llm_writer_accepted // response.debug.raw_debug.llm_writer_accepted // false) == true);
     def source_count:

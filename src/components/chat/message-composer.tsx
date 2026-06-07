@@ -107,21 +107,28 @@ function inferBackendModeFromDraft(text: string, currentMode: PromptMode): Promp
   const normalized = text
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, " ")
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 
   const summarySignals = [
     "resume",
+    "resume medical",
+    "resume medical clair et fidele",
+    "resume biologique",
     "synthese",
     "bilan",
     "présente les résultats",
     "presente les resultats",
     "présente le résultat",
     "presente le resultat",
+    "fais un resume medical",
+    "fais un résumé médical",
+    "fais une synthese medicale",
     "mets en avant",
     "en restant prudente",
     "en restant prudent",
+    "sans interpretation excessive",
     "sans inventer",
     "points clés",
     "points cles",

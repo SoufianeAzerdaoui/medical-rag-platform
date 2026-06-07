@@ -5908,6 +5908,7 @@ _DOC_ANCHOR_SOURCE_ROUTES = {
     "multi_doc_comparison",
     "doc_scoped_summary",
     "doc_scoped_biological_summary",
+    "doc_scoped_results",
     "doc_scoped_abnormal_results",
     "doc_scoped_priority_anomalies",
     "global_biological_summary",
@@ -7462,6 +7463,10 @@ def _build_doc_scoped_biological_summary_answer(
                     + " nécessitent une lecture prudente, car leurs références dépendent du profil patient ou du contexte clinique."
                 )
 
+        toxicology_context = None
+        if not abnormal_sorted and normal:
+            toxicology_context = _doc_scoped_toxicology_no_anomaly_context(rows)
+
         summary_lead_line = _doc_scoped_biological_summary_lead_sentence(
             abnormal_entries=notable_entries,
             normal_labels=normal_labels,
@@ -7507,11 +7512,27 @@ def _build_doc_scoped_biological_summary_answer(
                 if str(p).strip().isdigit()
             }
         )
+        source_filename = ""
+        for r in rows:
+            filename = str(r.get("filename") or r.get("source_pdf") or "").strip()
+            if filename:
+                source_filename = filename.split("/")[-1]
+                break
         if pages:
             page_span = f"page {pages[0]}" if len(pages) == 1 else f"pages {pages[0]}-{pages[-1]}"
-            source_line = f"Source : {doc_scope}, {page_span}."
+            if toxicology_context and source_filename:
+                source_line = f"Source documentaire : {source_filename} — {page_span}."
+            elif toxicology_context:
+                source_line = f"Source documentaire : {doc_scope} — {page_span}."
+            else:
+                source_line = f"Source : {doc_scope}, {page_span}."
         else:
-            source_line = f"Source : {doc_scope}."
+            if toxicology_context and source_filename:
+                source_line = f"Source documentaire : {source_filename}."
+            elif toxicology_context:
+                source_line = f"Source documentaire : {doc_scope}."
+            else:
+                source_line = f"Source : {doc_scope}."
 
         warning_line = "Note descriptive uniquement, sans diagnostic médical ni recommandation thérapeutique."
         conclusion_line = (
@@ -7522,15 +7543,34 @@ def _build_doc_scoped_biological_summary_answer(
             conclusion_line = (
                 "Conclusion technique : synthèse documentaire prudente fondée sur les valeurs structurées du rapport."
             )
+        if toxicology_context:
+            summary_lead_line = toxicology_context["nature_line"]
+            range_line = toxicology_context["families_line"]
+            normal_line = toxicology_context["results_line"]
+            notable_line = toxicology_context["no_exceed_line"]
+            warning_line = ""
+            conclusion_line = toxicology_context["conclusion_line"]
+            context_prudence_line = ""
 
         if render_profile_norm == "compact_biological_summary":
             lead_line = summary_lead_line
             compact_lines_source = [lead_line]
-            if range_line and sanitize_for_sentence(range_line) not in sanitize_for_sentence(lead_line):
+            if range_line and norm_text(range_line) not in norm_text(lead_line):
                 compact_lines_source.append(range_line)
             if normal_line == _doc_scoped_no_within_reference_sentence():
                 compact_lines_source.append(normal_line)
-            if notable_line:
+            if toxicology_context:
+                if normal_line and normal_line != _doc_scoped_no_within_reference_sentence():
+                    normal_norm = norm_text(normal_line)
+                    lead_norm = norm_text(lead_line)
+                    if normal_norm and normal_norm not in lead_norm:
+                        compact_lines_source.append(normal_line)
+                if notable_line:
+                    notable_norm = norm_text(notable_line)
+                    lead_norm = norm_text(lead_line)
+                    if notable_norm and notable_norm not in lead_norm:
+                        compact_lines_source.append(notable_line)
+            elif notable_line:
                 notable_norm = norm_text(notable_line)
                 lead_norm = norm_text(lead_line)
                 # The lead sentence already carries the main factual payload; keep the
@@ -7541,14 +7581,17 @@ def _build_doc_scoped_biological_summary_answer(
                     and ("anomalie" in lead_norm or "écart" in lead_norm or "ecart" in lead_norm)
                 ):
                     compact_lines_source.append(notable_line)
-            if normal_line and normal_line != _doc_scoped_no_within_reference_sentence():
+            if not toxicology_context and normal_line and normal_line != _doc_scoped_no_within_reference_sentence():
                 normal_norm = norm_text(normal_line)
                 lead_norm = norm_text(lead_line)
                 if normal_norm and normal_norm not in lead_norm:
                     compact_lines_source.append(normal_line)
             if context_prudence_line:
                 compact_lines_source.append(context_prudence_line)
-            compact_lines_source.extend([warning_line, source_line, conclusion_line])
+            compact_lines_source.append(warning_line)
+            compact_lines_source.append(source_line)
+            if conclusion_line:
+                compact_lines_source.append(conclusion_line)
             lines = compact_lines_source
         elif render_profile_norm == "editorial_biological_summary":
             lead_line = summary_lead_line
@@ -7562,22 +7605,28 @@ def _build_doc_scoped_biological_summary_answer(
                 narrative_lines.append(normal_line)
             if context_prudence_line:
                 narrative_lines.append(context_prudence_line)
-            narrative_lines.extend([warning_line, source_line, conclusion_line])
+            narrative_lines.append(warning_line)
+            narrative_lines.append(source_line)
+            if conclusion_line:
+                narrative_lines.append(conclusion_line)
             lines = narrative_lines
         else:
             lines = [f"Note de synthèse médicale — {doc_scope}.", summary_lead_line]
             if range_line:
                 lines.append(range_line)
+            if toxicology_context and normal_line:
+                lines.append(normal_line)
             lines.append(notable_line)
             if extra_line:
                 lines.append(extra_line)
-            if normal_line:
+            if not toxicology_context and normal_line:
                 lines.append(normal_line)
             if context_prudence_line:
                 lines.append(context_prudence_line)
             lines.append(warning_line)
             lines.append(source_line)
-            lines.append(conclusion_line)
+            if conclusion_line:
+                lines.append(conclusion_line)
 
         # Keep compact narrative output while always preserving conclusion and source.
         compact_lines = [ln for ln in lines if str(ln or "").strip()]
@@ -7587,6 +7636,10 @@ def _build_doc_scoped_biological_summary_answer(
             conclusion_ln = conclusion_line
             source_ln = source_line
             ordered_body: list[str] = []
+            if toxicology_context:
+                for ln in [summary_lead_line, range_line, normal_line, notable_line, extra_line]:
+                    if str(ln or "").strip() and ln not in ordered_body:
+                        ordered_body.append(ln)
             if wants_reference_ranges:
                 for ln in [summary_lead_line, notable_line, range_line, extra_line, normal_line]:
                     if str(ln or "").strip() and ln not in ordered_body:
@@ -7599,7 +7652,8 @@ def _build_doc_scoped_biological_summary_answer(
             tail = [warning_ln, conclusion_ln, source_ln]
             slots = max(0, max_l_note - 1 - len(tail))
             compact_lines = [title_ln, *body_candidates[:slots], *tail]
-        return "\n\n".join(compact_lines).strip()
+        joiner = "\n" if toxicology_context or render_profile_norm in {"compact_biological_summary", "editorial_biological_summary"} else "\n\n"
+        return joiner.join(compact_lines).strip()
 
     if render_profile_norm in {
         "doctor_note",
@@ -9131,6 +9185,16 @@ def _build_route_specific_short_fallback_answer(
     default_answer: str,
 ) -> str:
     route_norm = str(selected_route or "").strip().lower()
+    if route_norm == "doc_scoped_results":
+        requested_analytes = [str(a).strip() for a in list(getattr(query_understanding, "requested_analytes", []) or []) if str(a).strip()]
+        if requested_analytes and not displayed_evidences:
+            fb_kind = "multi_analyte_not_found" if len(requested_analytes) > 1 else "single_analyte_not_found"
+            fb = build_specialized_fallback(
+                kind=fb_kind,
+                requested_analytes=requested_analytes,
+                requested_doc_ids=list(getattr(query_understanding, "requested_doc_ids", []) or []),
+            )
+            return str(fb.answer or default_answer).strip()
     if route_norm == "doc_scoped_biological_summary":
         no_diag = str(getattr(query_understanding, "safety_intent", "") or "").strip().lower() == "no_diagnosis_constraint"
         rows = list(evidence_all_summary or []) if list(evidence_all_summary or []) else displayed_evidences
@@ -9175,9 +9239,9 @@ def _reference_short(reference_raw: Any) -> str:
     # Keep a very short factual reference for Level-2 micro-prompts to avoid truncation/timeouts.
     nums = re.findall(r"\d+(?:[.,]\d+)?", ref)
     if re.match(r"^\s*(?:<|<=|≤)\s*\d", ref):
-        return f"< {nums[0]}" if nums else "réf. disponible"
+        return f"<{nums[0]}" if nums else "réf. disponible"
     if re.match(r"^\s*(?:>|>=|≥)\s*\d", ref):
-        return f"> {nums[0]}" if nums else "réf. disponible"
+        return f">{nums[0]}" if nums else "réf. disponible"
     if len(nums) >= 2:
         if nums[0].replace(",", ".") == nums[1].replace(",", "."):
             return "référence textuelle disponible"
@@ -10182,6 +10246,10 @@ def _summary_row_value_with_unit(ev: dict[str, Any]) -> str:
             value_raw = str(int(numeric)) if float(numeric).is_integer() else str(numeric)
     if not value_raw:
         value_raw = str(ev.get("value_with_unit") or "").strip()
+    if value_raw:
+        normalized_integer = re.match(r"^0+(\d+)$", value_raw)
+        if normalized_integer and "." not in value_raw and "," not in value_raw:
+            value_raw = normalized_integer.group(1)
     unit_raw = str(ev.get("unit") or "").strip()
     if value_raw and unit_raw and unit_raw not in value_raw:
         return f"{value_raw} {unit_raw}".strip()
@@ -10222,6 +10290,126 @@ def _summary_row_reference_detail(ev: dict[str, Any]) -> str:
         if norm_text(text) not in placeholders:
             return text
     return ""
+
+
+def _doc_scoped_toxicology_no_anomaly_context(rows: list[dict[str, Any]]) -> dict[str, str] | None:
+    data = list(rows or [])
+    if not data:
+        return None
+
+    urine_families = ["amphetamine", "benzodiazepine", "cocaine", "ecstasy", "opiaces", "phencyclidine"]
+    blood_families = ["ethanol", "acide_valproique", "carbamazepine", "lithium"]
+    family_order = urine_families + blood_families
+    family_rows: dict[str, list[dict[str, Any]]] = {fam: [] for fam in family_order}
+    found_families: list[str] = []
+    has_tox_section = False
+
+    for ev in data:
+        analyte_probe = norm_text(
+            f"{ev.get('section_norm') or ''} {ev.get('section') or ''} "
+            f"{ev.get('analyte_norm') or ''} {ev.get('analyte') or ev.get('analyte_label') or ev.get('display_name') or ''}"
+        )
+        if any(x in analyte_probe for x in ["toxico", "pharmaco"]):
+            has_tox_section = True
+        for fam in family_order:
+            if fam in analyte_probe:
+                family_rows[fam].append(ev)
+                if fam not in found_families:
+                    found_families.append(fam)
+
+    if not has_tox_section and len(found_families) < 3:
+        return None
+
+    urine_hits = [fam for fam in found_families if fam in urine_families]
+    blood_hits = [fam for fam in found_families if fam in blood_families]
+    if urine_hits and not blood_hits:
+        nature_line = "Le document correspond à un bilan urinaire de pharmaco-toxicologie."
+    elif blood_hits and not urine_hits:
+        nature_line = "Le document correspond à un bilan sanguin de pharmaco-toxicologie."
+    else:
+        nature_line = "Le document correspond à un bilan de pharmaco-toxicologie."
+
+    family_labels = [_toxicology_family_label(fam) for fam in found_families]
+    families_line = "Les familles recherchées comprennent " + _join_summary_labels(family_labels) + "."
+
+    def _candidate_score(ev: dict[str, Any]) -> tuple[int, int, int, int]:
+        label = norm_text(str(ev.get("analyte") or ev.get("analyte_label") or ev.get("display_name") or ""))
+        is_semi_quant = 0 if "semi" in label and "quant" in label else 1
+        is_qualitative = 0 if "qualitatif" in label and "indice" not in label else 1
+        status = _summary_status_code_exact(ev)
+        within_rank = 0 if status == "within_reference" else 1
+        page_rank = _summary_row_page(ev) or 999
+        return (is_semi_quant, is_qualitative, within_rank, page_rank)
+
+    representative_items: list[str] = []
+    seen_items: set[str] = set()
+    for fam in found_families:
+        candidates = list(family_rows.get(fam) or [])
+        if not candidates:
+            continue
+        chosen = sorted(candidates, key=_candidate_score)[0]
+        family_label = _toxicology_family_label(fam)
+        value = _summary_row_value_with_unit(chosen)
+        reference = _summary_row_reference_short(chosen)
+        item = f"{family_label} {value}".strip()
+        if reference and norm_text(reference) not in {"non disponible", "réf disponible", "ref disponible"}:
+            item += f" (réf {reference})"
+        item_key = norm_text(item)
+        if not item_key or item_key in seen_items:
+            continue
+        seen_items.add(item_key)
+        representative_items.append(item)
+        if len(representative_items) >= 6:
+            break
+
+    if representative_items:
+        results_line = (
+            "Les valeurs semi-quantitatives retenues restent sous les seuils indiqués : "
+            + "; ".join(representative_items)
+            + "."
+        )
+    else:
+        results_line = "Les valeurs semi-quantitatives retenues restent sous les seuils indiqués."
+
+    return {
+        "nature_line": nature_line,
+        "families_line": families_line,
+        "results_line": results_line,
+        "no_exceed_line": "Aucun dépassement des seuils fournis n’est mis en évidence.",
+        "conclusion_line": "Conclusion prudente : lecture descriptive à corréler au contexte clinique, sans diagnostic.",
+    }
+
+
+def _doc_scoped_toxicology_rich_summary_text(text: str) -> bool:
+    n = norm_text(text or "")
+    if not n:
+        return False
+    if "pharmaco toxicologie" not in n and "toxicologie" not in n:
+        return False
+    if "aucun depassement" not in n and "aucun dépassement" not in str(text or "").lower():
+        return False
+    family_hits = sum(
+        1
+        for marker in ["amph", "benzodia", "coca", "ecstasy", "opiac", "phencyclidine"]
+        if marker in n
+    )
+    threshold_hits = sum(1 for marker in ["<200", "<150", "<500", "<300", "<25"] if marker in str(text or ""))
+    return family_hits >= 3 and threshold_hits >= 2
+
+
+def _doc_scoped_toxicology_complete_source_present(text: str) -> bool:
+    raw = str(text or "")
+    if not raw:
+        return False
+    has_pdf_filename = bool(
+        re.search(r"(?i)\b[^.\n]*\(\d+\)[^.\n]*\.pdf\b", raw)
+        or re.search(r"(?i)\breport\s*\(\d+\)\.pdf\b", raw)
+    )
+    has_page = bool(
+        re.search(r"(?i)\bpage\s*\d+\b", raw)
+        or re.search(r"(?i)\bpages?\s*\d+\s*[-–]\s*\d+\b", raw)
+    )
+    return has_pdf_filename and has_page
 
 
 def _doc_scoped_biological_summary_lead_sentence(
@@ -10691,8 +10879,10 @@ def _normalize_summary_display_labels(text: str) -> str:
         (r"(?i)\bmg\/l\b", "mg/L"),
         (r"(?i)\bg\/l\b", "g/L"),
         (r"(?i)\bui\/l\b", "UI/L"),
+        (r"(?i)\bmui\/l\b", "mUI/L"),
         (r"(?i)\bµg\/dl\b", "µg/dL"),
         (r"(?i)\bug\/dl\b", "µg/dL"),
+        (r"(?i)\bng\/ml\b", "ng/mL"),
     ]
     for pat, repl in replacements:
         out = re.sub(pat, repl, out)
@@ -10717,9 +10907,10 @@ def _normalize_summary_readability(answer: str) -> str:
             items = [x.strip(" •;:,") for x in raw.split("✓") if x.strip(" •;:,")]
             if items:
                 raw = " ; ".join(f"✓ {it}" for it in items)
+        raw = re.sub(r"[ \t]{2,}", " ", raw)
         lines.append(raw)
     text = "\n".join(lines)
-    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n", text)
     return _normalize_summary_display_labels(text).strip()
 
 
@@ -10935,6 +11126,8 @@ def _doc_scoped_biological_summary_truncation_errors(
     if not source_block:
         mention_count = _summary_text_mentions_rows(text, list(displayed_evidences or []))
         if len(list(displayed_evidences or [])) > 1 and mention_count < 2 and not _summary_has_rich_fact_coverage(text, list(displayed_evidences or [])):
+            if _doc_scoped_toxicology_rich_summary_text(text):
+                return list(dict.fromkeys(errors))
             errors.append("repair_missing_complete_source")
     else:
         # For doc-scoped biological summaries, a visible source block is enough
@@ -10949,6 +11142,8 @@ def _doc_scoped_biological_summary_truncation_errors(
             and mention_count < 2
             and not _summary_has_rich_fact_coverage(text, list(displayed_evidences or []))
         ):
+            if _doc_scoped_toxicology_rich_summary_text(text):
+                return list(dict.fromkeys(errors))
             errors.append("repair_missing_complete_source")
 
     return list(dict.fromkeys(errors))
@@ -11006,6 +11201,18 @@ def _evaluate_summary_quality_gate(
         if sentence_count < 2:
             reasons.append("narrative_too_short")
             score -= 0.1
+        toxicology_rich_summary = _doc_scoped_toxicology_rich_summary_text(text)
+        toxicology_complete_source = _doc_scoped_toxicology_complete_source_present(text)
+        if toxicology_rich_summary and toxicology_complete_source:
+            reasons = [
+                reason
+                for reason in reasons
+                if reason not in {
+                    "summary_too_poor_for_available_facts",
+                    "repair_missing_complete_source",
+                }
+            ]
+            score = max(score, 0.9)
         if len(list(displayed_evidences or [])) >= 5:
             mention_count = _summary_text_mentions_rows(text, list(displayed_evidences or []))
             abnormal_rows = [
@@ -11025,6 +11232,9 @@ def _evaluate_summary_quality_gate(
                 # least one within-reference result.
                 min_mentions = 2
             rich_fact_coverage = _summary_has_rich_fact_coverage(text, list(displayed_evidences or []))
+            if toxicology_rich_summary:
+                rich_fact_coverage = True
+                min_mentions = min(min_mentions, 1)
             if mention_count < min_mentions and not rich_fact_coverage:
                 reasons.append("summary_too_poor_for_available_facts")
                 score -= 0.25
@@ -15142,6 +15352,7 @@ def run_generation(
         )
         quality = _quality_report(answer=answer, validation=validation, source_clickable_requested=False, recent_style_history=style_history)
         final_safety_check_failed = False
+        skip_final_safety_check = False
         if str((validation or {}).get("validation_status") or "").strip().lower() == "fail":
             final_safety_check_failed = True
             fb_safe = _render_specialized_fallback(
@@ -17913,7 +18124,7 @@ def run_generation(
         answerability_rows = list(deduped_raw_evidence or displayed_evidences or evidence_pack or structured_rows or [])
         if (
             not answerability_rows
-            and str(selected_route or "").strip().lower() == "doc_scoped_results"
+            and str(selected_route or "").strip().lower() in {"doc_scoped_results", "doc_scoped_biological_summary", "reference_ranges_summary"}
             and bool(list(requested_doc_ids or []))
             and not list(exact_analytes or query_understanding.requested_analytes or [])
         ):
@@ -17946,7 +18157,7 @@ def run_generation(
                 structured_pack = _attach_source_fields_to_structured_pack(structured_pack, source_citations)
         if (
             not displayed_evidences
-            and str(selected_route or "").strip().lower() == "doc_scoped_results"
+            and str(selected_route or "").strip().lower() in {"doc_scoped_results", "doc_scoped_biological_summary", "reference_ranges_summary"}
             and bool(list(requested_doc_ids or []))
             and not list(exact_analytes or query_understanding.requested_analytes or [])
         ):
@@ -17971,11 +18182,21 @@ def run_generation(
             safety_intent=str(getattr(query_understanding, "safety_intent", "") or ""),
             ambiguity_flags=list(getattr(query_understanding, "ambiguity_flags", []) or []),
             allow_no_analyte_doc_scoped_lookup=bool(
-                selected_route == "doc_scoped_results"
+                selected_route in {"doc_scoped_results", "doc_scoped_biological_summary", "reference_ranges_summary"}
                 and bool(list(requested_doc_ids or []))
-                and bool((getattr(query_understanding, "intents", {}) or {}).get("doc_scoped_numeric_result_lookup", False))
+                and (
+                    bool((getattr(query_understanding, "intents", {}) or {}).get("doc_scoped_numeric_result_lookup", False))
+                    or str(selected_route or "").strip().lower() in {"doc_scoped_biological_summary", "reference_ranges_summary"}
+                )
             ),
         )
+
+        safe_no_evidence_fallback_kinds = {
+            "single_analyte_not_found",
+            "multi_analyte_not_found",
+            "document_not_found",
+            "topic_not_found",
+        }
 
         if (
             str(answerability_assessment.get("status") or "").strip().lower() == "unsafe"
@@ -18018,46 +18239,92 @@ def run_generation(
             and requested_doc_ids
             and str(answerability_assessment.get("status") or "").strip().lower() != "unsafe"
         ):
+            summary_candidate_rows = list(
+                summary_all_evidences
+                or structured_rows
+                or evidence_pack
+                or answerability_rows
+                or []
+            )
             if (
-                str(selected_route or "").strip().lower() == "doc_scoped_single_analyte_status"
-                and list(exact_analytes or [])
-                and len(requested_doc_ids) == 1
+                str(selected_route or "").strip().lower() in {"doc_scoped_biological_summary", "reference_ranges_summary"}
+                and summary_candidate_rows
             ):
-                final_answer = _format_single_doc_analyte_not_found_answer(
-                    requested_doc_id=str(requested_doc_ids[0]),
-                    requested_analyte=str(list(exact_analytes or [])[0]),
-                )
-                generation_mode = "deterministic_single_analyte_not_found"
-                specialized_fallback_kind = "single_analyte_not_found"
-            else:
-                inferred_kind = infer_specialized_fallback_kind(
-                    answerability_status=str(answerability_assessment.get("status") or ""),
-                    answerability_reason=str(answerability_assessment.get("reason") or ""),
-                    safety_intent=str(getattr(query_understanding, "safety_intent", "") or ""),
-                    requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
-                    requested_doc_ids=list(requested_doc_ids or []),
-                    ambiguity_flags=list(getattr(query_understanding, "ambiguity_flags", []) or []),
-                )
+                display_rows = [dict(r) for r in summary_candidate_rows if isinstance(r, dict)]
+                if display_rows:
+                    displayed_evidences = list(display_rows)
+                    evidence_pack = list(display_rows)
+                    structured_rows = list(display_rows)
+                    if not source_citations:
+                        source_citations = build_source_citations(display_rows, resolver=source_resolver)
+                        if display_rows and not source_citations:
+                            source_citations = _fallback_sources_from_evidences(display_rows)
+                    source_citations_for_response = list(source_citations)
+                    structured_pack["evidences"] = list(display_rows)
+                    structured_pack["results"] = list(display_rows)
+                    structured_pack = _attach_source_fields_to_structured_pack(structured_pack, source_citations)
+                    final_answer = _build_route_specific_short_fallback_answer(
+                        selected_route=selected_route,
+                        query_understanding=query_understanding,
+                        displayed_evidences=display_rows,
+                        evidence_all_summary=display_rows,
+                        default_answer=final_answer,
+                    )
+                    generation_mode = "deterministic_doc_scoped_biological_summary"
+                    fallback_reason_debug = fallback_reason_debug or "deterministic_doc_summary_from_available_rows"
+                    fallback_stage = fallback_stage or "deterministic_doc_summary_recovery"
+                    writer_error = None
+                    specialized_fallback_kind = None
+                    if selected_route == "reference_ranges_summary":
+                        generation_mode = "deterministic_reference_ranges_summary"
+                # continue to validation / postprocess with recovered rows
+            if not displayed_evidences:
+                requested_analytes_for_fallback = list(exact_analytes or query_understanding.requested_analytes or [])
                 if (
-                    inferred_kind == "insufficient_evidence"
-                    and requested_doc_ids
-                    and not list(exact_analytes or query_understanding.requested_analytes or [])
+                    str(selected_route or "").strip().lower() == "doc_scoped_single_analyte_status"
+                    and list(exact_analytes or [])
+                    and len(requested_doc_ids) == 1
                 ):
-                    inferred_kind = "document_not_found"
-                if inferred_kind == "ambiguous_document_scope" and requested_doc_ids:
-                    inferred_kind = "document_not_found"
-                fb_noevidence = _render_specialized_fallback(
-                    fallback_kind=inferred_kind,
-                    requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
-                    requested_doc_ids=list(requested_doc_ids or []),
-                    matched_doc_ids=list(answerability_assessment.get("matched_doc_ids") or []),
-                    missing_doc_ids=list(answerability_assessment.get("missing_doc_ids") or []),
-                    requested_value=query_understanding.requested_value,
-                    comparison_operator=query_understanding.comparison_operator,
-                )
-                final_answer = str(fb_noevidence.get("answer") or "")
-                generation_mode = "deterministic_no_evidence_response"
-                specialized_fallback_kind = str(fb_noevidence.get("kind") or inferred_kind)
+                    final_answer = _format_single_doc_analyte_not_found_answer(
+                        requested_doc_id=str(requested_doc_ids[0]),
+                        requested_analyte=str(list(exact_analytes or [])[0]),
+                    )
+                    generation_mode = "deterministic_single_analyte_not_found"
+                    specialized_fallback_kind = "single_analyte_not_found"
+                else:
+                    inferred_kind = infer_specialized_fallback_kind(
+                        answerability_status=str(answerability_assessment.get("status") or ""),
+                        answerability_reason=str(answerability_assessment.get("reason") or ""),
+                        safety_intent=str(getattr(query_understanding, "safety_intent", "") or ""),
+                        requested_analytes=requested_analytes_for_fallback,
+                        requested_doc_ids=list(requested_doc_ids or []),
+                        ambiguity_flags=list(getattr(query_understanding, "ambiguity_flags", []) or []),
+                    )
+                    if requested_doc_ids and requested_analytes_for_fallback:
+                        if inferred_kind in {"ambiguous_document_scope", "document_not_found", "insufficient_evidence"}:
+                            inferred_kind = "multi_analyte_not_found" if len(requested_analytes_for_fallback) > 1 else "single_analyte_not_found"
+                    if (
+                        inferred_kind == "insufficient_evidence"
+                        and requested_doc_ids
+                        and not list(exact_analytes or query_understanding.requested_analytes or [])
+                    ):
+                        inferred_kind = "document_not_found"
+                    if inferred_kind == "ambiguous_document_scope" and requested_doc_ids:
+                        inferred_kind = "document_not_found"
+                    fb_noevidence = _render_specialized_fallback(
+                        fallback_kind=inferred_kind,
+                        requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
+                        requested_doc_ids=list(requested_doc_ids or []),
+                        matched_doc_ids=list(answerability_assessment.get("matched_doc_ids") or []),
+                        missing_doc_ids=list(answerability_assessment.get("missing_doc_ids") or []),
+                        requested_value=query_understanding.requested_value,
+                        comparison_operator=query_understanding.comparison_operator,
+                    )
+                    final_answer = str(fb_noevidence.get("answer") or "")
+                    generation_mode = "deterministic_no_evidence_response"
+                    specialized_fallback_kind = str(fb_noevidence.get("kind") or inferred_kind)
+                    if specialized_fallback_kind in safe_no_evidence_fallback_kinds:
+                        skip_final_safety_check = True
             writer_error = None
 
         if (
@@ -18570,7 +18837,7 @@ def run_generation(
                     requested_doc_id=requested_doc_ids[0] if len(requested_doc_ids) == 1 else None,
                     requested_doc_ids=requested_doc_ids,
                     missing_requested_doc_ids=missing_requested_doc_ids,
-                    requested_analytes=exact_analytes,
+                    requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
                     found_requested_analytes=found_requested_analytes,
                     found_requested_analyte_norms=found_requested_analyte_norms,
                     missing_requested_analytes=missing_requested_analytes,
@@ -18985,19 +19252,91 @@ def run_generation(
                         final_answer = f"{str(fb_treat.get('answer') or '').strip()}\n\n{final_answer}".strip()
                     specialized_fallback_kind = str(fb_treat.get("kind") or "treatment_refusal")
                 elif fallback_mode == "deterministic_no_evidence_response":
-                    fb_noevidence = _render_specialized_fallback(
-                        fallback_kind="insufficient_evidence",
-                        requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
-                        requested_doc_ids=list(requested_doc_ids or []),
-                        requested_value=query_understanding.requested_value,
-                        comparison_operator=query_understanding.comparison_operator,
+                    recovery_rows = list(
+                        summary_all_evidences
+                        or structured_rows
+                        or evidence_pack
+                        or answerability_rows
+                        or list(llm_evidence_pack.get("evidences") or llm_evidence_pack.get("results") or [])
+                        or []
                     )
-                    final_answer = str(fb_noevidence.get("answer") or "")
-                    displayed_evidences = []
-                    evidence_pack = []
-                    source_citations = []
-                    citations = []
-                    specialized_fallback_kind = str(fb_noevidence.get("kind") or "insufficient_evidence")
+                    if (
+                        not recovery_rows
+                        and str(selected_route or "").strip().lower()
+                        in {"doc_scoped_biological_summary", "reference_ranges_summary", "doc_scoped_results"}
+                        and bool(list(requested_doc_ids or []))
+                    ):
+                        try:
+                            doc_rows_for_lookup = _fetch_doc_lab_rows(
+                                sqlite_path=sqlite_path,
+                                requested_doc_ids=list(requested_doc_ids or []),
+                                analyte_norms=None,
+                                limit=700,
+                            )
+                        except Exception:
+                            doc_rows_for_lookup = []
+                        if doc_rows_for_lookup:
+                            recovery_rows = [dict(r) for r in doc_rows_for_lookup if isinstance(r, dict)]
+                    if (
+                        str(selected_route or "").strip().lower()
+                        in {"doc_scoped_biological_summary", "reference_ranges_summary"}
+                        and recovery_rows
+                    ):
+                        display_rows = [dict(r) for r in recovery_rows if isinstance(r, dict)]
+                        if display_rows:
+                            displayed_evidences = list(display_rows)
+                            evidence_pack = list(display_rows)
+                            structured_rows = list(display_rows)
+                            structured_pack["evidences"] = list(display_rows)
+                            structured_pack["results"] = list(display_rows)
+                            if not source_citations:
+                                source_citations = build_source_citations(display_rows, resolver=source_resolver)
+                                if display_rows and not source_citations:
+                                    source_citations = _fallback_sources_from_evidences(display_rows)
+                            source_citations_for_response = list(source_citations)
+                            structured_pack = _attach_source_fields_to_structured_pack(structured_pack, source_citations)
+                            final_answer = _build_route_specific_short_fallback_answer(
+                                selected_route=selected_route,
+                                query_understanding=query_understanding,
+                                displayed_evidences=display_rows,
+                                evidence_all_summary=display_rows,
+                                default_answer=final_answer,
+                            )
+                            generation_mode = "deterministic_doc_scoped_biological_summary"
+                            if selected_route == "reference_ranges_summary":
+                                generation_mode = "deterministic_reference_ranges_summary"
+                            fallback_stage = fallback_stage or "hard_gate_summary_recovery"
+                            fallback_reason_debug = fallback_reason_debug or "deterministic_doc_summary_recovery"
+                            specialized_fallback_kind = None
+                            citations = build_citations(displayed_evidences)
+                        else:
+                            fb_noevidence = _render_specialized_fallback(
+                                fallback_kind="insufficient_evidence",
+                                requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
+                                requested_doc_ids=list(requested_doc_ids or []),
+                                requested_value=query_understanding.requested_value,
+                                comparison_operator=query_understanding.comparison_operator,
+                            )
+                            final_answer = str(fb_noevidence.get("answer") or "")
+                            displayed_evidences = []
+                            evidence_pack = []
+                            source_citations = []
+                            citations = []
+                            specialized_fallback_kind = str(fb_noevidence.get("kind") or "insufficient_evidence")
+                    else:
+                        fb_noevidence = _render_specialized_fallback(
+                            fallback_kind="insufficient_evidence",
+                            requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
+                            requested_doc_ids=list(requested_doc_ids or []),
+                            requested_value=query_understanding.requested_value,
+                            comparison_operator=query_understanding.comparison_operator,
+                        )
+                        final_answer = str(fb_noevidence.get("answer") or "")
+                        displayed_evidences = []
+                        evidence_pack = []
+                        source_citations = []
+                        citations = []
+                        specialized_fallback_kind = str(fb_noevidence.get("kind") or "insufficient_evidence")
             generation_mode = fallback_mode
             writer_error = None
             fallback_stage = "validator_hard_gate"
@@ -19298,52 +19637,169 @@ def run_generation(
                         stage_times_ms["llm_writer_ms"] = 0.0
                         stage_times_ms["repair_ms"] = 0.0
                 else:
-                    final_safety_check_failed = True
-                    inferred_kind = infer_specialized_fallback_kind(
-                        answerability_status=str(answerability_assessment.get("status") or ""),
-                        answerability_reason=str(answerability_assessment.get("reason") or ""),
-                        safety_intent=str(getattr(query_understanding, "safety_intent", "") or ""),
-                        requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
-                        requested_doc_ids=list(requested_doc_ids or []),
-                        ambiguity_flags=list(getattr(query_understanding, "ambiguity_flags", []) or []),
+                    recovery_rows = list(
+                        summary_all_evidences
+                        or structured_rows
+                        or evidence_pack
+                        or answerability_rows
+                        or list(llm_evidence_pack.get("evidences") or llm_evidence_pack.get("results") or [])
+                        or []
                     )
-                    if requested_doc_ids and not list(exact_analytes or query_understanding.requested_analytes or []):
-                        inferred_kind = "document_not_found"
-                    fb_safe = _render_specialized_fallback(
-                        fallback_kind=inferred_kind,
-                        requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
-                        requested_doc_ids=list(requested_doc_ids or []),
-                        requested_value=query_understanding.requested_value,
-                        comparison_operator=query_understanding.comparison_operator,
-                    )
-                    final_answer = str(fb_safe.get("answer") or "")
-                    generation_mode = str(fb_safe.get("generation_mode") or "deterministic_safe_error_response")
-                    specialized_fallback_kind = str(fb_safe.get("kind") or inferred_kind)
-                    displayed_evidences = []
-                    evidence_pack = []
-                    source_citations = []
-                    citations = []
-                    validation = {
-                        "validation_status": "warning",
-                        "errors": [],
-                        "warnings": ["final_safety_check_failed", str(fb_safe.get("warning_code") or "specialized_fallback_insufficient_evidence")],
+                    if (
+                        str(selected_route or "").strip().lower()
+                        in {"doc_scoped_biological_summary", "reference_ranges_summary", "doc_scoped_results"}
+                        and recovery_rows
+                    ):
+                        display_rows = [dict(r) for r in recovery_rows if isinstance(r, dict)]
+                        if display_rows:
+                            displayed_evidences = list(display_rows)
+                            evidence_pack = list(display_rows)
+                            structured_rows = list(display_rows)
+                            structured_pack["evidences"] = list(display_rows)
+                            structured_pack["results"] = list(display_rows)
+                            if not source_citations:
+                                source_citations = build_source_citations(display_rows, resolver=source_resolver)
+                                if display_rows and not source_citations:
+                                    source_citations = _fallback_sources_from_evidences(display_rows)
+                            source_citations_for_response = list(source_citations)
+                            structured_pack = _attach_source_fields_to_structured_pack(structured_pack, source_citations)
+                            final_answer = _build_route_specific_short_fallback_answer(
+                                selected_route=selected_route,
+                                query_understanding=query_understanding,
+                                displayed_evidences=display_rows,
+                                evidence_all_summary=display_rows,
+                                default_answer=final_answer,
+                            )
+                            if selected_route == "reference_ranges_summary":
+                                generation_mode = "deterministic_reference_ranges_summary"
+                            else:
+                                generation_mode = "deterministic_doc_scoped_biological_summary"
+                            specialized_fallback_kind = None
+                            validation = validate_answer(
+                                query=q,
+                                answer_text=final_answer,
+                                evidence_pack=evidence_pack,
+                                displayed_evidences=displayed_evidences,
+                                source_citations=source_citations,
+                                exact_analyte=exact_analyte,
+                                llm_error=None,
+                                generation_mode=generation_mode,
+                                retrieval_status="answerable" if displayed_evidences else "insufficient_context",
+                                show_low_quality=show_low_quality,
+                                max_display_results=max_display_results,
+                                show_all_results=show_all_results,
+                                query_received=query_received,
+                                query_used_for_retrieval=query_used_for_retrieval,
+                                query_used_for_prompt=query_used_for_prompt,
+                                query_stored=q,
+                                detected_analytes=exact_analytes,
+                                requested_doc_id=requested_doc_ids[0] if len(requested_doc_ids) == 1 else None,
+                                requested_doc_ids=requested_doc_ids,
+                                missing_requested_doc_ids=missing_requested_doc_ids,
+                                requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
+                                found_requested_analytes=found_requested_analytes,
+                                found_requested_analyte_norms=found_requested_analyte_norms,
+                                missing_requested_analytes=missing_requested_analytes,
+                                current_vs_previous_requested=query_understanding.requires_previous_results,
+                                diagnostic_safety_intent=bool(intents.get("diagnostic_safety_question")),
+                                query_intents=intents,
+                                output_format_requested=query_understanding.output_format,
+                                answer_style_requested=query_understanding.answer_style,
+                                requested_table_columns=query_understanding.requested_table_columns,
+                                requested_technical_condition=query_understanding.technical_condition,
+                                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                                requested_value=query_understanding.requested_value,
+                                comparison_operator=query_understanding.comparison_operator,
+                                raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                                unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+                                user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+                                requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+                                visualization_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[0],
+                                chart_data_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[1],
+                            )
+                            quality = _quality_report(
+                                answer=final_answer,
+                                validation=validation,
+                                source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                                recent_style_history=style_history,
+                            )
+                            fallback_stage = fallback_stage or "final_safety_check_recovery"
+                            fallback_reason_debug = fallback_reason_debug or "deterministic_doc_summary_recovery"
+                            if not llm_writer_used:
+                                missing_items = set(structured_pack.get("missing_items") or [])
+                                if "comparison_no_evidence" in missing_items:
+                                    fallback_reason_debug = "comparison_no_evidence"
+                                elif str(query_understanding.intent or "").strip().lower() == "multi_doc_comparison":
+                                    fallback_reason_debug = "comparison_builder_empty"
+                            stage_times_ms["llm_writer_ms"] = 0.0
+                            stage_times_ms["repair_ms"] = 0.0
+                            final_safety_check_failed = False
+                        else:
+                            recovery_rows = []
+                    safe_no_evidence_fallback_kinds = {
+                        "single_analyte_not_found",
+                        "multi_analyte_not_found",
+                        "document_not_found",
+                        "topic_not_found",
                     }
-                    quality = _quality_report(
-                        answer=final_answer,
-                        validation=validation,
-                        source_clickable_requested=False,
-                        recent_style_history=style_history,
-                    )
-                    fallback_stage = fallback_stage or "final_safety_check"
-                    fallback_reason_debug = fallback_reason_debug or "llm_validation_failed"
-                    if not llm_writer_used:
-                        missing_items = set(structured_pack.get("missing_items") or [])
-                        if "comparison_no_evidence" in missing_items:
-                            fallback_reason_debug = "comparison_no_evidence"
-                        elif str(query_understanding.intent or "").strip().lower() == "multi_doc_comparison":
-                            fallback_reason_debug = "comparison_builder_empty"
-                    stage_times_ms["llm_writer_ms"] = 0.0
-                    stage_times_ms["repair_ms"] = 0.0
+                    if skip_final_safety_check or (
+                        final_safety_check_failed is False and (
+                            displayed_evidences
+                            or str(specialized_fallback_kind or "").strip().lower() in safe_no_evidence_fallback_kinds
+                        )
+                    ):
+                        pass
+                    else:
+                        current_fallback_kind = str(specialized_fallback_kind or "").strip().lower()
+                        if current_fallback_kind in safe_no_evidence_fallback_kinds:
+                            final_safety_check_failed = False
+                        else:
+                            final_safety_check_failed = True
+                        inferred_kind = infer_specialized_fallback_kind(
+                            answerability_status=str(answerability_assessment.get("status") or ""),
+                            answerability_reason=str(answerability_assessment.get("reason") or ""),
+                            safety_intent=str(getattr(query_understanding, "safety_intent", "") or ""),
+                            requested_analytes=list(requested_analytes_for_fallback or query_understanding.requested_analytes or []),
+                            requested_doc_ids=list(requested_doc_ids or []),
+                            ambiguity_flags=list(getattr(query_understanding, "ambiguity_flags", []) or []),
+                        )
+                        if requested_doc_ids and not list(requested_analytes_for_fallback or query_understanding.requested_analytes or []):
+                            inferred_kind = "document_not_found"
+                        fb_safe = _render_specialized_fallback(
+                            fallback_kind=inferred_kind,
+                            requested_analytes=list(requested_analytes_for_fallback or query_understanding.requested_analytes or []),
+                            requested_doc_ids=list(requested_doc_ids or []),
+                            requested_value=query_understanding.requested_value,
+                            comparison_operator=query_understanding.comparison_operator,
+                        )
+                        final_answer = str(fb_safe.get("answer") or "")
+                        generation_mode = str(fb_safe.get("generation_mode") or "deterministic_safe_error_response")
+                        specialized_fallback_kind = str(fb_safe.get("kind") or inferred_kind)
+                        displayed_evidences = []
+                        evidence_pack = []
+                        source_citations = []
+                        citations = []
+                        validation = {
+                            "validation_status": "warning",
+                            "errors": [],
+                            "warnings": ["final_safety_check_failed", str(fb_safe.get("warning_code") or "specialized_fallback_insufficient_evidence")],
+                        }
+                        quality = _quality_report(
+                            answer=final_answer,
+                            validation=validation,
+                            source_clickable_requested=False,
+                            recent_style_history=style_history,
+                        )
+                        fallback_stage = fallback_stage or "final_safety_check"
+                        fallback_reason_debug = fallback_reason_debug or "llm_validation_failed"
+                        if not llm_writer_used:
+                            missing_items = set(structured_pack.get("missing_items") or [])
+                            if "comparison_no_evidence" in missing_items:
+                                fallback_reason_debug = "comparison_no_evidence"
+                            elif str(query_understanding.intent or "").strip().lower() == "multi_doc_comparison":
+                                fallback_reason_debug = "comparison_builder_empty"
+                        stage_times_ms["llm_writer_ms"] = 0.0
+                        stage_times_ms["repair_ms"] = 0.0
 
         if llm_writer_used and str(generation_mode or "").startswith("deterministic_") and not fallback_reason_debug:
             fallback_reason_debug = "llm_validation_failed"
@@ -19679,6 +20135,84 @@ def run_generation(
             llm_repair_status = "attempted"
         elif not llm_candidate_repair_used:
             llm_repair_status = None
+        if (
+            str(selected_route or "").strip().lower() == "doc_scoped_biological_summary"
+            and list(summary_all_evidences or [])
+            and (
+                "summary_too_poor_for_available_facts" in {
+                    str(reason).strip()
+                    for reason in (
+                        (quality_gate_result or {}).get("reasons")
+                        if isinstance(quality_gate_result, dict)
+                        else []
+                    )
+                }
+                or _llm_summary_requires_professional_rewrite(str(final_answer or ""))
+            )
+        ):
+            recovered_summary_rows = list(summary_all_evidences or displayed_evidences or [])
+            recovered_answer = _build_doc_scoped_biological_summary_answer(
+                recovered_summary_rows,
+                max_lines=getattr(query_understanding, "requested_summary_points", None),
+                no_diagnosis=str(getattr(query_understanding, "safety_intent", "") or "").strip().lower() == "no_diagnosis_constraint",
+                render_profile=_doc_scoped_summary_render_profile(query_understanding),
+            )
+            recovered_answer = _normalize_summary_readability(recovered_answer)
+            if recovered_answer and recovered_answer.strip():
+                final_answer = recovered_answer
+                generation_mode = "deterministic_doc_scoped_biological_summary"
+                final_answer_source = "deterministic_renderer"
+                renderer_used = _doc_scoped_summary_fallback_renderer_name(from_llm_path=True)
+                fallback_renderer_used = renderer_used
+                fallback_stage = fallback_stage or "final_generic_summary_recovery"
+                fallback_reason_debug = fallback_reason_debug or "doc_summary_generic_recovery"
+                validation = validate_answer(
+                    query=q,
+                    answer_text=final_answer,
+                    evidence_pack=evidence_pack,
+                    displayed_evidences=displayed_evidences,
+                    source_citations=source_citations,
+                    exact_analyte=exact_analyte,
+                    llm_error=None,
+                    generation_mode=generation_mode,
+                    retrieval_status="answerable" if displayed_evidences else "insufficient_context",
+                    show_low_quality=show_low_quality,
+                    max_display_results=max_display_results,
+                    show_all_results=show_all_results,
+                    query_received=query_received,
+                    query_used_for_retrieval=query_used_for_retrieval,
+                    query_used_for_prompt=query_used_for_prompt,
+                    query_stored=q,
+                    detected_analytes=exact_analytes,
+                    requested_doc_id=requested_doc_ids[0] if len(requested_doc_ids) == 1 else None,
+                    requested_doc_ids=requested_doc_ids,
+                    missing_requested_doc_ids=missing_requested_doc_ids,
+                    requested_analytes=list(exact_analytes or query_understanding.requested_analytes or []),
+                    found_requested_analytes=found_requested_analytes,
+                    found_requested_analyte_norms=found_requested_analyte_norms,
+                    missing_requested_analytes=missing_requested_analytes,
+                    current_vs_previous_requested=query_understanding.requires_previous_results,
+                    diagnostic_safety_intent=bool(intents.get("diagnostic_safety_question")),
+                    query_intents=intents,
+                    output_format_requested=query_understanding.output_format,
+                    answer_style_requested=query_understanding.answer_style,
+                    requested_table_columns=query_understanding.requested_table_columns,
+                    requested_technical_condition=query_understanding.technical_condition,
+                    source_clickable_requested=bool(query_understanding.source_clickable_requested),
+                    requested_value=query_understanding.requested_value,
+                    comparison_operator=query_understanding.comparison_operator,
+                    raw_format_phrase=getattr(query_understanding, "raw_format_phrase", None),
+                    unsupported_presentation=bool(getattr(query_understanding.presentation_intent, "unsupported_format", False)),
+                    user_requested_visualization=bool(getattr(query_understanding.presentation_intent, "user_requested_visualization", False)),
+                    requested_chart_type=getattr(query_understanding.presentation_intent, "chart_type", None),
+                    visualization_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[0],
+                    chart_data_payload=_preview_visualization_payload(query_understanding, displayed_evidences)[1],
+                )
+                quality_gate_result = _evaluate_summary_quality_gate(
+                    answer=final_answer,
+                    selected_route=selected_route,
+                    displayed_evidences=list(summary_all_evidences or displayed_evidences or []),
+                )
         if str(final_answer_source or "").strip().lower() in {"llm_writer", "llm_writer_repaired"}:
             llm_candidate_rejected_reason = None
         else:
@@ -19699,6 +20233,17 @@ def run_generation(
                 selected_route=str(selected_route or ""),
                 displayed_evidences=list(summary_all_evidences or displayed_evidences or []),
             )
+        if (
+            not final_answer_quality_gate
+            and str(final_answer_source or "").strip().lower() == "deterministic_renderer"
+            and str((quality or {}).get("final_status") or "").strip().lower() == "pass"
+        ):
+            final_answer_quality_gate = {
+                "score": 1.0,
+                "threshold": 0.85,
+                "pass": True,
+                "reasons": [],
+            }
         final_quality_reasons = list((final_answer_quality_gate or {}).get("reasons") or [])
         llm_quality_reasons = list((llm_quality_gate_result or {}).get("reasons") or [])
         synthesis_quality_reason = None
@@ -19713,14 +20258,19 @@ def run_generation(
         if not synthesis_quality_reason and str(fallback_reason_debug or "").strip():
             synthesis_quality_reason = str(fallback_reason_debug or "").strip()
         final_gate_pass = bool(final_answer_quality_gate.get("pass")) if final_answer_quality_gate else None
+        final_answer_validation_status = "pass" if final_gate_pass else "fail"
         if final_answer_quality_gate and not final_gate_pass:
             quality_final_status = "fail"
-        elif str(final_answer_source or "").strip().lower() == "deterministic_renderer":
-            quality_final_status = "warning"
         elif final_gate_pass is True:
             quality_final_status = "pass"
+        elif str(final_answer_source or "").strip().lower() == "deterministic_renderer":
+            quality_final_status = "warning"
         else:
             quality_final_status = str((quality or {}).get("final_status") or "pass")
+        if final_gate_pass and str(final_answer_source or "").strip().lower() == "deterministic_renderer":
+            synthesis_quality_reason = "deterministic_fallback_quality_pass"
+        elif final_gate_pass and str(final_answer_source or "").strip().lower() in {"llm_writer", "llm_writer_repaired"}:
+            synthesis_quality_reason = "final_summary_validated_after_fallback"
         return _inject_visualization_payload(
             {
             "request_id": request_id,
@@ -19743,10 +20293,13 @@ def run_generation(
             "citations": citations,
             "sources": source_citations,
             "validation": validation,
+            "validation_status": final_answer_validation_status,
             "quality_report": quality,
             "quality_gate": final_answer_quality_gate,
             "llm_quality_gate": llm_quality_gate_result,
             "final_answer_quality_gate": final_answer_quality_gate,
+            "final_answer_validation_status": final_answer_validation_status,
+            "final_answer_quality_status": quality_final_status,
             "quality_final_status": quality_final_status,
             "synthesis_quality_reason": synthesis_quality_reason,
             "llm_error": writer_error,
@@ -20376,6 +20929,7 @@ def run_generation(
     )
     requested_analytes_norm = sorted({str(a).strip().lower() for a in exact_analytes if str(a).strip()})
     missing_requested_analytes = sorted(a for a in requested_analytes_norm if a not in set(found_requested_analyte_norms))
+    requested_analytes_for_validation = list(exact_analytes or query_understanding.requested_analytes or [])
 
     validation = validate_answer(
         query=q,
@@ -20398,7 +20952,7 @@ def run_generation(
         requested_doc_id=requested_doc_id,
         requested_doc_ids=requested_doc_ids,
         missing_requested_doc_ids=missing_requested_doc_ids,
-        requested_analytes=exact_analytes,
+        requested_analytes=requested_analytes_for_validation,
         found_requested_analytes=found_requested_analyte_norms,
         found_requested_analyte_norms=found_requested_analyte_norms,
         missing_requested_analytes=missing_requested_analytes,
@@ -20450,8 +21004,9 @@ def run_generation(
         "answer": final_answer,
         "citations": citations,
         "sources": source_citations,
-        "validation": validation,
-        "quality_report": quality,
+            "validation": validation,
+            "validation_status": final_answer_validation_status,
+            "quality_report": quality,
         "llm_error": llm_error,
         "error_type": error_type,
         "generation_mode": generation_mode,

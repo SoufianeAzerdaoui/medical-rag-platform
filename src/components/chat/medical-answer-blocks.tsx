@@ -511,8 +511,8 @@ function removeLineRanges(content: string, ranges: Array<{ startIndex: number; e
 function MedicalResultCard({ result, compact = false, showSource = true }: { result: MedicalResult; compact?: boolean; showSource?: boolean }) {
   return (
     <article className={compact
-      ? "group relative overflow-hidden rounded-[22px] border border-border/70 bg-[radial-gradient(circle_at_top_right,rgba(14,165,233,0.08),transparent_30%),linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.018))] p-3.5 shadow-[0_12px_34px_hsl(220_35%_5%_/_0.10)] transition hover:-translate-y-0.5 hover:border-accent/30"
-      : "group relative overflow-hidden rounded-[22px] border border-border/70 bg-[radial-gradient(circle_at_top_right,rgba(14,165,233,0.09),transparent_30%),linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))] p-4 shadow-[0_14px_40px_hsl(220_35%_5%_/_0.12)] transition hover:-translate-y-0.5 hover:border-accent/30"
+      ? "group relative overflow-hidden rounded-[24px] border border-border/70 bg-[radial-gradient(circle_at_top_right,rgba(14,165,233,0.08),transparent_30%),linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.018))] p-3.5 shadow-[0_12px_34px_hsl(220_35%_5%_/_0.10)] transition hover:-translate-y-0.5 hover:border-accent/30"
+      : "group relative overflow-hidden rounded-[24px] border border-border/70 bg-[radial-gradient(circle_at_top_right,rgba(14,165,233,0.09),transparent_30%),linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))] p-4 shadow-[0_12px_34px_hsl(220_35%_5%_/_0.10)] transition hover:-translate-y-0.5 hover:border-accent/30"
     }>
       <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/35 to-transparent" />
       <div className="flex items-start justify-between gap-3">

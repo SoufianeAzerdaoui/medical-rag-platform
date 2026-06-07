@@ -106,7 +106,18 @@ export function useChatActions() {
           null;
         resolveAssistantMessage(chatId, loading.id, response.answer, response.sources, {
           quality_report: response.quality_report,
-          validation_status: response.validation_status,
+          validation_status:
+            (response.final_answer_validation_status as "pass" | "warning" | "fail" | null) ??
+            (response.quality_final_status as "pass" | "warning" | "fail" | null) ??
+            response.validation_status,
+          final_answer_validation_status:
+            (response.final_answer_validation_status as "pass" | "warning" | "fail" | null) ??
+            (debug.final_answer_validation_status as "pass" | "warning" | "fail" | null) ??
+            (rawDebug.final_answer_validation_status as "pass" | "warning" | "fail" | null) ??
+            (response.quality_final_status as "pass" | "warning" | "fail" | null) ??
+            (debug.quality_final_status as "pass" | "warning" | "fail" | null) ??
+            (rawDebug.quality_final_status as "pass" | "warning" | "fail" | null) ??
+            null,
           generation_mode: response.generation_mode,
           generation_writer: response.generation_writer,
           provider: response.provider ?? null,

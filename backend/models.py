@@ -111,6 +111,7 @@ class ChatResponse(BaseModel):
     response_time: float | None = None
     quality_report: dict[str, Any] | None = None
     validation_status: Literal["pass", "warning", "fail"] | None = None
+    final_answer_validation_status: Literal["pass", "warning", "fail"] | None = None
     generation_mode: str | None = None
     generation_writer: str | None = None
     provider: str | None = None

@@ -59,7 +59,11 @@ function parseCard(content: string): ParsedCard | null {
     return /^###\s+/.test(plain) || (/^[^:]{4,}$/.test(plain) && !/^(synthèse|synthese|conclusion|source|sources|niveau de support documentaire|qualité de synthèse|qualite de synthese)/i.test(plain));
   });
   const valueLine = lines.find((l) => /(?:^|\s)(?:-\s*)?(?:\*\*)?valeur(?:\*\*)?\s*[:：]/i.test(normalize(l)));
-  const refLine = lines.find((l) => /(?:^|\s)(?:-\s*)?(?:\*\*)?(référence|reference)(?: disponible)?(?:\*\*)?\s*[:：]/i.test(normalize(l)));
+  const refLine = lines.find((l) =>
+    /(?:^|\s)(?:-\s*)?(?:\*\*)?(?:référence|reference)(?:\s+(?:disponible|applicable|applicable|féminine|feminine))?(?:\*\*)?\s*[:：]/i.test(
+      normalize(l),
+    ),
+  );
   const statusLine = lines.find((l) => /(?:^|\s)(?:-\s*)?(?:\*\*)?statut (?:technique|interprétatif)(?:\*\*)?\s*[:：]/i.test(normalize(l)));
   const sourceLine = lines.find((l) => /(?:^|\s)(?:-\s*)?(?:\*\*)?source(?:\*\*)?\s*[:：]/i.test(normalize(l)));
   const conclusionLine = lines.find((l) => /conclusion technique/i.test(normalize(l)));
@@ -69,7 +73,18 @@ function parseCard(content: string): ParsedCard | null {
 
   const valueSplit = splitValueAndUnit(findLineValue(lines, ["Valeur"]));
   const refLabel = stripMd(refLine.split(":")[0].replace(/^-/, ""));
-  const refValue = stripMd(findLineValue(lines, ["Référence disponible", "Référence", "Reference", "Intervalle de référence", "Plage de référence"]));
+  const refValue = stripMd(
+    findLineValue(lines, [
+      "Référence applicable",
+      "Référence disponible",
+      "Référence féminine",
+      "Référence femme",
+      "Référence",
+      "Reference",
+      "Intervalle de référence",
+      "Plage de référence",
+    ]),
+  );
   const status = stripMd(findLineValue(lines, ["Statut technique", "Statut interprétatif"]));
   const sourceText = stripMd(findLineValue(lines, ["Source"]));
   const conclusion = stripMd(conclusionLine);

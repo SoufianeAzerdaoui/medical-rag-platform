@@ -90,6 +90,7 @@ export interface QualityReport {
 export interface AssistantDiagnostics {
   quality_report?: QualityReport;
   validation_status?: "pass" | "warning" | "fail";
+  final_answer_validation_status?: "pass" | "warning" | "fail" | null;
   generation_mode?: string;
   generation_writer?: "llm_writer" | "professional_fallback";
   provider?: string | null;
@@ -206,6 +207,7 @@ export interface RagResponse {
   response_time?: number;
   quality_report?: QualityReport;
   validation_status?: "pass" | "warning" | "fail";
+  final_answer_validation_status?: "pass" | "warning" | "fail" | null;
   generation_mode?: string;
   generation_writer?: "llm_writer" | "professional_fallback";
   provider?: string | null;
