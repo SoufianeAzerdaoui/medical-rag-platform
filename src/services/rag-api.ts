@@ -181,6 +181,7 @@ export interface UploadResponse {
 }
 
 const INGESTION_TIMEOUT_MS = 20 * 60 * 1000;
+const CHAT_TIMEOUT_MS = 5 * 60 * 1000;
 
 export interface IngestionJobStartResponse {
   job_id: string;
@@ -414,7 +415,7 @@ export async function sendChat(payload: ChatPayload, token: string): Promise<Rag
     method: "POST",
     token,
     body: JSON.stringify(payload),
-    timeoutMs: 90_000,
+    timeoutMs: CHAT_TIMEOUT_MS,
   });
   const sources = Array.isArray(response.sources) ? (response.sources as ChatSource[]) : undefined;
   return { ...response, sources };

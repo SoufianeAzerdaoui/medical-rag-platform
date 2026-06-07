@@ -1090,6 +1090,25 @@ def validate_answer(
     missing_requested = [str(a).strip().lower() for a in (missing_requested_analytes or []) if str(a).strip()]
     requested_doc_ids_norm = [str(d).strip().lower() for d in (requested_doc_ids or []) if str(d).strip()]
     multi_doc_requested = len(requested_doc_ids_norm) >= 2
+    no_evidence_doc_level_response = bool(
+        not displayed_doc_ids
+        and (source_doc_ids or structured_source_doc_ids)
+        and any(
+            phrase in core_norm
+            for phrase in [
+                "non retrouve",
+                "non retrouvé",
+                "non retrouves",
+                "non retrouvés",
+                "aucun resultat exploitable",
+                "aucun résultat exploitable",
+                "aucune donnee structuree exploitable",
+                "aucune donnée structurée exploitable",
+                "aucun resultat correspondant",
+                "aucun résultat correspondant",
+            ]
+        )
+    )
 
     if exact_analyte and not requested_analyte_list and not multi_doc_requested:
         detected = find_analyte_mentions(core_text)
@@ -1147,7 +1166,23 @@ def validate_answer(
             errors.append("requested_analyte_coverage_incomplete")
             unsupported_claims.append(f"Requested analytes without found/missing status: {uncovered}")
         if effective_missing_requested and generation_mode != "deterministic_measured_value_vs_comment_sql_template":
-            warnings.append("controlled_warning_missing_requested_analytes")
+            answer_norm = _norm(core_text)
+            acknowledged_missing = bool(
+                answer_norm
+                and any(
+                    phrase in answer_norm
+                    for phrase in [
+                        "non retrouve",
+                        "non retrouvé",
+                        "non retrouvée",
+                        "aucun résultat correspondant",
+                        "aucune valeur numérique exploitable",
+                    ]
+                )
+                and all(_norm(str(item).replace("_", " ")) in answer_norm for item in effective_missing_requested)
+            )
+            if not acknowledged_missing and not no_evidence_doc_level_response:
+                warnings.append("controlled_warning_missing_requested_analytes")
 
         displayed_norms = {str(ev.get("analyte_norm") or "").strip().lower() for ev in displayed if ev.get("analyte_norm")}
         if found_requested_norms:
@@ -1189,6 +1224,7 @@ def validate_answer(
         and result_line_count >= 2
         and source_count < result_line_count
         and not diagnostic_safety_intent
+        and not no_evidence_doc_level_response
     ):
         warnings.append("multi_result_missing_structured_details")
 
@@ -1402,7 +1438,7 @@ def validate_answer(
 
     if source_chunk_ids:
         source_alignment_pass = set(source_chunk_ids) == set(displayed_chunk_ids)
-        if not source_alignment_pass:
+        if not source_alignment_pass and not no_evidence_doc_level_response:
             errors.append("source_alignment_mismatch")
             errors.append("unsupported_source")
             unsupported_claims.append(
@@ -1412,7 +1448,7 @@ def validate_answer(
         displayed_doc_set = {str(d).strip().lower() for d in displayed_doc_ids if str(d).strip()}
         source_doc_set = {str(d).strip().lower() for d in (source_doc_ids + structured_source_doc_ids) if str(d).strip()}
         source_alignment_pass = (not source_doc_set) or (source_doc_set == displayed_doc_set)
-        if not source_alignment_pass:
+        if not source_alignment_pass and not no_evidence_doc_level_response:
             errors.append("source_alignment_mismatch_doc_level")
             errors.append("unsupported_source")
             unsupported_claims.append(
@@ -1917,8 +1953,31 @@ def validate_answer(
             and len(requested_analyte_list) == 1
         )
         if len(intro_sentences) > 2 and not section_intro_ok and not is_multi_doc_single_analyte_deterministic:
-            warnings.append("over_verbose_intro")
-        if requested_value:
+            status_counts = {
+                "above": 0,
+                "below": 0,
+                "within": 0,
+                "context": 0,
+            }
+            for ev in displayed:
+                status = str(ev.get("technical_status_code") or ev.get("interpretation_status") or ev.get("status") or "").strip().lower()
+                if status == "above_reference":
+                    status_counts["above"] += 1
+                elif status == "below_reference":
+                    status_counts["below"] += 1
+                elif status == "within_reference":
+                    status_counts["within"] += 1
+                elif status == "needs_clinical_context":
+                    status_counts["context"] += 1
+            rich_biological_summary = (
+                generation_mode_norm in {"llm_professional_writer", "hybrid_structured_llm_writer"}
+                and len(displayed) >= 5
+                and (status_counts["above"] + status_counts["below"] + status_counts["within"]) >= 5
+                and status_counts["within"] >= 1
+            )
+            if not rich_biological_summary:
+                warnings.append("over_verbose_intro")
+        if requested_value and (answer_style_requested or "").strip().lower() not in {"doctor_note"}:
             intro_norm = _norm(intro_block)
             rv = _norm(str(requested_value))
             op = _norm(str(comparison_operator or ""))
@@ -2201,6 +2260,8 @@ def validate_answer(
         )
         for missing_analyte in missing_requested:
             if suppress_missing_requested_warning:
+                continue
+            if no_evidence_doc_level_response:
                 continue
             warnings.append(f"missing_requested_analyte:{missing_analyte}")
 
@@ -2565,6 +2626,28 @@ def validate_answer(
             else:
                 warnings.append(f"downgraded_non_fact_error:{err}")
         errors = retained_errors
+
+    if (
+        generation_mode_norm in deterministic_fact_modes
+        and displayed
+        and bool((query_intents or {}).get("doc_scoped_numeric_result_lookup"))
+        and not [str(a).strip() for a in (requested_analytes or []) if str(a).strip()]
+    ):
+        relaxed_numeric_lookup_errors = {
+            "unsupported_value",
+            "unsupported_analyte",
+            "unsupported_source",
+            "source_alignment_mismatch_doc_level",
+            "reference_semantic_forbidden_multi_analyte_table",
+            "reference_range_forbidden_multi_analyte_table",
+        }
+        retained: list[str] = []
+        for err in errors:
+            if err in relaxed_numeric_lookup_errors:
+                warnings.append(f"downgraded_non_fact_error:{err}")
+                continue
+            retained.append(err)
+        errors = retained
 
     if generation_mode_norm in {"deterministic_doc_pair_comparison", "deterministic_multi_doc_comparison"} and errors:
         kept: list[str] = []

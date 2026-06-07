@@ -134,7 +134,8 @@ _DEFAULT_ASSISTANT_MESSAGES: dict[str, Any] = {
             "Conclusion technique : aucune donnée exploitable n’a été identifiée pour ce thème dans le périmètre demandé."
         ),
         "document_not_found_template": (
-            "Aucun résultat biologique exploitable n’a été retrouvé dans {doc_labels} pour la demande formulée.\n\n"
+            "Aucune donnée structurée exploitable n’a été extraite de {doc_pdf_labels} pour la demande formulée.\n\n"
+            "Source documentaire : {doc_pdf_labels}.\n"
             "Conclusion technique : le périmètre documentaire demandé ne contient pas de données compatibles."
         ),
         "ambiguous_analyte_template": (
@@ -165,7 +166,8 @@ _DEFAULT_ASSISTANT_MESSAGES: dict[str, Any] = {
             "Conclusion technique : réponse limitée aux données compatibles retrouvées."
         ),
         "insufficient_evidence_template": (
-            "Information insuffisante dans les données structurées disponibles pour répondre de façon fiable.\n\n"
+            "Aucune donnée structurée exploitable n’a été identifiée pour répondre de façon fiable.\n\n"
+            "Source documentaire : {doc_pdf_labels}.\n"
             "Conclusion technique : aucun résultat exploitable n’a été identifié pour {analyte_label}{criterion} dans {doc_labels}."
         ),
     },

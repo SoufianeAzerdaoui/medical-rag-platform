@@ -10,7 +10,7 @@ CHUNKING_SCRIPT_ROOT = PROJECT_ROOT / "scripts" / "chunking"
 if str(CHUNKING_SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(CHUNKING_SCRIPT_ROOT))
 
-from build_chunks import build_result_chunk
+from build_chunks import build_result_chunk, make_chunk_id, slugify
 
 
 class TestChunkReferenceMetadata(unittest.TestCase):
@@ -91,6 +91,14 @@ class TestChunkReferenceMetadata(unittest.TestCase):
         self.assertEqual(metadata.get("reference_unit"), "pmol/l")
         self.assertEqual(metadata.get("reference_low"), 0.78)
         self.assertEqual(metadata.get("reference_high"), 5.19)
+
+    def test_slugify_preserves_double_underscores_for_doc_id_uniqueness(self) -> None:
+        self.assertEqual(slugify("report__100"), "report__100")
+        self.assertEqual(slugify("report (100)"), "report_100")
+        self.assertNotEqual(
+            make_chunk_id("report__100", "document_summary", "document_summary"),
+            make_chunk_id("report (100)", "document_summary", "document_summary"),
+        )
 
 
 if __name__ == "__main__":

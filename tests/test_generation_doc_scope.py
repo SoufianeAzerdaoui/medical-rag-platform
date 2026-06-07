@@ -18,6 +18,10 @@ for root in (SCRIPTS_ROOT, GENERATION_ROOT):
 from generate_answer import run_generation
 from evaluation.benchmark_llm_writers import _extract_response_fields
 from retrieval.models import RetrievalResult, SearchResponse
+from answer_validator import validate_answer
+from citation_builder import build_source_citations
+from professional_answer_composer import render_professional_fallback
+from query_understanding import parse_query_understanding
 
 
 class _FakeSearchEngine:
@@ -69,6 +73,78 @@ def _mk_result(*, chunk_id: str, doc_id: str, analyte: str, analyte_norm: str, v
     )
 
 
+def _mk_tox_result(*, row_index: int, analyte: str, analyte_norm: str, value_raw: str, unit: str, reference: str) -> RetrievalResult:
+    metadata = {
+        "analyte": analyte,
+        "analyte_norm": analyte_norm,
+        "value_raw": value_raw,
+        "value_numeric": value_raw.replace(",", "."),
+        "unit": unit,
+        "reference_range": reference,
+        "interpretation_status": "within_reference",
+        "previous_result_present": 1,
+        "previous_result_value_raw": "",
+        "source_kind": "chu_text_fallback",
+        "row_index": row_index,
+        "page_number": 1,
+        "section": "TOXICOLOGIE",
+    }
+    return RetrievalResult(
+        chunk_id=f"chk_report_7_{row_index}_{analyte_norm}",
+        doc_id="report_7",
+        chunk_type="lab_result",
+        document_type="lab_report",
+        source_pdf="docs/report (7).pdf",
+        page_number=1,
+        text=f"{analyte} {value_raw} {unit} {reference}",
+        text_preview=f"{analyte} {value_raw} {unit} {reference}",
+        metadata=metadata,
+        retrieval_mode="hybrid",
+        match_reason=["fake", "doc_scope"],
+    )
+
+
+def _mk_doc_result(
+    *,
+    doc_id: str,
+    source_pdf: str,
+    row_index: int,
+    analyte: str,
+    analyte_norm: str,
+    value_raw: str,
+    unit: str,
+    reference: str,
+) -> RetrievalResult:
+    metadata = {
+        "analyte": analyte,
+        "analyte_norm": analyte_norm,
+        "value_raw": value_raw,
+        "value_numeric": value_raw.replace(",", "."),
+        "unit": unit,
+        "reference_range": reference,
+        "interpretation_status": "within_reference",
+        "previous_result_present": 1,
+        "previous_result_value_raw": "",
+        "source_kind": "chu_text_fallback",
+        "row_index": row_index,
+        "page_number": 1,
+        "section": "BIOCHIMIE",
+    }
+    return RetrievalResult(
+        chunk_id=f"chk_{doc_id}_{row_index}_{analyte_norm}",
+        doc_id=doc_id,
+        chunk_type="lab_result",
+        document_type="lab_report",
+        source_pdf=source_pdf,
+        page_number=1,
+        text=f"{analyte} {value_raw} {unit} {reference}",
+        text_preview=f"{analyte} {value_raw} {unit} {reference}",
+        metadata=metadata,
+        retrieval_mode="hybrid",
+        match_reason=["fake", "doc_scope"],
+    )
+
+
 class TestGenerationDocScope(unittest.TestCase):
     def setUp(self) -> None:
         self._orig_document_identity_guard = os.environ.get("MEDICAL_RAG_DOCUMENT_IDENTITY_GUARD_ENABLED")
@@ -115,6 +191,377 @@ class TestGenerationDocScope(unittest.TestCase):
                 os.environ.pop("MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_FAILURE_THRESHOLD", None)
             else:
                 os.environ["MEDICAL_RAG_LLM_TIMEOUT_CIRCUIT_FAILURE_THRESHOLD"] = old_threshold
+
+    def test_deterministic_summary_not_empty_when_llm_rejected(self) -> None:
+        tox_rows = [
+            _mk_tox_result(row_index=1, analyte="AMPHÉTAMINE QUALITATIF", analyte_norm="amphetamine_qualitatif", value_raw="001", unit="ng/mL", reference="<500"),
+            _mk_tox_result(row_index=3, analyte="AMPHÉTAMINE SEMI-QUANTITATIF", analyte_norm="amphetamine_semi_quantitatif", value_raw="3,00", unit="ng/mL", reference="<200"),
+            _mk_tox_result(row_index=4, analyte="BENZODIAZÉPINE QUALITATIF", analyte_norm="benzodiazepine_qualitatif", value_raw="4", unit="ng/mL", reference="<200"),
+            _mk_tox_result(row_index=9, analyte="COCAÏNE SEMI-QUANTITATIF", analyte_norm="cocaine_semi_quantitatif", value_raw="9,00", unit="ng/mL", reference="<150"),
+            _mk_tox_result(row_index=15, analyte="OPIACÈS SEMI-QUANTITATIF", analyte_norm="opiaces_semi_quantitatif", value_raw="15,00", unit="ng/mL", reference="<300"),
+            _mk_tox_result(row_index=18, analyte="PHENCYCLIDINE SEMI-QUANTITATIF", analyte_norm="phencyclidine_semi_quantitatif", value_raw="016", unit="ng/mL", reference="<25"),
+        ]
+        response = SearchResponse(
+            query="Dans le PDF report (7), fais un résumé médical clair et fidèle en 4 à 6 lignes, sans interprétation excessive.",
+            mode="hybrid",
+            filters={"doc_id": "report_7"},
+            top_results=list(tox_rows[:3]),
+            context_chunks=list(tox_rows),
+            sources=[
+                {
+                    "doc_id": "report_7",
+                    "source_pdf": "docs/report (7).pdf",
+                    "page_number": 1,
+                    "chunk_id": tox_rows[0].chunk_id,
+                    "chunk_type": tox_rows[0].chunk_type,
+                    "text_preview": tox_rows[0].text_preview,
+                }
+            ],
+            answerability={"status": "answerable_exact", "reason": "context_available"},
+        )
+
+        fake_search_engine = _FakeSearchEngine(response)
+        result = run_generation(
+            query="Dans le PDF report (7), fais un résumé médical clair et fidèle en 4 à 6 lignes, sans interprétation excessive.",
+            mode="hybrid",
+            summary_style="short",
+            top_k=5,
+            max_display_results=3,
+            show_all_results=False,
+            show_low_quality=False,
+            search_engine=fake_search_engine,
+        )
+
+        answer = str(result.get("answer") or "")
+        self.assertIn("pharmaco-toxicologie", answer.lower())
+        self.assertIn("urinaire", answer.lower())
+        self.assertIn("amphétamine", answer.lower())
+        self.assertIn("benzodiazépine", answer.lower())
+        self.assertIn("cocaïne", answer.lower())
+        self.assertIn("ecstasy", answer.lower())
+        self.assertIn("opiacés", answer.lower())
+        self.assertIn("phencyclidine", answer.lower())
+        self.assertTrue(
+            any(token in answer for token in ["<200", "<150", "<500", "<300", "<25"]),
+            msg=answer,
+        )
+        self.assertIn("aucun dépassement des seuils", answer.lower())
+        self.assertNotIn("Synthèse descriptive fondée sur", answer)
+
+    def test_report7_quality_gate_passes_after_toxicology_summary(self) -> None:
+        tox_rows = [
+            _mk_tox_result(row_index=1, analyte="AMPHÉTAMINE QUALITATIF", analyte_norm="amphetamine_qualitatif", value_raw="001", unit="ng/mL", reference="<500"),
+            _mk_tox_result(row_index=3, analyte="AMPHÉTAMINE SEMI-QUANTITATIF", analyte_norm="amphetamine_semi_quantitatif", value_raw="3,00", unit="ng/mL", reference="<200"),
+            _mk_tox_result(row_index=4, analyte="BENZODIAZÉPINE QUALITATIF", analyte_norm="benzodiazepine_qualitatif", value_raw="4", unit="ng/mL", reference="<200"),
+            _mk_tox_result(row_index=9, analyte="COCAÏNE SEMI-QUANTITATIF", analyte_norm="cocaine_semi_quantitatif", value_raw="9,00", unit="ng/mL", reference="<150"),
+            _mk_tox_result(row_index=12, analyte="ECSTASY SEMI-QUANTITATIF", analyte_norm="ecstasy_semi_quantitatif", value_raw="012", unit="ng/mL", reference="<500"),
+            _mk_tox_result(row_index=15, analyte="OPIACÈS SEMI-QUANTITATIF", analyte_norm="opiaces_semi_quantitatif", value_raw="15,00", unit="ng/mL", reference="<300"),
+            _mk_tox_result(row_index=18, analyte="PHENCYCLIDINE SEMI-QUANTITATIF", analyte_norm="phencyclidine_semi_quantitatif", value_raw="016", unit="ng/mL", reference="<25"),
+        ]
+        response = SearchResponse(
+            query="Dans le PDF report (7), fais un résumé médical clair et fidèle en 4 à 6 lignes, sans interprétation excessive.",
+            mode="hybrid",
+            filters={"doc_id": "report_7"},
+            top_results=list(tox_rows[:3]),
+            context_chunks=list(tox_rows),
+            sources=[
+                {
+                    "doc_id": "report_7",
+                    "source_pdf": "docs/report (7).pdf",
+                    "page_number": 1,
+                    "chunk_id": tox_rows[0].chunk_id,
+                    "chunk_type": tox_rows[0].chunk_type,
+                    "text_preview": tox_rows[0].text_preview,
+                }
+            ],
+            answerability={"status": "answerable_exact", "reason": "context_available"},
+        )
+
+        fake_search_engine = _FakeSearchEngine(response)
+        result = run_generation(
+            query="Dans le PDF report (7), fais un résumé médical clair et fidèle en 4 à 6 lignes, sans interprétation excessive.",
+            mode="hybrid",
+            summary_style="short",
+            top_k=5,
+            max_display_results=3,
+            show_all_results=False,
+            show_low_quality=False,
+            search_engine=fake_search_engine,
+        )
+        answer = str(result.get("answer") or "")
+        gate = dict(result.get("final_answer_quality_gate") or {})
+        self.assertEqual(str(result.get("quality_final_status") or ""), "pass", msg=answer)
+        self.assertEqual(str(result.get("final_answer_validation_status") or ""), "pass", msg=answer)
+        self.assertEqual(str(result.get("synthesis_quality_reason") or ""), "deterministic_fallback_quality_pass")
+        self.assertNotIn("summary_too_poor_for_available_facts", list(gate.get("reasons") or []))
+        self.assertNotIn("repair_missing_complete_source", list(gate.get("reasons") or []))
+        self.assertIn("pharmaco-toxicologie", answer.lower())
+        self.assertIn("report (7).pdf", answer)
+        self.assertIn("page 1", answer)
+        self.assertGreaterEqual(answer.count("\n"), 4, msg=answer)
+        self.assertNotIn("\n\n", answer, msg=answer)
+        self.assertIn("ecstasy 12 ng/ml", answer.lower(), msg=answer)
+        self.assertIn("phencyclidine 16 ng/ml", answer.lower(), msg=answer)
+
+    def test_report100_multi_analyte_not_found_lists_each_requested_analyte(self) -> None:
+        rows = [
+            _mk_doc_result(
+                doc_id="report_100",
+                source_pdf="docs/report (100).pdf",
+                row_index=1,
+                analyte="PTH INTACT",
+                analyte_norm="pth_intact",
+                value_raw="3,2",
+                unit="pg/mL",
+                reference="12,0 - 65,0",
+            ),
+            _mk_doc_result(
+                doc_id="report_100",
+                source_pdf="docs/report (100).pdf",
+                row_index=2,
+                analyte="AMH",
+                analyte_norm="amh",
+                value_raw="1,8",
+                unit="ng/mL",
+                reference="0,3 - 8,0",
+            ),
+            _mk_doc_result(
+                doc_id="report_100",
+                source_pdf="docs/report (100).pdf",
+                row_index=3,
+                analyte="TSHus",
+                analyte_norm="tshus",
+                value_raw="2,1",
+                unit="mUI/L",
+                reference="0,4 - 4,0",
+            ),
+        ]
+        response = SearchResponse(
+            query="Dans le PDF report (100), retrouve les anomalies de LDH, CKMB, bilirubine directe et ammonium. Si elles ne sont pas présentes, dis-le explicitement sans inventer de valeur.",
+            mode="hybrid",
+            filters={"doc_id": "report_100"},
+            top_results=list(rows[:3]),
+            context_chunks=list(rows),
+            sources=[
+                {
+                    "doc_id": "report_100",
+                    "source_pdf": "docs/report (100).pdf",
+                    "page_number": 1,
+                    "chunk_id": rows[0].chunk_id,
+                    "chunk_type": rows[0].chunk_type,
+                    "text_preview": rows[0].text_preview,
+                }
+            ],
+            answerability={"status": "not_found", "reason": "requested_analytes_absent"},
+        )
+
+        fake_search_engine = _FakeSearchEngine(response)
+        result = run_generation(
+            query="Dans le PDF report (100), retrouve les anomalies de LDH, CKMB, bilirubine directe et ammonium. Si elles ne sont pas présentes, dis-le explicitement sans inventer de valeur.",
+            mode="hybrid",
+            summary_style="short",
+            top_k=5,
+            max_display_results=3,
+            show_all_results=False,
+            show_low_quality=False,
+            search_engine=fake_search_engine,
+        )
+
+        answer = str(result.get("answer") or "")
+        low = answer.lower()
+        self.assertIn("ldh", low)
+        self.assertIn("ckmb", low)
+        self.assertIn("bilirubine directe", low)
+        self.assertIn("ammonium", low)
+        self.assertIn("non retrouvé", low)
+        self.assertNotIn("aucune donnée structurée exploitable", low)
+        self.assertIn("report (100).pdf", answer)
+        self.assertEqual(str(result.get("quality_final_status") or "").lower(), "pass", msg=answer)
+
+    def test_report7_summary_has_line_breaks(self) -> None:
+        tox_rows = [
+            _mk_tox_result(row_index=1, analyte="AMPHÉTAMINE QUALITATIF", analyte_norm="amphetamine_qualitatif", value_raw="001", unit="ng/mL", reference="<500"),
+            _mk_tox_result(row_index=3, analyte="AMPHÉTAMINE SEMI-QUANTITATIF", analyte_norm="amphetamine_semi_quantitatif", value_raw="3,00", unit="ng/mL", reference="<200"),
+            _mk_tox_result(row_index=4, analyte="BENZODIAZÉPINE QUALITATIF", analyte_norm="benzodiazepine_qualitatif", value_raw="4", unit="ng/mL", reference="<200"),
+            _mk_tox_result(row_index=9, analyte="COCAÏNE SEMI-QUANTITATIF", analyte_norm="cocaine_semi_quantitatif", value_raw="9,00", unit="ng/mL", reference="<150"),
+            _mk_tox_result(row_index=12, analyte="ECSTASY SEMI-QUANTITATIF", analyte_norm="ecstasy_semi_quantitatif", value_raw="012", unit="ng/mL", reference="<500"),
+            _mk_tox_result(row_index=15, analyte="OPIACÈS SEMI-QUANTITATIF", analyte_norm="opiaces_semi_quantitatif", value_raw="15,00", unit="ng/mL", reference="<300"),
+            _mk_tox_result(row_index=18, analyte="PHENCYCLIDINE SEMI-QUANTITATIF", analyte_norm="phencyclidine_semi_quantitatif", value_raw="016", unit="ng/mL", reference="<25"),
+        ]
+        response = SearchResponse(
+            query="Dans le PDF report (7), fais un résumé médical clair et fidèle en 4 à 6 lignes, sans interprétation excessive.",
+            mode="hybrid",
+            filters={"doc_id": "report_7"},
+            top_results=list(tox_rows[:3]),
+            context_chunks=list(tox_rows),
+            sources=[
+                {
+                    "doc_id": "report_7",
+                    "source_pdf": "docs/report (7).pdf",
+                    "page_number": 1,
+                    "chunk_id": tox_rows[0].chunk_id,
+                    "chunk_type": tox_rows[0].chunk_type,
+                    "text_preview": tox_rows[0].text_preview,
+                }
+            ],
+            answerability={"status": "answerable_exact", "reason": "context_available"},
+        )
+        result = run_generation(
+            query="Dans le PDF report (7), fais un résumé médical clair et fidèle en 4 à 6 lignes, sans interprétation excessive.",
+            mode="hybrid",
+            summary_style="short",
+            top_k=5,
+            max_display_results=3,
+            show_all_results=False,
+            show_low_quality=False,
+            search_engine=_FakeSearchEngine(response),
+        )
+        answer = str(result.get("answer") or "")
+        self.assertNotIn("\n\n", answer, msg=answer)
+        self.assertGreaterEqual(answer.count("\n"), 5, msg=answer)
+
+    def test_report7_complete_source_label(self) -> None:
+        ga = __import__("generate_answer")
+        rows = [
+            {
+                "doc_id": "report_7",
+                "filename": "report (7).pdf",
+                "page": 1,
+                "analyte": "AMPHÉTAMINE QUALITATIF",
+                "technical_status_code": "within_reference",
+                "value_with_unit": "001 ng/mL",
+                "reference_short": "<500",
+            },
+            {
+                "doc_id": "report_7",
+                "filename": "report (7).pdf",
+                "page": 1,
+                "analyte": "COCAÏNE SEMI-QUANTITATIF",
+                "technical_status_code": "within_reference",
+                "value_with_unit": "9,00 ng/mL",
+                "reference_short": "<150",
+            },
+            {
+                "doc_id": "report_7",
+                "filename": "report (7).pdf",
+                "page": 1,
+                "analyte": "PHENCYCLIDINE SEMI-QUANTITATIF",
+                "technical_status_code": "within_reference",
+                "value_with_unit": "016 ng/mL",
+                "reference_short": "<25",
+            },
+            {
+                "doc_id": "report_7",
+                "filename": "report (7).pdf",
+                "page": 1,
+                "analyte": "BENZODIAZÉPINE SEMI-QUANTITATIF",
+                "technical_status_code": "within_reference",
+                "value_with_unit": "6,00 ng/mL",
+                "reference_short": "<200",
+            },
+            {
+                "doc_id": "report_7",
+                "filename": "report (7).pdf",
+                "page": 1,
+                "analyte": "OPIACÈS SEMI-QUANTITATIF",
+                "technical_status_code": "within_reference",
+                "value_with_unit": "15,00 ng/mL",
+                "reference_short": "<300",
+            },
+        ]
+        rendered = ga._build_doc_scoped_biological_summary_answer(
+            rows,
+            max_lines=6,
+            no_diagnosis=True,
+            render_profile="compact_biological_summary",
+        )
+        self.assertIn("Source documentaire : report (7).pdf — page 1.", rendered)
+        self.assertIn("report (7).pdf", rendered)
+        self.assertIn("page 1", rendered)
+
+    def test_report7_no_summary_too_poor_reason(self) -> None:
+        tox_rows = [
+            _mk_tox_result(row_index=1, analyte="AMPHÉTAMINE QUALITATIF", analyte_norm="amphetamine_qualitatif", value_raw="001", unit="ng/mL", reference="<500"),
+            _mk_tox_result(row_index=3, analyte="AMPHÉTAMINE SEMI-QUANTITATIF", analyte_norm="amphetamine_semi_quantitatif", value_raw="3,00", unit="ng/mL", reference="<200"),
+            _mk_tox_result(row_index=4, analyte="BENZODIAZÉPINE QUALITATIF", analyte_norm="benzodiazepine_qualitatif", value_raw="4", unit="ng/mL", reference="<200"),
+            _mk_tox_result(row_index=9, analyte="COCAÏNE SEMI-QUANTITATIF", analyte_norm="cocaine_semi_quantitatif", value_raw="9,00", unit="ng/mL", reference="<150"),
+            _mk_tox_result(row_index=12, analyte="ECSTASY SEMI-QUANTITATIF", analyte_norm="ecstasy_semi_quantitatif", value_raw="012", unit="ng/mL", reference="<500"),
+            _mk_tox_result(row_index=15, analyte="OPIACÈS SEMI-QUANTITATIF", analyte_norm="opiaces_semi_quantitatif", value_raw="15,00", unit="ng/mL", reference="<300"),
+            _mk_tox_result(row_index=18, analyte="PHENCYCLIDINE SEMI-QUANTITATIF", analyte_norm="phencyclidine_semi_quantitatif", value_raw="016", unit="ng/mL", reference="<25"),
+        ]
+        response = SearchResponse(
+            query="Dans le PDF report (7), fais un résumé médical clair et fidèle en 4 à 6 lignes, sans interprétation excessive.",
+            mode="hybrid",
+            filters={"doc_id": "report_7"},
+            top_results=list(tox_rows[:3]),
+            context_chunks=list(tox_rows),
+            sources=[
+                {
+                    "doc_id": "report_7",
+                    "source_pdf": "docs/report (7).pdf",
+                    "page_number": 1,
+                    "chunk_id": tox_rows[0].chunk_id,
+                    "chunk_type": tox_rows[0].chunk_type,
+                    "text_preview": tox_rows[0].text_preview,
+                }
+            ],
+            answerability={"status": "answerable_exact", "reason": "context_available"},
+        )
+
+        result = run_generation(
+            query="Dans le PDF report (7), fais un résumé médical clair et fidèle en 4 à 6 lignes, sans interprétation excessive.",
+            mode="hybrid",
+            summary_style="short",
+            top_k=5,
+            max_display_results=3,
+            show_all_results=False,
+            show_low_quality=False,
+            search_engine=_FakeSearchEngine(response),
+        )
+        gate = dict(result.get("final_answer_quality_gate") or {})
+        self.assertNotIn("summary_too_poor_for_available_facts", list(gate.get("reasons") or []), msg=str(result.get("answer") or ""))
+
+    def test_report7_no_repair_missing_complete_source(self) -> None:
+        tox_rows = [
+            _mk_tox_result(row_index=1, analyte="AMPHÉTAMINE QUALITATIF", analyte_norm="amphetamine_qualitatif", value_raw="001", unit="ng/mL", reference="<500"),
+            _mk_tox_result(row_index=3, analyte="AMPHÉTAMINE SEMI-QUANTITATIF", analyte_norm="amphetamine_semi_quantitatif", value_raw="3,00", unit="ng/mL", reference="<200"),
+            _mk_tox_result(row_index=4, analyte="BENZODIAZÉPINE QUALITATIF", analyte_norm="benzodiazepine_qualitatif", value_raw="4", unit="ng/mL", reference="<200"),
+            _mk_tox_result(row_index=9, analyte="COCAÏNE SEMI-QUANTITATIF", analyte_norm="cocaine_semi_quantitatif", value_raw="9,00", unit="ng/mL", reference="<150"),
+            _mk_tox_result(row_index=12, analyte="ECSTASY SEMI-QUANTITATIF", analyte_norm="ecstasy_semi_quantitatif", value_raw="012", unit="ng/mL", reference="<500"),
+            _mk_tox_result(row_index=15, analyte="OPIACÈS SEMI-QUANTITATIF", analyte_norm="opiaces_semi_quantitatif", value_raw="15,00", unit="ng/mL", reference="<300"),
+            _mk_tox_result(row_index=18, analyte="PHENCYCLIDINE SEMI-QUANTITATIF", analyte_norm="phencyclidine_semi_quantitatif", value_raw="016", unit="ng/mL", reference="<25"),
+        ]
+        response = SearchResponse(
+            query="Dans le PDF report (7), fais un résumé médical clair et fidèle en 4 à 6 lignes, sans interprétation excessive.",
+            mode="hybrid",
+            filters={"doc_id": "report_7"},
+            top_results=list(tox_rows[:3]),
+            context_chunks=list(tox_rows),
+            sources=[
+                {
+                    "doc_id": "report_7",
+                    "source_pdf": "docs/report (7).pdf",
+                    "page_number": 1,
+                    "chunk_id": tox_rows[0].chunk_id,
+                    "chunk_type": tox_rows[0].chunk_type,
+                    "text_preview": tox_rows[0].text_preview,
+                }
+            ],
+            answerability={"status": "answerable_exact", "reason": "context_available"},
+        )
+
+        result = run_generation(
+            query="Dans le PDF report (7), fais un résumé médical clair et fidèle en 4 à 6 lignes, sans interprétation excessive.",
+            mode="hybrid",
+            summary_style="short",
+            top_k=5,
+            max_display_results=3,
+            show_all_results=False,
+            show_low_quality=False,
+            search_engine=_FakeSearchEngine(response),
+        )
+        gate = dict(result.get("final_answer_quality_gate") or {})
+        self.assertNotIn("repair_missing_complete_source", list(gate.get("reasons") or []), msg=str(result.get("answer") or ""))
 
     def test_doc_scoped_biological_summary_llm_profile_compact_is_stricter(self) -> None:
         ga = __import__("generate_answer")
@@ -362,6 +809,298 @@ class TestGenerationDocScope(unittest.TestCase):
         )
         self.assertNotIn("CLAIRANCE DE LA CRÉATININE nécessitent", rendered)
 
+    def test_summary_quality_gate_accepts_context_only_summary_with_single_newline_source(self) -> None:
+        ga = __import__("generate_answer")
+        rows = [
+            {
+                "doc_id": "report_12",
+                "page": 1,
+                "analyte": "CLAIRANCE DE LA CRÉATININE",
+                "value_raw": "20",
+                "unit": "non spécifiée",
+                "reference_range": "Homme : 66 - 163 ml/min/1,73m2 ISC Femme : 66 - 165 ml/min/1,73m2 ISC",
+                "technical_status_code": "needs_clinical_context",
+            }
+        ]
+        answer = (
+            "Résumé biologique court — report_12.\n"
+            "Paramètre à lecture prudente : CLAIRANCE DE LA CRÉATININE = 20 non spécifiée "
+            "(réf Homme : 66 - 163 ml/min/1,73m2 ISC Femme : 66 - 165 ml/min/1,73m2 ISC).\n"
+            "Aucun résultat dans la référence n’est mis en avant dans les éléments structurés sélectionnés.\n"
+            "Lecture prudente : CLAIRANCE DE LA CRÉATININE nécessite une lecture prudente, car sa référence dépend du profil patient ou du contexte clinique.\n"
+            "Note descriptive uniquement, sans diagnostic médical ni recommandation thérapeutique.\n"
+            "Conclusion technique : Les éléments retenus ne mettent pas en évidence d’écart hors référence dominant. Lecture descriptive et prudente, sans diagnostic.\n"
+            "Source : report_12, page 1."
+        )
+        gate = ga._evaluate_summary_quality_gate(
+            answer=answer,
+            selected_route="doc_scoped_biological_summary",
+            displayed_evidences=rows,
+        )
+        self.assertTrue(bool(gate.get("pass")))
+        self.assertNotIn("repair_truncated_prudent_reading_section", list(gate.get("reasons") or []))
+        self.assertNotIn("repair_missing_complete_source", list(gate.get("reasons") or []))
+
+    def test_doc_scoped_biological_summary_source_doc_id_without_page_marker_is_not_rejected(self) -> None:
+        ga = __import__("generate_answer")
+        rows = [
+            {
+                "doc_id": "report_16",
+                "page": 1,
+                "analyte": "T4 LIBRE",
+                "value_raw": "112,00",
+                "unit": "pmol/L",
+                "technical_status_code": "above_reference",
+            }
+        ]
+        errors = ga._doc_scoped_biological_summary_repair_errors(
+            candidate_answer="Points biologiques notables : T4 LIBRE = 112,00 pmol/L, au-dessus de la référence.\n\nSource : report_16.",
+            repaired_answer="Points biologiques notables : T4 LIBRE = 112,00 pmol/L, au-dessus de la référence.\n\nSource : report_16.",
+            evidences=rows,
+            query_understanding=SimpleNamespace(
+                safety_intent="no_diagnosis_constraint",
+                answer_style="short",
+                requested_summary_points=5,
+            ),
+        )
+        self.assertNotIn("repair_missing_complete_source", errors)
+
+    def test_status_code_parses_value_with_unit_for_directional_classification(self) -> None:
+        ga = __import__("generate_answer")
+        row = {
+            "interpretation_status": "",
+            "reference_range": "10 - 22 pmol/L",
+            "value_with_unit": "112,00 pmol/L",
+            "analyte": "T4 LIBRE",
+        }
+        self.assertEqual(ga._status_code(row), "above_reference")
+
+    def test_doc_scoped_biological_summary_rich_summary_with_simple_source_block_passes_quality_gate(self) -> None:
+        ga = __import__("generate_answer")
+        rows = [
+            {"analyte": "T4 LIBRE", "technical_status_code": "above_reference", "value_with_unit": "112,00 pmol/L", "reference_short": "10 - 22", "page": 1},
+            {"analyte": "TSHus", "technical_status_code": "above_reference", "value_with_unit": "55,00 mUI/L", "reference_short": "0.3 - 4.0", "page": 1},
+            {"analyte": "T3 LIBRE", "technical_status_code": "above_reference", "value_with_unit": "66,00 pmol/L", "reference_short": "3.1 - 6.8", "page": 1},
+            {"analyte": "ANTI-TG", "technical_status_code": "above_reference", "value_with_unit": "77 IU/mL", "reference_short": "0 - 40", "page": 1},
+            {"analyte": "INSULINE", "technical_status_code": "below_reference", "value_with_unit": "2,00 uU/mL", "reference_short": "3 - 25", "page": 1},
+            {"analyte": "ACTH", "technical_status_code": "within_reference", "value_with_unit": "23,00 pg/ml", "reference_short": "10 - 60", "page": 1},
+        ]
+        answer = (
+            "Résumé biologique court — report_16.\n"
+            "Points biologiques notables : T4 LIBRE = 112,00 pmol/L, au-dessus de la référence ; "
+            "TSHus = 55,00 mUI/L, au-dessus de la référence ; T3 LIBRE = 66,00 pmol/L, au-dessus de la référence ; "
+            "ANTI-TG = 77 IU/mL, au-dessus de la référence ; INSULINE = 2,00 uU/mL, en dessous de la référence.\n"
+            "Résultats dans la référence uniquement : ACTH = 23,00 pg/ml.\n"
+            "Conclusion technique : synthèse descriptive limitée aux données disponibles. Périmètre : report_16.\n"
+            "Source : report_16."
+        )
+        gate = ga._evaluate_summary_quality_gate(
+            answer=answer,
+            selected_route="doc_scoped_biological_summary",
+            displayed_evidences=rows,
+        )
+        self.assertTrue(bool(gate.get("pass")))
+        self.assertNotIn("summary_too_poor_for_available_facts", list(gate.get("reasons") or []))
+        self.assertNotIn("repair_missing_complete_source", list(gate.get("reasons") or []))
+
+        validation = ga.validate_answer(
+            query="Présente les résultats du PDF report (16) en restant prudente.",
+            answer_text=answer,
+            evidence_pack=rows,
+            displayed_evidences=rows,
+            source_citations=[
+                {
+                    "doc_id": "report_16",
+                    "page": 1,
+                    "url": "/viewer/pdf?doc_id=report_16&page=1",
+                    "viewer_url": "/viewer/pdf?doc_id=report_16&page=1",
+                }
+            ],
+            generation_mode="hybrid_structured_llm_writer",
+            retrieval_status="answerable",
+            query_intents={"doc_scoped_summary": True},
+            output_format_requested="",
+            answer_style_requested="short",
+            source_clickable_requested=True,
+        )
+        self.assertNotIn("over_verbose_intro", list(validation.get("warnings") or []))
+
+    def test_doc_scoped_numeric_result_lookup_accepts_multi_result_report_without_analyte(self) -> None:
+        query = (
+            "Dans le PDF report (18), quels sont les résultats chiffrés importants ? "
+            "Donne la valeur, l’unité, la référence si elle existe, et la source."
+        )
+        qu = parse_query_understanding(query)
+        self.assertEqual(str(qu.intent), "doc_scoped_results")
+        self.assertTrue(bool((qu.intents or {}).get("doc_scoped_numeric_result_lookup")))
+
+        ga = __import__("generate_answer")
+        pack = ga.build_structured_evidence_pack(
+            query=query,
+            query_understanding=qu,
+            sqlite_path=PROJECT_ROOT / "data" / "indexes" / "medical_rag.sqlite",
+        )
+        evidences = list(pack.get("evidences") or [])
+        self.assertGreaterEqual(len(evidences), 2)
+
+        sources = build_source_citations(evidences)
+        rendered = render_professional_fallback(pack, qu, user_question=query, source_citations=sources)
+        validation = validate_answer(
+            query=query,
+            answer_text=str(rendered.get("answer") or ""),
+            evidence_pack=evidences,
+            displayed_evidences=evidences,
+            source_citations=sources,
+            generation_mode=str(rendered.get("mode") or "deterministic_professional_fallback"),
+            retrieval_status="answerable",
+            query_received=query,
+            query_used_for_retrieval=query,
+            query_used_for_prompt=query,
+            query_stored=query,
+            detected_analytes=list(qu.requested_analytes or []),
+            requested_doc_id="report_18",
+            requested_doc_ids=["report_18"],
+            requested_analytes=list(qu.requested_analytes or []),
+            query_intents=dict(qu.intents or {}),
+            output_format_requested=qu.output_format,
+            answer_style_requested=qu.answer_style,
+            requested_table_columns=list(qu.requested_table_columns or []),
+            requested_technical_condition=qu.technical_condition,
+            source_clickable_requested=bool(qu.source_clickable_requested),
+            requested_value=qu.requested_value,
+            comparison_operator=qu.comparison_operator,
+            raw_format_phrase=getattr(qu, "raw_format_phrase", None),
+            unsupported_presentation=bool(getattr(qu.presentation_intent, "unsupported_format", False)),
+            user_requested_visualization=bool(getattr(qu.presentation_intent, "user_requested_visualization", False)),
+            requested_chart_type=getattr(qu.presentation_intent, "chart_type", None),
+            visualization_payload=None,
+            chart_data_payload=None,
+        )
+        self.assertIn(str(validation.get("validation_status") or ""), {"pass", "warning"})
+        self.assertNotIn("unsupported_value", set(validation.get("errors") or []))
+        self.assertNotIn("value_changed", set(validation.get("errors") or []))
+        self.assertIn("report (18).pdf", str(rendered.get("answer") or ""))
+
+    def test_doc_scoped_biological_summary_rewrites_generic_conclusion_more_naturally(self) -> None:
+        ga = __import__("generate_answer")
+        answer = (
+            "Résumé biologique court — report_16.\n"
+            "Points biologiques notables : T4 LIBRE = 112,00 pmol/L, au-dessus de la référence ; "
+            "TSHus = 55,00 mUI/L, au-dessus de la référence ; T3 LIBRE = 66,00 pmol/L, au-dessus de la référence ; "
+            "ANTI-TG = 77 IU/mL, au-dessus de la référence ; INSULINE = 2,00 uU/mL, en dessous de la référence.\n"
+            "Résultats dans la référence uniquement : ACTH = 23,00 pg/ml.\n"
+            "Conclusion technique : synthèse descriptive limitée aux données disponibles.\n"
+            "Source : report_16."
+        )
+        polished = ga._ensure_biological_summary_conclusion(
+            answer,
+            has_abnormal=True,
+            has_within=True,
+        )
+        low = polished.lower()
+        self.assertNotIn("synthèse descriptive limitée aux données disponibles", low)
+        self.assertIn("le bilan met en évidence plusieurs écarts biologiques documentés", low)
+        self.assertIn("tout en conservant quelques résultats dans la référence", low)
+
+    def test_doc_scoped_biological_summary_lead_sentence_is_dynamic(self) -> None:
+        ga = __import__("generate_answer")
+        lead = ga._doc_scoped_biological_summary_lead_sentence(
+            abnormal_entries=[
+                (
+                    {"analyte": "Albumine", "current_value": "5", "unit": "g/l", "technical_status_code": "below_reference"},
+                    "Albumine",
+                    "en dessous de la référence",
+                ),
+                (
+                    {"analyte": "Ammonium", "current_value": "4", "unit": "µg/dl", "technical_status_code": "below_reference"},
+                    "Ammonium",
+                    "en dessous de la référence",
+                ),
+            ],
+            normal_labels=["ACTH"],
+            context_labels=[],
+        )
+        low = lead.lower()
+        self.assertIn("deux anomalies documentées", low)
+        self.assertIn("albumine", low)
+        self.assertIn("ammonium", low)
+        self.assertNotIn("résumé biologique court", low)
+
+    def test_doc_scoped_biological_summary_lead_sentence_prefers_reference_when_mostly_normal(self) -> None:
+        ga = __import__("generate_answer")
+        lead = ga._doc_scoped_biological_summary_lead_sentence(
+            abnormal_entries=[],
+            normal_labels=["ACTH", "CRP", "ASAT"],
+            context_labels=[],
+        )
+        low = lead.lower()
+        self.assertIn("principalement dans la référence", low)
+        self.assertIn("acth", low)
+
+    def test_doc_scoped_biological_summary_toxicology_panel_is_described_generically(self) -> None:
+        ga = __import__("generate_answer")
+        rows = [
+            {"analyte": "AMPHÉTAMINE SEMI-QUANTITATIF", "technical_status_code": "within_reference", "value_raw": "3,00", "unit": "ng/ml", "reference_short": "<200", "section": "TOXICOLOGIE"},
+            {"analyte": "BENZODIAZÉPINE SEMI-QUANTITATIF", "technical_status_code": "within_reference", "value_raw": "6,00", "unit": "ng/ml", "reference_short": "<200", "section": "TOXICOLOGIE"},
+            {"analyte": "COCAÏNE SEMI-QUANTITATIF", "technical_status_code": "within_reference", "value_raw": "9,00", "unit": "ng/ml", "reference_short": "<150", "section": "TOXICOLOGIE"},
+            {"analyte": "ECSTASY SEMI-QUANTITATIF", "technical_status_code": "within_reference", "value_raw": "12,00", "unit": "ng/ml", "reference_short": "<500", "section": "TOXICOLOGIE"},
+            {"analyte": "OPIACÈS SEMI-QUANTITATIF", "technical_status_code": "within_reference", "value_raw": "15,00", "unit": "ng/ml", "reference_short": "<300", "section": "TOXICOLOGIE"},
+            {"analyte": "PHENCYCLIDINE SEMI-QUANTITATIF", "technical_status_code": "within_reference", "value_raw": "16,00", "unit": "ng/ml", "reference_short": "<25", "section": "TOXICOLOGIE"},
+            {"analyte": "AMPHÉTAMINE QUALITATIF INDICE", "technical_status_code": "within_reference", "value_raw": "001", "unit": "unknown", "reference_short": None, "section": "TOXICOLOGIE"},
+        ]
+        rendered = ga._build_doc_scoped_biological_summary_answer(
+            rows,
+            max_lines=6,
+            no_diagnosis=True,
+            render_profile="compact_biological_summary",
+        )
+        low = rendered.lower()
+        self.assertIn("bilan urinaire de pharmaco-toxicologie", low)
+        self.assertIn("amphétamine", low)
+        self.assertIn("benzodiazépine", low)
+        self.assertIn("cocaïne", low)
+        self.assertIn("ecstasy", low)
+        self.assertIn("opiacés", low)
+        self.assertIn("phencyclidine", low)
+        self.assertIn("3,00 ng/mL".lower(), low)
+        self.assertIn("16,00 ng/mL".lower(), low)
+        self.assertIn("aucun dépassement des seuils fournis", low)
+
+    def test_global_biological_summary_lead_sentence_is_dynamic(self) -> None:
+        ga = __import__("generate_answer")
+        lead = ga._global_biological_summary_lead_sentence(
+            [
+                {"analyte": "Albumine", "technical_status_code": "below_reference", "current_value": "5", "unit": "g/l"},
+                {"analyte": "AMMONIUM", "technical_status_code": "below_reference", "current_value": "4", "unit": "µg/dl"},
+                {"analyte": "ACTH", "technical_status_code": "within_reference", "current_value": "23", "unit": "pg/ml"},
+            ],
+            max_items=4,
+        )
+        low = lead.lower()
+        self.assertIn("synthèse globale", low)
+        self.assertIn("albumine", low)
+        self.assertIn("ammonium", low)
+
+    def test_reference_ranges_summary_intro_is_dynamic(self) -> None:
+        ga = __import__("generate_answer")
+        evidences = [
+            {
+                "analyte": "CRP",
+                "current_value": "7",
+                "unit": "mg/l",
+                "reference": "0 - 5 mg/l",
+                "reference_ranges": [{"operator": "range"}],
+            }
+        ]
+        rendered = ga._build_reference_ranges_deterministic_fallback(
+            evidences,
+            max_lines=6,
+            no_diagnosis=True,
+        )
+        low = rendered.lower()
+        self.assertIn("plages min-max", low)
+        self.assertIn("conclusion technique", low)
+
     def test_compact_biological_summary_fallback_keeps_values_and_no_within_sentence(self) -> None:
         ga = __import__("generate_answer")
         rows = [
@@ -472,6 +1211,19 @@ class TestGenerationDocScope(unittest.TestCase):
         )
         low = rendered.lower()
         self.assertIn("bilirubine directe =", low)
+        self.assertNotIn("non disponible", low)
+
+    def test_doc_scoped_summary_uses_current_value_when_value_raw_missing(self) -> None:
+        ga = __import__("generate_answer")
+        rows = [
+            {"analyte": "T4 libre", "technical_status_code": "within_reference", "current_value": "12.4", "unit": "pmol/L", "reference_range": "10 - 22"},
+            {"analyte": "TSHus", "technical_status_code": "within_reference", "current_value": "1.8", "unit": "mUI/L", "reference_range": "0.3 - 4.0"},
+            {"analyte": "T3 libre", "technical_status_code": "within_reference", "current_value": "4.1", "unit": "pmol/L", "reference_range": "3.1 - 6.8"},
+        ]
+        rendered = ga._format_doc_summary_answer(rows=rows, query_norm="résumé biologique")
+        low = rendered.lower()
+        self.assertIn("t4 libre: 12.4 pmol/l", low)
+        self.assertIn("tshus: 1.8 mui/l", low)
         self.assertNotIn("non disponible", low)
 
     def test_final_summary_quality_gate_rejects_non_disponible_when_structured_values_exist(self) -> None:
@@ -2605,6 +3357,75 @@ class TestGenerationDocScope(unittest.TestCase):
         )
         self.assertIn("repair_truncated_prudent_reading_section", errors)
         self.assertIn("repair_missing_complete_source", errors)
+
+    def test_doc_scoped_biological_summary_repair_accepts_semantic_no_within_sentence(self) -> None:
+        ga = __import__("generate_answer")
+        evidences = [
+            {
+                "doc_id": "report_16",
+                "page": 1,
+                "analyte": "Albumine",
+                "value_raw": "5",
+                "unit": "g/L",
+                "technical_status_code": "below_reference",
+            },
+            {
+                "doc_id": "report_16",
+                "page": 1,
+                "analyte": "AMMONIUM",
+                "value_raw": "4",
+                "unit": "µg/dL",
+                "technical_status_code": "below_reference",
+            },
+        ]
+        errors = ga._doc_scoped_biological_summary_repair_errors(
+            candidate_answer="Synthèse courte insuffisante.",
+            repaired_answer=(
+                "Le bilan met en évidence deux anomalies documentées. "
+                "Aucun résultat dans la référence n’est mis en avant dans les éléments structurés sélectionnés. "
+                "Conclusion technique : synthèse documentaire prudente fondée sur les valeurs structurées du rapport, sans diagnostic."
+            ),
+            evidences=evidences,
+            query_understanding=SimpleNamespace(
+                safety_intent="no_diagnosis_constraint",
+                answer_style="short",
+                requested_summary_points=5,
+            ),
+        )
+        self.assertNotIn("repair_missing_no_within_reference_sentence", errors)
+
+    def test_doc_scoped_compact_summary_keeps_no_within_sentence_when_needed(self) -> None:
+        ga = __import__("generate_answer")
+        evidences = [
+            {
+                "doc_id": "report_16",
+                "page": 1,
+                "analyte": "Albumine",
+                "current_value": "5",
+                "unit": "g/L",
+                "reference": "35 à 50 g/L",
+                "technical_status_code": "below_reference",
+            },
+            {
+                "doc_id": "report_16",
+                "page": 1,
+                "analyte": "AMMONIUM",
+                "current_value": "4",
+                "unit": "µg/dL",
+                "reference": "(31,00 - 123.00)µg/dl",
+                "technical_status_code": "below_reference",
+            },
+        ]
+        rendered = ga._build_doc_scoped_biological_summary_answer(
+            evidences,
+            max_lines=6,
+            no_diagnosis=True,
+            render_profile="compact_biological_summary",
+        )
+        low = rendered.lower()
+        self.assertIn("aucun résultat dans la référence", low)
+        self.assertIn("albumine", low)
+        self.assertIn("ammonium", low)
 
     def test_doc_scoped_biological_summary_truncated_repair_falls_back_and_exposes_debug(self) -> None:
         old_force = os.environ.get("MEDICAL_RAG_FORCE_LLM_WRITER")

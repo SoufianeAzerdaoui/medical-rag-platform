@@ -59,6 +59,9 @@ ANALYTE_DISPLAY_NAMES: dict[str, str] = {
     "t3_libre": "T3 LIBRE",
     "anti_tg": "ANTI-TG",
     "ckmb": "CKMB",
+    "ldh": "LDH",
+    "bilirubine_directe": "BILIRUBINE DIRECTE",
+    "ammonium": "AMMONIUM",
     "crp": "CRP",
     "ace": "ACE",
     "psa_totale": "PSA TOTALE",
@@ -90,6 +93,7 @@ ANALYTE_DISPLAY_NAMES: dict[str, str] = {
 # ============================================================
 DOC_SCOPED_INTENTS: set[str] = {
     "doc_scoped_results",
+    "doc_scoped_numeric_result_lookup",
     "doc_scoped_analyte_query",
     "doc_scoped_summary",
     "doc_scoped_biological_summary",
@@ -104,6 +108,7 @@ DOC_SCOPED_INTENTS: set[str] = {
 
 SINGLE_DOC_INTENTS: set[str] = {
     "doc_scoped_results",
+    "doc_scoped_numeric_result_lookup",
     "doc_scoped_analyte_query",
     "doc_scoped_summary",
     "doc_scoped_biological_summary",
@@ -645,6 +650,30 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
             "résultats",
         ]
     )
+    has_doc_scope = len(doc_ids) >= 1
+    has_numeric_result_lookup = (
+        has_doc_scope
+        and any(
+            k in qn
+            for k in [
+                "resultats chiffr",
+                "résultats chiffr",
+                "resultat chiffr",
+                "résultat chiffr",
+                "resultats numériques",
+                "résultats numériques",
+                "chiffr",
+                "valeur",
+                "valeurs",
+                "unité",
+                "unite",
+                "référence",
+                "reference",
+                "source",
+            ]
+        )
+        and any(k in qn for k in ["donne", "donner", "quels sont", "quels sont les", "présente", "presente", "retrouve"])
+    )
     has_global_scope_markers = any(
         k in qn
         for k in [
@@ -829,7 +858,6 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
             "hypothyro",
         ]
     ))
-    has_doc_scope = len(doc_ids) >= 1
     # Guardrail: avoid misrouting structured status queries to qualitative-comment intent
     # when the user says "sans interprétation médicale" or similar phrasing.
     if has_qualitative_comment_query and has_doc_scope and has_structured_status_request:
@@ -884,6 +912,25 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         ]
     )
     has_biological_summary_wording = has_biological_summary_wording or has_short_note_wording
+    has_medical_note_summary = (
+        len(doc_ids) >= 1
+        and any(
+            k in qn
+            for k in [
+                "résumé médical",
+                "resume medical",
+                "resume médical",
+                "résumé clair et fidèle",
+                "resume clair et fidele",
+                "sans interprétation excessive",
+                "sans interpretation excessive",
+                "compte rendu médical",
+                "compte rendu medical",
+                "note médicale",
+                "note medicale",
+            ]
+        )
+    )
     has_doc_scoped_biological_summary = (
         len(doc_ids) >= 1
         and has_biological_summary_wording
@@ -1264,11 +1311,13 @@ def detect_query_intents(query: str, *, requested_doc_ids: list[str] | None = No
         "doc_pair_comparison": has_doc_pair_comparison,
         "doc_scoped_medical_interpretation_guarded": has_doc_scoped_medical_interpretation_guarded,
         "doc_scoped_biological_summary": has_doc_scoped_biological_summary,
+        "doc_scoped_medical_summary": has_medical_note_summary,
         "reference_ranges_summary": has_reference_ranges_summary,
         "doc_scoped_priority_anomalies": has_doc_scoped_priority_anomalies,
         "doc_scoped_abnormal_results": has_doc_scoped_abnormal_results,
         "single_analyte_lookup": has_single_analyte_lookup,
         "doc_scoped_results": has_doc_scope and (len(analyte_list) >= 1 or not has_summary),
+        "doc_scoped_numeric_result_lookup": has_numeric_result_lookup,
         "doc_scoped_analyte_query": has_doc_scope and len(analyte_list) >= 1,
         "doc_scoped_summary": has_doc_scope and has_summary,
         "multi_analyte_results": has_multi_analyte,
@@ -1601,8 +1650,11 @@ def decide_response_strategy(query_understanding: "QueryUnderstanding", evidence
         return ResponseStrategy("answer_directly", "Liste demandée.", True, True)
     if output == "paragraph":
         return ResponseStrategy("answer_directly", "Format paragraphe demandé.", True, True)
-    if not evidences and intent in {"unstructured", "doc_scoped_summary"}:
-        return ResponseStrategy("ask_clarification", "Contexte insuffisant et demande peu contrainte.", True, True)
+    if not evidences:
+        if intent == "unstructured":
+            return ResponseStrategy("ask_clarification", "Contexte insuffisant et demande peu contrainte.", True, True)
+        if intent == "doc_scoped_summary" and not qu.requested_doc_ids and output not in {"paragraph", "list", "table"}:
+            return ResponseStrategy("ask_clarification", "Contexte insuffisant et demande peu contrainte.", True, True)
     return ResponseStrategy("render_table", "Format structuré fiable par défaut.", True, True)
 
 
@@ -1688,6 +1740,13 @@ def detect_answer_style(query: str) -> str:
             "note de synthese",
             "note de synthèse",
             "note documentaire",
+            "résumé médical",
+            "resume medical",
+            "resume médical",
+            "résumé clair et fidèle",
+            "resume clair et fidele",
+            "sans interprétation excessive",
+            "sans interpretation excessive",
         ]
     ):
         return "doctor_note"
@@ -1792,11 +1851,15 @@ def extract_requested_value(query: str) -> str | None:
         r"\b(?:valeur|value)(?:\s+de)?\s*[:=]?\s*([<>]?\s*\d+(?:[.,]\d+)?)\b",
     ]
     for patt in patterns:
-        m = re.search(patt, text, flags=re.IGNORECASE)
-        if m:
+        for m in re.finditer(patt, text, flags=re.IGNORECASE):
             value = str(m.group(1) or "").strip()
-            if value:
-                return value
+            if not value:
+                continue
+            # Avoid mistaking "4 à 6 lignes" / similar length constraints for a real requested value.
+            near_span = text[max(0, m.start() - 8) : min(len(text), m.end() + 12)].lower()
+            if "lign" in near_span:
+                continue
+            return value
     return None
 
 
@@ -2197,8 +2260,12 @@ def _resolve_primary_intent(intents: dict[str, bool], *, requested_doc_ids: list
         return "multi_doc_comparison"
     if intents.get("doc_scoped_medical_interpretation_guarded"):
         return "doc_scoped_medical_interpretation_guarded"
+    if intents.get("doc_scoped_numeric_result_lookup"):
+        return "doc_scoped_results"
     if intents.get("reference_ranges_summary"):
         return "reference_ranges_summary"
+    if intents.get("doc_scoped_medical_summary"):
+        return "doc_scoped_summary"
     if intents.get("doc_scoped_biological_summary"):
         return "doc_scoped_biological_summary"
     if intents.get("doc_scoped_priority_anomalies"):

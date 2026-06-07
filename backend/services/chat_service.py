@@ -19,6 +19,7 @@ from backend.services import conversation_service, message_service
 from backend.services.conversation_state_store import ConversationStateService, transformable_context
 from scripts.generation.source_normalization import dedup_normalized_sources
 from scripts.generation.policy_matrix import HARD_GATE_ERRORS, get_llm_route_class
+from scripts.generation.query_understanding import detect_requested_doc_ids
 from scripts.generation.model_settings import (
     DEFAULT_LLM_MAX_TOKENS,
     DEFAULT_LLM_MODEL,
@@ -152,7 +153,8 @@ def to_source_items(result: dict[str, Any]) -> list[SourceItem]:
             doc_id = str(src.get("doc_id") or "").strip() or None
             filename = str(src.get("filename") or src.get("source_pdf") or "").strip() or None
             page = src.get("page")
-            row = src.get("line", src.get("row"))
+            row = src.get("row")
+            line = src.get("line")
             label = str(src.get("label") or "").strip() or None
             url = str(src.get("url") or "").strip() or None
             viewer_url = str(src.get("viewer_url") or "").strip() or None
@@ -171,6 +173,7 @@ def to_source_items(result: dict[str, Any]) -> list[SourceItem]:
                     doc_id=doc_id,
                     filename=filename,
                     row=row if isinstance(row, int) else None,
+                    line=line if isinstance(line, int) else None,
                     label=label,
                     url=url,
                     viewer_url=viewer_url,
@@ -284,6 +287,12 @@ def _emit_request_summary_log(
     validation_warnings: list[str],
 ) -> None:
     quality_report = generation.get("quality_report") if isinstance(generation.get("quality_report"), dict) else {}
+    generation_quality_final_status = str(generation.get("quality_final_status") or "").strip().lower()
+    quality_final_status = (
+        generation_quality_final_status
+        if generation_quality_final_status in {"pass", "warning", "fail"}
+        else (str(quality_report.get("final_status") or "") or None)
+    )
     response_time_ms = round(float(generation.get("generation_time_seconds") or 0.0) * 1000.0, 3)
     if not isinstance(writer_profile_runtime, dict):
         writer_profile_runtime = {}
@@ -323,7 +332,7 @@ def _emit_request_summary_log(
         "llm_model_effective_runtime": llm_model_effective_runtime,
         "writer_profile_runtime": writer_profile_runtime or None,
         "validation_status": str(((generation.get("validation") or {}).get("validation_status") or "")) or None,
-        "quality_final_status": str(quality_report.get("final_status") or "") or None,
+        "quality_final_status": quality_final_status,
         "answerability_status": str(generation_debug.get("answerability_status") or "") or None,
         "fallback_kind": str(generation_debug.get("specialized_fallback_kind") or "") or None,
         "response_time_ms": response_time_ms,
@@ -658,7 +667,64 @@ def process_chat(
         state_version_before = int(state.get("state_version") or 1)
 
         previous_intent = str(state.get("last_intent") or "").strip().lower() or "none"
-        transformable = transformable_context(state)
+        query = f"{payload.message} doc_id {payload.document_id}" if payload.document_id else payload.message
+        requested_doc_ids_for_turn = detect_requested_doc_ids(query)
+
+        def _pack_doc_ids(pack: dict[str, Any] | None) -> set[str]:
+            if not isinstance(pack, dict) or not pack:
+                return set()
+            rows: list[dict[str, Any]] = []
+            for key in ("evidences", "results", "rows"):
+                maybe_rows = pack.get(key)
+                if isinstance(maybe_rows, list) and maybe_rows:
+                    rows = [row for row in maybe_rows if isinstance(row, dict)]
+                    if rows:
+                        break
+            doc_ids: set[str] = set()
+            for row in rows:
+                doc_id = str(row.get("doc_id") or row.get("documentId") or row.get("document_id") or "").strip().lower()
+                if doc_id:
+                    doc_ids.add(doc_id)
+            return doc_ids
+
+        requested_doc_ids_norm = {str(d).strip().lower() for d in requested_doc_ids_for_turn if str(d).strip()}
+        previous_displayed_evidence_pack = (
+            state.get("last_displayed_evidence_pack")
+            if isinstance(state.get("last_displayed_evidence_pack"), dict)
+            else None
+        )
+        previous_qualitative_evidence_pack = (
+            state.get("last_qualitative_evidence_pack")
+            if isinstance(state.get("last_qualitative_evidence_pack"), dict)
+            else None
+        )
+        previous_displayed_context = (
+            state.get("last_displayed_context")
+            if isinstance(state.get("last_displayed_context"), dict)
+            else None
+        )
+        previous_doc_scope = (
+            list((state.get("last_doc_scope") or {}).get("doc_ids") or [])
+            if isinstance(state.get("last_doc_scope"), dict)
+            else []
+        )
+        pack_matches_requested_docs = not requested_doc_ids_norm
+        if requested_doc_ids_norm:
+            transformable_candidates = [
+                state.get("last_transformable_evidence_pack") if isinstance(state.get("last_transformable_evidence_pack"), dict) else None,
+                previous_displayed_evidence_pack,
+            ]
+            pack_matches_requested_docs = any(
+                bool(candidate)
+                and _pack_doc_ids(candidate) == requested_doc_ids_norm
+                for candidate in transformable_candidates
+            )
+            if not pack_matches_requested_docs:
+                previous_displayed_evidence_pack = None
+                previous_qualitative_evidence_pack = None
+                previous_displayed_context = None
+                previous_doc_scope = []
+        transformable = transformable_context(state, requested_doc_ids=requested_doc_ids_for_turn) if pack_matches_requested_docs else None
         qualitative_context = (
             state.get("last_qualitative_evidence_pack")
             if isinstance(state.get("last_qualitative_evidence_pack"), dict)
@@ -685,7 +751,6 @@ def process_chat(
             bool(visualization_request_detected),
         )
 
-        query = f"{payload.message} doc_id {payload.document_id}" if payload.document_id else payload.message
         requested_provider_override = str(payload.llm_provider_override or "").strip() or None
         requested_model_override = str(payload.llm_model_override or "").strip() or None
         requested_summary_style = str(payload.summary_style or "").strip().lower() or None
@@ -717,29 +782,13 @@ def process_chat(
             collection="medical_chunks",
             summary_style=requested_summary_style,
             previous_structured_evidence_pack=transformable,
-            previous_displayed_evidence_pack=(
-                state.get("last_displayed_evidence_pack")
-                if isinstance(state.get("last_displayed_evidence_pack"), dict)
-                else None
-            ),
-            previous_displayed_context=(
-                state.get("last_displayed_context")
-                if isinstance(state.get("last_displayed_context"), dict)
-                else None
-            ),
+            previous_displayed_evidence_pack=previous_displayed_evidence_pack,
+            previous_displayed_context=previous_displayed_context,
             previous_context_intent=str(state.get("last_intent") or ""),
             previous_data_context_intent=str(state.get("last_data_context_intent") or ""),
             previous_data_context_type=str(state.get("last_data_context_type") or ""),
-            previous_doc_scope=(
-                list((state.get("last_doc_scope") or {}).get("doc_ids") or [])
-                if isinstance(state.get("last_doc_scope"), dict)
-                else []
-            ),
-            previous_qualitative_evidence_pack=(
-                state.get("last_qualitative_evidence_pack")
-                if isinstance(state.get("last_qualitative_evidence_pack"), dict)
-                else None
-            ),
+            previous_doc_scope=previous_doc_scope,
+            previous_qualitative_evidence_pack=previous_qualitative_evidence_pack,
             previous_has_patient_inventory=bool(state.get("last_patient_inventory")),
             previous_patient_inventory=(
                 state.get("last_patient_inventory")
@@ -749,16 +798,62 @@ def process_chat(
             recent_style_history=state.get("recent_style_history") or [],
         )
 
-        state_service.update_from_generation(
-            conversation_id=conversation_id,
-            state=state,
-            generation=generation,
-            user_message=payload.message,
-        )
-        new_state = state_service.load(conversation_id)
-        state_service.save_to_db(conversation_id, new_state)
+        persistence_warnings: list[str] = []
+        try:
+            state_service.update_from_generation(
+                conversation_id=conversation_id,
+                state=state,
+                generation=generation,
+                user_message=payload.message,
+            )
+        except Exception as exc:
+            persistence_warnings.append(f"state_update_failed:{exc.__class__.__name__}")
+            logger.exception(
+                "chat_state_update_failed request_id=%s conversation_id=%s user_message=%r error=%s\n%s",
+                request_id,
+                conversation_id,
+                payload.message,
+                str(exc),
+                traceback.format_exc(),
+            )
 
-        message_service.save_message(conversation_id, "user", payload.message)
+        try:
+            new_state = state_service.load(conversation_id)
+        except Exception as exc:
+            persistence_warnings.append(f"state_reload_failed:{exc.__class__.__name__}")
+            logger.exception(
+                "chat_state_reload_failed request_id=%s conversation_id=%s error=%s\n%s",
+                request_id,
+                conversation_id,
+                str(exc),
+                traceback.format_exc(),
+            )
+            new_state = state
+
+        try:
+            state_service.save_to_db(conversation_id, new_state)
+        except Exception as exc:
+            persistence_warnings.append(f"state_save_failed:{exc.__class__.__name__}")
+            logger.exception(
+                "chat_state_save_failed request_id=%s conversation_id=%s error=%s\n%s",
+                request_id,
+                conversation_id,
+                str(exc),
+                traceback.format_exc(),
+            )
+
+        try:
+            message_service.save_message(conversation_id, "user", payload.message)
+        except Exception as exc:
+            persistence_warnings.append(f"user_message_save_failed:{exc.__class__.__name__}")
+            logger.exception(
+                "chat_user_message_save_failed request_id=%s conversation_id=%s error=%s\n%s",
+                request_id,
+                conversation_id,
+                str(exc),
+                traceback.format_exc(),
+            )
+
         state_version_after = int(new_state.get("state_version") or state_version_before)
         current_intent = str(((generation.get("query_understanding") or {}).get("intent") or "")).strip().lower() or "unknown"
         visualization = generation.get("visualization") if isinstance(generation.get("visualization"), dict) else None
@@ -892,6 +987,13 @@ def process_chat(
         final_answer_quality_gate_top = generation.get("final_answer_quality_gate") if isinstance(generation.get("final_answer_quality_gate"), dict) else None
         quality_final_status_top = str(generation.get("quality_final_status") or "").strip().lower() or None
         synthesis_quality_reason_top = str(generation.get("synthesis_quality_reason") or "").strip() or None
+        final_answer_validation_status_top = str(
+            generation.get("final_answer_validation_status")
+            or generation.get("validation_status")
+            or ((final_answer_quality_gate_top or {}).get("pass") and "pass")
+            or quality_final_status_top
+            or ""
+        ).strip().lower() or None
         response_debug: dict[str, Any] = {
             "debug_contract_version": "v2",
             "intent": str(qu.get("intent") or "") or None,
@@ -905,6 +1007,7 @@ def process_chat(
             "llm_quality_gate": llm_quality_gate_top,
             "final_answer_quality_gate": final_answer_quality_gate_top,
             "quality_final_status": quality_final_status_top,
+            "final_answer_validation_status": final_answer_validation_status_top,
             "synthesis_quality_reason": synthesis_quality_reason_top,
             "displayed_evidences_count": int(generation_debug.get("displayed_evidences_count") or len(displayed_evidence_items) or 0),
             "evidence_pack_count": int(generation_debug.get("evidence_rows_count") or len(evidence_pack_items) or 0),
@@ -1111,7 +1214,8 @@ def process_chat(
 
         persisted_diagnostics: dict[str, Any] = {
             "quality_report": generation.get("quality_report") if isinstance(generation.get("quality_report"), dict) else None,
-            "validation_status": str((generation.get("validation") or {}).get("validation_status") or "") or None,
+            "validation_status": final_answer_validation_status_top,
+            "final_answer_validation_status": final_answer_validation_status_top,
             "generation_mode": str(generation.get("generation_mode") or "") or None,
             "generation_writer": str((generation_debug.get("generation_writer") or "")) or None,
             "llm_provider_requested": llm_provider,
@@ -1179,15 +1283,37 @@ def process_chat(
             "document_identity_mismatch": bool(generation.get("document_identity_mismatch") or generation_debug.get("document_identity_mismatch")),
             "document_identity_status": str(generation.get("document_identity_status") or generation_debug.get("document_identity_status") or "") or None,
             "document_identity_reasons": list(generation.get("document_identity_reasons") or generation_debug.get("document_identity_reasons") or []),
+            "persistence_warnings": persistence_warnings,
         }
-        message_service.save_message(
-            conversation_id,
-            "assistant",
-            answer,
-            sources=[item.model_dump() for item in sources],
-            diagnostics=persisted_diagnostics,
-        )
-        conversation_service.touch_conversation(conversation_id)
+        try:
+            message_service.save_message(
+                conversation_id,
+                "assistant",
+                answer,
+                sources=[item.model_dump() for item in sources],
+                diagnostics=persisted_diagnostics,
+            )
+        except Exception as exc:
+            persistence_warnings.append(f"assistant_message_save_failed:{exc.__class__.__name__}")
+            logger.exception(
+                "chat_assistant_message_save_failed request_id=%s conversation_id=%s error=%s\n%s",
+                request_id,
+                conversation_id,
+                str(exc),
+                traceback.format_exc(),
+            )
+
+        try:
+            conversation_service.touch_conversation(conversation_id)
+        except Exception as exc:
+            persistence_warnings.append(f"conversation_touch_failed:{exc.__class__.__name__}")
+            logger.exception(
+                "chat_conversation_touch_failed request_id=%s conversation_id=%s error=%s\n%s",
+                request_id,
+                conversation_id,
+                str(exc),
+                traceback.format_exc(),
+            )
 
         return ChatResponse(
             conversation_id=conversation_id,
@@ -1197,7 +1323,8 @@ def process_chat(
             document_ids=document_ids,
             response_time=float(generation.get("generation_time_seconds") or 0.0),
             quality_report=(generation.get("quality_report") if isinstance(generation.get("quality_report"), dict) else None),
-            validation_status=str((generation.get("validation") or {}).get("validation_status") or "") or None,
+            validation_status=final_answer_validation_status_top if final_answer_validation_status_top in {"pass", "warning", "fail"} else None,
+            final_answer_validation_status=final_answer_validation_status_top if final_answer_validation_status_top in {"pass", "warning", "fail"} else None,
             generation_mode=str(generation.get("generation_mode") or "") or None,
             generation_writer=str(((generation.get("debug") or {}).get("generation_writer") or "")) or None,
             provider=llm_provider,
@@ -1255,7 +1382,7 @@ def process_chat(
             patients=generation.get("patients"),
             inventory_view=(generation.get("inventory_view") if isinstance(generation.get("inventory_view"), dict) else None),
             displayed_evidences=displayed_evidences,
-            debug=response_debug,
+            debug={**response_debug, "persistence_warnings": persistence_warnings},
         )
 
     except HTTPException:

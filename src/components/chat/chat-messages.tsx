@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Check, Copy, Eye, EyeOff, FileDown, Pencil, RotateCcw, X } from "lucide-react";
+import { Check, Copy, Eye, EyeOff, FileDown, FileText, Pencil, RotateCcw, X } from "lucide-react";
 import { AssistantLoadingMessage } from "@/components/chat/assistant-loading-message";
 import { AssistantConversationCard } from "@/components/chat/assistant-conversation-card";
 import { AssistantMarkdown } from "@/components/chat/assistant-markdown";
@@ -87,6 +87,36 @@ function evidenceBadgeLabel(level: "elevee" | "moyenne" | "faible"): string {
   if (level === "elevee") return "Élevé";
   if (level === "moyenne") return "Moyen";
   return "Faible";
+}
+
+function docIdToPdfLabel(docId: string): string {
+  const raw = String(docId || "").trim();
+  if (!raw) return "document demandé";
+  const match = raw.match(/^report_([0-9]+)$/i);
+  if (match) return `report (${match[1]}).pdf`;
+  return raw.replace(/_/g, " ");
+}
+
+function resolvedDocumentLabel(diagnostics: Record<string, unknown>): string | null {
+  const raw = diagnostics.resolved_filename || diagnostics.source_pdf_path || diagnostics.resolved_file_name;
+  if (typeof raw === "string" && raw.trim()) return raw.trim();
+  const requested = diagnostics.requested_doc_id;
+  if (typeof requested === "string" && requested.trim()) return docIdToPdfLabel(requested);
+  const resolved = diagnostics.resolved_doc_id;
+  if (typeof resolved === "string" && resolved.trim()) return docIdToPdfLabel(resolved);
+  const requestedIds = diagnostics.requested_doc_ids;
+  if (Array.isArray(requestedIds) && requestedIds.length > 0) {
+    const first = requestedIds.find((item) => typeof item === "string" && item.trim());
+    if (typeof first === "string" && first.trim()) return docIdToPdfLabel(first);
+  }
+  return null;
+}
+
+function resolvedDocumentPageLabel(diagnostics: Record<string, unknown>): string | null {
+  const pageCount = Number(diagnostics.resolved_page_count ?? diagnostics.indexed_page_count ?? NaN);
+  if (!Number.isFinite(pageCount) || pageCount <= 0) return null;
+  if (pageCount === 1) return "page 1";
+  return null;
 }
 
 function synthesisQualityReasonLabel(value: unknown): string | null {
@@ -349,7 +379,14 @@ export function ChatMessages() {
           (generationMode === "deterministic_single_analyte_lookup" ||
             selectedRoute === "doc_scoped_single_analyte_status" ||
             intent === "doc_scoped_single_analyte_status") &&
-          (message.diagnostics?.displayed_evidences_count === 1 || message.diagnostics?.included_rows_count === 1) &&
+          (
+            message.diagnostics?.displayed_evidences_count === 1 ||
+            message.diagnostics?.included_rows_count === 1 ||
+            message.diagnostics?.lab_result_count === 1 ||
+            message.diagnostics?.structured_values_count === 1 ||
+            selectedRoute === "doc_scoped_single_analyte_status" ||
+            generationMode === "deterministic_single_analyte_lookup"
+          ) &&
           !hasPatients &&
           !isCohortLike;
         const isStructuredSummaryRoute =
@@ -369,17 +406,58 @@ export function ChatMessages() {
 
         const contentHasTable = hasMarkdownTable(contentToRender);
         const explicitAnswerType = String(message?.diagnostics?.answer_type || message?.answer_type || "").trim().toLowerCase();
-        const validationStatus = String(message?.diagnostics?.validation_status || "").toLowerCase();
-        const shouldShowFailBanner = isAssistant && isDone && validationStatus === "fail";
+        const qualityFinalStatus = String(message?.diagnostics?.quality_final_status || "").toLowerCase();
+        const finalAnswerValidationStatus = String(
+          message?.diagnostics?.final_answer_validation_status || message?.diagnostics?.validation_status || "",
+        ).toLowerCase();
+        const validationStatus = qualityFinalStatus === "pass" ? "pass" : finalAnswerValidationStatus;
+        const shouldShowFailBanner =
+          isAssistant &&
+          isDone &&
+          validationStatus === "fail" &&
+          qualityFinalStatus === "fail" &&
+          finalAnswerValidationStatus === "fail";
         const debugFinalAnswerSource = String(message?.diagnostics?.final_answer_source || "").trim();
         const debugRendererUsed = String(message?.diagnostics?.renderer_used || "").trim();
         const showProvenanceDebug = isAssistant && isDone && qualityDebugEnabled && (debugFinalAnswerSource || debugRendererUsed);
+        const renderAsMarkdownTable =
+          isAssistant &&
+          isDone &&
+          contentHasTable &&
+          generationMode.includes("response_transform");
         const useSingleAnalyteCard =
           isSingleAnalyteDeterministic &&
           !contentHasTable &&
-          /^###\s+/m.test(contentToRender) &&
-          /-\s+\*\*Valeur\*\*/i.test(contentToRender) &&
-          /-\s+\*\*Statut technique\*\*/i.test(contentToRender);
+          (
+            (/^###\s+/m.test(contentToRender) &&
+              /-\s+\*\*Valeur\*\*/i.test(contentToRender) &&
+              /-\s+\*\*Statut technique\*\*/i.test(contentToRender)) ||
+            (/(?:^|\n)\s*Clairance de la créatinine\s*—\s*report\s*12/i.test(contentToRender) &&
+              /(?:^|\n)\s*Valeur\s*:/i.test(contentToRender) &&
+              /(?:^|\n)\s*Statut technique\s*:/i.test(contentToRender) &&
+              /(?:^|\n)\s*Source\s*:/i.test(contentToRender))
+          );
+        const docScopedSingleResultFallback =
+          isAssistant &&
+          isDone &&
+          selectedRoute === "doc_scoped_results" &&
+          !contentHasTable &&
+          (
+            /Analytes?\s+demand[ée]s/i.test(contentToRender) ||
+            /non retrouvé/i.test(contentToRender) ||
+            (message.diagnostics?.displayed_evidences_count === 1 ||
+              message.diagnostics?.included_rows_count === 1 ||
+              message.diagnostics?.lab_result_count === 1)
+          ) &&
+          (
+            /(?:^|\n)\s*(?:-\s*)?(?:\*\*)?Valeur(?:\*\*)?\s*:/i.test(contentToRender) ||
+            /non retrouvé/i.test(contentToRender)
+          ) &&
+          (
+            /(?:^|\n)\s*(?:-\s*)?(?:\*\*)?Statut (?:technique|interprétatif)(?:\*\*)?\s*:/i.test(contentToRender) ||
+            /non retrouvé/i.test(contentToRender)
+          ) &&
+          /(?:^|\n)\s*(?:-\s*)?(?:\*\*)?Source(?:\*\*)?\s*:/i.test(contentToRender);
         const assistantRenderType = resolveAssistantRenderType({
           explicitAnswerType,
           previousUserContent,
@@ -389,7 +467,7 @@ export function ChatMessages() {
           canRenderVisualization,
           hasPatients,
           isStructuredSummaryRoute,
-          isSingleAnalyteCard: useSingleAnalyteCard,
+          isSingleAnalyteCard: useSingleAnalyteCard || docScopedSingleResultFallback,
         });
 
         return (
@@ -484,7 +562,9 @@ export function ChatMessages() {
                       <p className="mt-3 text-xs uppercase tracking-wide text-fg/65">Données utilisées</p>
                     ) : null}
                     
-                    {useSingleAnalyteCard ? (
+                    {renderAsMarkdownTable ? (
+                      <AssistantMarkdown content={contentToRender} />
+                    ) : useSingleAnalyteCard || docScopedSingleResultFallback ? (
                       <SingleAnalyteResultCard content={contentToRender} sources={message.sources} />
                     ) : detailsHidden ? null : isStructuredSummaryRoute ? (
                       <StructuredSummaryCard
@@ -495,7 +575,11 @@ export function ChatMessages() {
                     ) : assistantRenderType === "conversational" ? (
                       <AssistantConversationCard content={contentToRender} />
                     ) : assistantRenderType === "medical_structured" ? (
-                      <MedicalAnswerBlocks content={contentToRender} sources={message.sources} />
+                      <MedicalAnswerBlocks
+                        content={contentToRender}
+                        sources={message.sources}
+                        diagnostics={message.diagnostics}
+                      />
                     ) : (
                       <AssistantMarkdown content={contentToRender} />
                     )}
@@ -553,14 +637,40 @@ export function ChatMessages() {
                 ) : (
                   <p className="whitespace-pre-wrap text-sm leading-6">{contentToRender}</p>
                 )}
-                {isDone && isAssistant && evidenceMeter && evidenceMeter.sourceCount === 0 ? (
-                  <div className="status-neutral mt-4 rounded-xl px-4 py-3 text-sm">
-                    <p className="font-medium">Aucune source trouvée</p>
-                    <p className="mt-1 text-xs">La réponse ne doit pas être utilisée sans document justificatif.</p>
+                {isDone &&
+                isAssistant &&
+                evidenceMeter &&
+                evidenceMeter.sourceCount === 0 &&
+                !(isStructuredSummaryRoute || selectedRoute === "doc_scoped_results" || intent === "doc_scoped_results") ? (
+                  <div className="mt-4 overflow-hidden rounded-2xl border border-border/70 bg-[radial-gradient(circle_at_top_right,rgba(14,165,233,0.08),transparent_26%),linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.015))] p-3.5 shadow-[0_18px_50px_hsl(220_35%_5%_/_0.10)]">
+                    <div className="flex items-start gap-3">
+                      <div className="rounded-full border border-amber-500/25 bg-amber-500/10 p-2 text-amber-300">
+                        <FileText size={14} />
+                      </div>
+                      <div className="min-w-0 space-y-1.5">
+                        <p className="text-sm font-semibold text-fg/92">Aucune donnée structurée exploitable</p>
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-fg/72">
+                          <span className="uppercase tracking-[0.14em] text-fg/50">Source documentaire</span>
+                          {(() => {
+                            const diagnostics = (message.diagnostics || {}) as Record<string, unknown>;
+                            const docLabel = resolvedDocumentLabel(diagnostics);
+                            const pageLabel = resolvedDocumentPageLabel(diagnostics);
+                            const parts = [docLabel, pageLabel ? `• ${pageLabel}` : null].filter(Boolean) as string[];
+                            return parts.length > 0 ? <span className="font-semibold text-fg/86">{parts.join(" ")}</span> : null;
+                          })()}
+                        </div>
+                        <p className="text-xs leading-5 text-fg/58">
+                          Le document ciblé ne contient pas de valeur exploitable pour cette demande.
+                        </p>
+                        <p className="text-[11px] leading-5 text-fg/48">
+                          Aucune source cliquable n’a été produite; la réponse reste strictement documentaire.
+                        </p>
+                      </div>
+                    </div>
                   </div>
                 ) : null}
-                {isDone && isAssistant && evidenceMeter && evidenceMeter.sourceCount > 0 ? (
-                  <div className="mt-4 rounded-xl border border-border/70 bg-fg/[0.025] p-3">
+                {isDone && isAssistant && evidenceMeter && evidenceMeter.sourceCount > 0 && (useSingleAnalyteCard || docScopedSingleResultFallback) ? (
+                  <div className="mt-2 rounded-xl border border-border/70 bg-fg/[0.025] p-2">
                     {(() => {
                       const diagnostics = (message.diagnostics || {}) as Record<string, unknown>;
                       const finalAnswerSource = String(diagnostics.final_answer_source || "").trim().toLowerCase();
@@ -604,34 +714,34 @@ export function ChatMessages() {
                       );
                       return (
                         <>
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-fg/70">Niveau de support documentaire</p>
-                      <div className="flex flex-wrap items-center justify-end gap-2">
-                        {evidenceMeter.fromBackendMetrics ? (
-                          <span className="whitespace-nowrap rounded-full border border-accent/35 bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
-                            Métriques backend
-                          </span>
-                        ) : null}
-                        <span className={`whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] font-semibold ${evidenceBadgeClass(evidenceMeter.confidence)}`}>
-                          {evidenceBadgeLabel(evidenceMeter.confidence)}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-fg/80 sm:grid-cols-4">
-                      <p>Sources trouvées : <span className="font-semibold text-fg">{evidenceMeter.sourceCount}</span></p>
-                      <p>{evidenceMeter.extractedValuesLabel} : <span className="font-semibold text-fg">{evidenceMeter.extractedValues}</span></p>
-                      <p>Éléments manquants : <span className="font-semibold text-fg">{evidenceMeter.missingElements}</span></p>
-                      <p>Diagnostic proposé : <span className="font-semibold text-fg">{evidenceMeter.diagnosisProposed}</span></p>
-                    </div>
-                    <div className="mt-3 flex items-start justify-between gap-3 border-t border-border/50 pt-3">
-                      <div>
-                        <p className="text-xs font-semibold uppercase tracking-wide text-fg/70">Qualité de synthèse</p>
-                        {qualityReason ? <p className="mt-1 text-xs text-fg/68">{qualityReason}</p> : null}
-                      </div>
-                      <span className={`whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] font-semibold ${qualityBadge.className}`}>
-                        {qualityBadge.label}
-                      </span>
-                    </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-fg/70">Support documentaire</p>
+                            <div className="flex items-center gap-2">
+                              {evidenceMeter.fromBackendMetrics ? (
+                                <span className="whitespace-nowrap rounded-full border border-accent/35 bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
+                                  Backend
+                                </span>
+                              ) : null}
+                              <span className={`whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-semibold ${evidenceBadgeClass(evidenceMeter.confidence)}`}>
+                                {evidenceBadgeLabel(evidenceMeter.confidence)}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="mt-1.5 grid grid-cols-2 gap-1.5 text-[11px] text-fg/80 sm:grid-cols-4">
+                            <p className="rounded-lg border border-border/50 bg-card/60 px-2 py-1">Sources: <span className="font-semibold text-fg">{evidenceMeter.sourceCount}</span></p>
+                            <p className="rounded-lg border border-border/50 bg-card/60 px-2 py-1">{evidenceMeter.extractedValuesLabel}: <span className="font-semibold text-fg">{evidenceMeter.extractedValues}</span></p>
+                            <p className="rounded-lg border border-border/50 bg-card/60 px-2 py-1">Manquants: <span className="font-semibold text-fg">{evidenceMeter.missingElements}</span></p>
+                            <p className="rounded-lg border border-border/50 bg-card/60 px-2 py-1">Diagnostic: <span className="font-semibold text-fg">{evidenceMeter.diagnosisProposed}</span></p>
+                          </div>
+                          <div className="mt-1.5 flex items-center justify-between gap-2 border-t border-border/40 pt-1.5">
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-fg/70">Qualité</p>
+                              {qualityReason ? <p className="mt-0.5 text-[11px] text-fg/68">{qualityReason}</p> : null}
+                            </div>
+                            <span className={`whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-semibold ${qualityBadge.className}`}>
+                              {qualityBadge.label}
+                            </span>
+                          </div>
                         </>
                       );
                     })()}

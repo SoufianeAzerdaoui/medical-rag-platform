@@ -15,6 +15,7 @@ for root in (SCRIPTS_ROOT, GENERATION_ROOT):
 
 from query_planner import build_execution_plan
 from generate_answer import run_generation
+from query_understanding import parse_query_understanding
 
 
 class TestQueryPlannerPhase4(unittest.TestCase):
@@ -57,6 +58,103 @@ class TestQueryPlannerPhase4(unittest.TestCase):
         )
         routes = [str(c["route"]) for c in plan["route_candidates"]]
         self.assertIn("doc_scoped_biological_summary", routes)
+
+    def test_run_generation_numeric_result_lookup_routes_to_doc_scoped_results(self) -> None:
+        result = run_generation(
+            query="Dans le PDF report (12).pdf, quels sont les résultats chiffrés importants ? Donne la valeur, l’unité, la référence si elle existe, et la source.",
+            mode="keyword",
+            top_k=20,
+            index_dir="data/indexes",
+        )
+        debug = dict(result.get("debug") or {})
+        self.assertEqual(str(debug.get("selected_route") or ""), "doc_scoped_results")
+        self.assertNotEqual(str(result.get("generation_mode") or ""), "deterministic_no_evidence_response")
+
+    def test_build_execution_plan_numeric_result_lookup_prefers_results_route(self) -> None:
+        qu = parse_query_understanding(
+            "Dans le PDF report (12).pdf, quels sont les résultats chiffrés importants ? Donne la valeur, l’unité, la référence si elle existe, et la source."
+        )
+        self.assertTrue(bool((qu.intents or {}).get("doc_scoped_numeric_result_lookup")))
+        self.assertEqual(str(qu.intent), "doc_scoped_results")
+        plan = build_execution_plan(
+            {
+                "intent": qu.intent,
+                "intent_candidates": [{"intent": qu.intent, "confidence": 0.91}],
+                "intent_confidence": 0.91,
+                "scope_confidence": 0.95,
+                "ambiguity_flags": [],
+                "medical_topics": [{"topic": "general_biology", "confidence": 0.7}],
+                "requested_doc_ids": list(qu.requested_doc_ids or []),
+                "requested_analytes": list(qu.requested_analytes or []),
+                "technical_condition": None,
+                "safety_intent": None,
+            },
+            "Dans le PDF report (12).pdf, quels sont les résultats chiffrés importants ?",
+        )
+        self.assertEqual(plan["selected_plan"], "doc_scoped_results")
+
+    def test_parse_query_understanding_multi_analyte_report_100_routes_to_results(self) -> None:
+        qu = parse_query_understanding(
+            "Dans le PDF report (100), retrouve les anomalies de LDH, CKMB, bilirubine directe et ammonium. Si elles ne sont pas présentes, dis-le explicitement sans inventer de valeur."
+        )
+        requested = [str(a).strip().lower() for a in list(qu.requested_analytes or []) if str(a).strip()]
+        self.assertIn("ldh", requested)
+        self.assertIn("ckmb", requested)
+        self.assertIn("bilirubine_directe", requested)
+        self.assertIn("ammonium", requested)
+        self.assertEqual(str(qu.intent), "doc_scoped_results")
+        self.assertTrue(bool((qu.intents or {}).get("multi_analyte_results")))
+        self.assertTrue(bool((qu.intents or {}).get("doc_scoped_results")))
+        plan = build_execution_plan(
+            {
+                "intent": qu.intent,
+                "intent_candidates": [{"intent": qu.intent, "confidence": 0.93}],
+                "intent_confidence": 0.93,
+                "scope_confidence": 0.96,
+                "ambiguity_flags": [],
+                "medical_topics": [{"topic": "hepatic", "confidence": 0.8}],
+                "requested_doc_ids": list(qu.requested_doc_ids or []),
+                "requested_analytes": list(qu.requested_analytes or []),
+                "technical_condition": "out_of_reference",
+                "safety_intent": None,
+            },
+            "Dans le PDF report (100), retrouve les anomalies de LDH, CKMB, bilirubine directe et ammonium.",
+        )
+        self.assertEqual(plan["selected_plan"], "doc_scoped_results")
+
+    def test_build_execution_plan_medical_summary_prefers_doc_scoped_summary(self) -> None:
+        qu = parse_query_understanding(
+            "Dans le PDF report (45).pdf, fais un résumé médical clair et fidèle en 4 à 6 lignes, sans interprétation excessive."
+        )
+        self.assertEqual(str(qu.answer_style), "doctor_note")
+        self.assertTrue(bool((qu.intents or {}).get("doc_scoped_medical_summary")))
+        self.assertEqual(str(qu.intent), "doc_scoped_summary")
+        plan = build_execution_plan(
+            {
+                "intent": qu.intent,
+                "intent_candidates": [{"intent": qu.intent, "confidence": 0.88}],
+                "intent_confidence": 0.88,
+                "scope_confidence": 0.94,
+                "ambiguity_flags": [],
+                "medical_topics": [{"topic": "general_biology", "confidence": 0.7}],
+                "requested_doc_ids": list(qu.requested_doc_ids or []),
+                "requested_analytes": list(qu.requested_analytes or []),
+                "technical_condition": None,
+                "safety_intent": None,
+            },
+            "Dans le PDF report (45).pdf, fais un résumé médical clair et fidèle en 4 à 6 lignes, sans interprétation excessive.",
+        )
+        self.assertIn(plan["selected_plan"], {"doc_scoped_biological_summary", "doc_scoped_summary"})
+        self.assertNotEqual(plan["selected_plan"], "unstructured")
+
+    def test_parse_query_understanding_medical_summary_with_explicit_doc_is_not_clarification(self) -> None:
+        qu = parse_query_understanding(
+            "Dans le PDF report (7), fais un résumé médical clair et fidèle en 4 à 6 lignes, sans interprétation excessive."
+        )
+        self.assertEqual(str(qu.intent), "doc_scoped_summary")
+        self.assertTrue(list(qu.requested_doc_ids or []))
+        self.assertNotEqual(str(qu.response_strategy), "ask_clarification")
+        self.assertIn(str(qu.response_strategy), {"render_table", "answer_directly"})
 
     def test_build_execution_plan_safety_intent_prioritizes_refusal_route(self) -> None:
         plan = build_execution_plan(

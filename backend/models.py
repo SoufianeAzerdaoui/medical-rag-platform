@@ -96,6 +96,7 @@ class SourceItem(BaseModel):
     doc_id: str | None = None
     filename: str | None = None
     row: int | None = None
+    line: int | None = None
     label: str | None = None
     url: str | None = None
     viewer_url: str | None = None
@@ -110,6 +111,7 @@ class ChatResponse(BaseModel):
     response_time: float | None = None
     quality_report: dict[str, Any] | None = None
     validation_status: Literal["pass", "warning", "fail"] | None = None
+    final_answer_validation_status: Literal["pass", "warning", "fail"] | None = None
     generation_mode: str | None = None
     generation_writer: str | None = None
     provider: str | None = None

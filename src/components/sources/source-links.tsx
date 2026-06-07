@@ -40,14 +40,19 @@ function buildViewerUrl(docId: string, page?: number | null): string {
 
 function normalizeSource(source: ChatSource, index: number) {
   if (isStructuredCitation(source)) {
-    const href = source.viewer_url || source.url || null;
-    const fallback = `${source.doc_id}${source.page ? ` — page ${source.page}` : ""}`;
-    const label = sanitizeLabel(source.label || fallback);
+    const href = source.doc_id ? buildViewerUrl(source.doc_id, source.page ?? null) : source.viewer_url || source.url || null;
+    const lineRaw = typeof source.line === "number" ? source.line : null;
+    const row = typeof source.row === "number" ? source.row : null;
+    const line = lineRaw !== null && !(row !== null && lineRaw === row) ? lineRaw : null;
+    const base = source.filename || source.doc_id;
+    const fallback = `${base}${source.page ? ` — page ${source.page}` : ""}${line ? `, ligne ${line}` : ""}`;
+    const label = sanitizeLabel(fallback || source.label || "Source PDF");
     return {
-      key: `${source.doc_id}-${source.page ?? "na"}-${source.row ?? "na"}-${index}`,
+      key: `${source.doc_id}-${source.page ?? "na"}-${line ?? "na"}-${index}`,
       label,
       href,
-      row: source.row ?? null,
+      line,
+      row,
       page: source.page ?? null,
       docId: source.doc_id,
       filename: source.filename || null,
@@ -68,7 +73,8 @@ function normalizeSource(source: ChatSource, index: number) {
         key: `legacy-url-${index}`,
         label,
         href: url,
-        row: rowMatch ? Number(rowMatch[1]) : null,
+        line: rowMatch ? Number(rowMatch[1]) : null,
+        row: null,
         page: null,
         docId: "",
         filename: null,
@@ -82,6 +88,7 @@ function normalizeSource(source: ChatSource, index: number) {
         key: `legacy-text-${index}`,
         label: text,
         href: null,
+        line: null,
         row: null,
         page: null,
         docId: "",
@@ -98,6 +105,7 @@ function normalizeSource(source: ChatSource, index: number) {
       label: `${docId}${page ? ` — page ${page}` : ""}`,
       href: buildViewerUrl(docId, page),
       row,
+      line: null,
       page,
       docId,
       filename: null,
@@ -121,6 +129,7 @@ function normalizeSource(source: ChatSource, index: number) {
     key: `legacy-object-${docId || "unknown"}-${page ?? "na"}-${index}`,
     label,
     href: href || null,
+    line: typeof legacyObject.line === "number" ? legacyObject.line : null,
     row: null,
     page,
     docId,
@@ -152,6 +161,7 @@ function groupSources(
     key: string;
     label: string;
     href: string | null;
+    line: number | null;
     row: number | null;
     page: number | null;
     docId: string;
@@ -163,12 +173,12 @@ function groupSources(
   const grouped = new Map<string, (typeof items)[number] & { _rows: number[] }>();
   for (const item of items) {
     if (!item.groupable || !item.page || !item.docId) {
-      grouped.set(item.key, { ...item, _rows: typeof item.row === "number" ? [item.row] : [] });
+      grouped.set(item.key, { ...item, _rows: typeof item.line === "number" ? [item.line] : [] });
       continue;
     }
     const key = `${item.docId}::${item.page}`;
     const current = grouped.get(key);
-    const rows = typeof item.row === "number" ? [item.row] : [];
+    const rows = typeof item.line === "number" ? [item.line] : [];
     if (!current) {
       grouped.set(key, { ...item, key, _rows: rows });
       continue;
@@ -184,7 +194,8 @@ function groupSources(
       return {
         ...entry,
         label: safeLabel,
-        row: labelAlreadyHasLine(safeLabel) ? null : entry.row,
+        row: null,
+        line: labelAlreadyHasLine(safeLabel) ? null : entry.line,
       };
     }
     const filename = entry.filename || entry.docId;
@@ -193,6 +204,7 @@ function groupSources(
       ...entry,
       label,
       row: null,
+      line: null,
     };
   });
 }
@@ -260,9 +272,9 @@ export function SourceLinks({
               ) : (
                 <span className="break-words text-fg">{source.label}</span>
               )}
-              {typeof source.row === "number" && !labelAlreadyHasLine(source.label) ? (
-                <span className="ml-2 text-xs text-fg/60" title={`ligne ${source.row}`}>
-                  ligne {source.row}
+              {typeof source.line === "number" && !labelAlreadyHasLine(source.label) ? (
+                <span className="ml-2 text-xs text-fg/60" title={`ligne ${source.line}`}>
+                  ligne {source.line}
                 </span>
               ) : null}
             </div>

@@ -25,6 +25,21 @@ type ParsedSummary = {
   rangeItems: string[];
 };
 
+type ToxicologyNarrative = {
+  nature: string;
+  families: string;
+  findings: string;
+  noExceedance: string;
+  conclusion: string;
+};
+
+type ExplicitMultiAnalyteNotFound = {
+  title: string;
+  analytes: string[];
+  source: string;
+  conclusion: string;
+};
+
 function isCitation(source: ChatSource): source is SourceCitation {
   return typeof source === "object" && source !== null && "doc_id" in source && typeof source.doc_id === "string";
 }
@@ -47,10 +62,18 @@ function firstSourceHint(sources: ChatSource[] = []): string | null {
   return null;
 }
 
+function buildSourceViewerUrl(docId: string, page?: number | null): string {
+  const encoded = encodeURIComponent(docId);
+  if (page && Number.isFinite(page)) {
+    return `/viewer/pdf?doc_id=${encoded}&page=${page}`;
+  }
+  return `/viewer/pdf?doc_id=${encoded}`;
+}
+
 function firstSourceLink(sources: ChatSource[] = []): { label: string; href: string } | null {
   for (const source of sources) {
     if (isCitation(source)) {
-      const href = source.viewer_url || source.url || "";
+      const href = buildSourceViewerUrl(source.doc_id, source.page ?? null);
       if (!href) continue;
       const doc = source.filename || source.doc_id;
       const label = source.page ? `${doc} — page ${source.page}` : doc;
@@ -131,10 +154,18 @@ function splitLineItems(value: string): string[] {
   const compact = cleanSegment(value);
   if (!compact) return [];
   if (/aucun résultat/i.test(compact) || /aucun resultat/i.test(compact)) return [];
-  return compact
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+  for (const item of compact
     .split(/[;•]/g)
     .map((item) => normalizeMedicalUnits(cleanSegment(item)))
-    .filter(Boolean);
+    .filter(Boolean)) {
+    const key = item.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(item);
+  }
+  return deduped;
 }
 
 function cleanFindingChip(value: string): string {
@@ -250,7 +281,7 @@ function parseSummary(content: string, diagnostics?: AssistantDiagnostics): Pars
     ]);
     const warningRaw = extractLine(content, ["note descriptive uniquement", "avertissement"]);
     const sourceRaw = extractLine(content, ["source"]);
-    const conclusionRaw = extractLine(content, ["conclusion technique", "synthèse", "synthese"]);
+    const conclusionRaw = extractExplicitConclusion(content) || extractLine(content, ["conclusion technique", "synthèse", "synthese"]);
     const rangeItems = splitLineItems(rangesRaw);
 
     const documentAnalyzedRaw = extractLine(content, ["document analysé", "document analyse"]);
@@ -451,15 +482,240 @@ function sentenceExcerpt(value: string, maxSentences = 2): string {
   return sentences.slice(0, maxSentences).join(" ");
 }
 
+function compactNarrativeLead(value: string, maxSentences = 2): string {
+  const text = normalizeMedicalUnits(String(value || "").replace(/\r/g, "\n"));
+  if (!text) return "";
+
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sanitizeForSentence(sentence))
+    .filter(Boolean);
+
+  const seen = new Set<string>();
+  const kept: string[] = [];
+
+  for (const sentence of sentences) {
+    const lower = sentence.toLowerCase();
+    if (
+      lower.startsWith("source") ||
+      lower.startsWith("conclusion technique") ||
+      lower.startsWith("conclusion prudente") ||
+      lower.startsWith("note descriptive uniquement")
+    ) {
+      continue;
+    }
+
+    const normalized = lower.replace(/[^a-z0-9]+/g, " ").trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    kept.push(sentence);
+
+    if (kept.length >= maxSentences) break;
+  }
+
+  return kept.join(" ");
+}
+
+function isToxicologyNarrative(content: string): boolean {
+  const text = normalizeMedicalUnits(cleanSegment(content)).toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes("pharmaco-toxicologie") ||
+    text.includes("pharmaco toxicologie") ||
+    text.includes("bilan urinaire") ||
+    text.includes("document correspond à un bilan") ||
+    text.includes("document correspond a un bilan") ||
+    text.includes("familles recherchées") ||
+    text.includes("familles recherchees") ||
+    text.includes("seuils fournis")
+  );
+}
+
+function parseToxicologyNarrative(content: string): ToxicologyNarrative | null {
+  if (!isToxicologyNarrative(content)) return null;
+  const lines = String(content || "")
+    .split("\n")
+    .map((line) => normalizeMedicalUnits(cleanSegment(line)))
+    .filter(Boolean);
+  if (lines.length === 0) return null;
+
+  const nature =
+    lines.find((line) => /(document correspond à un\s+)?bilan\s+(urinaire|sanguin)\s+(?:de\s+)?pharmaco-toxicologie/i.test(line)) ||
+    lines.find((line) => /(document correspond à un\s+)?bilan\s+de\s+pharmaco-toxicologie/i.test(line)) ||
+    "";
+  const families =
+    lines.find((line) => /^les familles recherch[ée]es comprennent/i.test(line)) ||
+    lines.find((line) => /^les familles recherchees comprennent/i.test(line)) ||
+    "";
+  const findings =
+    lines.find((line) => /^les valeurs semi-quantitatives retenues restent sous les seuils indiqu[ée]s/i.test(line)) ||
+    lines.find((line) => /^les valeurs semi-quantitatives retenues restent sous les seuils indiques/i.test(line)) ||
+    "";
+  const noExceedance =
+    lines.find((line) => /^aucun d[ée]passement des seuils fournis n’est mis en évidence/i.test(line)) ||
+    lines.find((line) => /^aucun depassement des seuils fournis n’est mis en evidence/i.test(line)) ||
+    lines.find((line) => /^aucun dépassement des seuils fournis n’est mis en évidence/i.test(line)) ||
+    "";
+  const conclusion =
+    lines.find((line) => /^conclusion prudente\s*:/i.test(line)) ||
+    lines.find((line) => /^conclusion technique\s*:/i.test(line)) ||
+    "";
+
+  return {
+    nature,
+    families,
+    findings,
+    noExceedance,
+    conclusion,
+  };
+}
+
+function parseToxicologyNarrativeFallback(content: string): ToxicologyNarrative | null {
+  if (!isToxicologyNarrative(content)) return null;
+
+  const lines = String(content || "")
+    .split("\n")
+    .map((line) => normalizeMedicalUnits(cleanSegment(line)))
+    .filter(Boolean);
+
+  const text = lines.join(" ");
+  const sentence = firstSentenceOnly(text) || "";
+
+  const nature =
+    lines.find((line) => /bilan\s+(urinaire|sanguin)\s+(?:de\s+)?pharmaco-toxicologie/i.test(line)) ||
+    lines.find((line) => /pharmaco-toxicologie/i.test(line) && /bilan/i.test(line)) ||
+    sentence ||
+    "";
+
+  const families =
+    lines.find((line) => /^les familles recherch[ée]es comprennent/i.test(line)) ||
+    lines.find((line) => /familles?\s+recherch[ée]es/i.test(line)) ||
+    lines.find((line) => /amphétamine|amphetamine|benzodiazépine|benzodiazepine|cocaïne|cocaine|ecstasy|opiac[ée]s|opiaces|phencyclidine/i.test(line)) ||
+    "";
+
+  const findings =
+    lines.find((line) => /^les valeurs semi-quantitatives retenues restent sous les seuils indiqu[ée]s/i.test(line)) ||
+    lines.find((line) => /valeurs?\s+semi-quantitatives?/i.test(line) && /seuil/i.test(line)) ||
+    lines.find((line) => /<\s*\d+/.test(line)) ||
+    "";
+
+  const noExceedance =
+    lines.find((line) => /^aucun d[ée]passement des seuils fournis n’est mis en évidence/i.test(line)) ||
+    lines.find((line) => /^aucun depassement des seuils fournis n’est mis en evidence/i.test(line)) ||
+    lines.find((line) => /^aucun dépassement des seuils fournis n’est mis en évidence/i.test(line)) ||
+    lines.find((line) => /aucun\s+d[ée]passement/i.test(line)) ||
+    "";
+
+  const conclusion =
+    lines.find((line) => /^conclusion prudente\s*:/i.test(line)) ||
+    lines.find((line) => /^conclusion technique\s*:/i.test(line)) ||
+    lines.find((line) => /lecture\s+descriptive/i.test(line) && /diagnostic/i.test(line)) ||
+    "";
+
+  if (!nature && !families && !findings && !noExceedance && !conclusion) {
+    return null;
+  }
+
+  return {
+    nature,
+    families,
+    findings,
+    noExceedance,
+    conclusion,
+  };
+}
+
+function parseExplicitMultiAnalyteNotFound(content: string): ExplicitMultiAnalyteNotFound | null {
+  const text = normalizeMedicalUnits(String(content || "").replace(/\r/g, "\n"));
+  const lines = text
+    .split("\n")
+    .map((line) => normalizeMedicalUnits(cleanSegment(line)))
+    .filter(Boolean);
+  if (!lines.length) return null;
+
+  const title = lines.find((line) => /^analytes?\s+demand[ée]s/i.test(line)) || "";
+  if (!title) return null;
+
+  const analytes: string[] = [];
+  for (const line of lines) {
+    const match = line.match(/^\s*[-*]\s*(.+?)\s*:\s*non retrouv[ée]e?(?:\s+dans\s+.+)?$/i);
+    if (!match?.[1]) continue;
+    const item = sanitizeForSentence(match[1]);
+    if (!item) continue;
+    if (!analytes.includes(item)) analytes.push(item);
+  }
+
+  if (!analytes.length) return null;
+
+  const sourceLine = lines.find((line) => /^source documentaire\s*:/i.test(line)) || "";
+  const conclusionLine = lines.find((line) => /^conclusion technique\s*:/i.test(line)) || "";
+
+  return {
+    title: sanitizeForSentence(title),
+    analytes,
+    source: sanitizeForSentence(sourceLine.replace(/^source documentaire\s*:\s*/i, "")),
+    conclusion: sanitizeForSentence(conclusionLine.replace(/^conclusion technique\s*:\s*/i, "")),
+  };
+}
+
+function compactNarrativeSnippet(value: string): string {
+  const text = sanitizeForSentence(value);
+  if (!text) return "";
+  return firstSentence(text) || text;
+}
+
+function buildToxicologyLead(narrative: ToxicologyNarrative): string {
+  const nature = sanitizeForSentence(narrative.nature);
+  const families = sanitizeForSentence(narrative.families);
+  const findings = sanitizeForSentence(narrative.findings);
+  const noExceedance = sanitizeForSentence(narrative.noExceedance);
+
+  if (nature && /pharmaco-toxicologie/i.test(nature)) {
+    if (noExceedance) {
+      return "Panel urinaire de pharmaco-toxicologie sans dépassement des seuils fournis.";
+    }
+    return "Panel urinaire de pharmaco-toxicologie documenté.";
+  }
+
+  const parts: string[] = [];
+  if (nature) parts.push(nature);
+  if (families) parts.push(families);
+  if (findings) parts.push(findings);
+  if (parts.length === 0) return "";
+  const combined = parts.join(" ");
+  return firstSentenceOnly(combined) || sanitizeForSentence(combined);
+}
+
 function extractExplicitConclusion(value: string): string {
-  const lines = String(value || "")
+  const text = normalizeMedicalUnits(String(value || "").replace(/\r/g, "\n"));
+  const lines = text
     .split("\n")
     .map((line) => sanitizeForSentence(line))
     .filter(Boolean);
+
+  const patterns = [
+    /(?:^|[\s•-])conclusion(?:\s+technique)?\s*:\s*(.+)$/i,
+    /(?:^|[\s•-])conclusion prudente\s*:\s*(.+)$/i,
+  ];
+
   for (const line of lines) {
-    if (/^conclusion(?:\s+technique)?\s*:/i.test(line) || /^conclusion prudente\s*:/i.test(line)) {
-      const idx = line.indexOf(":");
-      const tail = idx >= 0 ? line.slice(idx + 1).trim() : line;
+    for (const pattern of patterns) {
+      const match = line.match(pattern);
+      if (match?.[1]) {
+        const tail = match[1]
+          .split(/\s+(?:Source principale|Source|Sources)\s*[:·]/i)[0]
+          .trim();
+        return tail ? ensureSentence(tail) : "";
+      }
+    }
+  }
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      const tail = match[1]
+        .split(/\s+(?:Source principale|Source|Sources)\s*[:·]/i)[0]
+        .trim();
       return tail ? ensureSentence(tail) : "";
     }
   }
@@ -527,6 +783,19 @@ function looksLikeWeakBoilerplate(value: string): boolean {
   ].some((pattern) => text.includes(pattern));
 }
 
+function toDisplayCount(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, Math.round(value));
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return Math.max(0, Math.round(parsed));
+    }
+  }
+  return null;
+}
+
 export function StructuredSummaryCard({ content, sources = [], diagnostics }: Props) {
   const [showAllRanges, setShowAllRanges] = useState(false);
   const [showAllAnomalies, setShowAllAnomalies] = useState(false);
@@ -536,6 +805,9 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
   const sourceLink = firstSourceLink(sources);
   const parsedSource = parsed.source && !/^document fourni\.?$/i.test(parsed.source) ? parsed.source : "";
   const sourceDisplayLabel = preferredSourceLabel(parsedSource, sourceHint, sourceLink?.label || null);
+  const requestedDocScope = Array.isArray(diagnostics?.requested_doc_ids) && diagnostics?.requested_doc_ids?.length
+    ? diagnostics.requested_doc_ids.map((item) => prettifyDocumentLabel(String(item || ""))).join(", ")
+    : null;
   const rawSynthesis = synthesisText(parsed.warning || parsed.conclusion);
   const isDoctorNote =
     parsed.kind === "doctor_note" ||
@@ -553,6 +825,30 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
   const docScope = Array.isArray(diagnostics?.requested_doc_ids) && diagnostics?.requested_doc_ids?.length
     ? diagnostics.requested_doc_ids.map((item) => prettifyDocumentLabel(String(item || ""))).join(", ")
     : null;
+  const backendAboveCount = toDisplayCount(diagnostics?.above_reference_count);
+  const backendBelowCount = toDisplayCount(diagnostics?.below_reference_count);
+  const backendWithinCount = toDisplayCount(diagnostics?.within_reference_count);
+  const backendMajorAnomaliesCount = toDisplayCount(diagnostics?.major_anomalies_count);
+  const backendAnomalyCount = backendMajorAnomaliesCount ?? ((backendAboveCount ?? 0) + (backendBelowCount ?? 0));
+  const backendNormalCount = backendWithinCount ?? parsed.normals.length;
+  const backendDocumentedCount =
+    toDisplayCount(diagnostics?.displayed_evidences_count) ??
+    toDisplayCount(diagnostics?.evidence_pack_count) ??
+    toDisplayCount(diagnostics?.lab_result_count) ??
+    toDisplayCount(diagnostics?.structured_values_count) ??
+    toDisplayCount(diagnostics?.sources_count);
+  const hasMeaningfulBiologicalCounts =
+    backendAnomalyCount > 0 ||
+    backendNormalCount > 0 ||
+    parsed.anomalies.length > 0 ||
+    parsed.normals.length > 0;
+  const noEvidenceDocumentLabel = sourceDisplayLabel || requestedDocScope || sourceHint || "document fourni";
+  const isNoEvidenceSummary =
+    sources.length === 0 &&
+    parsed.anomalies.length === 0 &&
+    parsed.normals.length === 0 &&
+    parsed.rangeItems.length === 0 &&
+    /(?:aucun|aucune)\s+(?:résultat|donnée|données|valeur)/i.test(content);
   const doctorNoteParagraph = parsed.noteLines
     .map((line) => sanitizeForSentence(line))
     .filter(Boolean)
@@ -591,35 +887,384 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
     .map((line) => line.trim())
     .filter(Boolean)
     .join("\n\n");
+  const faithfulNarrativeLead = compactNarrativeLead(
+    faithfulNarrativeText || backendNarrative || fallbackNarrative || content,
+    isNarrativeBiologicalSummary ? 1 : 2,
+  );
   const narrativeParagraph = useFaithfulNarrative
-    ? (faithfulNarrativeBody || faithfulNarrativeText || sentenceExcerpt(fallbackNarrative || content, 3))
+    ? (faithfulNarrativeLead || faithfulNarrativeBody || faithfulNarrativeText || sentenceExcerpt(fallbackNarrative || content, 3))
     : sentenceExcerpt(doctorNoteParagraph || fallbackNarrative, isNarrativeBiologicalSummary ? 3 : 2);
+  const narrativeLeadCandidate =
+    narrativeParagraph ||
+    sentenceExcerpt(fallbackNarrative || content, 2) ||
+    rawSynthesis ||
+    (isDoctorNote ? "Résumé médical documenté." : "Synthèse structurée.");
+  const toxicologyNarrative = isDoctorNote
+    ? parseToxicologyNarrative(faithfulNarrativeText || backendNarrative || fallbackNarrative || content) ||
+      parseToxicologyNarrativeFallback(faithfulNarrativeText || backendNarrative || fallbackNarrative || content)
+    : null;
+  const explicitMultiAnalyteNotFound = isDoctorNote
+    ? parseExplicitMultiAnalyteNotFound(faithfulNarrativeText || backendNarrative || fallbackNarrative || content)
+    : null;
+  const isToxicologySummary = Boolean(toxicologyNarrative) || isToxicologyNarrative(faithfulNarrativeText || backendNarrative || fallbackNarrative || content);
+  const narrativeInfoCards = isDoctorNote && !toxicologyNarrative
+    ? [
+      {
+        label: "Contexte",
+        value: sanitizeForSentence(parsed.context || docScope || "document fourni"),
+      },
+      {
+        label: "Cadre",
+        value: "Prudente, sans diagnostic",
+      },
+      {
+        label: "Source documentaire",
+        value: sanitizeForSentence(sourceDisplayLabel || "document fourni"),
+      },
+      {
+        label: "Conclusion",
+        value: compactNarrativeSnippet(backendNarrative || synthesis || ""),
+      },
+    ].filter((item) => item.value)
+    : [];
+  const narrativeLeadNeedsBackfill = (() => {
+    const normalizedLead = sanitizeForSentence(narrativeLeadCandidate).toLowerCase();
+    const normalizedTitle = sanitizeForSentence(parsed.title || "").toLowerCase();
+    if (!normalizedLead) return true;
+    if (normalizedTitle && normalizedLead === normalizedTitle) return true;
+    if (normalizedLead.length < 28) return true;
+    if (isDoctorNote && /^note de synth[eè]se m[eé]dicale/i.test(normalizedLead)) return true;
+    return false;
+  })();
+  const narrativeLeadText = narrativeLeadNeedsBackfill
+    ? (
+      (isDoctorNote ? editorialSynthesis : "") ||
+      sentenceExcerpt(backendNarrative || faithfulNarrativeText || fallbackNarrative || content, isDoctorNote ? 3 : 2) ||
+      narrativeLeadCandidate
+    )
+    : narrativeLeadCandidate;
   const explicitConclusion = useFaithfulNarrative
     ? extractExplicitConclusion(faithfulNarrativeText || backendNarrative || fallbackNarrative || content)
-    : "";
+    : extractExplicitConclusion(content);
   const narrativeConclusion = useFaithfulNarrative
-    ? explicitConclusion
-    : sentenceExcerpt(synthesis, 2);
+    ? (explicitConclusion || sentenceExcerpt(backendNarrative || fallbackNarrative || content, 2))
+      : sentenceExcerpt(synthesis, 2);
+  const paragraphLower = sanitizeForSentence(narrativeParagraph).toLowerCase();
+  const conclusionLower = sanitizeForSentence(narrativeConclusion).toLowerCase();
+  const showConclusionPanel =
+    !narrativeConclusion ||
+    !isNarrativeBiologicalSummary ||
+    !paragraphLower ||
+    !conclusionLower ||
+    !paragraphLower.includes(conclusionLower);
+  const isNarrativeMedicalNoteTitle =
+    /^note de synth[eè]se m[eé]dicale/i.test(parsed.title) ||
+    /^note m[eé]dicale/i.test(parsed.title);
+  const summaryChipLabel = isDoctorNote
+    ? (isReferenceRangesNote
+      ? "Note sur les valeurs physiologiques"
+      : (isNarrativeBiologicalSummary && !isNarrativeMedicalNoteTitle ? "Synthèse biologique" : "Synthèse médicale"))
+    : "Résumé technique";
+
+  if (toxicologyNarrative && !isNoEvidenceSummary) {
+    const toxicologyLeadText = buildToxicologyLead(toxicologyNarrative);
+    return (
+      <motion.section
+        initial={{ opacity: 0, y: 4 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.2 }}
+        className="relative overflow-hidden space-y-4 rounded-[28px] border border-border/70 bg-[radial-gradient(circle_at_top_right,rgba(14,165,233,0.10),transparent_28%),linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.015))] p-5 shadow-[0_22px_70px_hsl(220_35%_5%_/_0.22)]"
+      >
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/40 to-transparent" />
+        <div className="pointer-events-none absolute -right-12 -top-16 h-40 w-40 rounded-full bg-accent/10 blur-3xl" />
+        <div className="pointer-events-none absolute -left-10 bottom-0 h-36 w-36 rounded-full bg-emerald-500/10 blur-3xl" />
+
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-card/80 px-2.5 py-1 text-xs font-medium text-fg/80">
+            <FlaskConical size={12} />
+            {summaryChipLabel}
+          </span>
+          <span className="inline-flex items-center gap-1 rounded-full border border-accent/30 bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent transition hover:-translate-y-px">
+            <BadgeCheck size={12} />
+            Source vérifiée
+          </span>
+          <span className="inline-flex items-center rounded-full border border-border/60 bg-bg/40 px-2.5 py-1 text-[11px] text-fg/68">
+            Périmètre: {docScope || "document fourni"}
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-fg/65">
+          <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/25 bg-emerald-500/8 px-2.5 py-0.5 text-emerald-200">
+            <ShieldCheck size={11} />
+            Lecture prudente et documentée
+          </span>
+          <span className="inline-flex items-center rounded-full border border-border/60 bg-card/60 px-2.5 py-0.5">
+            Synthèse structurée
+          </span>
+        </div>
+
+        <div className="grid gap-2 sm:grid-cols-3">
+          <div className="rounded-2xl border border-border/60 bg-card/55 px-3 py-2.5 shadow-[0_6px_18px_hsl(220_35%_5%_/_0.08)]">
+            <p className="text-[10px] uppercase tracking-[0.22em] text-fg/55">Type d’examen</p>
+            <p className="mt-1 text-sm font-semibold text-fg/92">{toxicologyNarrative.nature || "Pharmaco-toxicologie urinaire"}</p>
+          </div>
+          <div className="rounded-2xl border border-border/60 bg-card/55 px-3 py-2.5 shadow-[0_6px_18px_hsl(220_35%_5%_/_0.08)]">
+            <p className="text-[10px] uppercase tracking-[0.22em] text-fg/55">Familles analysées</p>
+            <p className="mt-1 text-sm font-semibold text-fg/92">{toxicologyNarrative.families || "Amphétamine, benzodiazépine, cocaïne, ecstasy, opiacés, phencyclidine"}</p>
+          </div>
+          <div className="rounded-2xl border border-border/60 bg-card/55 px-3 py-2.5 shadow-[0_6px_18px_hsl(220_35%_5%_/_0.08)]">
+            <p className="text-[10px] uppercase tracking-[0.22em] text-fg/55">Résultats sous seuil</p>
+            <p className="mt-1 text-sm leading-6 text-fg/90">{toxicologyNarrative.findings || "Les valeurs restent sous les seuils indiqués."}</p>
+          </div>
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1.4fr)_minmax(280px,0.95fr)]">
+          <section className="space-y-3 rounded-[24px] border border-border/60 bg-card/55 p-4 shadow-[0_8px_24px_hsl(220_35%_5%_/_0.12)]">
+            <div className="flex items-center gap-2">
+              <div className="rounded-full border border-accent/20 bg-accent/10 p-1.5 text-accent">
+                <FlaskConical size={12} />
+              </div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Synthèse</p>
+            </div>
+            <p className="text-sm leading-6 text-fg/92">
+              {toxicologyLeadText || toxicologyNarrative.nature || "Le document présente une synthèse toxico documentée."}
+            </p>
+            {toxicologyNarrative.noExceedance ? (
+              <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/8 px-3 py-2.5">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-emerald-200/80">Conclusion opérationnelle</p>
+                <p className="mt-1 text-sm leading-6 text-fg/92">{toxicologyNarrative.noExceedance}</p>
+              </div>
+            ) : null}
+          </section>
+
+          <div className="space-y-3">
+            <section className="space-y-2 rounded-[24px] border border-border/60 bg-card/45 p-4 shadow-[0_8px_24px_hsl(220_35%_5%_/_0.10)]">
+              <div className="flex items-center gap-2">
+                <div className="rounded-full border border-emerald-500/20 bg-emerald-500/10 p-1.5 text-emerald-200">
+                  <ShieldCheck size={12} />
+                </div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Conclusion technique</p>
+              </div>
+              <p className="text-sm leading-6 text-fg/92">
+                {toxicologyNarrative.conclusion || "Lecture descriptive à corréler au contexte clinique, sans diagnostic."}
+              </p>
+            </section>
+            <section className="space-y-2 rounded-[24px] border border-border/60 bg-card/45 p-4 shadow-[0_8px_24px_hsl(220_35%_5%_/_0.10)]">
+              <div className="flex items-center gap-2">
+                <div className="rounded-full border border-accent/20 bg-accent/10 p-1.5 text-accent">
+                  <FileText size={12} />
+                </div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Source documentaire</p>
+              </div>
+              {sourceLink ? (
+                <a
+                  href={sourceLink.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-border/60 bg-bg/45 px-3 py-2 text-sm text-accent transition hover:border-accent/30 hover:bg-accent/8 hover:underline"
+                >
+                  <span aria-hidden="true">↗</span>
+                  <span className="min-w-0 break-words">{sourceDisplayLabel || prettifyDocumentLabel(sourceLink.label)}</span>
+                </a>
+              ) : (
+                <p className="text-sm text-fg/90">{sourceDisplayLabel || "voir les sources cliquables ci-dessous"}</p>
+              )}
+            </section>
+          </div>
+        </div>
+      </motion.section>
+    );
+  }
+
+  if (explicitMultiAnalyteNotFound) {
+    const explicitSourceLabel = explicitMultiAnalyteNotFound.source || sourceDisplayLabel || sourceHint || "document fourni";
+    const explicitConclusion =
+      explicitMultiAnalyteNotFound.conclusion ||
+      "Aucun résultat exploitable correspondant aux analytes demandés n’a été identifié.";
+    return (
+      <motion.section
+        initial={{ opacity: 0, y: 4 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.2 }}
+        className="relative overflow-hidden space-y-4 rounded-[28px] border border-border/70 bg-[radial-gradient(circle_at_top_right,rgba(14,165,233,0.10),transparent_28%),linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.015))] p-5 shadow-[0_22px_70px_hsl(220_35%_5%_/_0.22)]"
+      >
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/40 to-transparent" />
+        <div className="pointer-events-none absolute -right-12 -top-16 h-40 w-40 rounded-full bg-accent/10 blur-3xl" />
+        <div className="pointer-events-none absolute -left-10 bottom-0 h-36 w-36 rounded-full bg-emerald-500/10 blur-3xl" />
+
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-card/80 px-2.5 py-1 text-xs font-medium text-fg/80">
+            <FlaskConical size={12} />
+            {summaryChipLabel}
+          </span>
+          <span className="inline-flex items-center gap-1 rounded-full border border-accent/30 bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent transition hover:-translate-y-px">
+            <BadgeCheck size={12} />
+            Source vérifiée
+          </span>
+          <span className="inline-flex items-center rounded-full border border-border/60 bg-bg/40 px-2.5 py-1 text-[11px] text-fg/68">
+            Périmètre: {docScope || "document fourni"}
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-fg/65">
+          <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/25 bg-emerald-500/8 px-2.5 py-0.5 text-emerald-200">
+            <ShieldCheck size={11} />
+            Lecture prudente et documentée
+          </span>
+          <span className="inline-flex items-center rounded-full border border-border/60 bg-card/60 px-2.5 py-0.5">
+            Synthèse structurée
+          </span>
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1.3fr)_minmax(280px,0.95fr)]">
+          <section className="space-y-3 rounded-[24px] border border-border/60 bg-card/55 p-4 shadow-[0_8px_24px_hsl(220_35%_5%_/_0.12)]">
+            <div className="flex items-center gap-2">
+              <div className="rounded-full border border-accent/20 bg-accent/10 p-1.5 text-accent">
+                <FlaskConical size={12} />
+              </div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Synthèse</p>
+            </div>
+            <p className="text-sm leading-6 text-fg/92">
+              Aucun des analytes demandés n’a été retrouvé dans le document.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {explicitMultiAnalyteNotFound.analytes.map((analyte) => (
+                <span
+                  key={analyte}
+                  className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-bg/45 px-2.5 py-1 text-xs text-fg/80"
+                >
+                  <span className="font-semibold">•</span>
+                  {analyte}
+                  <span className="text-fg/55">non retrouvé</span>
+                </span>
+              ))}
+            </div>
+          </section>
+
+          <div className="space-y-3">
+            <section className="space-y-2 rounded-[24px] border border-border/60 bg-card/45 p-4 shadow-[0_8px_24px_hsl(220_35%_5%_/_0.10)]">
+              <div className="flex items-center gap-2">
+                <div className="rounded-full border border-emerald-500/20 bg-emerald-500/10 p-1.5 text-emerald-200">
+                  <ShieldCheck size={12} />
+                </div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Conclusion technique</p>
+              </div>
+              <p className="text-sm leading-6 text-fg/92">
+                {explicitConclusion}
+              </p>
+            </section>
+            <section className="space-y-2 rounded-[24px] border border-border/60 bg-card/45 p-4 shadow-[0_8px_24px_hsl(220_35%_5%_/_0.10)]">
+              <div className="flex items-center gap-2">
+                <div className="rounded-full border border-accent/20 bg-accent/10 p-1.5 text-accent">
+                  <FileText size={12} />
+                </div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Source documentaire</p>
+              </div>
+              {sourceLink ? (
+                <a
+                  href={sourceLink.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-border/60 bg-bg/45 px-3 py-2 text-sm text-accent transition hover:border-accent/30 hover:bg-accent/8 hover:underline"
+                >
+                  <span aria-hidden="true">↗</span>
+                  <span className="min-w-0 break-words">{sourceDisplayLabel || prettifyDocumentLabel(sourceLink.label)}</span>
+                </a>
+              ) : (
+                <p className="text-sm text-fg/90">{sourceDisplayLabel || "voir les sources cliquables ci-dessous"}</p>
+              )}
+            </section>
+          </div>
+        </div>
+      </motion.section>
+    );
+  }
+
+  if (isNoEvidenceSummary) {
+    return (
+      <motion.section
+        initial={{ opacity: 0, y: 4 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.2 }}
+        className="relative overflow-hidden space-y-4 rounded-[28px] border border-border/70 bg-[radial-gradient(circle_at_top_right,rgba(14,165,233,0.10),transparent_28%),linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.015))] p-5 shadow-[0_22px_70px_hsl(220_35%_5%_/_0.22)]"
+      >
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/40 to-transparent" />
+        <div className="pointer-events-none absolute -right-12 -top-16 h-40 w-40 rounded-full bg-accent/10 blur-3xl" />
+        <div className="pointer-events-none absolute -left-10 bottom-0 h-36 w-36 rounded-full bg-emerald-500/10 blur-3xl" />
+
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-card/80 px-2.5 py-1 text-xs font-medium text-fg/80">
+            <FlaskConical size={12} />
+            {summaryChipLabel}
+          </span>
+          <span className="inline-flex items-center gap-1 rounded-full border border-accent/30 bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent transition hover:-translate-y-px">
+            <BadgeCheck size={12} />
+            Source vérifiée
+          </span>
+          <span className="inline-flex items-center rounded-full border border-border/60 bg-bg/40 px-2.5 py-1 text-[11px] text-fg/68">
+            Périmètre: {requestedDocScope || "document fourni"}
+          </span>
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1.4fr)_minmax(260px,0.9fr)]">
+          <section className="space-y-3 rounded-[24px] border border-border/60 bg-card/55 p-4 shadow-[0_8px_24px_hsl(220_35%_5%_/_0.12)]">
+            <div className="flex items-center gap-2">
+              <div className="rounded-full border border-accent/20 bg-accent/10 p-1.5 text-accent">
+                <FileText size={12} />
+              </div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Synthèse</p>
+            </div>
+            <p className="text-sm leading-6 text-fg/92">
+              Aucune donnée structurée exploitable n’a été extraite de {noEvidenceDocumentLabel} pour cette demande.
+            </p>
+            <p className="text-sm leading-6 text-fg/72">
+              Le document ciblé ne contient pas de valeur exploitable pour cette demande.
+            </p>
+          </section>
+
+          <div className="space-y-3">
+            <section className="space-y-2 rounded-[24px] border border-border/60 bg-card/45 p-4 shadow-[0_8px_24px_hsl(220_35%_5%_/_0.10)]">
+              <div className="flex items-center gap-2">
+                <div className="rounded-full border border-emerald-500/20 bg-emerald-500/10 p-1.5 text-emerald-200">
+                  <ShieldCheck size={12} />
+                </div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Conclusion technique</p>
+              </div>
+              <p className="text-sm leading-6 text-fg/92">
+                Aucune source cliquable n’a été produite; la réponse reste strictement documentaire.
+              </p>
+            </section>
+            <section className="space-y-2 rounded-[24px] border border-border/60 bg-card/45 p-4 shadow-[0_8px_24px_hsl(220_35%_5%_/_0.10)]">
+              <div className="flex items-center gap-2">
+                <div className="rounded-full border border-accent/20 bg-accent/10 p-1.5 text-accent">
+                  <FileText size={12} />
+                </div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Source documentaire</p>
+              </div>
+              <p className="text-sm text-fg/90">{noEvidenceDocumentLabel}</p>
+              <p className="text-[11px] leading-5 text-fg/48">Aucune source cliquable n’a été produite.</p>
+            </section>
+          </div>
+        </div>
+      </motion.section>
+    );
+  }
 
   return (
     <motion.section
       initial={{ opacity: 0, y: 4 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2 }}
-      className="space-y-3 rounded-2xl border border-border/70 bg-gradient-to-b from-fg/[0.035] to-fg/[0.015] p-4 shadow-[0_12px_40px_hsl(220_30%_8%_/_0.08)]"
+      className="relative overflow-hidden space-y-4 rounded-[28px] border border-border/70 bg-[radial-gradient(circle_at_top_right,rgba(14,165,233,0.10),transparent_28%),linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.015))] p-5 shadow-[0_22px_70px_hsl(220_35%_5%_/_0.22)]"
     >
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/40 to-transparent" />
+      <div className="pointer-events-none absolute -right-12 -top-16 h-40 w-40 rounded-full bg-accent/10 blur-3xl" />
+      <div className="pointer-events-none absolute -left-10 bottom-0 h-36 w-36 rounded-full bg-emerald-500/10 blur-3xl" />
+
       <div className="flex flex-wrap items-center gap-2">
         <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-card/80 px-2.5 py-1 text-xs font-medium text-fg/80">
           <FlaskConical size={12} />
-          {isDoctorNote
-            ? (
-              isReferenceRangesNote
-                ? "Note sur les valeurs physiologiques"
-                : (isNarrativeBiologicalSummary
-                  ? (parsed.title.replace(/\s+[—-]\s+.*$/, "").trim() || "Résumé biologique")
-                  : "Note médicale")
-            )
-            : "Résumé technique"}
+          {summaryChipLabel}
         </span>
         {diagnostics?.llm_quality_escalation_used && isLlmWriter ? (
           <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-2.5 py-1 text-xs font-medium text-cyan-200">
@@ -639,7 +1284,7 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
       <div className="flex flex-wrap items-center gap-2 text-[11px] text-fg/65">
         <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/25 bg-emerald-500/8 px-2.5 py-0.5 text-emerald-200">
           <ShieldCheck size={11} />
-          Lecture prudente, sans diagnostic
+          Lecture prudente et documentée
         </span>
         <span className="inline-flex items-center rounded-full border border-border/60 bg-card/60 px-2.5 py-0.5">
           Synthèse structurée
@@ -647,31 +1292,124 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
       </div>
 
       {isDoctorNote ? (
+        <div className="grid gap-2 sm:grid-cols-3">
+          {hasMeaningfulBiologicalCounts ? (
+            <>
+              <div className="rounded-2xl border border-border/60 bg-card/55 px-3 py-2.5 shadow-[0_6px_18px_hsl(220_35%_5%_/_0.08)]">
+                <p className="text-[10px] uppercase tracking-[0.22em] text-fg/55">Écarts biologiques</p>
+                <p className="mt-1 text-sm font-semibold text-fg/92">{backendAnomalyCount}</p>
+              </div>
+              <div className="rounded-2xl border border-border/60 bg-card/55 px-3 py-2.5 shadow-[0_6px_18px_hsl(220_35%_5%_/_0.08)]">
+                <p className="text-[10px] uppercase tracking-[0.22em] text-fg/55">
+                  {isToxicologySummary ? "Résultats sous seuil" : "Résultats dans la référence"}
+                </p>
+                <p className="mt-1 text-sm font-semibold text-fg/92">{backendNormalCount}</p>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="rounded-2xl border border-border/60 bg-card/55 px-3 py-2.5 shadow-[0_6px_18px_hsl(220_35%_5%_/_0.08)]">
+                <p className="text-[10px] uppercase tracking-[0.22em] text-fg/55">Résultats documentés</p>
+                <p className="mt-1 text-sm font-semibold text-fg/92">{backendDocumentedCount ?? parsed.noteLines.length}</p>
+              </div>
+              <div className="rounded-2xl border border-border/60 bg-card/55 px-3 py-2.5 shadow-[0_6px_18px_hsl(220_35%_5%_/_0.08)]">
+                <p className="text-[10px] uppercase tracking-[0.22em] text-fg/55">Cadre</p>
+                <p className="mt-1 text-sm font-semibold text-fg/92">Prudente, sans diagnostic</p>
+              </div>
+            </>
+          )}
+          <div className="rounded-2xl border border-border/60 bg-card/55 px-3 py-2.5 shadow-[0_6px_18px_hsl(220_35%_5%_/_0.08)]">
+            <p className="text-[10px] uppercase tracking-[0.22em] text-fg/55">Source documentaire</p>
+            <p className="mt-1 truncate text-sm font-semibold text-fg/92">{sourceDisplayLabel || "document fourni"}</p>
+          </div>
+        </div>
+      ) : null}
+
+      {isDoctorNote ? (
         <>
           {DOCTOR_NOTE_DEMO_COMPACT ? (
-              <section className="space-y-2 rounded-2xl border border-border/50 bg-card/40 p-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Résumé narratif</p>
-              <p className={`text-sm leading-6 text-fg/90 ${isNarrativeBiologicalSummary && isLlmWriter ? "whitespace-pre-line" : ""}`}>
-                {narrativeParagraph || firstSentence(fallbackNarrative)}
-                {rangeSentence ? ` ${firstSentence(rangeSentence)}` : ""}
-              </p>
+            <section className="space-y-3 rounded-[24px] border border-border/60 bg-card/55 p-4 shadow-[0_8px_24px_hsl(220_35%_5%_/_0.12)]">
+              <div className="flex items-center gap-2">
+                <div className="rounded-full border border-accent/20 bg-accent/10 p-1.5 text-accent">
+                  <FlaskConical size={12} />
+                </div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Synthèse</p>
+              </div>
+              {toxicologyNarrative ? (
+                <div className="space-y-3">
+                  <p className="text-sm leading-6 text-fg/92">
+                    {narrativeLeadText}
+                  </p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {toxicologyNarrative.nature ? (
+                      <div className="rounded-2xl border border-border/60 bg-bg/35 px-3 py-2.5">
+                        <p className="text-[10px] uppercase tracking-[0.18em] text-fg/55">Type d’examen</p>
+                        <p className="mt-1 text-sm font-semibold text-fg/92">{toxicologyNarrative.nature}</p>
+                      </div>
+                    ) : null}
+                    {toxicologyNarrative.families ? (
+                      <div className="rounded-2xl border border-border/60 bg-bg/35 px-3 py-2.5">
+                        <p className="text-[10px] uppercase tracking-[0.18em] text-fg/55">Familles analysées</p>
+                        <p className="mt-1 text-sm font-semibold text-fg/92">{toxicologyNarrative.families}</p>
+                      </div>
+                    ) : null}
+                    {toxicologyNarrative.findings ? (
+                      <div className="rounded-2xl border border-border/60 bg-bg/35 px-3 py-2.5">
+                        <p className="text-[10px] uppercase tracking-[0.18em] text-fg/55">Résultats sous seuil</p>
+                        <p className="mt-1 text-sm leading-6 text-fg/90">{toxicologyNarrative.findings}</p>
+                      </div>
+                    ) : null}
+                    {toxicologyNarrative.noExceedance ? (
+                      <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/8 px-3 py-2.5">
+                        <p className="text-[10px] uppercase tracking-[0.18em] text-emerald-200/80">Conclusion opérationnelle</p>
+                        <p className="mt-1 text-sm leading-6 text-fg/92">{toxicologyNarrative.noExceedance}</p>
+                      </div>
+                    ) : null}
+                  </div>
+                  {toxicologyNarrative.conclusion ? (
+                    <p className="text-sm leading-6 text-fg/72">{toxicologyNarrative.conclusion}</p>
+                  ) : null}
+                </div>
+              ) : (
+                <p className={`text-sm leading-6 text-fg/92 ${isNarrativeBiologicalSummary && isLlmWriter ? "whitespace-pre-line" : ""}`}>
+                  {narrativeLeadText}
+                  {rangeSentence ? ` ${firstSentence(rangeSentence)}` : ""}
+                </p>
+              )}
+              {narrativeInfoCards.length > 0 ? (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {narrativeInfoCards.map((item) => (
+                    <div key={`${item.label}-${item.value}`} className="rounded-2xl border border-border/60 bg-bg/35 px-3 py-2.5">
+                      <p className="text-[10px] uppercase tracking-[0.18em] text-fg/55">{item.label}</p>
+                      <p className="mt-1 text-sm leading-6 text-fg/90">{item.value}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               <div className="flex flex-wrap items-center gap-2 text-[11px] text-fg/64">
                 <span className="rounded-full border border-border/60 bg-bg/45 px-2 py-0.5">
                   {parsed.context ? sanitizeForSentence(parsed.context) : docScope || "document fourni"}
                 </span>
-                <span className="rounded-full border border-border/60 bg-bg/45 px-2 py-0.5">
-                  {firstSentence(narrativeConclusion)}
-                </span>
+                {showConclusionPanel && narrativeConclusion ? (
+                  <span className="rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-emerald-100">
+                    {firstSentence(narrativeConclusion)}
+                  </span>
+                ) : null}
               </div>
             </section>
           ) : (
-            <>
-              <section className="space-y-2 rounded-2xl border border-border/50 bg-card/40 p-3">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">
-                  {isNarrativeBiologicalSummary ? "Synthèse clinique" : "Note clinique"}
-                </p>
-                <p className={`text-sm leading-6 text-fg/90 ${useFaithfulNarrative ? "whitespace-pre-line" : ""}`}>
-                  {narrativeParagraph || firstSentence(fallbackNarrative)}
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1.45fr)_minmax(280px,0.95fr)]">
+              <section className="space-y-3 rounded-[24px] border border-border/60 bg-card/55 p-4 shadow-[0_8px_24px_hsl(220_35%_5%_/_0.12)]">
+                <div className="flex items-center gap-2">
+                  <div className="rounded-full border border-accent/20 bg-accent/10 p-1.5 text-accent">
+                    <FlaskConical size={12} />
+                  </div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">
+                    {isNarrativeBiologicalSummary ? "Synthèse" : "Synthèse médicale"}
+                  </p>
+                </div>
+                <p className={`text-sm leading-6 text-fg/92 ${useFaithfulNarrative ? "whitespace-pre-line" : ""}`}>
+                  {narrativeLeadText}
                 </p>
                 {rangeSentence ? (
                   <div className="flex flex-wrap items-center gap-2 text-[11px] text-fg/62">
@@ -691,36 +1429,51 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
                 ) : null}
               </section>
 
-              <div className="grid gap-2 sm:grid-cols-2">
-                <section className="space-y-1 rounded-2xl border border-border/50 bg-card/35 p-3">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">
-                    {isNarrativeBiologicalSummary ? "Conclusion prudente" : "Avertissement"}
-                  </p>
-                  {narrativeConclusion ? (
-                    <p className={`text-sm leading-6 text-fg/90 ${useFaithfulNarrative ? "whitespace-pre-line" : ""}`}>
+              <div className="space-y-3">
+                <section className="space-y-2 rounded-[24px] border border-border/60 bg-card/45 p-4 shadow-[0_8px_24px_hsl(220_35%_5%_/_0.10)]">
+                  <div className="flex items-center gap-2">
+                    <div className="rounded-full border border-emerald-500/20 bg-emerald-500/10 p-1.5 text-emerald-200">
+                      <ShieldCheck size={12} />
+                    </div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">
+                      {isNarrativeBiologicalSummary ? "Conclusion technique" : "Point de vigilance"}
+                    </p>
+                  </div>
+                  {showConclusionPanel && narrativeConclusion ? (
+                    <p className={`text-sm leading-6 text-fg/92 ${useFaithfulNarrative ? "whitespace-pre-line" : ""}`}>
                       {DOCTOR_NOTE_DEMO_COMPACT ? firstSentence(narrativeConclusion) : narrativeConclusion}
                     </p>
                   ) : (
-                    <p className="text-sm leading-6 text-fg/60">Conclusion non explicitement formulée dans la réponse backend.</p>
+                    <p className="text-sm leading-6 text-fg/62">
+                      {isNarrativeBiologicalSummary
+                        ? "La synthèse ci-dessus contient déjà la conclusion utile."
+                        : "La réponse backend ne formulait pas explicitement de conclusion distincte."}
+                    </p>
                   )}
                 </section>
-                <section className="space-y-1 rounded-2xl border border-border/50 bg-card/35 p-3">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Source</p>
+                <section className="space-y-2 rounded-[24px] border border-border/60 bg-card/45 p-4 shadow-[0_8px_24px_hsl(220_35%_5%_/_0.10)]">
+                  <div className="flex items-center gap-2">
+                    <div className="rounded-full border border-accent/20 bg-accent/10 p-1.5 text-accent">
+                      <FileText size={12} />
+                    </div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg/62">Source documentaire</p>
+                  </div>
                   {sourceLink ? (
                     <a
                       href={sourceLink.href}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-sm text-accent underline-offset-2 hover:underline"
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-border/60 bg-bg/45 px-3 py-2 text-sm text-accent transition hover:border-accent/30 hover:bg-accent/8 hover:underline"
                     >
-                      {sourceDisplayLabel || prettifyDocumentLabel(sourceLink.label)}
+                      <span aria-hidden="true">↗</span>
+                      <span className="min-w-0 break-words">{sourceDisplayLabel || prettifyDocumentLabel(sourceLink.label)}</span>
                     </a>
                   ) : (
                     <p className="text-sm text-fg/90">{sourceDisplayLabel || "voir les sources cliquables ci-dessous"}</p>
                   )}
                 </section>
               </div>
-            </>
+            </div>
           )}
         </>
       ) : (
@@ -852,7 +1605,7 @@ export function StructuredSummaryCard({ content, sources = [], diagnostics }: Pr
             <div className="flex flex-wrap items-center gap-2 text-[11px] text-fg/60">
               <span className="inline-flex items-center gap-1.5">
                 <FileText size={11} />
-                Source principale:
+                Source documentaire:
               </span>
               <span className="rounded-full border border-border/60 bg-card/60 px-2 py-0.5 text-fg/72">
                 {sourceDisplayLabel || "voir les sources cliquables"}

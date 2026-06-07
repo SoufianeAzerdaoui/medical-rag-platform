@@ -102,6 +102,45 @@ function modeConfig(mode: PromptMode): PromptModeConfig {
   return modes.find((m) => m.value === mode) || modes[0];
 }
 
+function inferBackendModeFromDraft(text: string, currentMode: PromptMode): PromptMode {
+  if (currentMode !== "general") return currentMode;
+  const normalized = text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const summarySignals = [
+    "resume",
+    "resume medical",
+    "resume medical clair et fidele",
+    "resume biologique",
+    "synthese",
+    "bilan",
+    "présente les résultats",
+    "presente les resultats",
+    "présente le résultat",
+    "presente le resultat",
+    "fais un resume medical",
+    "fais un résumé médical",
+    "fais une synthese medicale",
+    "mets en avant",
+    "en restant prudente",
+    "en restant prudent",
+    "sans interpretation excessive",
+    "sans inventer",
+    "points clés",
+    "points cles",
+  ];
+
+  if (summarySignals.some((signal) => normalized.includes(signal))) {
+    return "summary";
+  }
+
+  return currentMode;
+}
+
 export function MessageComposer() {
   const [selectedModelId, setSelectedModelId] = useState<LlmChoiceId>("local-qwen");
   const [summaryReportStyle, setSummaryReportStyle] = useState<SummaryStyle>("editorial");
@@ -220,13 +259,23 @@ export function MessageComposer() {
   async function onSend() {
     const trimmed = composerDraft.trim();
     if (!trimmed || sending || !isAuthenticated) return;
-    const config = modeConfig(composerPromptMode);
+    const backendPromptMode = inferBackendModeFromDraft(trimmed, composerPromptMode);
+    const config = modeConfig(backendPromptMode);
+    const summaryStyleToSend =
+      backendPromptMode === "summary"
+        ? composerPromptMode === "summary"
+          ? summaryReportStyle
+          : "short"
+        : null;
+    if (backendPromptMode !== composerPromptMode) {
+      setComposerPromptMode(backendPromptMode);
+    }
     const content = config.preface ? `${config.preface}\n\n${trimmed}` : trimmed;
     try {
       await sendMessage({
         content,
         mode: config.backendMode,
-        summaryStyle: config.value === "summary" ? summaryReportStyle : null,
+        summaryStyle: summaryStyleToSend,
         llmProviderOverride: selectedModel.provider,
         llmModelOverride: selectedModel.model,
       });

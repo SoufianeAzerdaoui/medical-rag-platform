@@ -112,8 +112,11 @@ def strip_accents(text: str) -> str:
 
 def slugify(text: Any) -> str:
     text = strip_accents(clean(text)).lower()
-    text = re.sub(r"[^a-z0-9]+", "_", text)
-    text = re.sub(r"_+", "_", text).strip("_")
+    # Preserve underscores already present in source stems so that
+    # distinct filenames like `report__100.pdf` and `report (100).pdf`
+    # do not collapse to the same chunk id namespace.
+    text = re.sub(r"[^a-z0-9_]+", "_", text)
+    text = re.sub(r"^_+|_+$", "", text)
     return text or "unknown"
 
 

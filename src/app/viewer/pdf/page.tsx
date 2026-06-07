@@ -3,16 +3,25 @@ function asString(value: string | string[] | undefined): string {
   return value || "";
 }
 
+export const dynamic = "force-dynamic";
+
 function normalizeApiBase(base: string): string {
   const trimmed = (base || "").trim();
   if (!trimmed) return "";
   return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
 }
 
-function buildPdfHref(docId: string, page: number | null): string {
+function buildPdfHref(docId: string, page: number | null, version: string): string {
   const encoded = encodeURIComponent(docId);
-  const suffix = page && Number.isFinite(page) ? `?page=${page}` : "";
+  const params = new URLSearchParams();
+  if (page && Number.isFinite(page)) {
+    params.set("page", String(page));
+  }
+  if (version) {
+    params.set("v", version);
+  }
   const apiBase = normalizeApiBase(process.env.NEXT_PUBLIC_RAG_API_URL || "");
+  const suffix = params.toString() ? `?${params.toString()}` : "";
   const relative = `/api/documents/${encoded}/pdf${suffix}`;
   return apiBase ? `${apiBase}${relative}` : relative;
 }
@@ -25,6 +34,7 @@ export default async function PdfViewerPage({
     page?: string | string[];
     row?: string | string[];
     row_end?: string | string[];
+    v?: string | string[];
   }>;
 }) {
   const resolvedSearchParams = await searchParams;
@@ -32,6 +42,7 @@ export default async function PdfViewerPage({
   const pageRaw = asString(resolvedSearchParams.page).trim();
   const rowRaw = asString(resolvedSearchParams.row).trim();
   const rowEndRaw = asString(resolvedSearchParams.row_end).trim();
+  const versionRaw = asString(resolvedSearchParams.v).trim();
   const page = pageRaw ? Number(pageRaw) : null;
   const row = rowRaw ? Number(rowRaw) : null;
   const rowEnd = rowEndRaw ? Number(rowEndRaw) : null;
@@ -45,7 +56,8 @@ export default async function PdfViewerPage({
     );
   }
 
-  const pdfHref = buildPdfHref(docId, Number.isFinite(page || NaN) ? page : null);
+  const cacheVersion = versionRaw || String(Date.now());
+  const pdfHref = buildPdfHref(docId, Number.isFinite(page || NaN) ? page : null, cacheVersion);
   const title = `Source ${docId}${page ? ` — page ${page}` : ""}`;
   const hasRowFocus = Number.isFinite(row || NaN);
   const lineFocusText = hasRowFocus

@@ -34,6 +34,16 @@ class TestSourceNormalization(unittest.TestCase):
         self.assertTrue(str(out.get("viewer_url") or "").startswith("/viewer/pdf?doc_id=report_18"))
         self.assertIn("report (18).pdf", str(out.get("label") or ""))
 
+    def test_table_row_is_not_rendered_as_pdf_line(self) -> None:
+        src = {"doc_id": "report_12", "source_pdf": "report (12).pdf", "page": 1, "row": 1}
+        out = normalize_source_for_response(src)
+        self.assertEqual(out.get("source_pdf"), "report (12).pdf")
+        self.assertEqual(out.get("page"), 1)
+        self.assertEqual(out.get("row"), 1)
+        self.assertIsNone(out.get("line"))
+        self.assertEqual(out.get("viewer_url"), "/viewer/pdf?doc_id=report_12&page=1")
+        self.assertEqual(out.get("label"), "report (12).pdf — page 1")
+
     def test_dedup_by_source_page_line_and_url(self) -> None:
         sources = [
             {"doc_id": "report_18", "source_pdf": "report (18).pdf", "page": 1, "line": 1},
@@ -42,6 +52,17 @@ class TestSourceNormalization(unittest.TestCase):
         ]
         out = dedup_normalized_sources(sources)
         self.assertEqual(len(out), 2)
+
+    def test_dedup_page_level_sources_without_line_collapse_row_duplicates(self) -> None:
+        sources = [
+            {"doc_id": "report_16", "source_pdf": "report (16).pdf", "page": 1, "row": 1},
+            {"doc_id": "report_16", "source_pdf": "report (16).pdf", "page": 1, "row": 2},
+            {"doc_id": "report_16", "source_pdf": "report (16).pdf", "page": 1, "row": 3},
+        ]
+        out = dedup_normalized_sources(sources)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].get("page"), 1)
+        self.assertEqual(out[0].get("row"), 1)
 
     def test_docs_prefix_is_normalized(self) -> None:
         src = {"doc_id": "report_18", "source_pdf": "docs/report (18).pdf", "label": "docs/report (18).pdf — page 1, ligne 1", "page": 1, "line": 1}

@@ -77,6 +77,15 @@ class TestSpecializedFallbacks(unittest.TestCase):
         )
         self.assertEqual(kind, "single_analyte_not_found")
 
+    def test_document_not_found_premium_source_label(self) -> None:
+        out = build_specialized_fallback(
+            kind="document_not_found",
+            requested_doc_ids=["report_24"],
+        )
+        self.assertIn("Aucune donnée structurée exploitable", out.answer)
+        self.assertIn("Source documentaire", out.answer)
+        self.assertIn("report (24).pdf", out.answer)
+
 
 if __name__ == "__main__":
     unittest.main()
