@@ -516,6 +516,24 @@ function compactNarrativeLead(value: string, maxSentences = 2): string {
   return kept.join(" ");
 }
 
+function stripInlineSourceClause(value: string): string {
+  return String(value || "")
+    .split(/\bsource\s*:\s*/i)[0]
+    .trim();
+}
+
+function compactToxicologyNature(value: string): string {
+  const text = normalizeMedicalUnits(stripInlineSourceClause(value)).replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (
+    /(document correspond à un\s+)?bilan\s+(urinaire|sanguin)\s+(?:de\s+)?pharmaco-toxicologie/i.test(text) ||
+    /(document correspond à un\s+)?bilan\s+de\s+pharmaco-toxicologie/i.test(text)
+  ) {
+    return "Le document correspond à un bilan urinaire de pharmaco-toxicologie.";
+  }
+  return firstSentenceOnly(text) || sanitizeForSentence(text);
+}
+
 function isToxicologyNarrative(content: string): boolean {
   const text = normalizeMedicalUnits(cleanSegment(content)).toLowerCase();
   if (!text) return false;
@@ -539,10 +557,11 @@ function parseToxicologyNarrative(content: string): ToxicologyNarrative | null {
     .filter(Boolean);
   if (lines.length === 0) return null;
 
-  const nature =
+  const nature = compactToxicologyNature(
     lines.find((line) => /(document correspond à un\s+)?bilan\s+(urinaire|sanguin)\s+(?:de\s+)?pharmaco-toxicologie/i.test(line)) ||
     lines.find((line) => /(document correspond à un\s+)?bilan\s+de\s+pharmaco-toxicologie/i.test(line)) ||
-    "";
+    "",
+  );
   const families =
     lines.find((line) => /^les familles recherch[ée]es comprennent/i.test(line)) ||
     lines.find((line) => /^les familles recherchees comprennent/i.test(line)) ||
@@ -665,7 +684,7 @@ function compactNarrativeSnippet(value: string): string {
 }
 
 function buildToxicologyLead(narrative: ToxicologyNarrative): string {
-  const nature = sanitizeForSentence(narrative.nature);
+  const nature = compactToxicologyNature(narrative.nature);
   const families = sanitizeForSentence(narrative.families);
   const findings = sanitizeForSentence(narrative.findings);
   const noExceedance = sanitizeForSentence(narrative.noExceedance);
